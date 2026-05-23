@@ -1,0 +1,52 @@
+# Android standard
+.gradle
+/build
+/app/build
+/captures
+/platform-tools
+
+# Local configuration
+local.properties
+.idea/caches
+.idea/libraries
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+.idea/runConfigurations.xml
+*.iml
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Project specific debug/unused artifacts
+_test_write.txt
+adb.exe
+AdbWinApi.dll
+AdbWinUsbApi.dll
+libwinpthread-1.dll
+platform-tools.zip
+replace.ps1
+termux.apk
+test_proot.sh
+install-nethunter-termux
+launcher_fixed.sh
+proot_debug.log
+GEMINI.md.new
+
+# Rootfs remnants (do not commit extracted chroots)
+/usr/
+/kali-arm64/
+/kali-armhf/
+
+# Python environment
+__pycache__/
+*.pyc
+
+# Copilot/Gemini session artifacts
+.tasks/
+.copilot/
+AGENT.md
+AGENTS.md
+agent.md

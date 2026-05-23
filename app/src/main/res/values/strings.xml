@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">NetHunter AI Operator</string>
+    <string name="action_go">Go</string>
+    <string name="download_button">Download NetHunter Rootfs</string>
+    <string name="launch_button">Launch NetHunter</string>
+    <string name="redownload_button">Re-download Rootfs</string>
+    <string name="cancel_button">Cancel</string>
+    <string name="preparing_status">Preparing…</string>
+    <string name="downloading_status">Downloading rootfs…</string>
+    <string name="downloading_indeterminate">Downloading… (unknown size)</string>
+    <string name="extracting_status">Extracting rootfs…</string>
+    <string name="error_prefix">Error: </string>
+</resources>
