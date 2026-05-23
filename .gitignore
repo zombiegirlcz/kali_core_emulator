@@ -50,3 +50,6 @@ __pycache__/
 AGENT.md
 AGENTS.md
 agent.md
+
+# Local backup archive
+ignore-archiv.tar
