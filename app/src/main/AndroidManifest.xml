@@ -28,6 +28,7 @@
         <activity
             android:name=".ui.terminal.TerminalActivity"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|fontScale"
+            android:windowSoftInputMode="adjustResize"
             android:exported="false"
             android:theme="@style/Theme.Nethunteraioperator.Terminal" />
     </application>

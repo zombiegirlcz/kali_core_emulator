@@ -8,12 +8,15 @@ import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -39,12 +42,30 @@ class TerminalActivity : ComponentActivity() {
     private var currentSession: TerminalSession? = null
     private val viewClient = TerminalViewClientImpl()
 
+    // Premium Toolbar and Special Keypad Panel states
+    var customCtrlActive = false
+    var customAltActive = false
+    private lateinit var btnCtrl: Button
+    private lateinit var btnAlt: Button
+    private lateinit var btnToggleKeypad: Button
+    private lateinit var specialKeypadPanel: ScrollView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewClient.setActivity(this)
 
-        container = FrameLayout(this)
-        container.setBackgroundColor(Color.BLACK)
+        // Root container: vertical LinearLayout for screen layout
+        val mainLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+
+        // Terminal view container (takes weight = 1f to fill remaining screen space)
+        val terminalContainer = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
 
         terminalView = TerminalView(this, null)
         terminalView.setBackgroundColor(Color.BLACK)
@@ -53,20 +74,33 @@ class TerminalActivity : ComponentActivity() {
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
         
-        // Explicitly handle click to show keyboard
         terminalView.setOnClickListener {
-            Log.d(TAG, "TerminalView clicked - requesting keyboard")
-            showSoftKeyboard()
+            Log.d(TAG, "TerminalView clicked - requesting focus")
+            if (specialKeypadPanel.visibility == View.VISIBLE) {
+                toggleSpecialKeypad(false)
+            } else {
+                showSoftKeyboard()
+            }
         }
 
-        container.addView(terminalView, FrameLayout.LayoutParams(
+        terminalContainer.addView(terminalView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         errorLayout = buildErrorOverlay()
-        container.addView(errorLayout, FrameLayout.LayoutParams(
+        terminalContainer.addView(errorLayout, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        setContentView(container)
+        mainLayout.addView(terminalContainer)
+
+        // Horizontal scrollable Extra Keys Toolbar
+        val toolbarScroll = buildExtraKeysToolbar()
+        mainLayout.addView(toolbarScroll)
+
+        // Custom Special Keypad Panel (grid overlays Android keyboard space)
+        val keypadPanel = buildSpecialKeypadPanel()
+        mainLayout.addView(keypadPanel)
+
+        setContentView(mainLayout)
         setupAndStartSession()
     }
 
@@ -74,13 +108,233 @@ class TerminalActivity : ComponentActivity() {
         super.onResume()
         Log.d(TAG, "onResume - requesting focus")
         terminalView.requestFocus()
-        showSoftKeyboard()
+        if (specialKeypadPanel.visibility != View.VISIBLE) {
+            showSoftKeyboard()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         currentSession?.finishIfRunning()
         currentSession = null
+    }
+
+    private fun buildExtraKeysToolbar(): HorizontalScrollView {
+        val scroll = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            setBackgroundColor(Color.parseColor("#0d0e15"))
+            setPadding(4, 4, 4, 4)
+            isHorizontalScrollBarEnabled = false
+        }
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        val toolbarKeys = listOf(
+            "ESC" to { sendKey("\u001b") },
+            "TAB" to { sendKey("\t") },
+            "CTRL" to { toggleCtrlModifier() },
+            "ALT" to { toggleAltModifier() },
+            "|" to { sendKey("|") },
+            "-" to { sendKey("-") },
+            "_" to { sendKey("_") },
+            "/" to { sendKey("/") },
+            "\\" to { sendKey("\\") },
+            ":" to { sendKey(":") },
+            "⌨️ Keypad" to { toggleSpecialKeypad(specialKeypadPanel.visibility == View.GONE) }
+        )
+
+        for ((label, action) in toolbarKeys) {
+            val btn = Button(this).apply {
+                text = label
+                textSize = 12f
+                typeface = Typeface.MONOSPACE
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#181926"))
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
+                ).apply {
+                    setMargins(6, 4, 6, 4)
+                }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    action()
+                }
+            }
+            if (label == "CTRL") btnCtrl = btn
+            if (label == "ALT") btnAlt = btn
+            if (label == "⌨️ Keypad") btnToggleKeypad = btn
+
+            layout.addView(btn)
+        }
+
+        scroll.addView(layout)
+        return scroll
+    }
+
+    private fun buildSpecialKeypadPanel(): ScrollView {
+        specialKeypadPanel = ScrollView(this).apply {
+            val heightPx = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, 260f, resources.displayMetrics).toInt()
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, heightPx)
+            setBackgroundColor(Color.parseColor("#0c0d12"))
+            visibility = View.GONE
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(8, 8, 8, 8)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        fun addRow(buttons: List<Pair<String, () -> Unit>>) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                val rowHeight = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 46f, resources.displayMetrics).toInt()
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, rowHeight).apply {
+                    setMargins(0, 4, 0, 4)
+                }
+            }
+            for ((label, action) in buttons) {
+                val btn = Button(this).apply {
+                    text = label
+                    textSize = 12f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#151620"))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        setMargins(4, 0, 4, 0)
+                    }
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        action()
+                    }
+                }
+                row.addView(btn)
+            }
+            container.addView(row)
+        }
+
+        // Row 1: ESC, TAB, Ctrl, Alt, Del, Backspace
+        addRow(listOf(
+            "ESC" to { sendKey("\u001b") },
+            "TAB" to { sendKey("\t") },
+            "CTRL" to { toggleCtrlModifier() },
+            "ALT" to { toggleAltModifier() },
+            "DEL" to { sendKey("\u001b[3~") },
+            "⌫" to { sendKey("\u007f") }
+        ))
+
+        // Row 2: F1 - F6, PgUp
+        addRow(listOf(
+            "F1" to { sendKey("\u001bOP") },
+            "F2" to { sendKey("\u001bOQ") },
+            "F3" to { sendKey("\u001bOR") },
+            "F4" to { sendKey("\u001bOS") },
+            "F5" to { sendKey("\u001b[15~") },
+            "F6" to { sendKey("\u001b[17~") },
+            "PgUp" to { sendKey("\u001b[5~") }
+        ))
+
+        // Row 3: F7 - F12, PgDn
+        addRow(listOf(
+            "F7" to { sendKey("\u001b[18~") },
+            "F8" to { sendKey("\u001b[19~") },
+            "F9" to { sendKey("\u001b[20~") },
+            "F10" to { sendKey("\u001b[21~") },
+            "F11" to { sendKey("\u001b[23~") },
+            "F12" to { sendKey("\u001b[24~") },
+            "PgDn" to { sendKey("\u001b[6~") }
+        ))
+
+        // Row 4: HOME, ▲, END, Ctrl+C, Ctrl+D, Ctrl+Z
+        addRow(listOf(
+            "HOME" to { sendKey("\u001b[1~") },
+            "▲" to { sendKey("\u001b[A") },
+            "END" to { sendKey("\u001b[4~") },
+            "Ctrl+C" to { sendKey("\u0003") },
+            "Ctrl+D" to { sendKey("\u0004") },
+            "Ctrl+Z" to { sendKey("\u001a") }
+        ))
+
+        // Row 5: ◀, ENTER, ▶, ▼, |, clear
+        addRow(listOf(
+            "◀" to { sendKey("\u001b[D") },
+            "ENTER" to { sendKey("\r") },
+            "▶" to { sendKey("\u001b[C") },
+            "▼" to { sendKey("\u001b[B") },
+            "|" to { sendKey("|") },
+            "clear" to { sendKey("clear\r") }
+        ))
+
+        specialKeypadPanel.addView(container)
+        return specialKeypadPanel
+    }
+
+    private fun sendKey(sequence: String) {
+        currentSession?.write(sequence)
+        terminalView.requestFocus()
+    }
+
+    private fun toggleCtrlModifier() {
+        customCtrlActive = !customCtrlActive
+        if (customCtrlActive) {
+            btnCtrl.setBackgroundColor(Color.parseColor("#ff0033")) // Kali Red
+            btnCtrl.setTextColor(Color.WHITE)
+        } else {
+            btnCtrl.setBackgroundColor(Color.parseColor("#181926"))
+            btnCtrl.setTextColor(Color.WHITE)
+        }
+        terminalView.requestFocus()
+    }
+
+    private fun toggleAltModifier() {
+        customAltActive = !customAltActive
+        if (customAltActive) {
+            btnAlt.setBackgroundColor(Color.parseColor("#ff0033")) // Kali Red
+            btnAlt.setTextColor(Color.WHITE)
+        } else {
+            btnAlt.setBackgroundColor(Color.parseColor("#181926"))
+            btnAlt.setTextColor(Color.WHITE)
+        }
+        terminalView.requestFocus()
+    }
+
+    fun toggleSpecialKeypad(show: Boolean) {
+        if (show) {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(terminalView.windowToken, 0)
+            
+            specialKeypadPanel.visibility = View.VISIBLE
+            btnToggleKeypad.setBackgroundColor(Color.parseColor("#ff0033"))
+        } else {
+            specialKeypadPanel.visibility = View.GONE
+            btnToggleKeypad.setBackgroundColor(Color.parseColor("#181926"))
+            
+            showSoftKeyboard()
+        }
+        terminalView.requestFocus()
+    }
+
+    fun resetModifiers() {
+        customCtrlActive = false
+        customAltActive = false
+        runOnUiThread {
+            btnCtrl.setBackgroundColor(Color.parseColor("#181926"))
+            btnCtrl.setTextColor(Color.WHITE)
+            btnAlt.setBackgroundColor(Color.parseColor("#181926"))
+            btnAlt.setTextColor(Color.WHITE)
+        }
     }
 
     private fun buildErrorOverlay(): LinearLayout {
@@ -154,7 +408,9 @@ class TerminalViewClientImpl : TerminalViewClient {
     override fun onScale(scale: Float) = scale
     override fun onSingleTapUp(e: MotionEvent) {
         Log.d("TerminalView", "onSingleTapUp")
-        activity?.showSoftKeyboard()
+        if (activity?.toggleSpecialKeypad(false) == null) {
+            activity?.showSoftKeyboard()
+        }
     }
     override fun shouldBackButtonBeMappedToEscape() = false
     override fun shouldEnforceCharBasedInput() = true
@@ -176,6 +432,24 @@ class TerminalViewClientImpl : TerminalViewClient {
     override fun readShiftKey() = false
     override fun readFnKey() = false
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        val act = activity
+        val finalCtrl = ctrlDown || (act?.customCtrlActive == true)
+        val finalAlt = act?.customAltActive == true
+
+        if (finalCtrl) {
+            act?.resetModifiers()
+            val upperCode = codePoint.toChar().uppercaseChar().code
+            if (upperCode in 64..95) {
+                session.write(Character.toString((upperCode - 64).toChar()))
+                return true
+            }
+        }
+        if (finalAlt) {
+            act?.resetModifiers()
+            session.write("\u001b" + Character.toString(codePoint.toChar()))
+            return true
+        }
+
         val input = StringBuilder().appendCodePoint(codePoint).toString()
         Log.d("TerminalView", "onCodePoint: $input ($codePoint)")
         session.write(input)
