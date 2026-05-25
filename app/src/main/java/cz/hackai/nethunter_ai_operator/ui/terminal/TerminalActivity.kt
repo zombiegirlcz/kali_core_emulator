@@ -34,7 +34,6 @@ class TerminalActivity : ComponentActivity() {
         private const val TAG = "TerminalActivity"
     }
 
-    private lateinit var container: FrameLayout
     private lateinit var terminalView: TerminalView
     private lateinit var errorLayout: LinearLayout
     private lateinit var errorText: TextView
@@ -42,7 +41,12 @@ class TerminalActivity : ComponentActivity() {
     private var currentSession: TerminalSession? = null
     private val viewClient = TerminalViewClientImpl()
 
-    // Premium Toolbar and Special Keypad Panel states
+    // Multi-Session management
+    private val sessionsList = ArrayList<TerminalSession>()
+    private lateinit var sessionTabBar: HorizontalScrollView
+    private lateinit var sessionTabContainer: LinearLayout
+
+    // Keyboard Toolbar and Special Keypad Panel states
     var customCtrlActive = false
     var customAltActive = false
     private lateinit var btnCtrl: Button
@@ -60,6 +64,10 @@ class TerminalActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
+
+        // Active sessions tab bar docked at the very top
+        val sessionBar = buildSessionTabBar()
+        mainLayout.addView(sessionBar)
 
         // Terminal view container (takes weight = 1f to fill remaining screen space)
         val terminalContainer = FrameLayout(this).apply {
@@ -115,8 +123,139 @@ class TerminalActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        currentSession?.finishIfRunning()
+        for (session in sessionsList) {
+            session.finishIfRunning()
+        }
+        sessionsList.clear()
         currentSession = null
+    }
+
+    private fun buildSessionTabBar(): HorizontalScrollView {
+        sessionTabBar = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            setBackgroundColor(Color.parseColor("#08090d"))
+            isHorizontalScrollBarEnabled = false
+        }
+
+        sessionTabContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            setPadding(4, 4, 4, 4)
+        }
+
+        sessionTabBar.addView(sessionTabContainer)
+        return sessionTabBar
+    }
+
+    fun updateSessionTabBar() {
+        runOnUiThread {
+            sessionTabContainer.removeAllViews()
+            for (i in 0 until sessionsList.size) {
+                val session = sessionsList[i]
+                val isActive = (session == currentSession)
+                val btn = Button(this).apply {
+                    text = "Session ${i + 1}"
+                    textSize = 11f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(if (isActive) Color.parseColor("#ff0033") else Color.parseColor("#181926"))
+                    val params = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                            TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                    ).apply {
+                        setMargins(6, 2, 6, 2)
+                    }
+                    layoutParams = params
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        switchToSession(session)
+                    }
+                    setOnLongClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        closeSession(session)
+                        true
+                    }
+                }
+                sessionTabContainer.addView(btn)
+            }
+
+            // Plus Button to add session
+            val plusBtn = Button(this).apply {
+                text = " + "
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#151620"))
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                ).apply {
+                    setMargins(12, 2, 4, 2)
+                }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    addNewSession()
+                }
+            }
+            sessionTabContainer.addView(plusBtn)
+        }
+    }
+
+    private fun addNewSession() {
+        val cfg = config ?: return
+        Log.i(TAG, "addNewSession")
+        val session = try {
+            TerminalSession(
+                cfg.command[0], cfg.cwd, cfg.command, cfg.env, 1000,
+                TerminalSessionClientImpl(terminalView, this, System.currentTimeMillis()) { showError(it) }
+            )
+        } catch (e: Exception) {
+            showError("Session error: ${e.message}")
+            return
+        }
+
+        sessionsList.add(session)
+        switchToSession(session)
+    }
+
+    private fun switchToSession(session: TerminalSession) {
+        currentSession = session
+        terminalView.attachSession(session)
+        terminalView.post {
+            terminalView.requestFocus()
+            terminalView.onScreenUpdated()
+        }
+        updateSessionTabBar()
+    }
+
+    private fun closeSession(session: TerminalSession) {
+        session.finishIfRunning()
+        sessionsList.remove(session)
+        if (sessionsList.isEmpty()) {
+            finish()
+        } else {
+            if (currentSession == session) {
+                switchToSession(sessionsList[0])
+            } else {
+                updateSessionTabBar()
+            }
+        }
+    }
+
+    fun onSessionEnded(session: TerminalSession) {
+        sessionsList.remove(session)
+        if (sessionsList.isEmpty()) {
+            finish()
+        } else {
+            if (currentSession == session) {
+                switchToSession(sessionsList[0])
+            } else {
+                updateSessionTabBar()
+            }
+        }
     }
 
     private fun buildExtraKeysToolbar(): HorizontalScrollView {
@@ -356,7 +495,8 @@ class TerminalActivity : ComponentActivity() {
 
     private fun setupAndStartSession() {
         Log.i(TAG, "setupAndStartSession")
-        config = try { ProotManager.setupProotEnvironment(this) } catch (e: Exception) { 
+        val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
+        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName) } catch (e: Exception) { 
             showError("Setup failed: ${e.message}"); return 
         }
         startTerminalSession(config!!)
@@ -371,16 +511,9 @@ class TerminalActivity : ComponentActivity() {
             )
         } catch (e: Exception) { showError("Session error: ${e.message}"); return }
 
-        terminalView.attachSession(session)
-        currentSession = session
-        
-        terminalView.post {
-            terminalView.requestFocus()
-            terminalView.onScreenUpdated()
-            Log.d(TAG, "TerminalView attached and focused")
-        }
-        
-        showSoftKeyboard()
+        sessionsList.clear()
+        sessionsList.add(session)
+        switchToSession(session)
     }
 
     fun showSoftKeyboard() {
@@ -413,7 +546,7 @@ class TerminalViewClientImpl : TerminalViewClient {
         }
     }
     override fun shouldBackButtonBeMappedToEscape() = false
-    override fun shouldEnforceCharBasedInput() = true
+    override fun shouldEnforceCharBasedInput() = false
     override fun shouldUseCtrlSpaceWorkaround() = false
     override fun isTerminalViewSelected() = true
     override fun copyModeChanged(copyMode: Boolean) {}
@@ -421,6 +554,17 @@ class TerminalViewClientImpl : TerminalViewClient {
         Log.d("TerminalView", "onKeyDown: keyCode=$keyCode")
         if (keyCode == KeyEvent.KEYCODE_ENTER) {
             session.write("\r")
+            return true
+        }
+        val arrowSequence = when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A"
+            KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B"
+            KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C"
+            KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D"
+            else -> null
+        }
+        if (arrowSequence != null) {
+            session.write(arrowSequence)
             return true
         }
         return false
@@ -482,8 +626,14 @@ class TerminalSessionClientImpl(
     override fun onTitleChanged(session: TerminalSession) {}
     override fun onSessionFinished(session: TerminalSession) {
         Log.i("TermSession", "onSessionFinished: exitStatus=${session.exitStatus}")
-        if (session.exitStatus != 0 && session.exitStatus != -9) {
-            Handler(Looper.getMainLooper()).post { onError("Exit code: ${session.exitStatus}") }
+        Handler(Looper.getMainLooper()).post {
+            if (activity is TerminalActivity) {
+                activity.onSessionEnded(session)
+            } else {
+                if (session.exitStatus != 0 && session.exitStatus != -9) {
+                    onError("Exit code: ${session.exitStatus}")
+                }
+            }
         }
     }
     override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}

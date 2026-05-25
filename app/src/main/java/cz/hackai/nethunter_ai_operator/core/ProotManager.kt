@@ -16,16 +16,24 @@ class ProotConfig(
 object ProotManager {
     private const val TAG = "ProotManager"
 
-    fun setupProotEnvironment(context: Context): ProotConfig {
+    fun setupProotEnvironment(context: Context, rootfsDirName: String = "kali-arm64"): ProotConfig {
         val rootDir = context.filesDir
-
-        val rootfsDir = when {
-            File(rootDir, "kali-arm64").isDirectory -> File(rootDir, "kali-arm64")
-            File(rootDir, "kali-armhf").isDirectory -> File(rootDir, "kali-armhf")
-            else -> File(rootDir, "kali-arm64")
-        }
+        val rootfsDir = File(rootDir, rootfsDirName)
         val homeDir = File(rootfsDir, "root")
         val tmpDir = File(rootDir, "tmp")
+
+        // Pre-emptively fix permissions of critical bind mount target directories
+        val criticalDirs = listOf("system", "dev", "proc", "sys", "tmp", "root")
+        for (dirName in criticalDirs) {
+            val dir = File(rootfsDir, dirName)
+            if (dir.exists()) {
+                dir.setReadable(true, false)
+                dir.setWritable(true, false)
+                dir.setExecutable(true, false)
+            } else {
+                dir.mkdirs()
+            }
+        }
 
         if (!homeDir.exists()) homeDir.mkdirs()
         if (!tmpDir.exists()) tmpDir.mkdirs()
@@ -35,7 +43,8 @@ object ProotManager {
         // Do not force cleanup of the sentinel so that bootstrap runs only once!
         val sentinel = File(homeDir, ".setup_done")
 
-        createMasterScript(homeDir)
+        val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
+        createMasterScript(homeDir, distroId)
         createEntrypointScript(homeDir)
         fixLdLinuxSymlinks(rootfsDir)
 
@@ -119,24 +128,37 @@ object ProotManager {
         )
     }
 
-    private fun createMasterScript(homeDir: File) {
+    private fun createMasterScript(homeDir: File, distroId: String) {
         val masterFile = File(homeDir, "bootstrap.sh")
         val script = buildString {
             appendLine("#!/bin/bash")
+            appendLine("set -e")
             appendLine("export DEBIAN_FRONTEND=noninteractive")
             appendLine("echo '========================================'")
-            appendLine("echo '[*] KALI LINUX BOOTSTRAP STARTING... '")
+            appendLine("echo '[*] ${distroId.uppercase()} BOOTSTRAP STARTING... '")
             appendLine("echo '========================================'")
             
             appendLine("# 1. Fix Networking")
             appendLine("echo 'nameserver 8.8.8.8' > /etc/resolv.conf")
-            appendLine("echo 'deb https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list")
+            
+            if (distroId == "kali") {
+                appendLine("echo 'deb https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list")
+            } else {
+                appendLine("echo 'deb [trusted=yes] https://deb.parrot.sh/parrot parrot main contrib non-free' > /etc/apt/sources.list")
+            }
 
             // Wrappers are pre-installed by Kotlin code at /usr/sbin, /sbin, /usr/bin, /bin
             // We use dpkg-divert to ensure that apt packages do not overwrite our mock wrappers during installation!
             appendLine("# 2. Set up system call wrappers via dpkg-divert")
             appendLine("echo '[*] Setting up system call wrappers...'")
             appendLine("MOCK_SCRIPT='/usr/sbin/systemctl'")
+            appendLine("mkdir -p /usr/sbin")
+            appendLine("cat > \"\$MOCK_SCRIPT\" << 'MOCKEOF'")
+            appendLine("#!/bin/sh")
+            appendLine("echo \"Mocked call: \$0 \$*\"")
+            appendLine("exit 0")
+            appendLine("MOCKEOF")
+            appendLine("chmod +x \"\$MOCK_SCRIPT\"")
             appendLine("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap getcap capsh sysctl udevadm modprobe rmmod insmod dmidecode systemd-detect-virt timedatectl hostnamectl localectl loginctl journalctl ldconfig ldconfig.real adduser addgroup; do")
             appendLine("  for prefix in /usr/sbin /sbin /usr/bin /bin; do")
             appendLine("    path=\"\$prefix/\$cmd\"")
@@ -147,7 +169,12 @@ object ProotManager {
             appendLine("done")
 
             appendLine("# 3. Patch known failing postinst scripts")
-            appendLine("for pkg in sudo x11-common initramfs-tools kali-menu passwd login; do")
+            val pkgsToPatch = if (distroId == "kali") {
+                "sudo x11-common initramfs-tools kali-menu passwd login"
+            } else {
+                "sudo x11-common initramfs-tools passwd login"
+            }
+            appendLine("for pkg in $pkgsToPatch; do")
             appendLine("  postinst=\"/var/lib/dpkg/info/\${pkg}.postinst\"")
             appendLine("  echo '#!/bin/sh' > \"\$postinst\"")
             appendLine("  echo 'exit 0' >> \"\$postinst\"")
@@ -157,7 +184,11 @@ object ProotManager {
             appendLine("# 4. Update and Install")
             appendLine("echo '[*] Updating system and installing packages...'")
             appendLine("apt update")
-            appendLine("apt install -y kali-defaults zsh zsh-syntax-highlighting curl git")
+            if (distroId == "kali") {
+                appendLine("apt install -y kali-defaults zsh zsh-syntax-highlighting curl git")
+            } else {
+                appendLine("apt install -y zsh curl git")
+            }
 
             appendLine("# 5. Finalize dpkg state")
             appendLine("dpkg --configure -a 2>/dev/null || true")
@@ -170,22 +201,26 @@ object ProotManager {
             appendLine("  done")
             appendLine("done")
 
-            appendLine("# 7. Configure 'kali' user access")
-            appendLine("echo '[*] Configuring kali user...'")
-            appendLine("passwd -d kali 2>/dev/null || true")
-            appendLine("usermod -aG sudo kali 2>/dev/null || (groupadd sudo 2>/dev/null && usermod -aG sudo kali 2>/dev/null) || true")
-            appendLine("echo 'kali ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/kali 2>/dev/null || true")
-            appendLine("chmod 0440 /etc/sudoers.d/kali 2>/dev/null || true")
+            if (distroId == "kali") {
+                appendLine("# 7. Configure 'kali' user access")
+                appendLine("echo '[*] Configuring kali user...'")
+                appendLine("passwd -d kali 2>/dev/null || true")
+                appendLine("usermod -aG sudo kali 2>/dev/null || (groupadd sudo 2>/dev/null && usermod -aG sudo kali 2>/dev/null) || true")
+                appendLine("echo 'kali ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/kali 2>/dev/null || true")
+                appendLine("chmod 0440 /etc/sudoers.d/kali 2>/dev/null || true")
+            }
 
             appendLine("# 8. Set ZSH as default shell")
             appendLine("chsh -s /usr/bin/zsh root 2>/dev/null || true")
 
-            appendLine("# 9. Copy ZSH config to kali user")
-            appendLine("cp /root/.zshrc /home/kali/.zshrc 2>/dev/null || true")
-            appendLine("chown -R kali:kali /home/kali/.zshrc 2>/dev/null || true")
+            if (distroId == "kali") {
+                appendLine("# 9. Copy ZSH config to kali user")
+                appendLine("cp /root/.zshrc /home/kali/.zshrc 2>/dev/null || true")
+                appendLine("chown -R kali:kali /home/kali/.zshrc 2>/dev/null || true")
+            }
 
             appendLine("touch /root/.setup_done")
-            appendLine("echo '[+] ALL DONE! Kali is ready.'")
+            appendLine("echo '[+] ALL DONE! ${distroId.uppercase()} is ready.'")
             appendLine("rm -- \"\$0\"")
         }
         if (masterFile.exists()) masterFile.delete()
@@ -203,7 +238,13 @@ object ProotManager {
             appendLine("    /bin/bash /root/bootstrap.sh")
             appendLine("fi")
             appendLine("echo '[*] Starting session...'")
-            appendLine("exec /usr/bin/zsh --login 2>/dev/null || exec /bin/bash --login")
+            appendLine("if [ -x /usr/bin/zsh ]; then")
+            appendLine("    exec /usr/bin/zsh --login")
+            appendLine("elif [ -x /bin/zsh ]; then")
+            appendLine("    exec /bin/zsh --login")
+            appendLine("else")
+            appendLine("    exec /bin/bash --login")
+            appendLine("fi")
         }
         if (entryFile.exists()) entryFile.delete()
         entryFile.writeText(script)
@@ -211,19 +252,29 @@ object ProotManager {
     }
 
     private fun fixLdLinuxSymlinks(rootfsDir: File) {
-        val ldLink = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
-        if (ldLink.exists() && Files.isSymbolicLink(ldLink.toPath())) {
-            try {
-                val target = android.system.Os.readlink(ldLink.absolutePath)
-                val resolvedFile = File(ldLink.parentFile, target).canonicalFile
-                if (resolvedFile.exists() && resolvedFile.isFile) {
-                    ldLink.delete()
-                    resolvedFile.copyTo(ldLink)
-                    ldLink.setExecutable(true, false)
-                    ldLink.setReadable(true, false)
+        val paths = listOf("lib/ld-linux-aarch64.so.1", "lib64/ld-linux-aarch64.so.1", "usr/lib/ld-linux-aarch64.so.1")
+        for (relPath in paths) {
+            val ldLink = File(rootfsDir, relPath)
+            if (ldLink.exists() && Files.isSymbolicLink(ldLink.toPath())) {
+                try {
+                    val target = android.system.Os.readlink(ldLink.absolutePath)
+                    val resolvedFile = if (target.startsWith("/")) {
+                        File(rootfsDir, target.substring(1)).canonicalFile
+                    } else {
+                        File(ldLink.parentFile, target).canonicalFile
+                    }
+                    if (resolvedFile.exists() && resolvedFile.isFile) {
+                        ldLink.delete()
+                        resolvedFile.copyTo(ldLink)
+                        ldLink.setExecutable(true, false)
+                        ldLink.setReadable(true, false)
+                        Log.i(TAG, "Successfully resolved and replaced symlink $relPath with real binary")
+                    } else {
+                        Log.w(TAG, "Resolved file for symlink $relPath does not exist: ${resolvedFile.absolutePath}")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to fix symlink $relPath: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to fix ld-linux: ${e.message}")
             }
         }
     }
