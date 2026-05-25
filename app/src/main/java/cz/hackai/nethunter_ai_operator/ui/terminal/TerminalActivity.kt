@@ -208,7 +208,7 @@ class TerminalSessionClientImpl(
     override fun onTitleChanged(session: TerminalSession) {}
     override fun onSessionFinished(session: TerminalSession) {
         Log.i("TermSession", "onSessionFinished: exitStatus=${session.exitStatus}")
-        if (session.exitStatus != 0) {
+        if (session.exitStatus != 0 && session.exitStatus != -9) {
             Handler(Looper.getMainLooper()).post { onError("Exit code: ${session.exitStatus}") }
         }
     }

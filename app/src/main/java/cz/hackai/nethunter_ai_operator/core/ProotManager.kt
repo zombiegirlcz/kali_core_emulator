@@ -32,9 +32,8 @@ object ProotManager {
         
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
         
-        // FORCE CLEANUP: delete sentinel to ensure bootstrap runs
+        // Do not force cleanup of the sentinel so that bootstrap runs only once!
         val sentinel = File(homeDir, ".setup_done")
-        if (sentinel.exists()) sentinel.delete()
 
         createMasterScript(homeDir)
         createEntrypointScript(homeDir)
@@ -48,18 +47,42 @@ object ProotManager {
         val libtallocFile = File(context.filesDir, "libtalloc.so.2")
 
         synchronized(this) {
-            context.assets.open("proot-$suffix").use { input ->
-                prootFile.outputStream().use { output -> input.copyTo(output) }
+            if (!prootFile.exists() || prootFile.length() == 0L) {
+                try {
+                    if (prootFile.exists()) prootFile.delete()
+                    context.assets.open("proot-$suffix").use { input ->
+                        prootFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    prootFile.setExecutable(true, false)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to deploy proot: ${e.message}")
+                    if (!prootFile.exists()) throw e
+                }
             }
-            context.assets.open("loader-$suffix").use { input ->
-                loaderFile.outputStream().use { output -> input.copyTo(output) }
+            if (!loaderFile.exists() || loaderFile.length() == 0L) {
+                try {
+                    if (loaderFile.exists()) loaderFile.delete()
+                    context.assets.open("loader-$suffix").use { input ->
+                        loaderFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    loaderFile.setExecutable(true, false)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to deploy loader: ${e.message}")
+                    if (!loaderFile.exists()) throw e
+                }
             }
-            context.assets.open("libtalloc-$suffix.so").use { input ->
-                libtallocFile.outputStream().use { output -> input.copyTo(output) }
+            if (!libtallocFile.exists() || libtallocFile.length() == 0L) {
+                try {
+                    if (libtallocFile.exists()) libtallocFile.delete()
+                    context.assets.open("libtalloc-$suffix.so").use { input ->
+                        libtallocFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    libtallocFile.setReadable(true, false)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to deploy libtalloc: ${e.message}")
+                    if (!libtallocFile.exists()) throw e
+                }
             }
-            prootFile.setExecutable(true, false)
-            loaderFile.setExecutable(true, false)
-            libtallocFile.setReadable(true, false)
         }
 
         val launcherFile = File(rootDir, "launcher.sh")
@@ -83,6 +106,7 @@ object ProotManager {
             // Clean start inside the guest
             appendLine("exec ${prootFile.absolutePath} \$PROOT_FLAGS /bin/bash /root/entrypoint.sh")
         }
+        if (launcherFile.exists()) launcherFile.delete()
         launcherFile.writeText(scriptContent)
         launcherFile.setExecutable(true, false)
 
@@ -107,56 +131,64 @@ object ProotManager {
             appendLine("# 1. Fix Networking")
             appendLine("echo 'nameserver 8.8.8.8' > /etc/resolv.conf")
             appendLine("echo 'deb https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list")
-            
-            appendLine("# 2. Neutralize problematic scripts (PRoot workarounds)")
-            appendLine("echo '[*] Neutralizing system scripts...'")
-            appendLine("for cmd in update-rc.d systemctl invoke-rc.d dpkg-preconfigure; do")
-            appendLine("  path=\"/usr/sbin/\$cmd\"")
-            appendLine("  if [ ! -f \"\$path.orig\" ]; then")
-            appendLine("    [ -f \"\$path\" ] && mv \"\$path\" \"\$path.orig\"")
-            appendLine("    echo '#!/bin/sh' > \"\$path\"")
-            appendLine("    echo 'exit 0' >> \"\$path\"")
-            appendLine("    chmod +x \"\$path\"")
-            appendLine("  fi")
+
+            // Wrappers are pre-installed by Kotlin code at /usr/sbin, /sbin, /usr/bin, /bin
+            // We use dpkg-divert to ensure that apt packages do not overwrite our mock wrappers during installation!
+            appendLine("# 2. Set up system call wrappers via dpkg-divert")
+            appendLine("echo '[*] Setting up system call wrappers...'")
+            appendLine("MOCK_SCRIPT='/usr/sbin/systemctl'")
+            appendLine("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap getcap capsh sysctl udevadm modprobe rmmod insmod dmidecode systemd-detect-virt timedatectl hostnamectl localectl loginctl journalctl ldconfig ldconfig.real adduser addgroup; do")
+            appendLine("  for prefix in /usr/sbin /sbin /usr/bin /bin; do")
+            appendLine("    path=\"\$prefix/\$cmd\"")
+            appendLine("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true")
+            appendLine("    cp \"\$MOCK_SCRIPT\" \"\$path\" 2>/dev/null || true")
+            appendLine("    chmod +x \"\$path\" 2>/dev/null || true")
+            appendLine("  done")
             appendLine("done")
 
-            appendLine("# 3. Specifically patch sudo and other failing postinst scripts")
-            appendLine("for pkg in sudo x11-common initramfs-tools kali-menu; do")
+            appendLine("# 3. Patch known failing postinst scripts")
+            appendLine("for pkg in sudo x11-common initramfs-tools kali-menu passwd login; do")
             appendLine("  postinst=\"/var/lib/dpkg/info/\${pkg}.postinst\"")
-            appendLine("  if [ -f \"\$postinst\" ]; then")
-            appendLine("    echo '#!/bin/sh' > \"\$postinst\"")
-            appendLine("    echo 'exit 0' >> \"\$postinst\"")
-            appendLine("    chmod +x \"\$postinst\"")
-            appendLine("  fi")
+            appendLine("  echo '#!/bin/sh' > \"\$postinst\"")
+            appendLine("  echo 'exit 0' >> \"\$postinst\"")
+            appendLine("  chmod +x \"\$postinst\" 2>/dev/null || true")
             appendLine("done")
 
             appendLine("# 4. Update and Install")
-            appendLine("echo '[*] Updating system and installing ZSH...'")
+            appendLine("echo '[*] Updating system and installing packages...'")
             appendLine("apt update")
             appendLine("apt install -y kali-defaults zsh zsh-syntax-highlighting curl git")
-            
-            appendLine("# 5. Finalize dpkg state")
-            appendLine("dpkg --configure -a")
-            
-            appendLine("# 6. Configure 'kali' user access")
-            appendLine("echo '[*] Configuring kali user...'")
-            appendLine("passwd -d kali")
-            appendLine("usermod -aG sudo kali 2>/dev/null || groupadd sudo && usermod -aG sudo kali")
-            appendLine("echo 'kali ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/kali")
-            appendLine("chmod 0440 /etc/sudoers.d/kali")
 
-            appendLine("# 7. Configure environment")
-            appendLine("cat <<EOF > ~/.zshrc")
-            appendLine("source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh")
-            appendLine("export PS1='%n@kali:%~# '")
-            appendLine("alias ls='ls --color=auto'")
-            appendLine("alias ll='ls -la'")
-            appendLine("EOF")
-            
+            appendLine("# 5. Finalize dpkg state")
+            appendLine("dpkg --configure -a 2>/dev/null || true")
+
+            appendLine("# 6. Ensure wrappers are still applied")
+            appendLine("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap getcap capsh sysctl udevadm modprobe rmmod insmod dmidecode systemd-detect-virt timedatectl hostnamectl localectl loginctl journalctl ldconfig ldconfig.real adduser addgroup; do")
+            appendLine("  for prefix in /usr/sbin /sbin /usr/bin /bin; do")
+            appendLine("    path=\"\$prefix/\$cmd\"")
+            appendLine("    cp \"\$MOCK_SCRIPT\" \"\$path\" 2>/dev/null || true")
+            appendLine("  done")
+            appendLine("done")
+
+            appendLine("# 7. Configure 'kali' user access")
+            appendLine("echo '[*] Configuring kali user...'")
+            appendLine("passwd -d kali 2>/dev/null || true")
+            appendLine("usermod -aG sudo kali 2>/dev/null || (groupadd sudo 2>/dev/null && usermod -aG sudo kali 2>/dev/null) || true")
+            appendLine("echo 'kali ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/kali 2>/dev/null || true")
+            appendLine("chmod 0440 /etc/sudoers.d/kali 2>/dev/null || true")
+
+            appendLine("# 8. Set ZSH as default shell")
+            appendLine("chsh -s /usr/bin/zsh root 2>/dev/null || true")
+
+            appendLine("# 9. Copy ZSH config to kali user")
+            appendLine("cp /root/.zshrc /home/kali/.zshrc 2>/dev/null || true")
+            appendLine("chown -R kali:kali /home/kali/.zshrc 2>/dev/null || true")
+
             appendLine("touch /root/.setup_done")
             appendLine("echo '[+] ALL DONE! Kali is ready.'")
             appendLine("rm -- \"\$0\"")
         }
+        if (masterFile.exists()) masterFile.delete()
         masterFile.writeText(script)
         masterFile.setExecutable(true, false)
     }
@@ -173,6 +205,7 @@ object ProotManager {
             appendLine("echo '[*] Starting session...'")
             appendLine("exec /usr/bin/zsh --login 2>/dev/null || exec /bin/bash --login")
         }
+        if (entryFile.exists()) entryFile.delete()
         entryFile.writeText(script)
         entryFile.setExecutable(true, false)
     }
