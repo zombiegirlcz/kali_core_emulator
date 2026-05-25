@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">NetHunter AI Operator</string>
+    <string name="app_name">linux-distro</string>
     <string name="action_go">Go</string>
     <string name="download_button">Download NetHunter Rootfs</string>
     <string name="launch_button">Launch NetHunter</string>

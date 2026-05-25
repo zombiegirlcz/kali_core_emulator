@@ -3,8 +3,6 @@ package cz.hackai.nethunter_ai_operator.ui.terminal
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -22,11 +20,11 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import com.termux.terminal.TerminalSession
-import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import cz.hackai.nethunter_ai_operator.core.ProotConfig
 import cz.hackai.nethunter_ai_operator.core.ProotManager
+import cz.hackai.nethunter_ai_operator.core.TerminalService
 import java.io.File
 
 class TerminalActivity : ComponentActivity() {
@@ -41,8 +39,7 @@ class TerminalActivity : ComponentActivity() {
     private var currentSession: TerminalSession? = null
     private val viewClient = TerminalViewClientImpl()
 
-    // Multi-Session management
-    private val sessionsList = ArrayList<TerminalSession>()
+    // Multi-Session management via background service
     private lateinit var sessionTabBar: HorizontalScrollView
     private lateinit var sessionTabContainer: LinearLayout
 
@@ -53,6 +50,14 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var btnAlt: Button
     private lateinit var btnToggleKeypad: Button
     private lateinit var specialKeypadPanel: ScrollView
+
+    var terminalFontSizeFloat = 32f
+
+    fun changeTerminalFontSize(scale: Float) {
+        terminalFontSizeFloat *= scale
+        terminalFontSizeFloat = terminalFontSizeFloat.coerceIn(8f, 72f)
+        terminalView.setTextSize(terminalFontSizeFloat.toInt())
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -119,14 +124,21 @@ class TerminalActivity : ComponentActivity() {
         if (specialKeypadPanel.visibility != View.VISIBLE) {
             showSoftKeyboard()
         }
+
+        val serviceSessions = TerminalService.sessions
+        if (serviceSessions.isNotEmpty()) {
+            if (currentSession == null) {
+                switchToSession(serviceSessions[0])
+            }
+            updateSessionTabBar()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        for (session in sessionsList) {
-            session.finishIfRunning()
+        for (session in TerminalService.sessions) {
+            TerminalService.detachView(session)
         }
-        sessionsList.clear()
         currentSession = null
     }
 
@@ -151,9 +163,10 @@ class TerminalActivity : ComponentActivity() {
 
     fun updateSessionTabBar() {
         runOnUiThread {
+            val serviceSessions = TerminalService.sessions
             sessionTabContainer.removeAllViews()
-            for (i in 0 until sessionsList.size) {
-                val session = sessionsList[i]
+            for (i in 0 until serviceSessions.size) {
+                val session = serviceSessions[i]
                 val isActive = (session == currentSession)
                 val btn = Button(this).apply {
                     text = "Session ${i + 1}"
@@ -208,22 +221,20 @@ class TerminalActivity : ComponentActivity() {
         val cfg = config ?: return
         Log.i(TAG, "addNewSession")
         val session = try {
-            TerminalSession(
-                cfg.command[0], cfg.cwd, cfg.command, cfg.env, 1000,
-                TerminalSessionClientImpl(terminalView, this, System.currentTimeMillis()) { showError(it) }
-            )
+            TerminalService.createSession(this, cfg, terminalView) { showError(it) }
         } catch (e: Exception) {
             showError("Session error: ${e.message}")
             return
         }
 
-        sessionsList.add(session)
         switchToSession(session)
+        updateSessionTabBar()
     }
 
     private fun switchToSession(session: TerminalSession) {
+        currentSession?.let { TerminalService.detachView(it) }
         currentSession = session
-        terminalView.attachSession(session)
+        TerminalService.attachView(session, terminalView)
         terminalView.post {
             terminalView.requestFocus()
             terminalView.onScreenUpdated()
@@ -232,13 +243,14 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun closeSession(session: TerminalSession) {
-        session.finishIfRunning()
-        sessionsList.remove(session)
-        if (sessionsList.isEmpty()) {
+        TerminalService.removeSession(session)
+        val remaining = TerminalService.sessions
+        if (remaining.isEmpty()) {
             finish()
         } else {
             if (currentSession == session) {
-                switchToSession(sessionsList[0])
+                currentSession = null
+                switchToSession(remaining[0])
             } else {
                 updateSessionTabBar()
             }
@@ -246,12 +258,18 @@ class TerminalActivity : ComponentActivity() {
     }
 
     fun onSessionEnded(session: TerminalSession) {
-        sessionsList.remove(session)
-        if (sessionsList.isEmpty()) {
+        val remaining = TerminalService.sessions
+        if (!remaining.contains(session)) {
+            if (remaining.isEmpty()) finish()
+            else updateSessionTabBar()
+            return
+        }
+        if (remaining.isEmpty()) {
             finish()
         } else {
             if (currentSession == session) {
-                switchToSession(sessionsList[0])
+                currentSession = null
+                switchToSession(remaining[0])
             } else {
                 updateSessionTabBar()
             }
@@ -496,7 +514,8 @@ class TerminalActivity : ComponentActivity() {
     private fun setupAndStartSession() {
         Log.i(TAG, "setupAndStartSession")
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
-        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName) } catch (e: Exception) { 
+        val mountStorage = intent.getBooleanExtra("mountStorage", false)
+        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage) } catch (e: Exception) { 
             showError("Setup failed: ${e.message}"); return 
         }
         startTerminalSession(config!!)
@@ -505,15 +524,11 @@ class TerminalActivity : ComponentActivity() {
     private fun startTerminalSession(config: ProotConfig) {
         Log.i(TAG, "startTerminalSession")
         val session = try {
-            TerminalSession(
-                config.command[0], config.cwd, config.command, config.env, 1000,
-                TerminalSessionClientImpl(terminalView, this, System.currentTimeMillis()) { showError(it) }
-            )
+            TerminalService.createSession(this, config, terminalView) { showError(it) }
         } catch (e: Exception) { showError("Session error: ${e.message}"); return }
 
-        sessionsList.clear()
-        sessionsList.add(session)
         switchToSession(session)
+        updateSessionTabBar()
     }
 
     fun showSoftKeyboard() {
@@ -538,7 +553,10 @@ class TerminalViewClientImpl : TerminalViewClient {
 
     fun setActivity(activity: TerminalActivity) { this.activity = activity }
 
-    override fun onScale(scale: Float) = scale
+    override fun onScale(scale: Float): Float {
+        activity?.changeTerminalFontSize(scale)
+        return scale
+    }
     override fun onSingleTapUp(e: MotionEvent) {
         Log.d("TerminalView", "onSingleTapUp")
         if (activity?.toggleSpecialKeypad(false) == null) {
@@ -602,46 +620,6 @@ class TerminalViewClientImpl : TerminalViewClient {
     override fun onEmulatorSet() {
         Log.d("TerminalView", "onEmulatorSet")
     }
-    override fun logError(tag: String, message: String) { Log.e(tag, message) }
-    override fun logWarn(tag: String, message: String) { Log.w(tag, message) }
-    override fun logInfo(tag: String, message: String) { Log.i(tag, message) }
-    override fun logDebug(tag: String, message: String) { Log.d(tag, message) }
-    override fun logVerbose(tag: String, message: String) { Log.v(tag, message) }
-    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) { Log.e(tag, message, e) }
-    override fun logStackTrace(tag: String, e: Exception) { Log.e(tag, "Stack trace", e) }
-}
-
-class TerminalSessionClientImpl(
-    private val view: TerminalView,
-    private val activity: android.app.Activity,
-    private val startTimeMs: Long,
-    private val onError: (String) -> Unit
-) : TerminalSessionClient {
-    private var dataCount = 0
-    override fun onTextChanged(session: TerminalSession) { 
-        dataCount++
-        if (dataCount % 10 == 0) Log.d("TermSession", "onTextChanged count: $dataCount")
-        view.onScreenUpdated() 
-    }
-    override fun onTitleChanged(session: TerminalSession) {}
-    override fun onSessionFinished(session: TerminalSession) {
-        Log.i("TermSession", "onSessionFinished: exitStatus=${session.exitStatus}")
-        Handler(Looper.getMainLooper()).post {
-            if (activity is TerminalActivity) {
-                activity.onSessionEnded(session)
-            } else {
-                if (session.exitStatus != 0 && session.exitStatus != -9) {
-                    onError("Exit code: ${session.exitStatus}")
-                }
-            }
-        }
-    }
-    override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
-    override fun onPasteTextFromClipboard(session: TerminalSession) {}
-    override fun onBell(session: TerminalSession) {}
-    override fun onColorsChanged(session: TerminalSession) {}
-    override fun onTerminalCursorStateChange(state: Boolean) {}
-    override fun getTerminalCursorStyle(): Int = 0
     override fun logError(tag: String, message: String) { Log.e(tag, message) }
     override fun logWarn(tag: String, message: String) { Log.w(tag, message) }
     override fun logInfo(tag: String, message: String) { Log.i(tag, message) }

@@ -16,14 +16,14 @@ class ProotConfig(
 object ProotManager {
     private const val TAG = "ProotManager"
 
-    fun setupProotEnvironment(context: Context, rootfsDirName: String = "kali-arm64"): ProotConfig {
+    fun setupProotEnvironment(context: Context, rootfsDirName: String = "kali-arm64", mountStorage: Boolean = false): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
         val homeDir = File(rootfsDir, "root")
         val tmpDir = File(rootDir, "tmp")
 
         // Pre-emptively fix permissions of critical bind mount target directories
-        val criticalDirs = listOf("system", "dev", "proc", "sys", "tmp", "root")
+        val criticalDirs = listOf("system", "dev", "proc", "sys", "tmp", "root", "sdcard")
         for (dirName in criticalDirs) {
             val dir = File(rootfsDir, dirName)
             if (dir.exists()) {
@@ -99,6 +99,8 @@ object ProotManager {
             appendLine("#!/system/bin/sh")
             appendLine("export PROOT_TMP_DIR=\"${tmpDir.absolutePath}\"")
             appendLine("export HOME=/root")
+            appendLine("export USER=root")
+            appendLine("export LOGNAME=root")
             appendLine("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
             appendLine("export TERM=xterm-256color")
             appendLine("export LANG=C.UTF-8")
@@ -110,7 +112,10 @@ object ProotManager {
             
             appendLine("cd \"${rootDir.absolutePath}\"")
             
-            appendLine("PROOT_FLAGS=\"-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -w /root\"")
+            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -w /root"
+            val sdcardMount = if (mountStorage) " -b /sdcard" else ""
+            
+            appendLine("PROOT_FLAGS=\"${baseFlags}${sdcardMount}\"")
             
             // Clean start inside the guest
             appendLine("exec ${prootFile.absolutePath} \$PROOT_FLAGS /bin/bash /root/entrypoint.sh")
@@ -154,7 +159,7 @@ object ProotManager {
             appendLine("MOCK_SCRIPT='/usr/sbin/systemctl'")
             appendLine("mkdir -p /usr/sbin")
             appendLine("cat > \"\$MOCK_SCRIPT\" << 'MOCKEOF'")
-            appendLine("#!/bin/sh")
+            appendLine("#!/usr/bin/env bash")
             appendLine("echo \"Mocked call: \$0 \$*\"")
             appendLine("exit 0")
             appendLine("MOCKEOF")
@@ -174,9 +179,9 @@ object ProotManager {
             } else {
                 "sudo x11-common initramfs-tools passwd login"
             }
-            appendLine("for pkg in $pkgsToPatch; do")
+            appendLine("for pkg in \$pkgsToPatch; do")
             appendLine("  postinst=\"/var/lib/dpkg/info/\${pkg}.postinst\"")
-            appendLine("  echo '#!/bin/sh' > \"\$postinst\"")
+            appendLine("  echo '#!/usr/bin/env bash' > \"\$postinst\"")
             appendLine("  echo 'exit 0' >> \"\$postinst\"")
             appendLine("  chmod +x \"\$postinst\" 2>/dev/null || true")
             appendLine("done")
@@ -184,10 +189,16 @@ object ProotManager {
             appendLine("# 4. Update and Install")
             appendLine("echo '[*] Updating system and installing packages...'")
             appendLine("apt update")
+            
+            appendLine("# 4.1 Fix broken dpkg state before installing new packages")
+            appendLine("echo '[*] Repairing broken packages...'")
+            appendLine("dpkg --configure -a 2>/dev/null || true")
+            appendLine("apt --fix-broken install -y 2>/dev/null || true")
+            
             if (distroId == "kali") {
                 appendLine("apt install -y kali-defaults zsh zsh-syntax-highlighting curl git")
             } else {
-                appendLine("apt install -y zsh curl git")
+                appendLine("apt install -y zsh zsh-syntax-highlighting curl git")
             }
 
             appendLine("# 5. Finalize dpkg state")
@@ -210,14 +221,19 @@ object ProotManager {
                 appendLine("chmod 0440 /etc/sudoers.d/kali 2>/dev/null || true")
             }
 
-            appendLine("# 8. Set ZSH as default shell")
+            appendLine("# 8. Set ZSH as default shell and enable syntax highlighting")
             appendLine("chsh -s /usr/bin/zsh root 2>/dev/null || true")
+            appendLine("[ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /root/.zshrc")
+            appendLine("grep -q 'FORCE_ZSH_HIGHLIGHT' /root/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /root/.zshrc")
 
             if (distroId == "kali") {
                 appendLine("# 9. Copy ZSH config to kali user")
                 appendLine("cp /root/.zshrc /home/kali/.zshrc 2>/dev/null || true")
                 appendLine("chown -R kali:kali /home/kali/.zshrc 2>/dev/null || true")
             }
+
+            appendLine("# 10. Restore setuid bits for sudo and su (intercepted by proot .l2s)")
+            appendLine("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true")
 
             appendLine("touch /root/.setup_done")
             appendLine("echo '[+] ALL DONE! ${distroId.uppercase()} is ready.'")
@@ -237,6 +253,22 @@ object ProotManager {
             appendLine("if [ ! -f /root/.setup_done ]; then")
             appendLine("    /bin/bash /root/bootstrap.sh")
             appendLine("fi")
+            appendLine("if [ ! -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then")
+            appendLine("    echo '[*] Installing missing zsh-syntax-highlighting...'")
+            appendLine("    apt update >/dev/null 2>&1 && apt install -y zsh-syntax-highlighting >/dev/null 2>&1")
+            appendLine("fi")
+            appendLine("if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then")
+            appendLine("    [ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /root/.zshrc")
+            appendLine("    grep -q 'FORCE_ZSH_HIGHLIGHT' /root/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /root/.zshrc")
+            appendLine("    if [ -d /home/kali ]; then")
+            appendLine("        [ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /home/kali/.zshrc")
+            appendLine("        grep -q 'FORCE_ZSH_HIGHLIGHT' /home/kali/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /home/kali/.zshrc")
+            appendLine("    fi")
+            appendLine("fi")
+            
+            appendLine("# Restore setuid for existing installs")
+            appendLine("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true")
+            
             appendLine("echo '[*] Starting session...'")
             appendLine("if [ -x /usr/bin/zsh ]; then")
             appendLine("    exec /usr/bin/zsh --login")
