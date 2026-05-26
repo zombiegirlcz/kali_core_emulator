@@ -51,6 +51,7 @@ class TerminalService : Service() {
             sessions.add(session)
             sessionClients[session] = client
             instance?.updateNotification()
+            WidgetProvider.triggerUpdate(context)
             Log.i(TAG, "Session created. Total sessions: ${sessions.size}")
             return session
         }
@@ -60,6 +61,7 @@ class TerminalService : Service() {
             sessions.remove(session)
             sessionClients.remove(session)
             instance?.updateNotification()
+            instance?.let { WidgetProvider.triggerUpdate(it) }
             Log.i(TAG, "Session removed. Remaining: ${sessions.size}")
             if (sessions.isEmpty()) {
                 instance?.stopForeground(STOP_FOREGROUND_REMOVE)

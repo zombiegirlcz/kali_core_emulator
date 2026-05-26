@@ -60,6 +60,7 @@ import kotlin.random.Random
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.linux_core.core.ShortcutHelper.registerShortcuts(this)
         setContent {
             NethunteraioperatorTheme {
                 Surface(

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#5500FF41" /> <!-- Semi-transparent green on press -->
+            <corners android:radius="8dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#00FF41" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#CC12141C" /> <!-- Dark button -->
+            <corners android:radius="8dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#8800FF41" /> <!-- Bright green border -->
+        </shape>
+    </item>
+</selector>
