@@ -390,6 +390,75 @@ fun MainScreen() {
                         color = Color(0xFF00FF41) // Accented green text
                     )
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Custom 1x1 Script Launchers Card
+                var customCommandText by remember { mutableStateOf("") }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF1E2026)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0x770B0D13))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "1x1 Home Screen Launchers",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF00FF41),
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Text(
+                            text = "Create desktop icons to run specific scripts directly",
+                            fontSize = 11.sp,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+                        androidx.compose.material3.OutlinedTextField(
+                            value = customCommandText,
+                            onValueChange = { customCommandText = it },
+                            placeholder = { Text("e.g. nethunter-vibrate 1000", color = Color.DarkGray, fontSize = 12.sp) },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Color(0xFF00FF41),
+                                unfocusedBorderColor = Color(0xFF1E2026)
+                            ),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                        )
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    val cmd = customCommandText.trim().ifEmpty { null }
+                                    com.linux_core.core.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
+                                    Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(6.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
+                                modifier = Modifier.weight(1f).height(38.dp)
+                            ) {
+                                Text("PIN KALI 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    val cmd = customCommandText.trim().ifEmpty { null }
+                                    com.linux_core.core.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
+                                    Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(6.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
+                                modifier = Modifier.weight(1f).height(38.dp)
+                            ) {
+                                Text("PIN PARROT 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                            }
+                        }
+                    }
+                }
             } else {
                 if (isDownloading) {
                     Text(

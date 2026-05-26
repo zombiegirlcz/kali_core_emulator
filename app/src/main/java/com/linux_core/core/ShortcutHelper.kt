@@ -45,4 +45,56 @@ object ShortcutHelper {
             shortcutManager.dynamicShortcuts = listOf(kaliShortcut, parrotShortcut)
         } catch (_: Exception) {}
     }
+
+    fun pinShortcut(context: Context, distroId: String, customCommand: String?, mountStorage: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val shortcutManager = context.getSystemService(ShortcutManager::class.java) ?: return
+        if (!shortcutManager.isRequestPinShortcutSupported) return
+
+        val isKali = distroId.contains("kali")
+        val rootfsDirName = if (isKali) "kali-arm64" else "parrot-arm64"
+
+        // Build a unique shortcut ID based on the custom command or just static launch
+        val uniqueId = if (!customCommand.isNullOrEmpty()) {
+            "pin_${distroId}_${customCommand.hashCode()}"
+        } else {
+            "pin_${distroId}_default"
+        }
+
+        val launchIntent = Intent(context, TerminalActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            putExtra("rootfsDirName", rootfsDirName)
+            putExtra("mountStorage", mountStorage)
+            if (!customCommand.isNullOrEmpty()) {
+                putExtra("customCommand", customCommand)
+            }
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        // Display text: either standard Boot or shortened custom command
+        val shortLabel = if (!customCommand.isNullOrEmpty()) {
+            val cmd = customCommand.trim()
+            if (cmd.length > 10) cmd.take(8) + ".." else cmd
+        } else {
+            if (isKali) "Kali" else "Parrot"
+        }
+
+        val longLabel = if (!customCommand.isNullOrEmpty()) {
+            "Run '$customCommand' on ${if (isKali) "Kali" else "Parrot"}"
+        } else {
+            "Launch ${if (isKali) "Kali" else "Parrot"} Terminal"
+        }
+
+        val shortcut = ShortcutInfo.Builder(context, uniqueId)
+            .setShortLabel(shortLabel)
+            .setLongLabel(longLabel)
+            .setIcon(Icon.createWithResource(context, android.R.drawable.ic_menu_compass))
+            .setIntent(launchIntent)
+            .build()
+
+        try {
+            shortcutManager.requestPinShortcut(shortcut, null)
+        } catch (_: Exception) {}
+    }
 }

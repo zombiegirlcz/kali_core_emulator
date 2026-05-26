@@ -20,7 +20,8 @@ object ProotManager {
     fun setupProotEnvironment(
         context: Context,
         rootfsDirName: String = "kali-arm64",
-        mountStorage: Boolean = false
+        mountStorage: Boolean = false,
+        customCommand: String? = null
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -81,14 +82,19 @@ object ProotManager {
             append("cd \"${context.filesDir.absolutePath}\"").append(NL)
             val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -w /root"
             val sdcardMount = if (mountStorage) " -b /sdcard" else ""
-            append("exec ${File(context.filesDir, "proot").absolutePath} ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh").append(NL)
+            append("exec ${File(context.filesDir, "proot").absolutePath} ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"\$@\"").append(NL)
         }.toString()
         
         launcherFile.writeText(scriptContent)
         launcherFile.setExecutable(true, false)
 
+        val fullCommand = mutableListOf("/system/bin/sh", launcherFile.absolutePath)
+        if (!customCommand.isNullOrEmpty()) {
+            fullCommand.add(customCommand)
+        }
+
         return ProotConfig(
-            command = arrayOf("/system/bin/sh", launcherFile.absolutePath),
+            command = fullCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
             env = emptyArray(),
             prootPath = File(context.filesDir, "proot").absolutePath,
@@ -212,7 +218,12 @@ object ProotManager {
 
             append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
             append("echo '[*] Starting session...'").append(NL)
-            append("exec zsh --login").append(NL)
+            append("if [ \$# -gt 0 ]; then").append(NL)
+            append("    echo '[*] Running custom launcher command...'").append(NL)
+            append("    exec zsh -c \"\$*\"").append(NL)
+            append("else").append(NL)
+            append("    exec zsh --login").append(NL)
+            append("fi").append(NL)
         }.toString()
         entryFile.writeText(script)
         entryFile.setExecutable(true, false)

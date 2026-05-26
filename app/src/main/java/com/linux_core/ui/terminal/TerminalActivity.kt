@@ -617,7 +617,8 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "setupAndStartSession")
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
-        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage) } catch (e: Exception) { 
+        val customCommand = intent.getStringExtra("customCommand")
+        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage, customCommand) } catch (e: Exception) { 
             showError("Setup failed: ${e.message}"); return 
         }
         startTerminalSession(config!!)
