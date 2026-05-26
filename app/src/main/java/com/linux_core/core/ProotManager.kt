@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.core
+package com.linux_core.core
 
 import android.content.Context
 import android.util.Log
@@ -212,25 +212,24 @@ object ProotManager {
             appendLine("  done")
             appendLine("done")
 
-            if (distroId == "kali") {
-                appendLine("# 7. Configure 'kali' user access")
-                appendLine("echo '[*] Configuring kali user...'")
-                appendLine("passwd -d kali 2>/dev/null || true")
-                appendLine("usermod -aG sudo kali 2>/dev/null || (groupadd sudo 2>/dev/null && usermod -aG sudo kali 2>/dev/null) || true")
-                appendLine("echo 'kali ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/kali 2>/dev/null || true")
-                appendLine("chmod 0440 /etc/sudoers.d/kali 2>/dev/null || true")
-            }
+            val defaultUser = distroId // Uses 'kali' for Kali, 'parrot' for Parrot
+            appendLine("# 7. Configure '\${defaultUser}' user access")
+            appendLine("echo '[*] Configuring \${defaultUser} user...'")
+            appendLine("id -u \${defaultUser} &>/dev/null || useradd -m -s /bin/bash \${defaultUser} 2>/dev/null || true")
+            appendLine("passwd -d \${defaultUser} 2>/dev/null || true")
+            appendLine("usermod -aG sudo \${defaultUser} 2>/dev/null || (groupadd sudo 2>/dev/null && usermod -aG sudo \${defaultUser} 2>/dev/null) || true")
+            appendLine("echo '\${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/\${defaultUser} 2>/dev/null || true")
+            appendLine("chmod 0440 /etc/sudoers.d/\${defaultUser} 2>/dev/null || true")
 
             appendLine("# 8. Set ZSH as default shell and enable syntax highlighting")
             appendLine("chsh -s /usr/bin/zsh root 2>/dev/null || true")
             appendLine("[ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /root/.zshrc")
             appendLine("grep -q 'FORCE_ZSH_HIGHLIGHT' /root/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /root/.zshrc")
 
-            if (distroId == "kali") {
-                appendLine("# 9. Copy ZSH config to kali user")
-                appendLine("cp /root/.zshrc /home/kali/.zshrc 2>/dev/null || true")
-                appendLine("chown -R kali:kali /home/kali/.zshrc 2>/dev/null || true")
-            }
+            appendLine("# 9. Copy ZSH config to \${defaultUser} user")
+            appendLine("cp /root/.zshrc /home/\${defaultUser}/.zshrc 2>/dev/null || true")
+            appendLine("chown -R \${defaultUser}:\${defaultUser} /home/\${defaultUser}/.zshrc 2>/dev/null || true")
+            appendLine("chsh -s /usr/bin/zsh \${defaultUser} 2>/dev/null || true")
 
             appendLine("# 10. Restore setuid bits for sudo and su (intercepted by proot .l2s)")
             appendLine("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true")
@@ -260,10 +259,12 @@ object ProotManager {
             appendLine("if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then")
             appendLine("    [ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /root/.zshrc")
             appendLine("    grep -q 'FORCE_ZSH_HIGHLIGHT' /root/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /root/.zshrc")
-            appendLine("    if [ -d /home/kali ]; then")
-            appendLine("        [ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /home/kali/.zshrc")
-            appendLine("        grep -q 'FORCE_ZSH_HIGHLIGHT' /home/kali/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /home/kali/.zshrc")
-            appendLine("    fi")
+            appendLine("    for usr in kali parrot; do")
+            appendLine("        if [ -d /home/\$usr ]; then")
+            appendLine("            [ -f /etc/skel/.zshrc ] && cp -n /etc/skel/.zshrc /home/\$usr/.zshrc")
+            appendLine("            grep -q 'FORCE_ZSH_HIGHLIGHT' /home/\$usr/.zshrc 2>/dev/null || echo -e '\\n# FORCE_ZSH_HIGHLIGHT\\nsource /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /home/\$usr/.zshrc")
+            appendLine("        fi")
+            appendLine("    done")
             appendLine("fi")
             
             appendLine("# Restore setuid for existing installs")

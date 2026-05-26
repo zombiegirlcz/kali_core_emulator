@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.ui.theme
+package com.linux_core.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

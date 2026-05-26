@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator
+package com.linux_core
 
 import android.content.Intent
 import android.os.Bundle
@@ -49,10 +49,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import cz.hackai.nethunter_ai_operator.core.Distro
-import cz.hackai.nethunter_ai_operator.core.RootfsManager
-import cz.hackai.nethunter_ai_operator.ui.terminal.TerminalActivity
-import cz.hackai.nethunter_ai_operator.ui.theme.NethunteraioperatorTheme
+import com.linux_core.core.Distro
+import com.linux_core.core.RootfsManager
+import com.linux_core.ui.terminal.TerminalActivity
+import com.linux_core.ui.theme.NethunteraioperatorTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.random.Random

@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.core
+package com.linux_core.core
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -15,7 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
-import cz.hackai.nethunter_ai_operator.MainActivity
+import com.linux_core.MainActivity
 import java.util.concurrent.CopyOnWriteArrayList
 
 class TerminalService : Service() {
@@ -23,7 +23,7 @@ class TerminalService : Service() {
         private const val TAG = "TerminalService"
         const val CHANNEL_ID = "terminal_sessions"
         const val NOTIFICATION_ID = 1
-        const val ACTION_STOP_ALL = "cz.hackai.nethunter_ai_operator.STOP_ALL"
+        const val ACTION_STOP_ALL = "com.linux_core.STOP_ALL"
 
         @Volatile
         private var instance: TerminalService? = null

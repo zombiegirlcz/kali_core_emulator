@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator
+package com.linux_core
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("cz.hackai.nethunter_ai_operator", appContext.packageName)
+        assertEquals("com.linux_core", appContext.packageName)
     }
 }

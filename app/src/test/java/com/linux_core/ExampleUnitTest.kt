@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator
+package com.linux_core
 
 import org.junit.Test
 

@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.ui.theme
+package com.linux_core.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

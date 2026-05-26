@@ -53,3 +53,15 @@ agent.md
 
 # Local backup archive
 ignore-archiv.tar
+
+# IDE, AI tools, and plugin directories
+/.ai/
+/.explyt/
+/.fastRequest/
+/.idea/
+/.kilo/
+/.kotlin/
+/.sixth/
+
+# Other unnecessary roots
+/parrotOS-GUI-proot/

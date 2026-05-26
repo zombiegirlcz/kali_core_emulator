@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.core
+package com.linux_core.core
 
 import android.content.Context
 import android.os.Build

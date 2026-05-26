@@ -1,4 +1,4 @@
-package cz.hackai.nethunter_ai_operator.ui.terminal
+package com.linux_core.ui.terminal
 
 import android.graphics.Color
 import android.graphics.Typeface
@@ -22,9 +22,9 @@ import androidx.activity.ComponentActivity
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
-import cz.hackai.nethunter_ai_operator.core.ProotConfig
-import cz.hackai.nethunter_ai_operator.core.ProotManager
-import cz.hackai.nethunter_ai_operator.core.TerminalService
+import com.linux_core.core.ProotConfig
+import com.linux_core.core.ProotManager
+import com.linux_core.core.TerminalService
 import java.io.File
 
 class TerminalActivity : ComponentActivity() {

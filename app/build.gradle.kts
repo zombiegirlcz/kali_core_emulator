@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "cz.hackai.nethunter_ai_operator"
+    namespace = "com.linux_core"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "cz.hackai.nethunter_ai_operator"
+        applicationId = "com.linux_core"
         minSdk = 33
         targetSdk = 28
         versionCode = 1
