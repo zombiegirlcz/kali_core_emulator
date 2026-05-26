@@ -60,8 +60,13 @@ object RootfsManager {
         val targetFile = File(cacheDir, distro.tarFileName)
         val tempFile = File(cacheDir, distro.tarFileName + TEMP_SUFFIX)
 
+        // OPTIMIZATION: Check if we already have the complete file
+        if (targetFile.exists() && targetFile.length() > 0) {
+            emit(100)
+            return@flow
+        }
+
         // Clean up any stale partial files
-        if (targetFile.exists()) targetFile.delete()
         if (tempFile.exists()) tempFile.delete()
 
         // Check available storage space
@@ -271,7 +276,7 @@ object RootfsManager {
                 }
             }
 
-            rootfsFile.delete()
+            // rootfsFile.delete() // Keep for reinstall
             emit(100)
         } finally {
             try {

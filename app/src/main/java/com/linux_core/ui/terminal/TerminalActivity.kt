@@ -39,6 +39,12 @@ class TerminalActivity : ComponentActivity() {
     private var currentSession: TerminalSession? = null
     private val viewClient = TerminalViewClientImpl()
 
+    // History and suggestions
+    private lateinit var historyManager: com.linux_core.core.HistoryManager
+    private val currentCommand = StringBuilder()
+    private lateinit var suggestionBar: HorizontalScrollView
+    private lateinit var suggestionContainer: LinearLayout
+
     // Multi-Session management via background service
     private lateinit var sessionTabBar: HorizontalScrollView
     private lateinit var sessionTabContainer: LinearLayout
@@ -62,6 +68,7 @@ class TerminalActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewClient.setActivity(this)
+        historyManager = com.linux_core.core.HistoryManager(this)
 
         // Root container: vertical LinearLayout for screen layout
         val mainLayout = LinearLayout(this).apply {
@@ -105,6 +112,10 @@ class TerminalActivity : ComponentActivity() {
 
         mainLayout.addView(terminalContainer)
 
+        // Suggestions Bar
+        val suggBar = buildSuggestionBar()
+        mainLayout.addView(suggBar)
+
         // Horizontal scrollable Extra Keys Toolbar
         val toolbarScroll = buildExtraKeysToolbar()
         mainLayout.addView(toolbarScroll)
@@ -140,6 +151,97 @@ class TerminalActivity : ComponentActivity() {
             TerminalService.detachView(session)
         }
         currentSession = null
+    }
+
+    private fun buildSuggestionBar(): HorizontalScrollView {
+        suggestionBar = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            setBackgroundColor(Color.parseColor("#1a1b26"))
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+        }
+
+        suggestionContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            setPadding(8, 4, 8, 4)
+        }
+
+        suggestionBar.addView(suggestionContainer)
+        return suggestionBar
+    }
+
+    fun updateSuggestions() {
+        runOnUiThread {
+            val input = currentCommand.toString()
+            val suggestions = historyManager.getSuggestions(input)
+
+            if (suggestions.isEmpty()) {
+                suggestionBar.visibility = View.GONE
+            } else {
+                suggestionBar.visibility = View.VISIBLE
+                suggestionContainer.removeAllViews()
+                for (sug in suggestions) {
+                    val btn = Button(this).apply {
+                        text = sug
+                        textSize = 10f
+                        isAllCaps = false
+                        typeface = Typeface.MONOSPACE
+                        setTextColor(Color.parseColor("#a9b1d6"))
+                        setBackgroundColor(Color.parseColor("#24283b"))
+                        val params = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                                TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+                        ).apply {
+                            setMargins(4, 2, 4, 2)
+                        }
+                        layoutParams = params
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            applySuggestion(sug)
+                        }
+                    }
+                    suggestionContainer.addView(btn)
+                }
+            }
+        }
+    }
+
+    private fun applySuggestion(suggestion: String) {
+        // Clear current line using Ctrl+U (\u0015)
+        currentSession?.write("\u0015")
+        currentSession?.write(suggestion)
+        currentCommand.setLength(0)
+        currentCommand.append(suggestion)
+        updateSuggestions()
+        terminalView.requestFocus()
+    }
+
+    fun onTerminalInput(codePoint: Int) {
+        if (codePoint == 127 || codePoint == 8) { // Backspace
+            if (currentCommand.isNotEmpty()) {
+                currentCommand.setLength(currentCommand.length - 1)
+            }
+        } else if (codePoint in 32..126) { // Printable chars
+            currentCommand.append(codePoint.toChar())
+        }
+        updateSuggestions()
+    }
+
+    fun onTerminalEnter() {
+        val cmd = currentCommand.toString().trim()
+        if (cmd.isNotEmpty()) {
+            historyManager.addCommand(cmd)
+        }
+        currentCommand.setLength(0)
+        updateSuggestions()
+    }
+
+    fun resetCurrentCommand() {
+        currentCommand.setLength(0)
+        updateSuggestions()
     }
 
     private fun buildSessionTabBar(): HorizontalScrollView {
@@ -571,6 +673,7 @@ class TerminalViewClientImpl : TerminalViewClient {
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
         Log.d("TerminalView", "onKeyDown: keyCode=$keyCode")
         if (keyCode == KeyEvent.KEYCODE_ENTER) {
+            activity?.onTerminalEnter()
             session.write("\r")
             return true
         }
@@ -603,6 +706,10 @@ class TerminalViewClientImpl : TerminalViewClient {
             val upperCode = codePoint.toChar().uppercaseChar().code
             if (upperCode in 64..95) {
                 session.write(Character.toString((upperCode - 64).toChar()))
+                // Ctrl+C (3), Ctrl+L (12), Ctrl+U (21) should reset currentCommand
+                if (upperCode == 'C'.code || upperCode == 'L'.code || upperCode == 'U'.code) {
+                    act?.resetCurrentCommand()
+                }
                 return true
             }
         }
@@ -612,6 +719,7 @@ class TerminalViewClientImpl : TerminalViewClient {
             return true
         }
 
+        act?.onTerminalInput(codePoint)
         val input = StringBuilder().appendCodePoint(codePoint).toString()
         Log.d("TerminalView", "onCodePoint: $input ($codePoint)")
         session.write(input)
