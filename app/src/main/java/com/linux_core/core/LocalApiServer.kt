@@ -1,0 +1,407 @@
+package com.linux_core.core
+
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.camera2.CameraManager
+import android.location.Location
+import android.location.LocationManager
+import android.media.AudioManager
+import android.net.wifi.WifiManager
+import android.os.BatteryManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.speech.tts.TextToSpeech
+import android.util.Log
+import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import android.app.NotificationManager
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.Locale
+import java.util.concurrent.Executors
+
+object LocalApiServer {
+    private const val TAG = "LocalApiServer"
+    private const val PORT = 1337
+    private var serverSocket: ServerSocket? = null
+    private var isRunning = false
+    private val executor = Executors.newCachedThreadPool()
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+
+    fun start(context: Context) {
+        if (isRunning) return
+        isRunning = true
+        initTts(context)
+        executor.execute {
+            try {
+                serverSocket = ServerSocket(PORT, 50, InetAddress.getByName("127.0.0.1"))
+                Log.i(TAG, "Local API Server started on port $PORT")
+                while (isRunning) {
+                    val socket = serverSocket?.accept() ?: break
+                    executor.execute { handleConnection(context, socket) }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Server socket exception: ${e.message}")
+            }
+        }
+    }
+
+    fun stop() {
+        isRunning = false
+        try {
+            serverSocket?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing server socket: ${e.message}")
+        }
+        serverSocket = null
+        try {
+            tts?.shutdown()
+        } catch (e: Exception) {}
+        tts = null
+        ttsReady = false
+    }
+
+    private fun initTts(context: Context) {
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+                ttsReady = true
+                Log.i(TAG, "TTS Initialized successfully")
+            } else {
+                Log.e(TAG, "TTS Initialization failed")
+            }
+        }
+    }
+
+    private fun handleConnection(context: Context, socket: Socket) {
+        try {
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val out = socket.getOutputStream()
+
+            val requestLine = reader.readLine() ?: return
+            Log.d(TAG, "Request: $requestLine")
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid HTTP request\"}")
+                return
+            }
+            val method = parts[0]
+            val path = parts[1]
+
+            // Parse headers to find Content-Length
+            var contentLength = 0
+            var line: String? = reader.readLine()
+            while (line != null && line.isNotEmpty()) {
+                if (line.startsWith("Content-Length:", ignoreCase = true)) {
+                    contentLength = line.substring(15).trim().toIntOrNull() ?: 0
+                }
+                line = reader.readLine()
+            }
+
+            // Read request body if present
+            var body = ""
+            if (contentLength > 0) {
+                val bodyChars = CharArray(contentLength)
+                var totalRead = 0
+                while (totalRead < contentLength) {
+                    val read = reader.read(bodyChars, totalRead, contentLength - totalRead)
+                    if (read == -1) break
+                    totalRead += read
+                }
+                body = String(bodyChars, 0, totalRead)
+            }
+
+            routeRequest(context, method, path, body, out)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling connection: ${e.message}")
+        } finally {
+            try { socket.close() } catch (e: Exception) {}
+        }
+    }
+
+    private fun routeRequest(context: Context, method: String, path: String, body: String, out: OutputStream) {
+        try {
+            when {
+                path == "/battery" && method == "GET" -> handleBattery(context, out)
+                path == "/vibrate" && method == "POST" -> handleVibrate(context, body, out)
+                path == "/toast" && method == "POST" -> handleToast(context, body, out)
+                path == "/tts" && method == "POST" -> handleTts(body, out)
+                path == "/clipboard" && method == "GET" -> handleClipboardGet(context, out)
+                path == "/clipboard" && method == "POST" -> handleClipboardSet(context, body, out)
+                path == "/notification" && method == "POST" -> handleNotification(context, body, out)
+                path == "/wifi" && method == "GET" -> handleWifi(context, out)
+                path == "/location" && method == "GET" -> handleLocation(context, out)
+                path == "/volume" && method == "GET" -> handleVolumeGet(context, out)
+                path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
+                path == "/torch" && method == "POST" -> handleTorch(context, body, out)
+                else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
+            }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun sendResponse(out: OutputStream, statusCode: Int, statusText: String, jsonResponse: String) {
+        val rawResponse = jsonResponse.toByteArray(Charsets.UTF_8)
+        val headers = "HTTP/1.1 $statusCode $statusText\r\n" +
+                "Content-Type: application/json\r\n" +
+                "Content-Length: ${rawResponse.size}\r\n" +
+                "Connection: close\r\n\r\n"
+        out.write(headers.toByteArray(Charsets.UTF_8))
+        out.write(rawResponse)
+        out.flush()
+    }
+
+    private fun handleBattery(context: Context, out: OutputStream) {
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        val batteryIntent = context.registerReceiver(null, filter)
+        if (batteryIntent == null) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"Could not query battery state\"}")
+            return
+        }
+
+        val level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        val percentage = if (level >= 0 && scale > 0) (level * 100 / scale) else -1
+        val temperature = batteryIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f
+        val voltage = batteryIntent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
+
+        val statusInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val status = when (statusInt) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
+            BatteryManager.BATTERY_STATUS_FULL -> "full"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not charging"
+            else -> "unknown"
+        }
+
+        val healthInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)
+        val health = when (healthInt) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "good"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "overheat"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "dead"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "over voltage"
+            else -> "unknown"
+        }
+
+        val pluggedInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
+        val plugged = when (pluggedInt) {
+            BatteryManager.BATTERY_PLUGGED_AC -> "ac"
+            BatteryManager.BATTERY_PLUGGED_USB -> "usb"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
+            else -> "none"
+        }
+
+        val json = JSONObject().apply {
+            put("percentage", percentage)
+            put("temperature", temperature)
+            put("voltage", voltage)
+            put("status", status)
+            put("health", health)
+            put("plugged", plugged)
+        }.toString()
+
+        sendResponse(out, 200, "OK", json)
+    }
+
+    private fun handleVibrate(context: Context, body: String, out: OutputStream) {
+        val durationMs = body.trim().toLongOrNull() ?: 500L
+        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(durationMs)
+        }
+        sendResponse(out, 200, "OK", "{\"status\":\"vibrated\",\"duration\":$durationMs}")
+    }
+
+    private fun handleToast(context: Context, body: String, out: OutputStream) {
+        val message = body.ifEmpty { "Hello from API!" }
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+        sendResponse(out, 200, "OK", "{\"status\":\"toasted\"}")
+    }
+
+    private fun handleTts(body: String, out: OutputStream) {
+        val text = body.trim()
+        if (text.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Text to speak cannot be empty\"}")
+            return
+        }
+        if (!ttsReady || tts == null) {
+            sendResponse(out, 500, "Service Unavailable", "{\"error\":\"TTS engine is initializing or unavailable\"}")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nethunter_api_tts")
+        } else {
+            @Suppress("DEPRECATION")
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
+        }
+        sendResponse(out, 200, "OK", "{\"status\":\"spoken\"}")
+    }
+
+    private fun handleClipboardGet(context: Context, out: OutputStream) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = clipboard.primaryClip
+                val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(context).toString() else ""
+                sendResponse(out, 200, "OK", JSONObject().put("text", text).toString())
+            } catch (e: Exception) {
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+            }
+        }
+    }
+
+    private fun handleClipboardSet(context: Context, body: String, out: OutputStream) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = android.content.ClipData.newPlainText("nethunter_api", body)
+                clipboard.setPrimaryClip(clip)
+                sendResponse(out, 200, "OK", "{\"status\":\"updated\"}")
+            } catch (e: Exception) {
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+            }
+        }
+    }
+
+    private fun handleNotification(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val title = json.optString("title", "NetHunter API")
+            val content = json.optString("content", "")
+            if (content.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"content cannot be empty\"}")
+                return
+            }
+
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val notification = NotificationCompat.Builder(context, "terminal_sessions")
+                .setContentTitle(title)
+                .setContentText(content)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+
+            manager.notify(System.currentTimeMillis().toInt(), notification)
+            sendResponse(out, 200, "OK", "{\"status\":\"notified\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleWifi(context: Context, out: OutputStream) {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val info = wifiManager.connectionInfo
+            val json = JSONObject().apply {
+                if (info != null) {
+                    put("ssid", info.ssid?.replace("\"", ""))
+                    put("bssid", info.bssid)
+                    put("rssi", info.rssi)
+                    put("link_speed_mbps", info.linkSpeed)
+                } else {
+                    put("error", "No connection info available")
+                }
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleLocation(context: Context, out: OutputStream) {
+        try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            var location: Location? = null
+            try {
+                location = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            } catch (_: SecurityException) {}
+
+            val json = JSONObject().apply {
+                if (location != null) {
+                    put("latitude", location.latitude)
+                    put("longitude", location.longitude)
+                    put("accuracy", location.accuracy.toDouble())
+                    put("provider", location.provider)
+                    put("time", location.time)
+                } else {
+                    put("error", "No last known location available. Check permissions and GPS.")
+                }
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVolumeGet(context: Context, out: OutputStream) {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val json = JSONObject().apply {
+                put("stream", "music")
+                put("volume", current)
+                put("max_volume", max)
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVolumeSet(context: Context, body: String, out: OutputStream) {
+        try {
+            val volume = body.trim().toIntOrNull()
+            if (volume == null) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"volume level must be an integer\"}")
+                return
+            }
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val target = volume.coerceIn(0, max)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            sendResponse(out, 200, "OK", "{\"status\":\"volume_set\",\"volume\":$target}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleTorch(context: Context, body: String, out: OutputStream) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            sendResponse(out, 500, "Not Supported", "{\"error\":\"Torch control is only supported on Android 6.0+\"}")
+            return
+        }
+        try {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val firstCamera = cm.cameraIdList.firstOrNull()
+            if (firstCamera == null) {
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"No camera found\"}")
+                return
+            }
+            val enable = body.trim().equals("on", ignoreCase = true)
+            cm.setTorchMode(firstCamera, enable)
+            sendResponse(out, 200, "OK", "{\"status\":\"torch_updated\",\"state\":\"${if (enable) "on" else "off"}\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+}

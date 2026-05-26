@@ -99,6 +99,7 @@ class TerminalService : Service() {
         super.onCreate()
         instance = this
         createNotificationChannel()
+        LocalApiServer.start(applicationContext)
         Log.i(TAG, "Service created")
     }
 
@@ -188,6 +189,7 @@ class TerminalService : Service() {
 
     override fun onDestroy() {
         instance = null
+        LocalApiServer.stop()
         Log.i(TAG, "Service destroyed")
         super.onDestroy()
     }
