@@ -25,6 +25,8 @@ import com.termux.view.TerminalViewClient
 import com.linux_core.core.ProotConfig
 import com.linux_core.core.ProotManager
 import com.linux_core.core.TerminalService
+import com.linux_core.core.KeyType
+import com.linux_core.core.HackerKeyboardRows
 import java.io.File
 
 class TerminalActivity : ComponentActivity() {
@@ -55,7 +57,12 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var btnCtrl: Button
     private lateinit var btnAlt: Button
     private lateinit var btnToggleKeypad: Button
-    private lateinit var specialKeypadPanel: ScrollView
+    private lateinit var specialKeypadPanel: LinearLayout
+    private lateinit var tabContainer: LinearLayout
+    private lateinit var keysContainer: LinearLayout
+    private var activeKeyboardTab = "SYMBOLS"
+    private val tabsList = listOf("CONTROL", "SYMBOLS", "NAVIGATION", "CTRL COMBOS", "F-KEYS")
+    private val tabButtons = HashMap<String, Button>()
 
     var terminalFontSizeFloat = 32f
 
@@ -437,107 +444,268 @@ class TerminalActivity : ComponentActivity() {
         return scroll
     }
 
-    private fun buildSpecialKeypadPanel(): ScrollView {
-        specialKeypadPanel = ScrollView(this).apply {
+    private fun buildSpecialKeypadPanel(): LinearLayout {
+        specialKeypadPanel = LinearLayout(this).apply {
             val heightPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, 260f, resources.displayMetrics).toInt()
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, heightPx)
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#0c0d12"))
             visibility = View.GONE
         }
 
-        val container = LinearLayout(this).apply {
+        // Tab bar container
+        val tabScroll = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(Color.parseColor("#08090d"))
+            setPadding(4, 4, 4, 4)
+        }
+
+        tabContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        tabScroll.addView(tabContainer)
+        specialKeypadPanel.addView(tabScroll)
+
+        // Scrollable keys container
+        val keysScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isVerticalScrollBarEnabled = true
+        }
+
+        keysContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(8, 8, 8, 8)
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
+        keysScroll.addView(keysContainer)
+        specialKeypadPanel.addView(keysScroll)
 
-        fun addRow(buttons: List<Pair<String, () -> Unit>>) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                val rowHeight = TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 46f, resources.displayMetrics).toInt()
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, rowHeight).apply {
-                    setMargins(0, 4, 0, 4)
+        buildTabs()
+        renderActiveTab()
+
+        return specialKeypadPanel
+    }
+
+    private fun buildTabs() {
+        tabContainer.removeAllViews()
+        tabButtons.clear()
+
+        for (tab in tabsList) {
+            val btn = Button(this).apply {
+                text = when (tab) {
+                    "CONTROL" -> "🎛️ Control"
+                    "SYMBOLS" -> "🔣 Symbols"
+                    "NAVIGATION" -> "🧭 Navigation"
+                    "CTRL COMBOS" -> "⚡ Combos"
+                    "F-KEYS" -> "🛠️ F-Keys"
+                    else -> tab
+                }
+                textSize = 11f
+                isAllCaps = false
+                typeface = Typeface.MONOSPACE
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                ).apply {
+                    setMargins(4, 2, 4, 2)
+                }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    activeKeyboardTab = tab
+                    updateTabStyles()
+                    renderActiveTab()
                 }
             }
-            for ((label, action) in buttons) {
-                val btn = Button(this).apply {
-                    text = label
-                    textSize = 12f
-                    typeface = Typeface.MONOSPACE
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(Color.parseColor("#151620"))
+            tabContainer.addView(btn)
+            tabButtons[tab] = btn
+        }
+        updateTabStyles()
+    }
+
+    private fun updateTabStyles() {
+        for ((tab, btn) in tabButtons) {
+            val isActive = (tab == activeKeyboardTab)
+            if (isActive) {
+                btn.setTextColor(Color.parseColor("#00FF41")) // Deep matrix green
+                btn.setBackgroundColor(Color.parseColor("#151620")) // Active background
+            } else {
+                btn.setTextColor(Color.WHITE)
+                btn.setBackgroundColor(Color.parseColor("#08090d")) // Inactive background
+            }
+        }
+    }
+
+    private fun renderActiveTab() {
+        keysContainer.removeAllViews()
+
+        val keys = when (activeKeyboardTab) {
+            "CONTROL" -> HackerKeyboardRows.row1Control
+            "SYMBOLS" -> HackerKeyboardRows.row3Symbols
+            "NAVIGATION" -> HackerKeyboardRows.row4Navigation
+            "CTRL COMBOS" -> HackerKeyboardRows.row5CtrlCombos
+            "F-KEYS" -> HackerKeyboardRows.row6Function
+            else -> emptyList()
+        }
+
+        val columns = when (activeKeyboardTab) {
+            "SYMBOLS", "CTRL COMBOS" -> 5
+            else -> 4
+        }
+
+        var currentRow: LinearLayout? = null
+        val rowHeight = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, 44f, resources.displayMetrics).toInt()
+
+        for (i in keys.indices) {
+            if (i % columns == 0) {
+                currentRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, rowHeight
+                    ).apply {
+                        setMargins(0, 4, 0, 4)
+                    }
+                }
+                keysContainer.addView(currentRow)
+            }
+
+            val key = keys[i]
+            val btn = Button(this).apply {
+                text = key.label
+                textSize = 12f
+                isAllCaps = false
+                typeface = Typeface.MONOSPACE
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#151620")) // Deep cyber black background
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    setMargins(4, 0, 4, 0)
+                }
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    handleHackerKeyPress(key)
+                }
+            }
+            currentRow?.addView(btn)
+        }
+
+        // Pad the last row with empty space / invisible views if it's not fully filled
+        val remainder = keys.size % columns
+        if (remainder != 0 && currentRow != null) {
+            val missing = columns - remainder
+            for (m in 0 until missing) {
+                val spacer = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                         setMargins(4, 0, 4, 0)
                     }
-                    setOnClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        action()
-                    }
                 }
-                row.addView(btn)
+                currentRow.addView(spacer)
             }
-            container.addView(row)
+        }
+    }
+
+    private fun handleHackerKeyPress(key: KeyType) {
+        if (key == KeyType.CTRL_C || key == KeyType.CTRL_L || key == KeyType.CTRL_U) {
+            resetCurrentCommand()
         }
 
-        // Row 1: ESC, TAB, Ctrl, Alt, Del, Backspace
-        addRow(listOf(
-            "ESC" to { sendKey("\u001b") },
-            "TAB" to { sendKey("\t") },
-            "CTRL" to { toggleCtrlModifier() },
-            "ALT" to { toggleAltModifier() },
-            "DEL" to { sendKey("\u001b[3~") },
-            "⌫" to { sendKey("\u007f") }
-        ))
+        val sequence = when (key) {
+            // Row 1 - Control
+            KeyType.ESC -> "\u001b"
+            KeyType.TAB -> "\t"
+            KeyType.ENTER -> "\r"
+            KeyType.BACK_SPACE -> "\u007f"
+            KeyType.INSERT -> "\u001b[2~"
+            KeyType.DELETE -> "\u001b[3~"
+            KeyType.SHIFT_TAB -> "\u001b[Z"
+            KeyType.PASTE -> {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clipData = clipboard.primaryClip
+                if (clipData != null && clipData.itemCount > 0) {
+                    val text = clipData.getItemAt(0).text?.toString()
+                    if (!text.isNullOrEmpty()) {
+                        sendKey(text)
+                    }
+                }
+                return
+            }
 
-        // Row 2: F1 - F6, PgUp
-        addRow(listOf(
-            "F1" to { sendKey("\u001bOP") },
-            "F2" to { sendKey("\u001bOQ") },
-            "F3" to { sendKey("\u001bOR") },
-            "F4" to { sendKey("\u001bOS") },
-            "F5" to { sendKey("\u001b[15~") },
-            "F6" to { sendKey("\u001b[17~") },
-            "PgUp" to { sendKey("\u001b[5~") }
-        ))
+            // Row 4 - Navigation
+            KeyType.PAGE_UP -> "\u001b[5~"
+            KeyType.PAGE_DOWN -> "\u001b[6~"
+            KeyType.ARROW_LEFT -> "\u001b[D"
+            KeyType.ARROW_RIGHT -> "\u001b[C"
+            KeyType.ARROW_UP -> "\u001b[A"
+            KeyType.ARROW_DOWN -> "\u001b[B"
+            KeyType.HOME -> "\u001b[H"
+            KeyType.END -> "\u001b[F"
 
-        // Row 3: F7 - F12, PgDn
-        addRow(listOf(
-            "F7" to { sendKey("\u001b[18~") },
-            "F8" to { sendKey("\u001b[19~") },
-            "F9" to { sendKey("\u001b[20~") },
-            "F10" to { sendKey("\u001b[21~") },
-            "F11" to { sendKey("\u001b[23~") },
-            "F12" to { sendKey("\u001b[24~") },
-            "PgDn" to { sendKey("\u001b[6~") }
-        ))
+            // Row 5 - Ctrl Combinations
+            KeyType.CTRL_UNDERSCORE -> "\u001f"
+            KeyType.CTRL_XX -> "\u0018\u0018"
+            KeyType.CTRL_Z -> "\u001a"
+            KeyType.CTRL_R -> "\u0012"
+            KeyType.CTRL_G -> "\u0007"
+            KeyType.CTRL_A -> "\u0001"
+            KeyType.CTRL_B -> "\u0002"
+            KeyType.CTRL_X -> "\u0018"
+            KeyType.CTRL_F -> "\u0006"
+            KeyType.CTRL_P -> "\u0010"
+            KeyType.CTRL_N -> "\u000e"
+            KeyType.CTRL_C -> "\u0003"
+            KeyType.CTRL_H -> "\u0008"
+            KeyType.CTRL_S -> "\u0013"
+            KeyType.CTRL_Q -> "\u0011"
+            KeyType.CTRL_U -> "\u0015"
+            KeyType.CTRL_W -> "\u0017"
+            KeyType.CTRL_L -> "\u000c"
+            KeyType.CTRL_D -> "\u0004"
 
-        // Row 4: HOME, ▲, END, Ctrl+C, Ctrl+D, Ctrl+Z
-        addRow(listOf(
-            "HOME" to { sendKey("\u001b[1~") },
-            "▲" to { sendKey("\u001b[A") },
-            "END" to { sendKey("\u001b[4~") },
-            "Ctrl+C" to { sendKey("\u0003") },
-            "Ctrl+D" to { sendKey("\u0004") },
-            "Ctrl+Z" to { sendKey("\u001a") }
-        ))
+            // Row 6 - F-keys
+            KeyType.F1 -> "\u001bOP"
+            KeyType.F2 -> "\u001bOQ"
+            KeyType.F3 -> "\u001bOR"
+            KeyType.F4 -> "\u001bOS"
+            KeyType.F5 -> "\u001b[15~"
+            KeyType.F6 -> "\u001b[17~"
+            KeyType.F7 -> "\u001b[18~"
+            KeyType.F8 -> "\u001b[19~"
+            KeyType.F9 -> "\u001b[20~"
+            KeyType.F10 -> "\u001b[21~"
+            KeyType.F11 -> "\u001b[23~"
+            KeyType.F12 -> "\u001b[24~"
+            KeyType.F13 -> "\u001b[25~"
+            KeyType.F14 -> "\u001b[26~"
+            KeyType.F15 -> "\u001b[28~"
+            KeyType.F16 -> "\u001b[29~"
+            KeyType.F17 -> "\u001b[31~"
+            KeyType.F18 -> "\u001b[32~"
+            KeyType.F19 -> "\u001b[33~"
+            KeyType.F20 -> "\u001b[34~"
 
-        // Row 5: ◀, ENTER, ▶, ▼, |, clear
-        addRow(listOf(
-            "◀" to { sendKey("\u001b[D") },
-            "ENTER" to { sendKey("\r") },
-            "▶" to { sendKey("\u001b[C") },
-            "▼" to { sendKey("\u001b[B") },
-            "|" to { sendKey("|") },
-            "clear" to { sendKey("clear\r") }
-        ))
+            // Alt and Ctrl keys (as fallbacks if needed)
+            KeyType.ALT -> {
+                toggleAltModifier()
+                return
+            }
+            KeyType.CTRL -> {
+                toggleCtrlModifier()
+                return
+            }
 
-        specialKeypadPanel.addView(container)
-        return specialKeypadPanel
+            // Row 3 - Symbols
+            else -> key.label
+        }
+
+        sendKey(sequence)
     }
 
     private fun sendKey(sequence: String) {
@@ -618,8 +786,32 @@ class TerminalActivity : ComponentActivity() {
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
         val customCommand = intent.getStringExtra("customCommand")
-        config = try { ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage, customCommand) } catch (e: Exception) { 
-            showError("Setup failed: ${e.message}"); return 
+
+        val rootfsDir = File(filesDir, rootfsDirName)
+        val setupDoneFile = File(rootfsDir, "root/.setup_done")
+
+        if (!setupDoneFile.exists()) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Detekce Rootu")
+                .setMessage("Má Vaše zařízení ROOT oprávnění (Magisk / KernelSU)?\n\nPokud zvolíte 'Ano', nebudou se vytvářet falešné mock soubory pro systémové příkazy (jako systemctl, sysctl, atd.), protože je nebudete potřebovat.")
+                .setPositiveButton("Ano") { _, _ ->
+                    startSetup(rootfsDirName, mountStorage, customCommand, true)
+                }
+                .setNegativeButton("Ne") { _, _ ->
+                    startSetup(rootfsDirName, mountStorage, customCommand, false)
+                }
+                .setCancelable(false)
+                .show()
+        } else {
+            startSetup(rootfsDirName, mountStorage, customCommand, false)
+        }
+    }
+
+    private fun startSetup(rootfsDirName: String, mountStorage: Boolean, customCommand: String?, hasRoot: Boolean) {
+        config = try {
+            ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage, customCommand, hasRoot)
+        } catch (e: Exception) {
+            showError("Setup failed: ${e.message}"); return
         }
         startTerminalSession(config!!)
     }

@@ -1,7 +1,12 @@
 package com.linux_core
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -46,9 +51,12 @@ import androidx.compose.ui.graphics.nativeCanvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.linux_core.core.Distro
 import com.linux_core.core.RootfsManager
 import com.linux_core.ui.terminal.TerminalActivity
@@ -56,6 +64,42 @@ import com.linux_core.ui.theme.NethunteraioperatorTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+
+private fun hasAllFilesAccess(context: Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+}
+
+private fun requestAllFilesAccess(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = Uri.parse("package:${context.packageName}")
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+            context.startActivity(intent)
+        }
+    } else {
+        if (context is ComponentActivity) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                context,
+                arrayOf(
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ),
+                1001
+            )
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -206,6 +250,21 @@ fun MainScreen() {
     var mountStorage by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasStoragePermission = hasAllFilesAccess(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose { downloadJob?.cancel() }
     }
@@ -290,22 +349,44 @@ fun MainScreen() {
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(bottom = 24.dp).clickable(enabled = !isDownloading) { mountStorage = !mountStorage }
+                modifier = Modifier.padding(bottom = 24.dp).clickable(enabled = !isDownloading) {
+                    val nextState = !mountStorage
+                    if (nextState && !hasStoragePermission) {
+                        requestAllFilesAccess(context)
+                    }
+                    mountStorage = nextState
+                }
             ) {
                 androidx.compose.material3.Switch(
                     checked = mountStorage,
-                    onCheckedChange = { mountStorage = it },
+                    onCheckedChange = { checked ->
+                        if (checked && !hasStoragePermission) {
+                            requestAllFilesAccess(context)
+                        }
+                        mountStorage = checked
+                    },
                     colors = androidx.compose.material3.SwitchDefaults.colors(
                         checkedThumbColor = Color(0xFF00FF41),
                         checkedTrackColor = Color(0x8800FF41)
                     )
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = "Mount /sdcard Storage",
-                    color = Color.LightGray,
-                    fontSize = 14.sp
-                )
+                Column {
+                    Text(
+                        text = "Mount /sdcard Storage",
+                        color = Color.LightGray,
+                        fontSize = 14.sp
+                    )
+                    if (mountStorage && !hasStoragePermission) {
+                        Text(
+                            text = "All Files Access required! Tap to grant.",
+                            color = Color(0xFFFF3333),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { requestAllFilesAccess(context) }
+                        )
+                    }
+                }
             }
 
             // Action Flow

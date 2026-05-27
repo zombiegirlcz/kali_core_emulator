@@ -21,7 +21,8 @@ object ProotManager {
         context: Context,
         rootfsDirName: String = "kali-arm64",
         mountStorage: Boolean = false,
-        customCommand: String? = null
+        customCommand: String? = null,
+        hasRoot: Boolean = false
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -58,11 +59,11 @@ object ProotManager {
         }
 
         val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
-        createMasterScript(homeDir, distroId)
+        createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
-        createNetHunterZshrc(rootfsDir)
         fixLdLinuxSymlinks(rootfsDir)
         deployApiScripts(rootfsDir)
+        deployZshrc(context, rootfsDir, distroId)
 
         val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
         deployBinaries(context, suffix)
@@ -120,28 +121,8 @@ object ProotManager {
         }
     }
 
-    private fun createNetHunterZshrc(rootfsDir: File) {
-        val etcDir = File(rootfsDir, "etc")
-        if (!etcDir.exists()) etcDir.mkdirs()
-        val zshrcFile = File(etcDir, "nethunter.zshrc")
-        val content = StringBuilder().apply {
-            append("# NetHunter AI Operator Managed Config").append(NL)
-            append("alias ll='ls -la --color=auto'").append(NL)
-            append("alias l='ls -CF'").append(NL)
-            append("alias la='ls -A'").append(NL)
-            append("if [ \"\$(id -u)\" = \"0\" ]; then").append(NL)
-            append("    alias parrot='sudo -u parrot -i'").append(NL)
-            append("    alias kali='sudo -u kali -i'").append(NL)
-            append("fi").append(NL)
-            append("export PS1='%F{cyan}%n@parrot%f:%F{blue}%~%f# '").append(NL)
-            append("# Load plugins if they exist").append(NL)
-            append("[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh").append(NL)
-            append("[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] && source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh").append(NL)
-        }.toString()
-        zshrcFile.writeText(content)
-    }
 
-    private fun createMasterScript(homeDir: File, distroId: String) {
+    private fun createMasterScript(homeDir: File, distroId: String, hasRoot: Boolean) {
         val masterFile = File(homeDir, "bootstrap.sh")
         val script = StringBuilder().apply {
             append("#!/bin/bash").append(NL)
@@ -158,13 +139,20 @@ object ProotManager {
                 append("wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg || true").append(NL)
             }
 
-            append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf passwd; do").append(NL)
-            append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
-            append("    path=\"\$prefix/\$cmd\"").append(NL)
-            append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
-            append("    ln -sf /bin/true \"\$path\" 2>/dev/null || true").append(NL)
-            append("  done").append(NL)
-            append("done").append(NL)
+            if (!hasRoot) {
+                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf; do").append(NL)
+                append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
+                append("    path=\"\$prefix/\$cmd\"").append(NL)
+                append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
+                append("    ln -sf /bin/true \"\$path\" 2>/dev/null || true").append(NL)
+                append("  done").append(NL)
+                append("done").append(NL)
+            }
+
+            append("mkdir -p /etc/dpkg/dpkg.cfg.d").append(NL)
+            append("echo 'force-unsafe-io' > /etc/dpkg/dpkg.cfg.d/force-unsafe-io").append(NL)
+            append("mkdir -p /etc/apt/apt.conf.d").append(NL)
+            append("echo 'DPkg::options { \"--force-unsafe-io\"; };' > /etc/apt/apt.conf.d/force-unsafe-io").append(NL)
 
             append("apt update 2>&1 || true").append(NL)
             append("apt install -y --allow-unauthenticated zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo 2>&1 || true").append(NL)
@@ -195,6 +183,15 @@ object ProotManager {
             append("    /bin/bash /root/bootstrap.sh").append(NL)
             append("    rm -f /root/.bootstrap_required").append(NL)
             append("fi").append(NL)
+            
+            append("# Restore passwd if it was previously diverted by mistake").append(NL)
+            append("for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
+            append("  path=\"\$prefix/passwd\"").append(NL)
+            append("  if [ -L \"\$path\" ] && [ -f \"\$path.distrib\" ]; then").append(NL)
+            append("    rm -f \"\$path\"").append(NL)
+            append("    dpkg-divert --remove --local --rename \"\$path\" 2>/dev/null || true").append(NL)
+            append("  fi").append(NL)
+            append("done").append(NL)
 
             append("setup_user_zsh() {").append(NL)
             append("    local target_home=\"\$1\"").append(NL)
@@ -207,8 +204,6 @@ object ProotManager {
             append("    sed -i '/NetHunter AI Operator/d' \"\$zrc\" 2>/dev/null || true").append(NL)
             append("    sed -i '/FORCE_ZSH_/d' \"\$zrc\" 2>/dev/null || true").append(NL)
             append("    sed -i '/source \\/etc\\/nethunter.zshrc/d' \"\$zrc\" 2>/dev/null || true").append(NL)
-            append("    # Add source line").append(NL)
-            append("    echo 'source /etc/nethunter.zshrc # NetHunter AI Operator' >> \"\$zrc\"").append(NL)
             append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$zrc\" 2>/dev/null || true").append(NL)
             append("}").append(NL)
 
@@ -340,6 +335,20 @@ object ProotManager {
                 append("#!/bin/bash").append(NL)
                 append("state=\${1:-on}").append(NL)
                 append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch").append(NL)
+            }.toString(),
+
+            "nethunter-fix-postinst" to StringBuilder().apply {
+                append("#!/bin/bash").append(NL)
+                append("if [ -z \"\$1\" ]; then").append(NL)
+                append("  echo \"Usage: nethunter-fix-postinst <package-name>\"").append(NL)
+                append("  exit 1").append(NL)
+                append("fi").append(NL)
+                append("pkg=\"\$1\"").append(NL)
+                append("echo \"[*] Mocking postinst for \$pkg...\"").append(NL)
+                append("ln -sf /bin/true /var/lib/dpkg/info/\$pkg.postinst 2>/dev/null || true").append(NL)
+                append("echo \"[*] Reconfiguring dpkg...\"").append(NL)
+                append("dpkg --configure -a").append(NL)
+                append("echo \"[+] Successfully fixed postinst for \$pkg!\"").append(NL)
             }.toString()
         )
 
@@ -353,6 +362,34 @@ object ProotManager {
             } catch (e: Exception) {
                 Log.e("ProotManager", "Failed to deploy API script $name: ${e.message}")
             }
+        }
+    }
+
+    private fun deployZshrc(context: Context, rootfsDir: File, distroId: String) {
+        val assetName = "zshrc.$distroId"
+        val zshrcContent = try {
+            context.assets.open(assetName).use { input ->
+                input.bufferedReader().use { it.readText() }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read zshrc asset $assetName: ${e.message}")
+            return
+        }
+
+        // 1. Write to /etc/skel/.zshrc
+        val skelDir = File(rootfsDir, "etc/skel")
+        if (!skelDir.exists()) skelDir.mkdirs()
+        File(skelDir, ".zshrc").writeText(zshrcContent)
+
+        // 2. Write to /root/.zshrc
+        val rootHome = File(rootfsDir, "root")
+        if (!rootHome.exists()) rootHome.mkdirs()
+        File(rootHome, ".zshrc").writeText(zshrcContent)
+
+        // 3. Write to /home/$distroId/.zshrc
+        val userHome = File(rootfsDir, "home/$distroId")
+        if (userHome.exists()) {
+            File(userHome, ".zshrc").writeText(zshrcContent)
         }
     }
 }

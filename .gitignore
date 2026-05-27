@@ -65,3 +65,10 @@ ignore-archiv.tar
 
 # Other unnecessary roots
 /parrotOS-GUI-proot/
+.tmp.driveupload/
+
+# User uploaded root configurations
+/.zshrc.kali
+/.zshrc.parrot
+/HackerKeyboard.kt
+
