@@ -45,11 +45,11 @@ __pycache__/
 *.pyc
 
 # Copilot/Gemini session artifacts
-.tasks/
 .copilot/
 AGENT.md
 AGENTS.md
 agent.md
+task/
 
 # Local backup archive
 ignore-archiv.tar
