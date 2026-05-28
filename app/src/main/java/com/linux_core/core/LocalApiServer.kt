@@ -145,6 +145,9 @@ object LocalApiServer {
                 path == "/volume" && method == "GET" -> handleVolumeGet(context, out)
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
+                path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
+                path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
+                path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -404,4 +407,45 @@ object LocalApiServer {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
     }
+
+    private fun handleVpnStatus(context: Context, out: OutputStream) {
+        val running = com.linux_core.core.VpnCaptureService.isRunning()
+        val packets = com.linux_core.core.VpnCaptureService.getCapturedPacketCount()
+        val bytes = com.linux_core.core.VpnCaptureService.getCapturedByteCount()
+        val json = JSONObject().apply {
+            put("running", running)
+            put("packets", packets)
+            put("bytes", bytes)
+        }.toString()
+        sendResponse(out, 200, "OK", json)
+    }
+
+    private fun handleVpnStop(context: Context, out: OutputStream) {
+        try {
+            val intent = Intent(context, VpnCaptureService::class.java).apply {
+                action = VpnCaptureService.ACTION_STOP
+            }
+            context.startService(intent)
+            sendResponse(out, 200, "OK", "{\"status\":\"stopping\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnStart(context: Context, out: OutputStream) {
+        try {
+            val intent = Intent(context, VpnCaptureService::class.java).apply {
+                action = VpnCaptureService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            sendResponse(out, 200, "OK", "{\"status\":\"starting\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
 }
+

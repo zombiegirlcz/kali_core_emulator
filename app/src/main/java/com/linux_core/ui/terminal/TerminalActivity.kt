@@ -1,8 +1,11 @@
 package com.linux_core.ui.terminal
 
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -18,7 +21,14 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.ProgressBar
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebSettings
+import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.drawerlayout.widget.DrawerLayout
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
@@ -28,10 +38,29 @@ import com.linux_core.core.TerminalService
 import com.linux_core.core.KeyType
 import com.linux_core.core.HackerKeyboardRows
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
 
 class TerminalActivity : ComponentActivity() {
     companion object {
         private const val TAG = "TerminalActivity"
+    }
+
+    private lateinit var btnSniffer: Button
+
+    private val vpnPrepareLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            startVpnServiceDirectly()
+        } else {
+            android.widget.Toast.makeText(this, "VPN permission denied", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     private lateinit var terminalView: TerminalView
@@ -47,9 +76,9 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var suggestionBar: HorizontalScrollView
     private lateinit var suggestionContainer: LinearLayout
 
-    // Multi-Session management via background service
-    private lateinit var sessionTabBar: HorizontalScrollView
-    private lateinit var sessionTabContainer: LinearLayout
+    // Drawer-based Session Management
+    private lateinit var drawerLayout: androidx.drawerlayout.widget.DrawerLayout
+    private lateinit var sessionDrawerContainer: LinearLayout
 
     // Keyboard Toolbar and Special Keypad Panel states
     var customCtrlActive = false
@@ -64,6 +93,42 @@ class TerminalActivity : ComponentActivity() {
     private val tabsList = listOf("CONTROL", "SYMBOLS", "NAVIGATION", "CTRL COMBOS", "F-KEYS")
     private val tabButtons = HashMap<String, Button>()
 
+    // X11 GUI Desktop integration fields
+    private var activeViewMode = "CLI" // "CLI" or "GUI"
+    private lateinit var btnCli: Button
+    private lateinit var btnGui: Button
+    private lateinit var guiContainer: FrameLayout
+    private lateinit var guiWebView: WebView
+    private lateinit var guiPlaceholderLayout: LinearLayout
+    private lateinit var guiPlaceholderTitle: TextView
+    private lateinit var guiPlaceholderDesc: TextView
+    private lateinit var btnStartGui: Button
+    private lateinit var guiProgress: ProgressBar
+    private lateinit var toolbarScroll: HorizontalScrollView
+    private val guiScope = CoroutineScope(Dispatchers.Main + Job())
+    private lateinit var btnTouchToggle: Button
+    private var guiTouchMode = true // true = trackpad (default), false = direct touch
+
+    // Trackpad state variables (Android-level touch interception)
+    private var virtualCursorX = 960f
+    private var virtualCursorY = 540f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var touchStartTime = 0L
+    private var totalTouchMovement = 0f
+    private var isTouchMoving = false
+    private var isTwoFingerGesture = false
+    private var longPressTriggered = false
+    private var twoFingerStartY = 0f
+    private var scrollAccum = 0f
+    private val longPressHandler = Handler(Looper.getMainLooper())
+
+    // Double tap drag lock states
+    private var lastTapTime = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private var isDragGesture = false
+
     var terminalFontSizeFloat = 32f
 
     fun changeTerminalFontSize(scale: Float) {
@@ -74,19 +139,157 @@ class TerminalActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.linux_core.core.VpnCaptureService.onStateChangeListener = { _ ->
+            updateSnifferButtonState()
+        }
         viewClient.setActivity(this)
         historyManager = com.linux_core.core.HistoryManager(this)
 
-        // Root container: vertical LinearLayout for screen layout
+        // Root DrawerLayout container
+        drawerLayout = androidx.drawerlayout.widget.DrawerLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+
+        // Main content vertical container
         val mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = DrawerLayout.LayoutParams(
+                DrawerLayout.LayoutParams.MATCH_PARENT, DrawerLayout.LayoutParams.MATCH_PARENT)
         }
 
-        // Active sessions tab bar docked at the very top
-        val sessionBar = buildSessionTabBar()
-        mainLayout.addView(sessionBar)
+        // Active top bar with menu button, spacer, and GUI switch
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#08090d"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        // Hamburger Menu button on the left of topBar to slide drawer open
+        val btnMenu = Button(this).apply {
+            text = "☰"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#151620"))
+            setPadding(16, 4, 16, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+            ).apply {
+                setMargins(12, 4, 12, 4)
+            }
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                drawerLayout.openDrawer(Gravity.START)
+            }
+        }
+        topBar.addView(btnMenu)
+
+        // Symmetrical spacer to push GUI switch to the right
+        val spacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+        topBar.addView(spacer)
+
+        // CLI/GUI Switch on the right side of topBar
+        val guiToggleLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(8, 0, 16, 0)
+            }
+            gravity = Gravity.CENTER
+        }
+
+        btnCli = Button(this).apply {
+            text = "🐚 CLI"
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.parseColor("#00FF41")) // Deep Matrix Green initially highlighted
+            setBackgroundColor(Color.parseColor("#151620"))
+            setPadding(12, 4, 12, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+            )
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                switchViewMode("CLI")
+            }
+        }
+
+        btnGui = Button(this).apply {
+            text = "🖥️ GUI"
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#08090d"))
+            setPadding(12, 4, 12, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+            )
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                switchViewMode("GUI")
+            }
+        }
+
+        guiToggleLayout.addView(btnCli)
+        guiToggleLayout.addView(btnGui)
+
+        btnSniffer = Button(this).apply {
+            text = "🔌 Sniff"
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#08090d"))
+            setPadding(12, 4, 12, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+            ).apply {
+                setMargins(8, 0, 8, 0)
+            }
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                toggleSniffer()
+            }
+        }
+        topBar.addView(btnSniffer)
+
+        btnTouchToggle = Button(this).apply {
+            text = "🖱️ Mouse"
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#151620"))
+            setPadding(12, 4, 12, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+            ).apply {
+                setMargins(8, 0, 8, 0)
+            }
+            layoutParams = params
+            visibility = View.GONE
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                toggleTouchMode()
+            }
+        }
+        topBar.addView(btnTouchToggle)
+        topBar.addView(guiToggleLayout)
+
+        mainLayout.addView(topBar)
 
         // Terminal view container (takes weight = 1f to fill remaining screen space)
         val terminalContainer = FrameLayout(this).apply {
@@ -117,6 +320,215 @@ class TerminalActivity : ComponentActivity() {
         terminalContainer.addView(errorLayout, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+        // Add GUI webview container
+        guiContainer = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            visibility = View.GONE
+        }
+
+        guiWebView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.allowFileAccess = true
+            settings.allowContentAccess = true
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    // Inject WebSocket interceptor BEFORE noVNC scripts run.
+                    // This captures the VNC WebSocket so we can send raw pointer events.
+                    view?.evaluateJavascript("""
+                (function() {
+                    if (window._nhWsPatched) return;
+                    window._nhWsPatched = true;
+                    window._vncWs = null;
+
+                    // Method 1: Override WebSocket constructor to capture on creation
+                    var OrigWS = window.WebSocket;
+                    window.WebSocket = function(url, protocols) {
+                        var ws = protocols !== undefined ? new OrigWS(url, protocols) : new OrigWS(url);
+                        window._vncWs = ws;
+                        return ws;
+                    };
+                    window.WebSocket.prototype = OrigWS.prototype;
+                    window.WebSocket.CONNECTING = 0;
+                    window.WebSocket.OPEN = 1;
+                    window.WebSocket.CLOSING = 2;
+                    window.WebSocket.CLOSED = 3;
+
+                    // Method 2: Also patch prototype.send as backup
+                    var origSend = OrigWS.prototype.send;
+                    OrigWS.prototype.send = function(data) {
+                        if (!window._vncWs || window._vncWs.readyState !== 1) {
+                            window._vncWs = this;
+                        }
+                        return origSend.apply(this, arguments);
+                    };
+
+                    // Define _vncPtr immediately (uses captured WS when available)
+                    window._vncPtr = function(x, y, mask) {
+                        var ws = window._vncWs;
+                        if (!ws || ws.readyState !== 1) return;
+                        var d = new Uint8Array(6);
+                        d[0] = 5;  // VNC pointer event message type
+                        d[1] = mask;
+                        d[2] = (x >> 8) & 0xFF; d[3] = x & 0xFF;
+                        d[4] = (y >> 8) & 0xFF; d[5] = y & 0xFF;
+                        ws.send(d.buffer);
+
+                        if (window._updateCursor) {
+                            window._updateCursor(x, y);
+                        }
+                    };
+
+                    // Create a custom cursor element if it doesn't exist yet
+                    if (!document.getElementById('nh-custom-cursor')) {
+                        var cur = document.createElement('div');
+                        cur.id = 'nh-custom-cursor';
+                        cur.style.position = 'fixed';
+                        cur.style.width = '16px';
+                        cur.style.height = '16px';
+                        cur.style.pointerEvents = 'none';
+                        cur.style.zIndex = '999999';
+                        cur.style.left = '0px';
+                        cur.style.top = '0px';
+                        cur.style.display = 'none'; // hide until first move
+                        cur.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+                                        '  <path d="M0 0V14.5L4.25 10.25L8 18L11 16.5L7.25 8.75L12.5 8.75Z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="miter"/>' +
+                                        '</svg>';
+                        document.body.appendChild(cur);
+                    }
+
+                    window._updateCursor = function(x, y) {
+                        var cur = document.getElementById('nh-custom-cursor');
+                        if (!cur) return;
+                        var canvas = document.querySelector('canvas') || document.getElementById('noVNC_canvas');
+                        if (!canvas) {
+                            cur.style.left = (x / 1920 * window.innerWidth) + 'px';
+                            cur.style.top = (y / 1080 * window.innerHeight) + 'px';
+                            cur.style.display = 'block';
+                            return;
+                        }
+                        var rect = canvas.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            var left = rect.left + (x / canvas.width) * rect.width;
+                            var top = rect.top + (y / canvas.height) * rect.height;
+                            cur.style.left = left + 'px';
+                            cur.style.top = top + 'px';
+                            cur.style.display = 'block';
+                        } else {
+                            cur.style.left = (x / 1920 * window.innerWidth) + 'px';
+                            cur.style.top = (y / 1080 * window.innerHeight) + 'px';
+                            cur.style.display = 'block';
+                        }
+                    };
+                })();
+            """.trimIndent(), null)
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    // Hide the noVNC fullscreen button
+                    view?.evaluateJavascript("(function() { " +
+                        "var css = '#noVNC_fullscreen_button { display: none !important; }'; " +
+                        "var head = document.head || document.getElementsByTagName('head')[0]; " +
+                        "var style = document.createElement('style'); " +
+                        "style.type = 'text/css'; " +
+                        "style.appendChild(document.createTextNode(css)); " +
+                        "head.appendChild(style); " +
+                        "})()", null)
+
+                    // Re-inject WS interceptor as backup (in case onPageStarted was too early)
+                    view?.postDelayed({
+                        view.evaluateJavascript(getVncPointerHelperScript(), null)
+                    }, 3000)
+                }
+            }
+
+            // Android-level touch interceptor for trackpad mode
+            setOnTouchListener(createTrackpadTouchListener())
+
+            visibility = View.GONE
+        }
+        guiContainer.addView(guiWebView)
+
+        // Custom Cyber-styled VNC Placeholder
+        guiPlaceholderLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#07080A"))
+            setPadding(32, 32, 32, 32)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+
+        guiPlaceholderTitle = TextView(this).apply {
+            text = "X11 Graphical Desktop"
+            setTextColor(Color.parseColor("#00FF41"))
+            textSize = 20f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            gravity = Gravity.CENTER
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 8)
+            }
+            layoutParams = params
+        }
+        guiPlaceholderLayout.addView(guiPlaceholderTitle)
+
+        guiPlaceholderDesc = TextView(this).apply {
+            text = "Start a fully interactive XFCE4 desktop inside Kali/Parrot.\n(On the first boot, packages will be installed automatically)"
+            setTextColor(Color.parseColor("#A9B1D6"))
+            textSize = 13f
+            gravity = Gravity.CENTER
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 24)
+            }
+            layoutParams = params
+        }
+        guiPlaceholderLayout.addView(guiPlaceholderDesc)
+
+        guiProgress = ProgressBar(this).apply {
+            visibility = View.GONE
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 16)
+            }
+            layoutParams = params
+        }
+        guiPlaceholderLayout.addView(guiProgress)
+
+        btnStartGui = Button(this).apply {
+            text = "START GRAPHICAL DESKTOP"
+            setTextColor(Color.BLACK)
+            setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
+            textSize = 12f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setPadding(24, 12, 24, 12)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                startDesktopInBackground()
+            }
+        }
+        guiPlaceholderLayout.addView(btnStartGui)
+
+        guiContainer.addView(guiPlaceholderLayout)
+        terminalContainer.addView(guiContainer)
+
         mainLayout.addView(terminalContainer)
 
         // Suggestions Bar
@@ -124,19 +536,523 @@ class TerminalActivity : ComponentActivity() {
         mainLayout.addView(suggBar)
 
         // Horizontal scrollable Extra Keys Toolbar
-        val toolbarScroll = buildExtraKeysToolbar()
+        toolbarScroll = buildExtraKeysToolbar()
         mainLayout.addView(toolbarScroll)
 
         // Custom Special Keypad Panel (grid overlays Android keyboard space)
         val keypadPanel = buildSpecialKeypadPanel()
         mainLayout.addView(keypadPanel)
 
-        setContentView(mainLayout)
+        // Left drawer container (takes 280dp width, sliding from START)
+        val drawerView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#08090d")) // Premium dark cyber grey
+            setPadding(24, 32, 24, 32)
+            val params = DrawerLayout.LayoutParams(
+                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 280f, resources.displayMetrics).toInt(),
+                DrawerLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                gravity = Gravity.START
+            }
+            layoutParams = params
+        }
+
+        val drawerHeader = TextView(this).apply {
+            text = "🐚 NETHUNTER SESSIONS"
+            setTextColor(Color.parseColor("#00FF41"))
+            textSize = 15f
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+            gravity = Gravity.CENTER_HORIZONTAL
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 24)
+            }
+            layoutParams = params
+        }
+        drawerView.addView(drawerHeader)
+
+        val drawerScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            isVerticalScrollBarEnabled = true
+        }
+        
+        sessionDrawerContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        drawerScroll.addView(sessionDrawerContainer)
+        drawerView.addView(drawerScroll)
+
+        val btnAddSession = Button(this).apply {
+            text = "+ NEW SESSION"
+            setTextColor(Color.BLACK)
+            setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
+            textSize = 12f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setPadding(24, 12, 24, 12)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 16, 0, 0)
+            }
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                addNewSession()
+                drawerLayout.closeDrawer(Gravity.START)
+            }
+        }
+        drawerView.addView(btnAddSession)
+
+        // Assemble root DrawerLayout
+        drawerLayout.addView(mainLayout)
+        drawerLayout.addView(drawerView)
+        setContentView(drawerLayout)
+
         setupAndStartSession()
+    }
+
+    private fun switchViewMode(mode: String) {
+        activeViewMode = mode
+        if (mode == "CLI") {
+            btnCli.setTextColor(Color.parseColor("#00FF41"))
+            btnCli.setBackgroundColor(Color.parseColor("#151620"))
+            btnGui.setTextColor(Color.WHITE)
+            btnGui.setBackgroundColor(Color.parseColor("#08090d"))
+
+            terminalView.visibility = View.VISIBLE
+            suggestionBar.visibility = if (historyManager.getSuggestions(currentCommand.toString()).isNotEmpty()) View.VISIBLE else View.GONE
+            toolbarScroll.visibility = View.VISIBLE
+            guiContainer.visibility = View.GONE
+            btnTouchToggle.visibility = View.GONE
+            
+            showSoftKeyboard()
+        } else {
+            btnGui.setTextColor(Color.parseColor("#00FF41"))
+            btnGui.setBackgroundColor(Color.parseColor("#151620"))
+            btnCli.setTextColor(Color.WHITE)
+            btnCli.setBackgroundColor(Color.parseColor("#08090d"))
+
+            terminalView.visibility = View.GONE
+            suggestionBar.visibility = View.GONE
+            toolbarScroll.visibility = View.GONE
+            specialKeypadPanel.visibility = View.GONE
+            guiContainer.visibility = View.VISIBLE
+            btnTouchToggle.visibility = View.VISIBLE
+
+            // Hide soft keyboard when switching to GUI
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(terminalView.windowToken, 0)
+
+            checkAndLoadGui()
+        }
+    }
+
+    private fun isPortOpen(port: Int): Boolean {
+        return try {
+            java.net.Socket("127.0.0.1", port).use { true }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun checkAndLoadGui() {
+        guiScope.launch {
+            val running = withContext(Dispatchers.IO) {
+                isPortOpen(6080)
+            }
+            if (running) {
+                guiPlaceholderLayout.visibility = View.GONE
+                guiWebView.visibility = View.VISIBLE
+                val vncUrl = getVncUrl()
+                val currentUrl = guiWebView.url
+                if (currentUrl == null || !currentUrl.startsWith("http://127.0.0.1:6080/vnc.html")) {
+                    guiWebView.loadUrl(vncUrl)
+                }
+            } else {
+                guiWebView.visibility = View.GONE
+                guiPlaceholderLayout.visibility = View.VISIBLE
+                guiProgress.visibility = View.GONE
+                btnStartGui.visibility = View.VISIBLE
+                guiPlaceholderTitle.text = "X11 Graphical Desktop"
+                guiPlaceholderDesc.text = "Start a fully interactive XFCE4 desktop inside Kali/Parrot.\n(On the first boot, packages will be installed automatically)"
+            }
+        }
+    }
+
+    private fun getVncUrl(): String {
+        return "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale&password=kali_operator&cursor=false&locale=en&lang=en"
+    }
+
+    private fun toggleTouchMode() {
+        guiTouchMode = !guiTouchMode
+        if (guiTouchMode) {
+            btnTouchToggle.text = "🖱️ Trackpad"
+            btnTouchToggle.setTextColor(Color.parseColor("#00FF41"))
+            enableNativeTrackpad()
+        } else {
+            btnTouchToggle.text = "✋ Touch"
+            btnTouchToggle.setTextColor(Color.WHITE)
+        }
+    }
+
+    /**
+     * Reset virtual cursor to center of VNC framebuffer (default 1920x1080).
+     */
+    private fun enableNativeTrackpad() {
+        virtualCursorX = 960f
+        virtualCursorY = 540f
+        Log.d(TAG, "Trackpad: enabled, cursor at (${virtualCursorX.toInt()},${virtualCursorY.toInt()})")
+    }
+
+    /**
+     * Returns a JavaScript snippet that ensures window._vncPtr is defined.
+     * This is a backup injection — the primary injection happens in onPageStarted
+     * which intercepts the WebSocket constructor and prototype.send.
+     *
+     * This backup handles the case where the WS interceptor from onPageStarted
+     * was too early or got overwritten by the page.
+     */
+    private fun getVncPointerHelperScript(): String {
+        return """
+        (function() {
+            // Re-patch WebSocket.prototype.send to capture WS if not already captured
+            if (!window._vncWs) {
+                var origSend = WebSocket.prototype.send;
+                if (!window._nhSendPatched) {
+                    window._nhSendPatched = true;
+                    WebSocket.prototype.send = function(data) {
+                        if (!window._vncWs || window._vncWs.readyState !== 1) {
+                            window._vncWs = this;
+                        }
+                        return origSend.apply(this, arguments);
+                    };
+                }
+            }
+
+            // Ensure _vncPtr is defined
+            window._vncPtr = function(x, y, mask) {
+                var ws = window._vncWs;
+                if (!ws || ws.readyState !== 1) return;
+                var d = new Uint8Array(6);
+                d[0] = 5;
+                d[1] = mask;
+                d[2] = (x >> 8) & 0xFF; d[3] = x & 0xFF;
+                d[4] = (y >> 8) & 0xFF; d[5] = y & 0xFF;
+                ws.send(d.buffer);
+
+                if (window._updateCursor) {
+                    window._updateCursor(x, y);
+                }
+            };
+
+            // Create a custom cursor element if it doesn't exist yet
+            if (!document.getElementById('nh-custom-cursor')) {
+                var cur = document.createElement('div');
+                cur.id = 'nh-custom-cursor';
+                cur.style.position = 'fixed';
+                cur.style.width = '16px';
+                cur.style.height = '16px';
+                cur.style.pointerEvents = 'none';
+                cur.style.zIndex = '999999';
+                cur.style.left = '0px';
+                cur.style.top = '0px';
+                cur.style.display = 'none'; // hide until first move
+                cur.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+                                '  <path d="M0 0V14.5L4.25 10.25L8 18L11 16.5L7.25 8.75L12.5 8.75Z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="miter"/>' +
+                                '</svg>';
+                document.body.appendChild(cur);
+            }
+
+            window._updateCursor = function(x, y) {
+                var cur = document.getElementById('nh-custom-cursor');
+                if (!cur) return;
+                var canvas = document.querySelector('canvas') || document.getElementById('noVNC_canvas');
+                if (!canvas) {
+                    cur.style.left = (x / 1920 * window.innerWidth) + 'px';
+                    cur.style.top = (y / 1080 * window.innerHeight) + 'px';
+                    cur.style.display = 'block';
+                    return;
+                }
+                var rect = canvas.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    var left = rect.left + (x / canvas.width) * rect.width;
+                    var top = rect.top + (y / canvas.height) * rect.height;
+                    cur.style.left = left + 'px';
+                    cur.style.top = top + 'px';
+                    cur.style.display = 'block';
+                } else {
+                    cur.style.left = (x / 1920 * window.innerWidth) + 'px';
+                    cur.style.top = (y / 1080 * window.innerHeight) + 'px';
+                    cur.style.display = 'block';
+                }
+            };
+
+            // If WS is already captured, test it
+            if (window._vncWs && window._vncWs.readyState === 1) {
+                window._vncPtr(960, 540, 0);
+                console.log('NethunterTrackpad: _vncPtr ready, WS captured');
+            } else {
+                console.log('NethunterTrackpad: _vncPtr defined, waiting for WS...');
+            }
+        })();
+        """.trimIndent()
+    }
+
+    @Suppress("ClickableViewAccessibility")
+    private fun createTrackpadTouchListener(): View.OnTouchListener {
+        return View.OnTouchListener { _, event ->
+            // If NOT in trackpad mode, let noVNC handle touch events normally
+            if (!guiTouchMode) return@OnTouchListener false
+
+            val pointerCount = event.pointerCount
+            val sensitivity = 1.2f
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    touchStartTime = System.currentTimeMillis()
+                    totalTouchMovement = 0f
+                    isTouchMoving = false
+                    isTwoFingerGesture = false
+                    longPressTriggered = false
+
+                    val now = System.currentTimeMillis()
+                    val dxFromLastTap = event.x - lastTapX
+                    val dyFromLastTap = event.y - lastTapY
+                    val distFromLastTap = kotlin.math.sqrt(dxFromLastTap * dxFromLastTap + dyFromLastTap * dyFromLastTap)
+
+                    if (now - lastTapTime < 300 && distFromLastTap < 50f) {
+                        isDragGesture = true
+                        longPressHandler.removeCallbacksAndMessages(null)
+                        val cx = virtualCursorX.toInt()
+                        val cy = virtualCursorY.toInt()
+                        guiWebView.evaluateJavascript(
+                            "if(window._vncPtr)window._vncPtr($cx,$cy,1)", null)
+                    } else {
+                        isDragGesture = false
+                        // Long-press timer → right click
+                        longPressHandler.removeCallbacksAndMessages(null)
+                        longPressHandler.postDelayed({
+                            if (!isTouchMoving && totalTouchMovement < 15f && !isTwoFingerGesture) {
+                                longPressTriggered = true
+                                val cx = virtualCursorX.toInt()
+                                val cy = virtualCursorY.toInt()
+                                guiWebView.evaluateJavascript(
+                                    "if(window._vncPtr)window._vncPtr($cx,$cy,4)", null)
+                                guiWebView.postDelayed({
+                                    guiWebView.evaluateJavascript(
+                                        "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
+                                }, 100)
+                            }
+                        }, 500)
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Second finger → enter scroll mode
+                    isTwoFingerGesture = true
+                    longPressHandler.removeCallbacksAndMessages(null)
+                    if (pointerCount >= 2) {
+                        twoFingerStartY = (event.getY(0) + event.getY(1)) / 2f
+                        scrollAccum = 0f
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (isTwoFingerGesture && pointerCount >= 2) {
+                        // Two-finger scroll
+                        val midY = (event.getY(0) + event.getY(1)) / 2f
+                        val delta = midY - twoFingerStartY
+                        twoFingerStartY = midY
+                        scrollAccum += delta
+
+                        val cx = virtualCursorX.toInt()
+                        val cy = virtualCursorY.toInt()
+                        while (scrollAccum > 30f) {
+                            guiWebView.evaluateJavascript(
+                                "if(window._vncPtr){window._vncPtr($cx,$cy,16);" +
+                                "setTimeout(function(){window._vncPtr($cx,$cy,0)},10)}", null)
+                            scrollAccum -= 30f
+                        }
+                        while (scrollAccum < -30f) {
+                            guiWebView.evaluateJavascript(
+                                "if(window._vncPtr){window._vncPtr($cx,$cy,8);" +
+                                "setTimeout(function(){window._vncPtr($cx,$cy,0)},10)}", null)
+                            scrollAccum += 30f
+                        }
+                    } else if (!isTwoFingerGesture) {
+                        // Single finger → move cursor relative
+                        val dx = event.x - lastTouchX
+                        val dy = event.y - lastTouchY
+                        lastTouchX = event.x
+                        lastTouchY = event.y
+                        totalTouchMovement += kotlin.math.abs(dx) + kotlin.math.abs(dy)
+
+                        if (totalTouchMovement > 15f) {
+                            isTouchMoving = true
+                            longPressHandler.removeCallbacksAndMessages(null)
+                        }
+
+                        // Update virtual cursor, clamped to 0..1920, 0..1080
+                        virtualCursorX = (virtualCursorX + dx * sensitivity).coerceIn(0f, 1920f)
+                        virtualCursorY = (virtualCursorY + dy * sensitivity).coerceIn(0f, 1080f)
+
+                        val cx = virtualCursorX.toInt()
+                        val cy = virtualCursorY.toInt()
+                        val mask = if (isDragGesture) 1 else 0
+                        guiWebView.evaluateJavascript(
+                            "if(window._vncPtr)window._vncPtr($cx,$cy,$mask)", null)
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    longPressHandler.removeCallbacksAndMessages(null)
+
+                    val cx = virtualCursorX.toInt()
+                    val cy = virtualCursorY.toInt()
+
+                    if (isDragGesture) {
+                        // End of drag
+                        guiWebView.evaluateJavascript(
+                            "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
+                        lastTapTime = 0L
+                    } else if (!isTwoFingerGesture && !longPressTriggered) {
+                        val elapsed = System.currentTimeMillis() - touchStartTime
+                        if (elapsed < 300 && totalTouchMovement < 15f) {
+                            // Quick tap → left click (down then up)
+                            guiWebView.evaluateJavascript(
+                                "if(window._vncPtr)window._vncPtr($cx,$cy,1)", null)
+                            guiWebView.postDelayed({
+                                guiWebView.evaluateJavascript(
+                                    "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
+                            }, 80)
+
+                            lastTapTime = System.currentTimeMillis()
+                            lastTapX = event.x
+                            lastTapY = event.y
+                        }
+                    }
+
+                    isTouchMoving = false
+                    isTwoFingerGesture = false
+                    longPressTriggered = false
+                    isDragGesture = false
+                    true
+                }
+
+                MotionEvent.ACTION_POINTER_UP -> {
+                    // One finger lifted, others still down
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    longPressHandler.removeCallbacksAndMessages(null)
+                    isTouchMoving = false
+                    isTwoFingerGesture = false
+                    longPressTriggered = false
+                    isDragGesture = false
+                    true
+                }
+
+                else -> true
+            }
+        }
+    }
+
+    private fun startDesktopInBackground() {
+        btnStartGui.visibility = View.GONE
+        guiProgress.visibility = View.VISIBLE
+        guiPlaceholderTitle.text = "Initializing Desktop..."
+        guiPlaceholderDesc.text = "Running setup and launching graphical server in guest container.\nThis may take up to 2-3 minutes if packages are being installed."
+        
+        guiScope.launch {
+            withContext(Dispatchers.IO) {
+                try {
+                    val launcher = File(filesDir, "launcher.sh").absolutePath
+                    val builder = ProcessBuilder("/system/bin/sh", launcher, "nethunter-desktop start")
+                    builder.directory(filesDir)
+                    val process = builder.start()
+                    // Don't block, just spawn.
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start desktop process: ${e.message}")
+                }
+            }
+            
+            // Poll for port 6080 to open
+            var attempts = 0
+            while (attempts < 120) {
+                delay(2000)
+                val running = withContext(Dispatchers.IO) { isPortOpen(6080) }
+                if (running) {
+                    break
+                }
+                attempts++
+            }
+            
+            checkAndLoadGui()
+        }
+    }
+
+    private fun startVpnServiceDirectly() {
+        val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
+            action = com.linux_core.core.VpnCaptureService.ACTION_START
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        updateSnifferButtonState()
+    }
+
+    private fun stopVpnService() {
+        val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
+            action = com.linux_core.core.VpnCaptureService.ACTION_STOP
+        }
+        startService(intent)
+        Handler(Looper.getMainLooper()).postDelayed({
+            updateSnifferButtonState()
+        }, 150)
+    }
+
+    private fun toggleSniffer() {
+        if (com.linux_core.core.VpnCaptureService.isRunning()) {
+            stopVpnService()
+        } else {
+            val vpnIntent = android.net.VpnService.prepare(this)
+            if (vpnIntent != null) {
+                vpnPrepareLauncher.launch(vpnIntent)
+            } else {
+                startVpnServiceDirectly()
+            }
+        }
+    }
+
+    fun updateSnifferButtonState() {
+        runOnUiThread {
+            if (com.linux_core.core.VpnCaptureService.isRunning()) {
+                btnSniffer.text = "🔌 Sniff"
+                btnSniffer.setTextColor(Color.parseColor("#00FF41"))
+                btnSniffer.setBackgroundColor(Color.parseColor("#151620"))
+            } else {
+                btnSniffer.text = "🔌 Sniff"
+                btnSniffer.setTextColor(Color.WHITE)
+                btnSniffer.setBackgroundColor(Color.parseColor("#08090d"))
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        updateSnifferButtonState()
         Log.d(TAG, "onResume - requesting focus")
         terminalView.requestFocus()
         if (specialKeypadPanel.visibility != View.VISIBLE) {
@@ -148,12 +1064,14 @@ class TerminalActivity : ComponentActivity() {
             if (currentSession == null) {
                 switchToSession(serviceSessions[0])
             }
-            updateSessionTabBar()
+            updateSessionDrawer()
         }
     }
 
     override fun onDestroy() {
+        com.linux_core.core.VpnCaptureService.onStateChangeListener = null
         super.onDestroy()
+        guiScope.cancel()
         for (session in TerminalService.sessions) {
             TerminalService.detachView(session)
         }
@@ -251,78 +1169,80 @@ class TerminalActivity : ComponentActivity() {
         updateSuggestions()
     }
 
-    private fun buildSessionTabBar(): HorizontalScrollView {
-        sessionTabBar = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#08090d"))
-            isHorizontalScrollBarEnabled = false
-        }
-
-        sessionTabContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            setPadding(4, 4, 4, 4)
-        }
-
-        sessionTabBar.addView(sessionTabContainer)
-        return sessionTabBar
-    }
-
-    fun updateSessionTabBar() {
+    fun updateSessionDrawer() {
         runOnUiThread {
             val serviceSessions = TerminalService.sessions
-            sessionTabContainer.removeAllViews()
+            sessionDrawerContainer.removeAllViews()
             for (i in 0 until serviceSessions.size) {
                 val session = serviceSessions[i]
                 val isActive = (session == currentSession)
-                val btn = Button(this).apply {
-                    text = "Session ${i + 1}"
-                    textSize = 11f
-                    typeface = Typeface.MONOSPACE
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(if (isActive) Color.parseColor("#ff0033") else Color.parseColor("#181926"))
+                
+                // Vertical container row for the session card
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setBackgroundColor(if (isActive) Color.parseColor("#151620") else Color.parseColor("#0c0d12"))
+                    setPadding(12, 12, 12, 12)
                     val params = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                            TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply {
-                        setMargins(6, 2, 6, 2)
+                        setMargins(0, 4, 0, 4)
+                    }
+                    layoutParams = params
+                }
+
+                // Glow/Indicator vertical line on the left side of the row
+                val indicator = View(this).apply {
+                    setBackgroundColor(if (isActive) Color.parseColor("#00FF41") else Color.TRANSPARENT)
+                    val params = LinearLayout.LayoutParams(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                        LinearLayout.LayoutParams.MATCH_PARENT
+                    )
+                    layoutParams = params
+                }
+                row.addView(indicator)
+
+                // Session Text label taking up remaining space
+                val label = TextView(this).apply {
+                    text = "🐚 Session ${i + 1}"
+                    textSize = 13f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(if (isActive) Color.parseColor("#00FF41") else Color.WHITE)
+                    val params = LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ).apply {
+                        setMargins(16, 0, 16, 0)
                     }
                     layoutParams = params
                     setOnClickListener {
                         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         switchToSession(session)
-                    }
-                    setOnLongClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        closeSession(session)
-                        true
+                        drawerLayout.closeDrawer(Gravity.START)
                     }
                 }
-                sessionTabContainer.addView(btn)
-            }
+                row.addView(label)
 
-            // Plus Button to add session
-            val plusBtn = Button(this).apply {
-                text = " + "
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#151620"))
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                        TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
-                ).apply {
-                    setMargins(12, 2, 4, 2)
+                // Quick Close Button on the right
+                val btnClose = TextView(this).apply {
+                    text = "✕"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#A9B1D6"))
+                    val params = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        setMargins(8, 0, 8, 0)
+                    }
+                    layoutParams = params
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        closeSession(session)
+                    }
                 }
-                layoutParams = params
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    addNewSession()
-                }
+                row.addView(btnClose)
+
+                sessionDrawerContainer.addView(row)
             }
-            sessionTabContainer.addView(plusBtn)
         }
     }
 
@@ -337,7 +1257,7 @@ class TerminalActivity : ComponentActivity() {
         }
 
         switchToSession(session)
-        updateSessionTabBar()
+        updateSessionDrawer()
     }
 
     private fun switchToSession(session: TerminalSession) {
@@ -348,7 +1268,7 @@ class TerminalActivity : ComponentActivity() {
             terminalView.requestFocus()
             terminalView.onScreenUpdated()
         }
-        updateSessionTabBar()
+        updateSessionDrawer()
     }
 
     private fun closeSession(session: TerminalSession) {
@@ -361,7 +1281,7 @@ class TerminalActivity : ComponentActivity() {
                 currentSession = null
                 switchToSession(remaining[0])
             } else {
-                updateSessionTabBar()
+                updateSessionDrawer()
             }
         }
     }
@@ -370,7 +1290,7 @@ class TerminalActivity : ComponentActivity() {
         val remaining = TerminalService.sessions
         if (!remaining.contains(session)) {
             if (remaining.isEmpty()) finish()
-            else updateSessionTabBar()
+            else updateSessionDrawer()
             return
         }
         if (remaining.isEmpty()) {
@@ -380,7 +1300,7 @@ class TerminalActivity : ComponentActivity() {
                 currentSession = null
                 switchToSession(remaining[0])
             } else {
-                updateSessionTabBar()
+                updateSessionDrawer()
             }
         }
     }
@@ -823,7 +1743,7 @@ class TerminalActivity : ComponentActivity() {
         } catch (e: Exception) { showError("Session error: ${e.message}"); return }
 
         switchToSession(session)
-        updateSessionTabBar()
+        updateSessionDrawer()
     }
 
     fun showSoftKeyboard() {

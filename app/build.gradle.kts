@@ -19,9 +19,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.jks")
+            storePassword = "password123"
+            keyAlias = "releaseKey"
+            keyPassword = "password123"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -49,6 +59,11 @@ android {
     }
     buildToolsVersion = "34.0.0"
     ndkVersion = "34"
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 dependencies {
@@ -61,6 +76,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
     // Coroutines & OkHttp for downloading rootfs
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)

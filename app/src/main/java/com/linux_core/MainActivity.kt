@@ -64,6 +64,11 @@ import com.linux_core.ui.theme.NethunteraioperatorTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import android.content.pm.PackageManager
+import android.content.pm.ApplicationInfo
+
 
 private fun hasAllFilesAccess(context: Context): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -251,6 +256,7 @@ fun MainScreen() {
     val scope = rememberCoroutineScope()
 
     var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
+    var currentTab by remember { mutableStateOf("home") }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -278,319 +284,194 @@ fun MainScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "linux-distro",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF00FF41), // Matrix Green
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-
-            Text(
-                text = "Select active guest environment",
-                fontSize = 14.sp,
-                color = Color.LightGray,
-                modifier = Modifier.padding(bottom = 32.dp)
-            )
-
-            // Distro Selector Cards
+            // Cyber Tab Selector
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                    .padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.Center
             ) {
-                RootfsManager.DISTROS.forEach { distro ->
-                    val isSelected = (distro == selectedDistro)
-                    val cardBorder = if (isSelected) {
-                        BorderStroke(2.dp, Color(0xFF00FF41))
-                    } else {
-                        BorderStroke(1.dp, Color(0xFF1E2026))
-                    }
-
-                    Card(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 8.dp)
-                            .clickable(enabled = !isDownloading) {
-                                selectedDistro = distro
-                            },
-                        shape = RoundedCornerShape(12.dp),
-                        border = cardBorder,
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) Color(0xDD12141C) else Color(0xDD0B0D13)
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = distro.name,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isSelected) Color.White else Color.Gray,
-                                modifier = Modifier.padding(bottom = 6.dp)
-                            )
-                            val exists = RootfsManager.isRootfsExtracted(context, distro)
-                            Text(
-                                text = if (exists) "Installed" else "Not Ready",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (exists) Color(0xFF00FF66) else Color.DarkGray
-                            )
-                        }
-                    }
+                Button(
+                    onClick = { currentTab = "home" },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (currentTab == "home") Color(0xFF008F11) else Color(0xCC1E2026)
+                    ),
+                    shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
+                    modifier = Modifier.weight(1f).height(40.dp)
+                ) {
+                    Text("Home", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.width(2.dp))
+                Button(
+                    onClick = { currentTab = "manage_apps" },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (currentTab == "manage_apps") Color(0xFF008F11) else Color(0xCC1E2026)
+                    ),
+                    shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
+                    modifier = Modifier.weight(1f).height(40.dp)
+                ) {
+                    Text("Manage App", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(bottom = 24.dp).clickable(enabled = !isDownloading) {
-                    val nextState = !mountStorage
-                    if (nextState && !hasStoragePermission) {
-                        requestAllFilesAccess(context)
+            if (currentTab == "home") {
+                Text(
+                    text = "linux-distro",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00FF41), // Matrix Green
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Text(
+                    text = "Select active guest environment",
+                    fontSize = 14.sp,
+                    color = Color.LightGray,
+                    modifier = Modifier.padding(bottom = 32.dp)
+                )
+
+                // Distro Selector Cards
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    RootfsManager.DISTROS.forEach { distro ->
+                        val isSelected = (distro == selectedDistro)
+                        val cardBorder = if (isSelected) {
+                            BorderStroke(2.dp, Color(0xFF00FF41))
+                        } else {
+                            BorderStroke(1.dp, Color(0xFF1E2026))
+                        }
+
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                                .clickable(enabled = !isDownloading) {
+                                    selectedDistro = distro
+                                },
+                            shape = RoundedCornerShape(12.dp),
+                            border = cardBorder,
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) Color(0xDD12141C) else Color(0xDD0B0D13)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = distro.name,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) Color.White else Color.Gray,
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                                val exists = RootfsManager.isRootfsExtracted(context, distro)
+                                Text(
+                                    text = if (exists) "Installed" else "Not Ready",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (exists) Color(0xFF00FF66) else Color.DarkGray
+                                )
+                            }
+                        }
                     }
-                    mountStorage = nextState
                 }
-            ) {
-                androidx.compose.material3.Switch(
-                    checked = mountStorage,
-                    onCheckedChange = { checked ->
-                        if (checked && !hasStoragePermission) {
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 24.dp).clickable(enabled = !isDownloading) {
+                        val nextState = !mountStorage
+                        if (nextState && !hasStoragePermission) {
                             requestAllFilesAccess(context)
                         }
-                        mountStorage = checked
-                    },
-                    colors = androidx.compose.material3.SwitchDefaults.colors(
-                        checkedThumbColor = Color(0xFF00FF41),
-                        checkedTrackColor = Color(0x8800FF41)
-                    )
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = "Mount /sdcard Storage",
-                        color = Color.LightGray,
-                        fontSize = 14.sp
-                    )
-                    if (mountStorage && !hasStoragePermission) {
-                        Text(
-                            text = "All Files Access required! Tap to grant.",
-                            color = Color(0xFFFF3333),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable { requestAllFilesAccess(context) }
-                        )
+                        mountStorage = nextState
                     }
-                }
-            }
-
-            // Action Flow
-            if (isExtracted) {
-                Button(
-                    onClick = {
-                        val intent = Intent(context, TerminalActivity::class.java).apply {
-                            putExtra("rootfsDirName", selectedDistro.rootfsDirName)
-                            putExtra("mountStorage", mountStorage)
-                        }
-                        context.startActivity(intent)
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF008F11) // Darker Matrix Green
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
                 ) {
-                    Text(
-                        text = "LAUNCH " + selectedDistro.name.uppercase(),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = Color.White
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Premium Reinstall button
-                Button(
-                    onClick = {
-                        downloadJob = scope.launch {
-                            isDownloading = true
-                            try {
-                                statusText = "Reinstalling: Deleting old files…"
-                                RootfsManager.deleteRootfs(context, selectedDistro)
-                                isExtracted = false
-                                downloadProgress = 0
-
-                                statusText = "Reinstalling: Downloading rootfs…"
-                                RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
-                                    downloadProgress = progress
-                                }
-
-                                downloadProgress = 0
-                                statusText = "Reinstalling: Extracting filesystem…"
-                                RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
-                                    downloadProgress = progress
-                                }
-
-                                isExtracted = true
-                                statusText = ""
-                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                downloadProgress = 0
-                                statusText = ""
-                                throw e
-                            } catch (e: Exception) {
-                                Toast.makeText(
-                                    context,
-                                    "Reinstall failed: " + (e.message ?: "Unknown error"),
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            } finally {
-                                isDownloading = false
+                    androidx.compose.material3.Switch(
+                        checked = mountStorage,
+                        onCheckedChange = { checked ->
+                            if (checked && !hasStoragePermission) {
+                                requestAllFilesAccess(context)
                             }
-                        }
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xCC1E2026) // Sleek dark grey button, slightly transparent
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp)
-                ) {
-                    Text(
-                        text = "REINSTALL " + selectedDistro.name.uppercase(),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = Color(0xFF00FF41) // Accented green text
+                            mountStorage = checked
+                        },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF00FF41),
+                            checkedTrackColor = Color(0x8800FF41)
+                        )
                     )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Custom 1x1 Script Launchers Card
-                var customCommandText by remember { mutableStateOf("") }
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                    colors = CardDefaults.cardColors(containerColor = Color(0x770B0D13))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
                         Text(
-                            text = "1x1 Home Screen Launchers",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF00FF41),
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        Text(
-                            text = "Create desktop icons to run specific scripts directly",
-                            fontSize = 11.sp,
-                            color = Color.Gray,
-                            modifier = Modifier.padding(bottom = 12.dp)
-                        )
-                        androidx.compose.material3.OutlinedTextField(
-                            value = customCommandText,
-                            onValueChange = { customCommandText = it },
-                            placeholder = { Text("e.g. nethunter-vibrate 1000", color = Color.DarkGray, fontSize = 12.sp) },
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
-                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color(0xFF00FF41),
-                                unfocusedBorderColor = Color(0xFF1E2026)
-                            ),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-                        )
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            Button(
-                                onClick = {
-                                    val cmd = customCommandText.trim().ifEmpty { null }
-                                    com.linux_core.core.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
-                                    Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
-                                },
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                modifier = Modifier.weight(1f).height(38.dp)
-                            ) {
-                                Text("PIN KALI 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    val cmd = customCommandText.trim().ifEmpty { null }
-                                    com.linux_core.core.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
-                                    Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
-                                },
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                modifier = Modifier.weight(1f).height(38.dp)
-                            ) {
-                                Text("PIN PARROT 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
-                            }
-                        }
-                    }
-                }
-            } else {
-                if (isDownloading) {
-                    Text(
-                        text = statusText,
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-                    if (downloadProgress in 1..99) {
-                        Text(
-                            text = "$downloadProgress%",
-                            color = Color(0xFF00FF41),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    } else if (downloadProgress == -1) {
-                        Text(
-                            text = "Processing…",
+                            text = "Mount /sdcard Storage",
                             color = Color.LightGray,
-                            fontSize = 13.sp
+                            fontSize = 14.sp
                         )
+                        if (mountStorage && !hasStoragePermission) {
+                            Text(
+                                text = "All Files Access required! Tap to grant.",
+                                color = Color(0xFFFF3333),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { requestAllFilesAccess(context) }
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Action Flow
+                if (isExtracted) {
                     Button(
                         onClick = {
-                            downloadJob?.cancel()
-                            isDownloading = false
-                            statusText = ""
-                            downloadProgress = 0
+                            val intent = Intent(context, TerminalActivity::class.java).apply {
+                                putExtra("rootfsDirName", selectedDistro.rootfsDirName)
+                                putExtra("mountStorage", mountStorage)
+                            }
+                            context.startActivity(intent)
                         },
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF12141C)
-                        )
+                            containerColor = Color(0xFF008F11) // Darker Matrix Green
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
                     ) {
-                        Text("Cancel", color = Color.White)
+                        Text(
+                            text = "LAUNCH " + selectedDistro.name.uppercase(),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = Color.White
+                        )
                     }
-                } else {
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Premium Reinstall button
                     Button(
                         onClick = {
                             downloadJob = scope.launch {
                                 isDownloading = true
                                 try {
-                                    statusText = "Downloading rootfs archive…"
+                                    statusText = "Reinstalling: Deleting old files…"
+                                    RootfsManager.deleteRootfs(context, selectedDistro)
+                                    isExtracted = false
+                                    downloadProgress = 0
+
+                                    statusText = "Reinstalling: Downloading rootfs…"
                                     RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
                                         downloadProgress = progress
                                     }
 
                                     downloadProgress = 0
-                                    statusText = "Extracting rootfs filesystem…"
+                                    statusText = "Reinstalling: Extracting filesystem…"
                                     RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
                                         downloadProgress = progress
                                     }
@@ -604,7 +485,7 @@ fun MainScreen() {
                                 } catch (e: Exception) {
                                     Toast.makeText(
                                         context,
-                                        "Installation failed: " + (e.message ?: "Unknown error"),
+                                        "Reinstall failed: " + (e.message ?: "Unknown error"),
                                         Toast.LENGTH_LONG
                                     ).show()
                                 } finally {
@@ -614,17 +495,329 @@ fun MainScreen() {
                         },
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF008F11)
+                            containerColor = Color(0xCC1E2026) // Sleek dark grey button, slightly transparent
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp)
                     ) {
                         Text(
-                            text = "INSTALL " + selectedDistro.name.uppercase(),
+                            text = "REINSTALL " + selectedDistro.name.uppercase(),
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
-                            color = Color.White
+                            color = Color(0xFF00FF41) // Accented green text
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Custom 1x1 Script Launchers Card
+                    var customCommandText by remember { mutableStateOf("") }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFF1E2026)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0x770B0D13))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "1x1 Home Screen Launchers",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FF41),
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            Text(
+                                text = "Create desktop icons to run specific scripts directly",
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(bottom = 12.dp)
+                            )
+                            androidx.compose.material3.OutlinedTextField(
+                                value = customCommandText,
+                                onValueChange = { customCommandText = it },
+                                placeholder = { Text("e.g. nethunter-vibrate 1000", color = Color.DarkGray, fontSize = 12.sp) },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color(0xFF00FF41),
+                                    unfocusedBorderColor = Color(0xFF1E2026)
+                                ),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                            )
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = {
+                                        val cmd = customCommandText.trim().ifEmpty { null }
+                                        com.linux_core.core.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
+                                        Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
+                                    modifier = Modifier.weight(1f).height(38.dp)
+                                ) {
+                                    Text("PIN KALI 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        val cmd = customCommandText.trim().ifEmpty { null }
+                                        com.linux_core.core.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
+                                        Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
+                                    modifier = Modifier.weight(1f).height(38.dp)
+                                ) {
+                                    Text("PIN PARROT 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if (isDownloading) {
+                        Text(
+                            text = statusText,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        if (downloadProgress in 1..99) {
+                            Text(
+                                text = "$downloadProgress%",
+                                color = Color(0xFF00FF41),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else if (downloadProgress == -1) {
+                            Text(
+                                text = "Processing…",
+                                color = Color.LightGray,
+                                fontSize = 13.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                downloadJob?.cancel()
+                                isDownloading = false
+                                statusText = ""
+                                downloadProgress = 0
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF12141C)
+                            )
+                        ) {
+                            Text("Cancel", color = Color.White)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                downloadJob = scope.launch {
+                                    isDownloading = true
+                                    try {
+                                        statusText = "Downloading rootfs archive…"
+                                        RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
+                                            downloadProgress = progress
+                                        }
+
+                                        downloadProgress = 0
+                                        statusText = "Extracting rootfs filesystem…"
+                                        RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
+                                            downloadProgress = progress
+                                        }
+
+                                        isExtracted = true
+                                        statusText = ""
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        downloadProgress = 0
+                                        statusText = ""
+                                        throw e
+                                    } catch (e: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            "Installation failed: " + (e.message ?: "Unknown error"),
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } finally {
+                                        isDownloading = false
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF008F11)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                        ) {
+                            Text(
+                                text = "INSTALL " + selectedDistro.name.uppercase(),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = Color.White
+                            )
+                        }
+                    }
+                }
+            } else {
+                ManageAppsScreen(modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+fun ManageAppsScreen(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val pm = remember { context.packageManager }
+
+    val installedApps = remember {
+        pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            .filter { app ->
+                pm.getLaunchIntentForPackage(app.packageName) != null
+            }
+            .map { app ->
+                object {
+                    val name = app.loadLabel(pm).toString()
+                    val packageName = app.packageName
+                }
+            }
+            .sortedBy { it.name }
+    }
+
+    val sharedPrefs = remember { context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE) }
+    var disallowedPackages by remember {
+        mutableStateOf(sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet())
+    }
+
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredApps = remember(searchQuery, installedApps) {
+        if (searchQuery.trim().isEmpty()) {
+            installedApps
+        } else {
+            installedApps.filter {
+                it.name.contains(searchQuery, ignoreCase = true) ||
+                        it.packageName.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(top = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "App VPN Exclusion",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF00FF41),
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Text(
+            text = "Toggle apps to bypass Sniffer VPN routing",
+            fontSize = 13.sp,
+            color = Color.LightGray,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            androidx.compose.material3.OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search apps…", color = Color.DarkGray, fontSize = 13.sp) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF00FF41),
+                    unfocusedBorderColor = Color(0xFF1E2026)
+                ),
+                modifier = Modifier.weight(1f)
+            )
+
+            if (disallowedPackages.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        disallowedPackages = emptySet()
+                        sharedPrefs.edit().putStringSet("disallowed_packages", emptySet()).apply()
+                        Toast.makeText(context, "Cleared all exclusions", Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8F0011)),
+                    modifier = Modifier.height(50.dp)
+                ) {
+                    Text("Clear All", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(filteredApps) { app ->
+                val isIgnored = disallowedPackages.contains(app.packageName)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, if (isIgnored) Color(0xFF00FF41) else Color(0xFF1E2026)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isIgnored) Color(0xAA12141C) else Color(0xAA0B0D13)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = app.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = app.packageName,
+                                fontSize = 11.sp,
+                                color = Color.Gray
+                            )
+                        }
+
+                        androidx.compose.material3.Switch(
+                            checked = isIgnored,
+                            onCheckedChange = { checked ->
+                                val newSet = if (checked) {
+                                    disallowedPackages + app.packageName
+                                } else {
+                                    disallowedPackages - app.packageName
+                                }
+                                disallowedPackages = newSet
+                                sharedPrefs.edit().putStringSet("disallowed_packages", newSet).apply()
+                            },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00FF41),
+                                checkedTrackColor = Color(0x8800FF41)
+                            )
                         )
                     }
                 }

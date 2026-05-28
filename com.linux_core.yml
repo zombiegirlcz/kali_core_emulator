@@ -1,0 +1,29 @@
+Categories:
+  - System
+  - Security
+License: GPL-3.0-only
+WebSite: https://github.com/zombiegirlcz/kali_core_emulator
+SourceCode: https://github.com/zombiegirlcz/kali_core_emulator.git
+IssueTracker: https://github.com/zombiegirlcz/kali_core_emulator/issues
+Donate: https://revolut.me/tomaspetrpayme
+
+Name: NetHunter AI Operator
+Description: |-
+  A modern, highly optimized Android application to run full Linux environments (Kali NetHunter & ParrotOS Security) on unrooted devices using PRoot and Termux terminal components.
+  
+  Features:
+  - **Up to 50x Faster Operations:** Optimized disk writes via automated `force-unsafe-io` configurations for both `dpkg` and `apt` package managers.
+  - **Premium Termius-style Hacker Keyboard:** Responzive overlay keypad with 5 scrollable tabs (Control, Symbols, Navigation, Ctrl Combos, F1-F20 Keys), custom ANSI/VT100 keycodes, haptic feedback, and clipboard PASTE integration.
+  - **Android API Bridge (NetHunter API):** Zero-dependency loopback API server allowing seamless system control (flashlight, clipboard, vibration, Text-to-Speech, notifications, GPS, Wi-Fi info) from your guest Linux terminal.
+  - **Smart Root Detection:** Prompts you at startup to skip creating system binary mocks if the host device has ROOT, maintaining a clean native installation.
+  - **Classic Parrot OS Prompt:** Beautiful dual-line terminal prompt featuring cyan layout borders and the green/red spearhead indicator.
+
+Summary: Run Kali NetHunter & ParrotOS with 50x speed boost and custom Hacker Keyboard
+
+Builds:
+  - versionName: '1.0'
+    versionCode: 1
+    commit: 2f2bd0cdfe1e47122267401aa56f81bb403cfef5
+    subdir: app
+    gradle:
+      - yes
