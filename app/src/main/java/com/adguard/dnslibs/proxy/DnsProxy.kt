@@ -49,6 +49,10 @@ class DnsProxy private constructor() : Closeable {
         FILTERS(1)
     }
 
+    interface LoggingCallback {
+        fun log(level: Int, message: String)
+    }
+
     enum class InitErrorCode {
         PROXY_NOT_SET,
         EVENT_LOOP_NOT_SET,

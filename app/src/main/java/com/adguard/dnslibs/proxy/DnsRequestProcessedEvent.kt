@@ -17,11 +17,27 @@ class DnsRequestProcessedEvent {
     @JvmField var filterListIds: IntArray? = null
     @JvmField var whitelist: Boolean = false
     @JvmField var error: String? = null
-
-    // Backward compatibility / extra fields just in case
     @JvmField var filterId: Int = 0
     @JvmField var rule: String? = null
     @JvmField var cached: Boolean = false
     @JvmField var dnssec: Boolean = false
     @JvmField var upstream: String? = null
+    @JvmField var time: String? = null
+    @JvmField var clientIp: String? = null
+    @JvmField var clientProto: String? = null
+    @JvmField var responseCode: String? = null
+    @JvmField var cacheHit: Boolean = false
+    @JvmField var dnssecResult: String? = null
+    @JvmField var blocklistId: Int = 0
+    @JvmField var filterName: String? = null
+    @JvmField var ruleText: String? = null
+    @JvmField var action: Int = 0
+    @JvmField var upstreamAddress: String? = null
+    @JvmField var connectionTimeMs: Long = 0
+    @JvmField var ecs: String? = null
+    @JvmField var filteringAction: Any? = null
+    @JvmField var certificate: String? = null
+    @JvmField var rcode: Int = 0
+    @JvmField var serverIp: String? = null
+    @JvmField var blockingReason: DnsBlockingReason? = null
 }

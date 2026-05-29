@@ -3,6 +3,10 @@ package com.adguard.corelibs.logger
 import android.util.Log
 
 object NativeLogger {
+    interface Callback {
+        fun log(level: Int, message: String)
+    }
+
     interface Facade {
         fun error(msg: String, vararg args: Any?)
         fun info(msg: String, vararg args: Any?)
