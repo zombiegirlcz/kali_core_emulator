@@ -26,7 +26,14 @@ class NativeTcpIpStackImpl(
         private val LOG = NativeLogger.getFacade(NativeTcpIpStackImpl::class.java)
 
         init {
-            System.loadLibrary("adguard-core")
+            try {
+                System.loadLibrary("a")
+                System.loadLibrary("io_utils")
+                System.loadLibrary("common_native_jni")
+                System.loadLibrary("adguard-core")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e("NativeTcpIpStackImpl", "Failed to load libraries: ${e.message}", e)
+            }
         }
 
         @JvmStatic
@@ -177,14 +184,14 @@ class NativeTcpIpStackImpl(
                 raisedConnections[reqId] = 0
                 listenerExecutor.execute {
                     try {
-                        val result = listener.onConnectRequest(info)
+                        val result = listener.onTcpConnectRequest(reqId, info)
                         stack.completeTcpConnectRequest(reqId, result)
                     } catch (e: Exception) {
-                        stack.completeTcpConnectRequest(reqId, ConnectionRequestResult(ConnectionRequestResultType.BLOCK, null, false))
+                        stack.completeTcpConnectRequest(reqId, ConnectionRequestResult.REJECT)
                     }
                 }
             } catch (e: IOException) {
-                stack.completeTcpConnectRequest(reqId, ConnectionRequestResult(ConnectionRequestResultType.BLOCK, null, false))
+                stack.completeTcpConnectRequest(reqId, ConnectionRequestResult.REJECT)
             }
         }
 
@@ -202,14 +209,14 @@ class NativeTcpIpStackImpl(
                 raisedConnections[reqId] = 0
                 listenerExecutor.execute {
                     try {
-                        val result = listener.onConnectRequest(info)
+                        val result = listener.onUdpConnectRequest(reqId, info)
                         stack.completeUdpConnectRequest(reqId, result)
                     } catch (e: Exception) {
-                        stack.completeUdpConnectRequest(reqId, ConnectionRequestResult(ConnectionRequestResultType.BLOCK, null, false))
+                        stack.completeUdpConnectRequest(reqId, ConnectionRequestResult.REJECT)
                     }
                 }
             } catch (e: IOException) {
-                stack.completeUdpConnectRequest(reqId, ConnectionRequestResult(ConnectionRequestResultType.BLOCK, null, false))
+                stack.completeUdpConnectRequest(reqId, ConnectionRequestResult.REJECT)
             }
         }
 

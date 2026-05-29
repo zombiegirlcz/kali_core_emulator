@@ -61,29 +61,58 @@ object ProotManager {
         val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
-        fixLdLinuxSymlinks(rootfsDir)
+        fixLdLinuxSymlinks(context, rootfsDir)
         deployApiScripts(rootfsDir)
         deployZshrc(context, rootfsDir, distroId)
 
         val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
         deployBinaries(context, suffix)
 
+        val prootBin = File(context.filesDir, "proot")
+        val loaderBin = File(context.filesDir, "loader")
+        val tallocLib = File(context.filesDir, "libtalloc.so.2")
+        val standaloneProot = File(context.filesDir, "proot.standalone")
+        val standaloneLoader = File(context.filesDir, "loader.standalone")
+
         val launcherFile = File(rootDir, "launcher.sh")
         val scriptContent = StringBuilder().apply {
             append("#!/system/bin/sh").append(NL)
+            // Preflight diagnostics
+            append("log -t ProotLauncher \"[PROOT] Starting launcher.sh\"").append(NL)
+            // Try dynamic proot first (needs loader+talloc), fall back to standalone
+            append("USE_PROOT=\"${prootBin.absolutePath}\"").append(NL)
+            append("USE_LOADER=\"${loaderBin.absolutePath}\"").append(NL)
+            append("if [ -x \"${'$'}USE_PROOT\" ] && [ -x \"${'$'}USE_LOADER\" ] && [ -f \"${tallocLib.absolutePath}\" ]; then").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] Using dynamic proot with LOADER+talloc\"").append(NL)
+            append("  export PROOT_LOADER=\"${'$'}USE_LOADER\"").append(NL)
+            append("  export LD_LIBRARY_PATH=\"${context.filesDir.absolutePath}\"").append(NL)
+            append("elif [ -x \"${standaloneProot.absolutePath}\" ] && [ -x \"${standaloneLoader.absolutePath}\" ]; then").append(NL)
+            append("  USE_PROOT=\"${standaloneProot.absolutePath}\"").append(NL)
+            append("  USE_LOADER=\"${standaloneLoader.absolutePath}\"").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] Using standalone proot (static)\"").append(NL)
+            append("  export PROOT_LOADER=\"${'$'}USE_LOADER\"").append(NL)
+            append("else").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] FATAL: no usable proot+loader combination found\"").append(NL)
+            append("  exit 1").append(NL)
+            append("fi").append(NL)
+            append("log -t ProotLauncher \"[PROOT] proot binary: ${'$'}USE_PROOT (exists=\$(test -f \"${'$'}USE_PROOT\" && echo yes || echo no), exec=\$(test -x \"${'$'}USE_PROOT\" && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] loader binary: ${'$'}USE_LOADER (exists=\$(test -f \"${'$'}USE_LOADER\" && echo yes || echo no), exec=\$(test -x \"${'$'}USE_LOADER\" && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] talloc lib: ${tallocLib.absolutePath} (exists=$(test -f '${tallocLib.absolutePath}' && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] rootfs: ${rootfsDir.absolutePath} (exists=$(test -d '${rootfsDir.absolutePath}' && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] /bin/bash in rootfs: (exists=$(test -e '${rootfsDir.absolutePath}/bin/bash' && echo yes || echo no), islink=$(test -L '${rootfsDir.absolutePath}/bin/bash' && echo yes || echo no))\"").append(NL)
             append("export PROOT_TMP_DIR=\"${tmpDir.absolutePath}\"").append(NL)
             append("export HOME=/root").append(NL)
             append("export USER=root").append(NL)
             append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
             append("export TERM=xterm-256color").append(NL)
             append("export LANG=C.UTF-8").append(NL)
-            append("export PROOT_LOADER=\"${File(context.filesDir, "loader").absolutePath}\"").append(NL)
-            append("export LD_LIBRARY_PATH=\"${context.filesDir.absolutePath}\"").append(NL)
             append("unset LD_PRELOAD").append(NL)
             append("cd \"${context.filesDir.absolutePath}\"").append(NL)
             val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -w /root"
             val sdcardMount = if (mountStorage) " -b /sdcard" else ""
-            append("exec ${File(context.filesDir, "proot").absolutePath} ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"\$@\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] Executing proot now...\"").append(NL)
+            append("exec ${'$'}USE_PROOT ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"${'$'}@\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] exec returned \$? (should not reach here)\"").append(NL)
         }.toString()
         
         launcherFile.writeText(scriptContent)
@@ -94,29 +123,61 @@ object ProotManager {
             fullCommand.add(customCommand)
         }
 
+        val defaultProot = if (standaloneProot.exists() && standaloneProot.canExecute()) standaloneProot else prootBin
         return ProotConfig(
             command = fullCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
             env = emptyArray(),
-            prootPath = File(context.filesDir, "proot").absolutePath,
+            prootPath = defaultProot.absolutePath,
             rootfsDir = rootfsDir.absolutePath
         )
     }
 
     private fun deployBinaries(context: Context, suffix: String) {
-        val binaries = listOf("proot" to "proot-$suffix", "loader" to "loader-$suffix", "libtalloc.so.2" to "libtalloc-$suffix.so")
+        val binaries = listOf(
+            "proot" to "proot-$suffix",
+            "loader" to "loader-$suffix",
+            "libtalloc.so.2" to "libtalloc-$suffix.so"
+        )
         for ((name, asset) in binaries) {
             val file = File(context.filesDir, name)
-            if (!file.exists() || file.length() == 0L) {
-                try {
-                    context.assets.open(asset).use { input ->
-                        file.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    file.setExecutable(true, false)
-                    file.setReadable(true, false)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to deploy $name: ${e.message}")
+            // Always delete old binary to ensure fresh deployment
+            if (file.exists()) file.delete()
+            try {
+                context.assets.open(asset).use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
                 }
+                Log.i(TAG, "Deployed binary $name (${file.length()} bytes)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to deploy $name from asset $asset: ${e.message}")
+            }
+            if (file.exists() && file.length() > 0L) {
+                file.setExecutable(true, false)
+                file.setReadable(true, false)
+                Log.d(TAG, "Permissions enforced: $name (${file.length()} bytes, canExecute=${file.canExecute()})")
+            } else {
+                Log.e(TAG, "Binary missing or empty after deploy: $name at ${file.absolutePath}")
+            }
+        }
+
+        // Deploy static fallback binaries
+        val staticSuffix = if (suffix == "aarch64") "static-aarch64" else "static-arm32"
+        val staticBinaries = listOf(
+            "proot.standalone" to "proot-$staticSuffix",
+            "loader.standalone" to "loader-$staticSuffix"
+        )
+        for ((name, asset) in staticBinaries) {
+            val file = File(context.filesDir, name)
+            if (file.exists()) file.delete()
+            try {
+                context.assets.open(asset).use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                }
+                file.setExecutable(true, false)
+                file.setReadable(true, false)
+                Log.i(TAG, "Deployed static fallback binary $name (${file.length()} bytes)")
+            } catch (e: Exception) {
+                Log.w(TAG, "Static fallback $name not available: ${e.message}")
             }
         }
     }
@@ -224,8 +285,36 @@ object ProotManager {
         entryFile.setExecutable(true, false)
     }
 
-    private fun fixLdLinuxSymlinks(rootfsDir: File) {
-        val paths = listOf("lib/ld-linux-aarch64.so.1", "lib64/ld-linux-aarch64.so.1", "usr/lib/ld-linux-aarch64.so.1", "bin/sh", "bin/bash")
+    private fun fixLdLinuxSymlinks(context: Context, rootfsDir: File) {
+        // Also copy the loader into the rootfs as ld-linux fallback
+        val loaderFile = File(context.filesDir, "loader")
+        val tallocFile = File(context.filesDir, "libtalloc.so.2")
+        for (destRel in listOf("lib/ld-linux-aarch64.so.1", "lib64/ld-linux-aarch64.so.1")) {
+            val dest = File(rootfsDir, destRel)
+            if (!dest.exists() || dest.length() == 0L) {
+                dest.parentFile?.mkdirs()
+                try {
+                    loaderFile.copyTo(dest, overwrite = true)
+                    dest.setExecutable(true, false)
+                    Log.i(TAG, "Installed loader into rootfs: $destRel")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to install loader into rootfs: ${e.message}")
+                }
+            }
+        }
+        // Copy talloc into rootfs lib so guest binaries can find it
+        val tallocDest = File(rootfsDir, "lib/libtalloc.so.2")
+        if (!tallocDest.exists() || tallocDest.length() == 0L) {
+            try {
+                tallocFile.copyTo(tallocDest, overwrite = true)
+                tallocDest.setReadable(true, false)
+                Log.i(TAG, "Installed talloc into rootfs: lib/libtalloc.so.2")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to install talloc into rootfs: ${e.message}")
+            }
+        }
+        // Fix bash/sh symlinks
+        val paths = listOf("bin/sh", "bin/bash")
         for (relPath in paths) {
             val linkFile = File(rootfsDir, relPath)
             if (linkFile.exists() && Files.isSymbolicLink(linkFile.toPath())) {

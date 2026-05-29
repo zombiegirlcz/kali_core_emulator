@@ -2,8 +2,10 @@ package com.linux_core.core
 
 import android.content.Context
 import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
 import android.os.StatFs
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -13,13 +15,20 @@ import okhttp3.Request
 import org.apache.commons.compress.archivers.ArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FilterInputStream
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class Distro(
     val id: String,
@@ -300,5 +309,270 @@ object RootfsManager {
                 "Insufficient storage space. Need at least ${needMb}MB free, but only ${haveMb}MB available."
             )
         }
+    }
+
+    /**
+     * Backup the rootfs directory into a .tar.gz file in the device Downloads folder.
+     * Preserves symlinks. Emits progress 0..100.
+     *
+     * @param distro  the distro whose rootfs to back up
+     * @param outputFile  destination .tar.gz file; if null, auto-generated in Downloads
+     * @return the backup file path on success (via last emission being 100 and file accessible)
+     */
+    fun backupRootfs(context: Context, distro: Distro, outputFile: File? = null): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Preparing backup...")
+
+        val rootfsDir = File(context.filesDir, distro.rootfsDirName)
+        if (!rootfsDir.exists() || !rootfsDir.isDirectory) {
+            throw IOException("Rootfs directory not found: ${rootfsDir.absolutePath}")
+        }
+
+        val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+        val backupFileName = "${distro.id}-rootfs-backup-${timestamp}.tar.gz"
+
+        val destFile = outputFile ?: run {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            downloads.mkdirs()
+            File(downloads, backupFileName)
+        }
+        val tempFile = File(destFile.parent, "${destFile.name}.tmp")
+
+        Log.i("RootfsManager", "Backup starting: ${rootfsDir.absolutePath} -> ${destFile.absolutePath}")
+
+        // Count total files for progress
+        var totalFiles = 0
+        rootfsDir.walkTopDown().forEach { totalFiles++ }
+        if (totalFiles == 0) throw IOException("Rootfs directory is empty")
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:backup")
+        wakeLock.acquire(60 * 60 * 1000L) // 1 hour max
+
+        try {
+            var processed = 0
+            var lastProgress = -1
+            var lastEmitMs = 0L
+
+            FileOutputStream(tempFile).use { fos ->
+                BufferedOutputStream(fos, 512 * 1024).use { bos ->
+                    GzipCompressorOutputStream(bos).use { gzOut ->
+                        TarArchiveOutputStream(gzOut).use { tarOut ->
+                            tarOut.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU)
+                            tarOut.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_STAR)
+
+                            rootfsDir.walkTopDown()
+                                .onFail { file, ex ->
+                                    Log.w("RootfsManager", "Skipping unreadable: ${file.absolutePath}: ${ex.message}")
+                                }
+                                .forEach { file ->
+                                    val relativePath = distro.rootfsDirName + "/" +
+                                        file.relativeTo(rootfsDir).path.replace('\\', '/')
+
+                                    val isSymlink = try {
+                                        java.nio.file.Files.isSymbolicLink(file.toPath())
+                                    } catch (_: Exception) { false }
+
+                                    val entry = TarArchiveEntry(relativePath + if (file.isDirectory && !isSymlink) "/" else "")
+
+                                    when {
+                                        isSymlink -> {
+                                            val linkTarget = try {
+                                                android.system.Os.readlink(file.absolutePath)
+                                            } catch (_: Exception) { null }
+                                            if (linkTarget != null) {
+                                                val symlinkEntry = TarArchiveEntry(
+                                                    relativePath,
+                                                    TarArchiveEntry.LF_SYMLINK
+                                                )
+                                                symlinkEntry.linkName = linkTarget
+                                                tarOut.putArchiveEntry(symlinkEntry)
+                                                tarOut.closeArchiveEntry()
+                                            }
+                                        }
+                                        file.isDirectory -> {
+                                            tarOut.putArchiveEntry(entry)
+                                            tarOut.closeArchiveEntry()
+                                        }
+                                        file.isFile -> {
+                                            entry.size = file.length()
+                                            entry.mode = if (file.canExecute()) 0b111_101_101 else 0b110_100_100 // 0755 or 0644
+                                            tarOut.putArchiveEntry(entry)
+                                            try {
+                                                FileInputStream(file).use { it.copyTo(tarOut) }
+                                            } catch (e: Exception) {
+                                                Log.w("RootfsManager", "Could not read file ${file.absolutePath}: ${e.message}")
+                                            }
+                                            tarOut.closeArchiveEntry()
+                                        }
+                                    }
+
+                                    processed++
+                                    val progress = ((processed.toLong() * 99) / totalFiles).toInt()
+                                    val now = System.currentTimeMillis()
+                                    if (progress > lastProgress && (now - lastEmitMs) >= 200) {
+                                        emit(progress to "Backing up... ($processed/$totalFiles files)")
+                                        lastProgress = progress
+                                        lastEmitMs = now
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+
+            if (!tempFile.renameTo(destFile)) {
+                // Try copy + delete if rename fails (cross-device)
+                tempFile.copyTo(destFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            val sizeMb = destFile.length() / (1024 * 1024)
+            Log.i("RootfsManager", "Backup complete: ${destFile.absolutePath} (${sizeMb}MB)")
+            emit(100 to destFile.absolutePath)
+
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+            if (tempFile.exists()) tempFile.delete()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Restore a rootfs from a .tar.gz backup file.
+     * The existing rootfs directory is renamed to .bak before extraction (safe restore).
+     * Emits progress 0..100.
+     */
+    fun restoreRootfs(context: Context, backupFile: File, distro: Distro): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Preparing restore...")
+
+        if (!backupFile.exists() || backupFile.length() == 0L) {
+            throw IOException("Backup file not found: ${backupFile.absolutePath}")
+        }
+
+        val rootfsDir = File(context.filesDir, distro.rootfsDirName)
+        val oldBackupDir = File(context.filesDir, "${distro.rootfsDirName}.bak")
+
+        // Check space — need ~3x the backup size
+        checkAvailableSpace(context.filesDir, backupFile.length() * 3)
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:restore")
+        wakeLock.acquire(60 * 60 * 1000L)
+
+        try {
+            // Rename existing rootfs as .bak safety net
+            if (rootfsDir.exists()) {
+                if (oldBackupDir.exists()) oldBackupDir.deleteRecursively()
+                rootfsDir.renameTo(oldBackupDir)
+                Log.i("RootfsManager", "Existing rootfs moved to ${oldBackupDir.absolutePath}")
+            }
+            rootfsDir.mkdirs()
+
+            emit(5 to "Extracting backup...")
+
+            val totalSize = backupFile.length()
+            var lastProgress = 5
+            var lastEmitMs = 0L
+
+            class CountingInputStream(input: java.io.InputStream) : FilterInputStream(input) {
+                var bytesRead: Long = 0
+                    private set
+                override fun read(): Int = super.read().also { if (it != -1) bytesRead++ }
+                override fun read(b: ByteArray, off: Int, len: Int): Int =
+                    super.read(b, off, len).also { if (it > 0) bytesRead += it }
+            }
+
+            val counting = CountingInputStream(BufferedInputStream(FileInputStream(backupFile), 512 * 1024))
+            counting.use { tracked ->
+                GzipCompressorInputStream(tracked).use { gzIn ->
+                    TarArchiveInputStream(gzIn).use { tarIn ->
+                        val canonicalBase = rootfsDir.canonicalPath
+                        var stripPrefix: String? = null
+
+                        var entry: ArchiveEntry? = tarIn.nextEntry
+                        while (entry != null) {
+                            if (stripPrefix == null && entry.name.contains('/')) {
+                                stripPrefix = entry.name.substringBefore('/') + "/"
+                            }
+                            val relativeName = if (stripPrefix != null && entry.name.startsWith(stripPrefix!!)) {
+                                val stripped = entry.name.removePrefix(stripPrefix!!)
+                                stripped.ifEmpty { "." }
+                            } else {
+                                entry.name
+                            }
+
+                            val entryFile = File(rootfsDir, relativeName)
+                            val canonicalDest = entryFile.canonicalPath
+                            if (!canonicalDest.startsWith(canonicalBase + File.separator) && canonicalDest != canonicalBase) {
+                                entry = tarIn.nextEntry; continue
+                            }
+
+                            val tarEntry = entry as? TarArchiveEntry
+                            when {
+                                tarEntry?.isSymbolicLink == true -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    try {
+                                        android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+                                    } catch (_: Exception) {}
+                                }
+                                tarEntry?.isLink == true -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    try {
+                                        android.system.Os.link(tarEntry.linkName, entryFile.absolutePath)
+                                    } catch (_: Exception) {}
+                                }
+                                tarEntry?.isDirectory == true -> entryFile.mkdirs()
+                                else -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
+                                        entryFile.setExecutable(true, false)
+                                    }
+                                    entryFile.setReadable(true, false)
+                                }
+                            }
+
+                            val progress = 5 + ((tracked.bytesRead * 94) / totalSize).toInt()
+                            val now = System.currentTimeMillis()
+                            if (progress > lastProgress && (now - lastEmitMs) >= 200) {
+                                emit(progress to "Restoring... (${tracked.bytesRead / 1024 / 1024}MB / ${totalSize / 1024 / 1024}MB)")
+                                lastProgress = progress
+                                lastEmitMs = now
+                            }
+
+                            entry = tarIn.nextEntry
+                        }
+                    }
+                }
+            }
+
+            // Remove .bak only on success
+            if (oldBackupDir.exists()) {
+                oldBackupDir.deleteRecursively()
+                Log.i("RootfsManager", "Old rootfs .bak removed")
+            }
+
+            Log.i("RootfsManager", "Restore complete: ${rootfsDir.absolutePath}")
+            emit(100 to rootfsDir.absolutePath)
+
+        } catch (e: Exception) {
+            // Rollback — move .bak back
+            Log.e("RootfsManager", "Restore failed, rolling back: ${e.message}")
+            if (rootfsDir.exists()) rootfsDir.deleteRecursively()
+            if (oldBackupDir.exists()) oldBackupDir.renameTo(rootfsDir)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Lists existing backup .tar.gz files in the Downloads folder for a given distro.
+     */
+    fun getBackupFiles(distro: Distro): List<File> {
+        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!downloads.exists()) return emptyList()
+        return downloads.listFiles { f ->
+            f.name.startsWith("${distro.id}-rootfs-backup-") && f.name.endsWith(".tar.gz")
+        }?.sortedByDescending { it.lastModified() } ?: emptyList()
     }
 }

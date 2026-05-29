@@ -1,7 +1,6 @@
 # Android standard
 .gradle
-/build
-/app/build
+
 /captures
 /platform-tools
 

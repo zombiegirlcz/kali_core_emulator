@@ -1,6 +1,6 @@
 package com.adguard.dnslibs.proxy
 
 class DnsMessageInfo(
-    var transparent: Boolean = false,
-    var sourcePort: Int = 0
+    @JvmField var transparent: Boolean = false,
+    @JvmField var sourcePort: Int = 0
 )

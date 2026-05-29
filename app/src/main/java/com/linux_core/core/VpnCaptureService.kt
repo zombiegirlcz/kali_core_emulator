@@ -108,10 +108,26 @@ class VpnCaptureService : VpnService() {
                 .addRoute("::", 0)
                 .addDnsServer("198.18.53.53")
                 .addRoute("198.18.53.53", 32)
+                .allowBypass()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("10.0.0.0"), 8))
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
+                    Log.i(TAG, "Excluded private subnets from VPN to prevent ADB/local API disconnects")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not exclude private subnets: ${e.message}")
+                }
+            }
             
             val sharedPrefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val disallowedPackages = sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet()
-            for (pkg in disallowedPackages) {
+            val finalDisallowed = disallowedPackages.toMutableSet().apply {
+                add(packageName)
+                add("com.android.shell")
+            }
+            for (pkg in finalDisallowed) {
                 try {
                     builder.addDisallowedApplication(pkg)
                 } catch (e: Exception) {
@@ -150,9 +166,15 @@ class VpnCaptureService : VpnService() {
                 cacheDir = cacheDir,
                 proxyConfig = null,
                 listener = object : NativeTcpIpStackListener {
-                    override fun onConnectRequest(connectionInfo: TcpIpConnectionInfo): ConnectionRequestResult {
+                    override fun onTcpConnectRequest(id: Long, connectionInfo: TcpIpConnectionInfo): ConnectionRequestResult {
                         packetCount.incrementAndGet()
-                        byteCount.addAndGet(100L) // Estimate byte throughput on request
+                        byteCount.addAndGet(100L)
+                        return ConnectionRequestResult(ConnectionRequestResultType.ALLOW, null, false)
+                    }
+
+                    override fun onUdpConnectRequest(id: Long, connectionInfo: TcpIpConnectionInfo): ConnectionRequestResult {
+                        packetCount.incrementAndGet()
+                        byteCount.addAndGet(100L)
                         return ConnectionRequestResult(ConnectionRequestResultType.ALLOW, null, false)
                     }
                 },

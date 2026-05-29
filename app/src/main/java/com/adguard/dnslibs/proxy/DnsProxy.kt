@@ -7,7 +7,14 @@ class DnsProxy private constructor() : Closeable {
 
     companion object {
         init {
-            System.loadLibrary("adguard-dns")
+            try {
+                System.loadLibrary("a")
+                System.loadLibrary("io_utils")
+                System.loadLibrary("common_native_jni")
+                System.loadLibrary("adguard-dns")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e("DnsProxy", "Failed to load libraries: ${e.message}", e)
+            }
         }
 
         @JvmStatic
@@ -34,18 +41,44 @@ class DnsProxy private constructor() : Closeable {
     }
 
     enum class LogLevel {
-        DEBUG, INFO, WARN, ERROR
+        DEBUG, INFO, WARN, ERROR, TRACE
+    }
+
+    enum class ReapplyOption(val code: Int) {
+        SETTINGS(0),
+        FILTERS(1)
+    }
+
+    enum class InitErrorCode {
+        PROXY_NOT_SET,
+        EVENT_LOOP_NOT_SET,
+        INVALID_ADDRESS,
+        EMPTY_PROXY,
+        PROTOCOL_ERROR,
+        LISTENER_INIT_ERROR,
+        INVALID_IPV4,
+        INVALID_IPV6,
+        UPSTREAM_INIT_ERROR,
+        FALLBACK_FILTER_INIT_ERROR,
+        FILTER_LOAD_ERROR,
+        MEM_LIMIT_REACHED,
+        NON_UNIQUE_FILTER_ID,
+        OK
     }
 
     class InitResult {
-        var success: Boolean = false
-        var error: String? = null
-        var errorCode: Int = 0
+        @JvmField var success: Boolean = false
+        @JvmField var code: InitErrorCode = InitErrorCode.OK
+        @JvmField var description: String? = ""
     }
 
     class EventsAdapter(private val events: DnsProxyEvents?) {
         fun onRequestProcessed(event: DnsRequestProcessedEvent) {
             events?.onRequestProcessed(event)
+        }
+
+        fun onCertificateVerification(event: CertificateVerificationEvent): String? {
+            return events?.onCertificateVerification(event)
         }
     }
 
