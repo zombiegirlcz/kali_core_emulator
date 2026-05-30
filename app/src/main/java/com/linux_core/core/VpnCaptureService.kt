@@ -94,12 +94,16 @@ class VpnCaptureService : VpnService() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         try {
+            val sharedPrefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val customMtu = sharedPrefs.getString("vpn_mtu", MTU.toString())?.toIntOrNull() ?: MTU
+            val customDns = sharedPrefs.getString("vpn_dns", VPN_DNS) ?: VPN_DNS
+            
             val builder = Builder()
                 .setSession("NetHunter VPN")
-                .setMtu(MTU)
+                .setMtu(customMtu)
                 .addAddress(VPN_ADDRESS, 32)
                 .addRoute("0.0.0.0", 0)
-                .addDnsServer(VPN_DNS)
+                .addDnsServer(customDns)
                 .allowBypass()
 
             // Exclude private subnets to prevent ADB/local API disconnects
@@ -114,12 +118,22 @@ class VpnCaptureService : VpnService() {
                 }
             }
 
-            // Prevent VPN from routing ADB and loopback API traffic
+            // Prevent VPN from routing ADB, loopback API traffic and user disallowed packages
             try {
                 builder.addDisallowedApplication(packageName)
                 builder.addDisallowedApplication("com.android.shell")
+                
+                val disallowedPackages = sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet()
+                disallowedPackages.forEach { pkg ->
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                        Log.d(TAG, "App bypassed from VPN: $pkg")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not disallow app: $pkg")
+                    }
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "Could not disallow app: ${e.message}")
+                Log.w(TAG, "Could not disallow core apps: ${e.message}")
             }
 
             vpnInterface = builder.establish()

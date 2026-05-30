@@ -40,8 +40,19 @@
             android:name=".ui.terminal.TerminalActivity"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|fontScale"
             android:windowSoftInputMode="adjustResize"
-            android:exported="false"
-            android:theme="@style/Theme.Nethunteraioperator.Terminal" />
+            android:launchMode="singleTask"
+            android:exported="true"
+            android:theme="@style/Theme.Nethunteraioperator.Terminal">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
 
         <service
             android:name=".core.TerminalService"
@@ -57,16 +68,27 @@
             </intent-filter>
         </service>
 
+        <!-- Widget temporarily disabled for later
         <receiver
             android:name=".core.WidgetProvider"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.linux_core.REFRESH_WIDGET" />
+                <action android:name="com.linux_core.CELL_CLICK" />
+                <action android:name="com.linux_core.ARROW_CLICK" />
+                <action android:name="com.linux_core.ACTION_CLICK" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
         </receiver>
+
+        <service
+            android:name=".core.WidgetRenderService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+        -->
 
         <provider
             android:name=".core.DistroDocumentsProvider"

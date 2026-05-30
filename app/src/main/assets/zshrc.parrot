@@ -316,6 +316,7 @@ api() {
     cprintf "${green}[+]nethunter-vibrate\n"
     cprintf "${green}[+]nethunter-volume up/down\n"
     cprintf "${green}[+]nethunter-wifi-connectioninfo\n"
+    cprintf "${gold}[+]vpn-on <command> / vpn-off <command> / ignore-vpn <command>\n"
 }
 
 feedback() {

@@ -12,6 +12,7 @@ import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import com.termux.terminal.TerminalSession
 
 class VpnNatEngine(
     private val vpnService: VpnService,
@@ -84,6 +85,7 @@ class VpnNatEngine(
         val srcPort = udpHeader.sourcePort
         val dstPort = udpHeader.destinationPort
         val dstIp = ipHeader.destinationAddress
+        val dstIpStr = intToIp(dstIp)
         
         val payloadOffset = ipHeader.ihl + 8
         val payloadLen = udpHeader.length - 8
@@ -91,6 +93,18 @@ class VpnNatEngine(
 
         var session = udpSessions[srcPort]
         if (session == null) {
+            // Threat detection for UDP
+            var category = VpnLogManager.AuditCategory.ALLOWED
+            var detail = "Standard UDP transfer"
+            if (dstPort == 4444 || dstPort == 4443 || dstPort == 9999 || dstPort == 5555) {
+                category = VpnLogManager.AuditCategory.CRITICAL
+                detail = "High-risk port targeted via UDP!"
+            } else if (dstPort == 53) {
+                detail = "DNS Resolution lookup"
+            }
+
+            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, category, detail)
+
             try {
                 val channel = DatagramChannel.open().apply {
                     configureBlocking(false)
@@ -111,11 +125,14 @@ class VpnNatEngine(
                 selector?.let { sel ->
                     channel.register(sel, SelectionKey.OP_READ, session)
                 }
-                Log.d(TAG, "Created UDP session for port $srcPort to ${intToIp(dstIp)}:$dstPort")
+                Log.d(TAG, "Created UDP session for port $srcPort to $dstIpStr:$dstPort")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to establish UDP connection: ${e.message}")
                 return
             }
+        } else {
+            // Update logged transfer size
+            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "UDP data chunk")
         }
 
         session.lastActiveTime = System.currentTimeMillis()
@@ -134,6 +151,7 @@ class VpnNatEngine(
         val srcPort = tcpHeader.sourcePort
         val dstPort = tcpHeader.destinationPort
         val dstIp = ipHeader.destinationAddress
+        val dstIpStr = intToIp(dstIp)
         
         var session = tcpSessions[srcPort]
 
@@ -143,16 +161,26 @@ class VpnNatEngine(
                 closeTcpSession(srcPort)
             }
             
+            // Threat detection filters
+            var category = VpnLogManager.AuditCategory.ALLOWED
+            var detail = "TCP Handshake handshake started"
+            if (dstPort == 4444 || dstPort == 4443 || dstPort == 9999) {
+                category = VpnLogManager.AuditCategory.CRITICAL
+                detail = "Reverse Shell gateway target detected!"
+            } else if (dstPort == 5555 || dstPort == 5037) {
+                category = VpnLogManager.AuditCategory.SUSPICIOUS
+                detail = "ADB / Remote Shell enumeration attempt"
+            } else if (dstPort == 22 || dstPort == 23 || dstPort == 80 || dstPort == 443) {
+                detail = "Standard web / SSH connection"
+            }
+
+            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, category, detail)
+
             try {
-                val channel = SocketChannel.open().apply {
-                    configureBlocking(false)
-                }
+                val channel = SocketChannel.open()
                 
                 // CRITICAL: Protect channel socket from loopback routing
                 vpnService.protect(channel.socket())
-                
-                val remoteAddr = intToInetAddress(dstIp)
-                channel.connect(InetSocketAddress(remoteAddr, dstPort))
                 
                 session = TcpSession(srcPort, dstIp, dstPort).apply {
                     socketChannel = channel
@@ -160,11 +188,82 @@ class VpnNatEngine(
                     state = TcpState.SYN_RECEIVED
                 }
                 tcpSessions[srcPort] = session
-                
-                // Register with Selector for connect/read
-                selector?.let { sel ->
-                    channel.register(sel, SelectionKey.OP_CONNECT, session)
-                }
+
+                // Asynchronous handshaker thread to connect and do proxy negotiation without blocking Selector loop
+                Thread {
+                    try {
+                        val bypassedSession = getSessionForLocalPort(srcPort, isTcp = true)
+                        val isBypassed = bypassedSession != null && TerminalService.isSessionVpnIgnored(bypassedSession)
+                        
+                        val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()
+                        if (activeProxy != null) {
+                            Log.i(TAG, "Routing session $srcPort through proxy: ${activeProxy.country} (${activeProxy.ip}:${activeProxy.port})")
+                            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
+                            
+                            channel.connect(InetSocketAddress(activeProxy.ip, activeProxy.port))
+                            channel.configureBlocking(true)
+                            
+                            // 1. Send SOCKS5 greeting
+                            val out = channel.socket().getOutputStream()
+                            val input = channel.socket().getInputStream()
+                            out.write(byteArrayOf(0x05, 0x01, 0x00)) // Version 5, 1 auth method: No Auth
+                            out.flush()
+                            
+                            val response = ByteArray(2)
+                            val read = input.read(response)
+                            if (read < 2 || response[0].toInt() != 0x05 || response[1].toInt() != 0x00) {
+                                throw IOException("SOCKS5 Proxy rejected authentication method")
+                            }
+                            
+                            // 2. Request connection to target
+                            val req = ByteArray(10)
+                            req[0] = 0x05 // Version
+                            req[1] = 0x01 // Command: CONNECT
+                            req[2] = 0x00 // Reserved
+                            req[3] = 0x01 // Address Type: IPv4
+                            
+                            // Destination IP bytes
+                            req[4] = ((dstIp shr 24) and 0xFF).toByte()
+                            req[5] = ((dstIp shr 16) and 0xFF).toByte()
+                            req[6] = ((dstIp shr 8) and 0xFF).toByte()
+                            req[7] = (dstIp and 0xFF).toByte()
+                            
+                            // Destination Port
+                            req[8] = ((dstPort shr 8) and 0xFF).toByte()
+                            req[9] = (dstPort and 0xFF).toByte()
+                            
+                            out.write(req)
+                            out.flush()
+                            
+                            val rep = ByteArray(10)
+                            val r = input.read(rep)
+                            if (r < 10 || rep[0].toInt() != 0x05 || rep[1].toInt() != 0x00) {
+                                throw IOException("SOCKS5 Tunnel setup failed with error code: ${rep[1].toInt()}")
+                            }
+                        } else {
+                            if (isBypassed) {
+                                Log.i(TAG, "Routing session $srcPort directly (VPN bypass active)")
+                                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
+                            }
+                            channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
+                        }
+                        
+                        channel.configureBlocking(false)
+                        selector?.let { sel ->
+                            channel.register(sel, SelectionKey.OP_READ, session)
+                        }
+                        
+                        // Trigger random session-based proxy rotation for the next connection if enabled
+                        if (VpnProxyManager.isEnabled() && VpnProxyManager.getRotationMode() == 1) {
+                            VpnProxyManager.triggerRandomRotation()
+                        }
+                        
+                        Log.d(TAG, "Connection completed for session $srcPort")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Handshake thread failed for session $srcPort: ${e.message}")
+                        closeTcpSession(srcPort, sendRst = true)
+                    }
+                }.start()
 
                 // Send SYN-ACK back to local client immediately to complete Tun handshake
                 sendTcpSynAck(session, tcpHeader)
@@ -222,6 +321,8 @@ class VpnNatEngine(
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
                 
+                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "TCP payload transfer")
+
                 if (session.socketChannel?.isConnected == true) {
                     try {
                         session.socketChannel?.write(payloadCopy)
@@ -326,6 +427,10 @@ class VpnNatEngine(
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
+                // Telemetry tracking for incoming WAN data
+                val dstIpStr = intToIp(session.destinationAddress)
+                VpnLogManager.logConnection("TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.ALLOWED, "Incoming TCP packets")
+
                 // Wrap in TCP packet and write to TUN
                 sendTcpDataToClient(session, payload)
             }
@@ -346,6 +451,10 @@ class VpnNatEngine(
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
+                // Telemetry tracking for incoming WAN data
+                val dstIpStr = intToIp(session.destinationAddress)
+                VpnLogManager.logConnection("UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.ALLOWED, "Incoming UDP packets")
+
                 // Wrap in UDP packet and write to TUN
                 sendUdpDataToClient(session, payload)
             }
@@ -610,6 +719,125 @@ class VpnNatEngine(
             closeUdpSession(port)
         }
         Log.i(TAG, "NAT Engine successfully stopped")
+    }
+
+    private fun getParentPid(pid: Int): Int {
+        try {
+            val statFile = java.io.File("/proc/$pid/stat")
+            if (!statFile.exists()) return -1
+            val content = statFile.readText()
+            val lastParen = content.lastIndexOf(')')
+            if (lastParen != -1 && lastParen + 2 < content.length) {
+                val afterParen = content.substring(lastParen + 2).trim()
+                val fields = afterParen.split(" ")
+                if (fields.size >= 2) {
+                    return fields[1].toIntOrNull() ?: -1
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore
+        }
+        return -1
+    }
+
+    private fun getDescendantPids(parentPid: Int): Set<Int> {
+        val descendants = HashSet<Int>()
+        descendants.add(parentPid)
+        try {
+            val procDir = java.io.File("/proc")
+            val pids = procDir.list { _, name -> name.all { it.isDigit() } }
+            if (pids == null) return descendants
+            val pidsList = pids.mapNotNull { it.toIntOrNull() }
+            
+            val parentMap = HashMap<Int, MutableList<Int>>()
+            for (pid in pidsList) {
+                val ppid = getParentPid(pid)
+                if (ppid != -1) {
+                    parentMap.getOrPut(ppid) { ArrayList() }.add(pid)
+                }
+            }
+            
+            val queue = java.util.ArrayDeque<Int>()
+            queue.add(parentPid)
+            while (!queue.isEmpty()) {
+                val current = queue.poll() ?: break
+                val children = parentMap[current]
+                if (children != null) {
+                    for (child in children) {
+                        if (descendants.add(child)) {
+                            queue.add(child)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore
+        }
+        return descendants
+    }
+
+    private fun getSocketInodeForLocalPort(localPort: Int, isTcp: Boolean): Long? {
+        val files = if (isTcp) {
+            listOf("/proc/net/tcp", "/proc/net/tcp6")
+        } else {
+            listOf("/proc/net/udp", "/proc/net/udp6")
+        }
+        
+        val portHex = String.format("%04X", localPort)
+        for (filePath in files) {
+            try {
+                val file = java.io.File(filePath)
+                if (!file.exists()) continue
+                val lines = file.readLines()
+                for (line in lines) {
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size >= 10) {
+                        val localAddress = parts[1]
+                        val inode = parts[9]
+                        val localPortHex = localAddress.substringAfterLast(":")
+                        if (localPortHex.equals(portHex, ignoreCase = true)) {
+                            val inodeVal = inode.toLongOrNull()
+                            if (inodeVal != null && inodeVal != 0L) {
+                                return inodeVal
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+        return null
+    }
+
+    private fun getSessionForLocalPort(localPort: Int, isTcp: Boolean): TerminalSession? {
+        val inode = getSocketInodeForLocalPort(localPort, isTcp) ?: return null
+        val activeSessions = TerminalService.sessions
+        for (session in activeSessions) {
+            val shellPid = session.pid
+            if (shellPid <= 0) continue
+            val descendants = getDescendantPids(shellPid)
+            for (pid in descendants) {
+                val fdDir = java.io.File("/proc/$pid/fd")
+                val fds = fdDir.list() ?: continue
+                for (fd in fds) {
+                    try {
+                        val symlink = java.io.File(fdDir, fd)
+                        val target = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            java.nio.file.Files.readSymbolicLink(symlink.toPath()).toString()
+                        } else {
+                            symlink.canonicalPath
+                        }
+                        if (target.contains("socket:[$inode]")) {
+                            return session
+                        }
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private fun intToIp(ip: Int): String {

@@ -31,6 +31,60 @@ class TerminalService : Service() {
         val sessions = CopyOnWriteArrayList<TerminalSession>()
         val sessionClients = HashMap<TerminalSession, ViewHostSessionClient>()
 
+        val sessionIds = java.util.concurrent.ConcurrentHashMap<TerminalSession, String>()
+        val idToSession = java.util.concurrent.ConcurrentHashMap<String, TerminalSession>()
+        val ignoredSessionIds = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+        val sessionNames = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val sessionDistros = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        fun getSessionId(session: TerminalSession): String? {
+            return sessionIds[session]
+        }
+
+        fun getSessionDistro(session: TerminalSession): String {
+            val id = getSessionId(session) ?: return "kali-arm64"
+            return sessionDistros[id] ?: "kali-arm64"
+        }
+
+        fun getSessionName(session: TerminalSession): String? {
+            val id = getSessionId(session) ?: return null
+            return sessionNames[id]
+        }
+
+        fun setSessionName(session: TerminalSession, name: String) {
+            val id = getSessionId(session) ?: return
+            sessionNames[id] = name
+            // Trigger drawer update in TerminalActivity if active on the main thread
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    com.linux_core.ui.terminal.TerminalActivity.instance?.updateSessionDrawer()
+                } catch (e: Exception) {
+                    Log.e("TerminalService", "Failed to update session drawer on name change: ${e.message}")
+                }
+            }
+        }
+
+        fun isSessionVpnIgnored(session: TerminalSession): Boolean {
+            val id = getSessionId(session) ?: return false
+            return ignoredSessionIds[id] ?: false
+        }
+
+        fun isSessionVpnIgnoredById(sessionId: String): Boolean {
+            return ignoredSessionIds[sessionId] ?: false
+        }
+
+        fun setSessionVpnIgnored(sessionId: String, ignored: Boolean) {
+            ignoredSessionIds[sessionId] = ignored
+            // Trigger drawer update in TerminalActivity if active on the main thread
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    com.linux_core.ui.terminal.TerminalActivity.instance?.updateSessionDrawer()
+                } catch (e: Exception) {
+                    Log.e("TerminalService", "Failed to update session drawer: ${e.message}")
+                }
+            }
+        }
+
         fun getInstance(): TerminalService? = instance
 
         fun isRunning(): Boolean = instance != null
@@ -44,10 +98,22 @@ class TerminalService : Service() {
             onError: (String) -> Unit
         ): TerminalSession {
             startService(context)
+            
+            // Inject NETHUNTER_SESSION_ID environment variable
+            val sessionId = "session_${System.currentTimeMillis()}"
+            val newEnv = config.env.toMutableList().apply {
+                add("NETHUNTER_SESSION_ID=$sessionId")
+            }.toTypedArray()
+            
             val client = ViewHostSessionClient(view, onError)
             val session = TerminalSession(
-                config.command[0], config.cwd, config.command, config.env, 1000, client
+                config.command[0], config.cwd, config.command, newEnv, 1000, client
             )
+            
+            sessionIds[session] = sessionId
+            idToSession[sessionId] = session
+            sessionDistros[sessionId] = java.io.File(config.rootfsDir).name
+            
             sessions.add(session)
             sessionClients[session] = client
             instance?.updateNotification()
@@ -60,6 +126,16 @@ class TerminalService : Service() {
             session.finishIfRunning()
             sessions.remove(session)
             sessionClients.remove(session)
+            
+            // Clean up session ID mappings
+            val id = sessionIds.remove(session)
+            if (id != null) {
+                idToSession.remove(id)
+                ignoredSessionIds.remove(id)
+                sessionNames.remove(id)
+                sessionDistros.remove(id)
+            }
+            
             instance?.updateNotification()
             instance?.let { WidgetProvider.triggerUpdate(it) }
             Log.i(TAG, "Session removed. Remaining: ${sessions.size}")

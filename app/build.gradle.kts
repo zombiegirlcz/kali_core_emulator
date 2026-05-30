@@ -13,8 +13,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 33
         targetSdk = 28
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -57,8 +57,11 @@ android {
             useLegacyPackaging = true
         }
     }
-    buildToolsVersion = "34.0.0"
-    ndkVersion = "34"
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
 
     lint {
         checkReleaseBuilds = false

@@ -17,13 +17,22 @@ Description: |-
   - **Android API Bridge (NetHunter API):** Zero-dependency loopback API server allowing seamless system control (flashlight, clipboard, vibration, Text-to-Speech, notifications, GPS, Wi-Fi info) from your guest Linux terminal.
   - **Smart Root Detection:** Prompts you at startup to skip creating system binary mocks if the host device has ROOT, maintaining a clean native installation.
   - **Classic Parrot OS Prompt:** Beautiful dual-line terminal prompt featuring cyan layout borders and the green/red spearhead indicator.
+  - **AdGuard VPN & DNS Traffic Sniffer:** Built-in VPN center backed by AdGuard JNI C++ stack with interactive Canvas bandwidth line chart and hourly/daily breakdown history.
+  - **Multi-Distro Session Tabs:** Manage active chroot terminal sessions grouped by distribution (ALL, KALI, PARROT) with custom renaming and visual badges (🐉, 🦜).
+  - **System File Editor (Nano Integration):** Reusable intent handlers allowing you to open and edit system-wide files using the nano editor directly inside active terminal sessions.
 
-Summary: Run Kali NetHunter & ParrotOS with 50x speed boost and custom Hacker Keyboard
+Summary: Run Kali & Parrot with AdGuard VPN, custom Hacker Keyboard, and 50x speed boost
 
 Builds:
   - versionName: '1.0'
     versionCode: 1
     commit: 2f2bd0cdfe1e47122267401aa56f81bb403cfef5
+    subdir: app
+    gradle:
+      - yes
+  - versionName: '2.0'
+    versionCode: 2
+    commit: HEAD
     subdir: app
     gradle:
       - yes

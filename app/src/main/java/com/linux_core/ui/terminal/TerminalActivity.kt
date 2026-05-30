@@ -49,6 +49,8 @@ import kotlinx.coroutines.cancel
 class TerminalActivity : ComponentActivity() {
     companion object {
         private const val TAG = "TerminalActivity"
+        @Volatile
+        var instance: TerminalActivity? = null
     }
 
     private lateinit var btnSniffer: Button
@@ -79,6 +81,8 @@ class TerminalActivity : ComponentActivity() {
     // Drawer-based Session Management
     private lateinit var drawerLayout: androidx.drawerlayout.widget.DrawerLayout
     private lateinit var sessionDrawerContainer: LinearLayout
+    private var activeDrawerTab = "ALL" // "ALL", "KALI", "PARROT"
+    private val drawerTabButtons = HashMap<String, Button>()
 
     // Keyboard Toolbar and Special Keypad Panel states
     var customCtrlActive = false
@@ -106,6 +110,7 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var guiProgress: ProgressBar
     private lateinit var toolbarScroll: HorizontalScrollView
     private val guiScope = CoroutineScope(Dispatchers.Main + Job())
+    private var pendingNanoCommand: String? = null
     private lateinit var btnTouchToggle: Button
     private var guiTouchMode = true // true = trackpad (default), false = direct touch
 
@@ -132,13 +137,21 @@ class TerminalActivity : ComponentActivity() {
     var terminalFontSizeFloat = 32f
 
     fun changeTerminalFontSize(scale: Float) {
-        terminalFontSizeFloat *= scale
+        val dampenedScale = 1.0f + (scale - 1.0f) * 0.15f
+        terminalFontSizeFloat *= dampenedScale
         terminalFontSizeFloat = terminalFontSizeFloat.coerceIn(8f, 72f)
         terminalView.setTextSize(terminalFontSizeFloat.toInt())
+        getSharedPreferences("terminal_prefs", MODE_PRIVATE)
+            .edit()
+            .putFloat("font_size", terminalFontSizeFloat)
+            .apply()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        instance = this
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("terminal_prefs", MODE_PRIVATE)
+        terminalFontSizeFloat = prefs.getFloat("font_size", 32f)
         com.linux_core.core.VpnCaptureService.onStateChangeListener = { _ ->
             updateSnifferButtonState()
         }
@@ -299,7 +312,7 @@ class TerminalActivity : ComponentActivity() {
 
         terminalView = TerminalView(this, null)
         terminalView.setBackgroundColor(Color.BLACK)
-        terminalView.setTextSize(32)
+        terminalView.setTextSize(terminalFontSizeFloat.toInt())
         terminalView.setTerminalViewClient(viewClient)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
@@ -572,6 +585,52 @@ class TerminalActivity : ComponentActivity() {
         }
         drawerView.addView(drawerHeader)
 
+        val tabLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 16)
+            }
+            layoutParams = params
+            weightSum = 3f
+        }
+
+        val createDrawerTabButton = { title: String, tabCode: String ->
+            val btn = Button(this)
+            btn.apply {
+                text = title
+                textSize = 9f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                setPadding(0, 4, 0, 4)
+                val params = LinearLayout.LayoutParams(
+                    0, TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(), 1f
+                ).apply {
+                    setMargins(2, 0, 2, 0)
+                }
+                layoutParams = params
+                setOnClickListener {
+                    btn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    activeDrawerTab = tabCode
+                    updateSessionDrawer()
+                }
+            }
+            btn
+        }
+
+        val tabAll = createDrawerTabButton("ALL", "ALL")
+        val tabKali = createDrawerTabButton("KALI", "KALI")
+        val tabParrot = createDrawerTabButton("PARROT", "PARROT")
+
+        drawerTabButtons["ALL"] = tabAll
+        drawerTabButtons["KALI"] = tabKali
+        drawerTabButtons["PARROT"] = tabParrot
+
+        tabLayout.addView(tabAll)
+        tabLayout.addView(tabKali)
+        tabLayout.addView(tabParrot)
+        drawerView.addView(tabLayout)
+
         val drawerScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -612,6 +671,7 @@ class TerminalActivity : ComponentActivity() {
         drawerLayout.addView(drawerView)
         setContentView(drawerLayout)
 
+        handleFileIntent(intent)
         setupAndStartSession()
     }
 
@@ -1068,7 +1128,108 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleFileIntent(intent)
+    }
+
+    private fun handleFileIntent(intent: Intent) {
+        val action = intent.action
+        if (Intent.ACTION_VIEW == action || Intent.ACTION_EDIT == action) {
+            val uri = intent.data ?: return
+            val fileName = getFileNameFromUri(uri)
+            
+            // Determine rootfs directory name
+            var rootfsDirName = intent.getStringExtra("rootfsDirName")
+            if (rootfsDirName == null) {
+                val kaliSetup = File(File(filesDir, "kali-arm64"), "root/.setup_done")
+                val parrotSetup = File(File(filesDir, "parrot-arm64"), "root/.setup_done")
+                rootfsDirName = when {
+                    kaliSetup.exists() -> "kali-arm64"
+                    parrotSetup.exists() -> "parrot-arm64"
+                    else -> "kali-arm64"
+                }
+            }
+            
+            val copiedFile = copyUriToChrootTmp(uri, fileName, rootfsDirName)
+            if (copiedFile != null) {
+                val command = "nano /tmp/nethunter_edit_$fileName"
+                
+                // If GUI is active, automatically switch to CLI so they see the editor
+                if (activeViewMode != "CLI") {
+                    switchViewMode("CLI")
+                }
+                
+                val activeSession = currentSession ?: TerminalService.sessions.firstOrNull()
+                if (activeSession != null) {
+                    // Send command to active session
+                    switchToSession(activeSession)
+                    terminalView.post {
+                        terminalView.postDelayed({
+                            activeSession.write("\u0003\u0015$command\r")
+                        }, 500)
+                    }
+                } else {
+                    // Save for when the session starts
+                    pendingNanoCommand = command
+                }
+            }
+        }
+    }
+
+    private fun getFileNameFromUri(uri: android.net.Uri): String {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            try {
+                if (cursor != null && cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx != -1) {
+                        result = cursor.getString(idx)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to query displayName: ${e.message}")
+            } finally {
+                cursor?.close()
+            }
+        }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/') ?: -1
+            if (cut != -1) {
+                result = result?.substring(cut + 1)
+            }
+        }
+        // Sanitize filename to avoid weird shell characters
+        return (result ?: "unnamed_file").replace(Regex("[^a-zA-Z0-9._-]"), "_")
+    }
+
+    private fun copyUriToChrootTmp(uri: android.net.Uri, fileName: String, rootfsDirName: String): File? {
+        try {
+            val destDir = File(filesDir, "$rootfsDirName/tmp")
+            if (!destDir.exists()) {
+                destDir.mkdirs()
+            }
+            val destFile = File(destDir, "nethunter_edit_$fileName")
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                destFile.outputStream().use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+            Log.i(TAG, "Successfully copied $uri to ${destFile.absolutePath}")
+            return destFile
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy URI to chroot tmp: ${e.message}")
+            return null
+        }
+    }
+
     override fun onDestroy() {
+        if (instance == this) {
+            instance = null
+        }
         com.linux_core.core.VpnCaptureService.onStateChangeListener = null
         super.onDestroy()
         guiScope.cancel()
@@ -1171,10 +1332,23 @@ class TerminalActivity : ComponentActivity() {
 
     fun updateSessionDrawer() {
         runOnUiThread {
+            // Update drawer tab button styling
+            drawerTabButtons.forEach { (tabCode, btn) ->
+                val isSel = (tabCode == activeDrawerTab)
+                btn.setTextColor(if (isSel) Color.parseColor("#00FF41") else Color.WHITE)
+                btn.setBackgroundColor(if (isSel) Color.parseColor("#151620") else Color.parseColor("#08090d"))
+            }
+
             val serviceSessions = TerminalService.sessions
             sessionDrawerContainer.removeAllViews()
             for (i in 0 until serviceSessions.size) {
                 val session = serviceSessions[i]
+                val distro = TerminalService.getSessionDistro(session)
+                
+                // Filtering based on active tab
+                if (activeDrawerTab == "KALI" && !distro.contains("kali")) continue
+                if (activeDrawerTab == "PARROT" && !distro.contains("parrot")) continue
+
                 val isActive = (session == currentSession)
                 
                 // Vertical container row for the session card
@@ -1182,7 +1356,9 @@ class TerminalActivity : ComponentActivity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setBackgroundColor(if (isActive) Color.parseColor("#151620") else Color.parseColor("#0c0d12"))
-                    setPadding(12, 12, 12, 12)
+                    val pxPaddingHoriz = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
+                    val pxPaddingVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 18f, resources.displayMetrics).toInt()
+                    setPadding(pxPaddingHoriz, pxPaddingVert, pxPaddingHoriz, pxPaddingVert)
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply {
@@ -1203,22 +1379,28 @@ class TerminalActivity : ComponentActivity() {
                 row.addView(indicator)
 
                 // Session Text label taking up remaining space
+                val isIgnored = TerminalService.isSessionVpnIgnored(session)
+                val isParrot = distro.contains("parrot")
+                val distroBadge = if (isParrot) "🦜 " else "🐉 "
                 val label = TextView(this).apply {
-                    text = "🐚 Session ${i + 1}"
+                    val customName = TerminalService.getSessionName(session)
+                    val baseText = if (!customName.isNullOrEmpty()) customName else "Session ${i + 1}"
+                    text = "${distroBadge}${baseText}" + (if (isIgnored) " [VPN IGNORED]" else "")
                     textSize = 13f
                     typeface = Typeface.MONOSPACE
-                    setTextColor(if (isActive) Color.parseColor("#00FF41") else Color.WHITE)
+                    if (isActive) {
+                        setTextColor(Color.parseColor("#00FF41"))
+                    } else if (isIgnored) {
+                        setTextColor(Color.parseColor("#FF9900")) // Gold/Orange for bypassed session
+                    } else {
+                        setTextColor(Color.WHITE)
+                    }
                     val params = LinearLayout.LayoutParams(
                         0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
                     ).apply {
                         setMargins(16, 0, 16, 0)
                     }
                     layoutParams = params
-                    setOnClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        switchToSession(session)
-                        drawerLayout.closeDrawer(Gravity.START)
-                    }
                 }
                 row.addView(label)
 
@@ -1241,9 +1423,55 @@ class TerminalActivity : ComponentActivity() {
                 }
                 row.addView(btnClose)
 
+                // Set listeners on the entire row card (except close button)
+                row.setOnClickListener {
+                    row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    switchToSession(session)
+                    drawerLayout.closeDrawer(Gravity.START)
+                }
+
+                row.setOnLongClickListener {
+                    row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    showRenameDialog(session, i + 1)
+                    true
+                }
+
                 sessionDrawerContainer.addView(row)
             }
         }
+    }
+
+    private fun showRenameDialog(session: TerminalSession, defaultIndex: Int) {
+        val currentName = TerminalService.getSessionName(session) ?: "Session $defaultIndex"
+        val input = android.widget.EditText(this).apply {
+            setText(currentName)
+            setSingleLine(true)
+            setSelection(currentName.length)
+        }
+        
+        val container = android.widget.FrameLayout(this).apply {
+            val padding = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, 20f, resources.displayMetrics
+            ).toInt()
+            setPadding(padding, padding / 2, padding, padding / 2)
+            addView(input)
+        }
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Rename Session")
+            .setMessage("Enter custom name for this session:")
+            .setView(container)
+            .setPositiveButton("Rename") { dialog, _ ->
+                val newName = input.text.toString().trim()
+                if (newName.isNotEmpty()) {
+                    TerminalService.setSessionName(session, newName)
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
     }
 
     private fun addNewSession() {
@@ -1744,6 +1972,13 @@ class TerminalActivity : ComponentActivity() {
 
         switchToSession(session)
         updateSessionDrawer()
+
+        pendingNanoCommand?.let { cmd ->
+            pendingNanoCommand = null
+            terminalView.postDelayed({
+                session.write("\u0003\u0015$cmd\r")
+            }, 2500)
+        }
     }
 
     fun showSoftKeyboard() {

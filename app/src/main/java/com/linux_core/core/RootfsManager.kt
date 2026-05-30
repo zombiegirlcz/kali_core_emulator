@@ -26,6 +26,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FilterInputStream
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -339,10 +341,18 @@ object RootfsManager {
 
         Log.i("RootfsManager", "Backup starting: ${rootfsDir.absolutePath} -> ${destFile.absolutePath}")
 
-        // Count total files for progress
+        // Count total files for progress — use Files.walk (no FOLLOW_LINKS) to avoid
+        // AssertionError on symlinks pointing to directories inside the rootfs.
+        val rootPath: Path = rootfsDir.toPath()
         var totalFiles = 0
-        rootfsDir.walkTopDown().forEach { totalFiles++ }
-        if (totalFiles == 0) throw IOException("Rootfs directory is empty")
+        try {
+            Files.walk(rootPath).use { stream ->
+                stream.forEach { totalFiles++ }
+            }
+        } catch (e: Exception) {
+            Log.w("RootfsManager", "Error counting files: ${e.message}")
+        }
+        if (totalFiles == 0) totalFiles = 1 // Prevent div-by-zero; we'll still back up
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:backup")
@@ -360,61 +370,68 @@ object RootfsManager {
                             tarOut.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU)
                             tarOut.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_STAR)
 
-                            rootfsDir.walkTopDown()
-                                .onFail { file, ex ->
-                                    Log.w("RootfsManager", "Skipping unreadable: ${file.absolutePath}: ${ex.message}")
-                                }
-                                .forEach { file ->
+                            // Use Files.walk without FOLLOW_LINKS — symlinks are enumerated
+                            // but NOT entered, preventing AssertionError on broken/circular links.
+                            val allPaths: List<Path> = Files.walk(rootPath).use { stream ->
+                                stream.collect(java.util.stream.Collectors.toList())
+                            }
+
+                            for (path in allPaths) {
+                                    val file = path.toFile()
                                     val relativePath = distro.rootfsDirName + "/" +
-                                        file.relativeTo(rootfsDir).path.replace('\\', '/')
+                                        rootfsDir.toPath().relativize(path).toString().replace('\\', '/')
 
                                     val isSymlink = try {
-                                        java.nio.file.Files.isSymbolicLink(file.toPath())
+                                        Files.isSymbolicLink(path)
                                     } catch (_: Exception) { false }
 
-                                    val entry = TarArchiveEntry(relativePath + if (file.isDirectory && !isSymlink) "/" else "")
-
-                                    when {
-                                        isSymlink -> {
-                                            val linkTarget = try {
-                                                android.system.Os.readlink(file.absolutePath)
-                                            } catch (_: Exception) { null }
-                                            if (linkTarget != null) {
-                                                val symlinkEntry = TarArchiveEntry(
-                                                    relativePath,
-                                                    TarArchiveEntry.LF_SYMLINK
-                                                )
-                                                symlinkEntry.linkName = linkTarget
-                                                tarOut.putArchiveEntry(symlinkEntry)
+                                    try {
+                                        when {
+                                            isSymlink -> {
+                                                val linkTarget = try {
+                                                    android.system.Os.readlink(file.absolutePath)
+                                                } catch (_: Exception) { null }
+                                                if (linkTarget != null) {
+                                                    val symlinkEntry = TarArchiveEntry(
+                                                        relativePath,
+                                                        TarArchiveEntry.LF_SYMLINK
+                                                    )
+                                                    symlinkEntry.linkName = linkTarget
+                                                    tarOut.putArchiveEntry(symlinkEntry)
+                                                    tarOut.closeArchiveEntry()
+                                                }
+                                            }
+                                            file.isDirectory -> {
+                                                val dirEntry = TarArchiveEntry("$relativePath/")
+                                                tarOut.putArchiveEntry(dirEntry)
+                                                tarOut.closeArchiveEntry()
+                                            }
+                                            file.isFile -> {
+                                                val fileEntry = TarArchiveEntry(relativePath)
+                                                fileEntry.size = file.length()
+                                                fileEntry.mode = if (file.canExecute()) 0b111_101_101 else 0b110_100_100
+                                                tarOut.putArchiveEntry(fileEntry)
+                                                try {
+                                                    FileInputStream(file).use { it.copyTo(tarOut) }
+                                                } catch (e: Exception) {
+                                                    Log.w("RootfsManager", "Could not read file ${file.absolutePath}: ${e.message}")
+                                                }
                                                 tarOut.closeArchiveEntry()
                                             }
                                         }
-                                        file.isDirectory -> {
-                                            tarOut.putArchiveEntry(entry)
-                                            tarOut.closeArchiveEntry()
-                                        }
-                                        file.isFile -> {
-                                            entry.size = file.length()
-                                            entry.mode = if (file.canExecute()) 0b111_101_101 else 0b110_100_100 // 0755 or 0644
-                                            tarOut.putArchiveEntry(entry)
-                                            try {
-                                                FileInputStream(file).use { it.copyTo(tarOut) }
-                                            } catch (e: Exception) {
-                                                Log.w("RootfsManager", "Could not read file ${file.absolutePath}: ${e.message}")
-                                            }
-                                            tarOut.closeArchiveEntry()
-                                        }
+                                    } catch (e: Exception) {
+                                        Log.w("RootfsManager", "Skipping entry ${file.absolutePath}: ${e.message}")
                                     }
 
                                     processed++
-                                    val progress = ((processed.toLong() * 99) / totalFiles).toInt()
+                                    val progress = ((processed.toLong() * 99) / allPaths.size).toInt()
                                     val now = System.currentTimeMillis()
                                     if (progress > lastProgress && (now - lastEmitMs) >= 200) {
-                                        emit(progress to "Backing up... ($processed/$totalFiles files)")
+                                        emit(progress to "Backing up… ($processed/${allPaths.size} files)")
                                         lastProgress = progress
                                         lastEmitMs = now
                                     }
-                                }
+                            }
                         }
                     }
                 }

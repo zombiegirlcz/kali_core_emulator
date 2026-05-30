@@ -61,12 +61,12 @@ object ProotManager {
         val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
-        fixLdLinuxSymlinks(context, rootfsDir)
         deployApiScripts(rootfsDir)
         deployZshrc(context, rootfsDir, distroId)
 
         val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
         deployBinaries(context, suffix)
+        fixLdLinuxSymlinks(context, rootfsDir)
 
         val prootBin = File(context.filesDir, "proot")
         val loaderBin = File(context.filesDir, "loader")
@@ -188,20 +188,45 @@ object ProotManager {
         val script = StringBuilder().apply {
             append("#!/bin/bash").append(NL)
             append("export DEBIAN_FRONTEND=noninteractive").append(NL)
+            append("export DEBCONF_NOWARNINGS=yes").append(NL)
             append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
             append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
             append("echo 'nameserver 8.8.8.8' > /etc/resolv.conf").append(NL)
+            append("# Base ParrotOS /usr/bin/perl is a directory, breaking debconf Perl shebang.").append(NL)
+            append("# Replace confmodule with dummy no-op shell functions during bootstrap.").append(NL)
+            append("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then").append(NL)
+            append("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak").append(NL)
+            append("  cat > /usr/share/debconf/confmodule << 'ENDCONF'").append(NL)
+            append("db_version() { return 0; }").append(NL)
+            append("db_input() { return 0; }").append(NL)
+            append("db_go() { return 0; }").append(NL)
+            append("db_get() { eval \"\$RET=''\"; return 0; }").append(NL)
+            append("db_set() { return 0; }").append(NL)
+            append("db_subst() { return 0; }").append(NL)
+            append("db_fset() { return 0; }").append(NL)
+            append("db_reset() { return 0; }").append(NL)
+            append("db_stop() { return 0; }").append(NL)
+            append("db_metaget() { return 0; }").append(NL)
+            append("db_register() { return 0; }").append(NL)
+            append("db_purge() { return 0; }").append(NL)
+            append("ENDCONF").append(NL)
+            append("  echo '[*] Replaced debconf confmodule with dummy (no Perl needed)'").append(NL)
+            append("fi").append(NL)
 
             if (distroId == "kali") {
                 append("echo 'deb [trusted=yes] https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list").append(NL)
             } else {
                 append("echo 'deb [trusted=yes] https://deb.parrot.sh/parrot parrot main contrib non-free' > /etc/apt/sources.list").append(NL)
                 append("mkdir -p /etc/apt/trusted.gpg.d").append(NL)
-                append("wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg || true").append(NL)
+                append("if command -v curl >/dev/null 2>&1; then").append(NL)
+                append("  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
+                append("elif command -v wget >/dev/null 2>&1; then").append(NL)
+                append("  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
+                append("fi").append(NL)
             }
 
             if (!hasRoot) {
-                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf; do").append(NL)
+                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf dpkg-realpath; do").append(NL)
                 append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
                 append("    path=\"\$prefix/\$cmd\"").append(NL)
                 append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
@@ -216,16 +241,43 @@ object ProotManager {
             append("echo 'DPkg::options { \"--force-unsafe-io\"; };' > /etc/apt/apt.conf.d/force-unsafe-io").append(NL)
 
             append("apt update 2>&1 || true").append(NL)
-            append("apt install -y --allow-unauthenticated zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo 2>&1 || true").append(NL)
+            append("echo '[*] Installing core packages...'").append(NL)
+            append("apt install -y --allow-unauthenticated perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip 2>&1 || true").append(NL)
+            append("# Restore debconf confmodule (real Perl now installed, debconf should work)").append(NL)
+            append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
+            append("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
+            append("  echo '[*] Restored debconf confmodule'").append(NL)
+            append("fi").append(NL)
+            append("echo '[*] Fixing any half-configured packages...'").append(NL)
+            append("dpkg --configure -a 2>&1 || true").append(NL)
+            append("SHELL_BIN=/bin/bash").append(NL)
+            append("if command -v zsh >/dev/null 2>&1; then SHELL_BIN=/usr/bin/zsh; echo '[*] zsh installed OK'; else echo '[!] WARNING: zsh install failed, using bash fallback'; fi").append(NL)
+            append("echo '[*] Installing Python packages (requests, scapy)...'").append(NL)
+            append("# Try pip3 first, fall back to python3 -m pip, with break-system-packages detection").append(NL)
+            append("PIP_CMD=\"\"").append(NL)
+            append("if command -v pip3 >/dev/null 2>&1; then").append(NL)
+            append("  PIP_CMD=pip3").append(NL)
+            append("elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then").append(NL)
+            append("  PIP_CMD=\"python3 -m pip\"").append(NL)
+            append("fi").append(NL)
+            append("if [ -n \"\$PIP_CMD\" ]; then").append(NL)
+            append("  if \$PIP_CMD install --help 2>&1 | grep -q break-system-packages; then").append(NL)
+            append("    \$PIP_CMD install --break-system-packages requests scapy 2>&1 || true").append(NL)
+            append("  else").append(NL)
+            append("    PIP_REQUIRE_VIRTUALENV=false \$PIP_CMD install requests scapy 2>&1 || true").append(NL)
+            append("  fi").append(NL)
+            append("else").append(NL)
+            append("  echo '[!] WARNING: pip not found, skipping Python packages'").append(NL)
+            append("fi").append(NL)
 
             val defaultUser = distroId
-            append("id -u ${defaultUser} &>/dev/null || useradd -m -s /usr/bin/zsh ${defaultUser} 2>/dev/null || true").append(NL)
+            append("id -u ${defaultUser} &>/dev/null || useradd -m -s \"\$SHELL_BIN\" ${defaultUser} 2>/dev/null || true").append(NL)
             append("passwd -d ${defaultUser} 2>/dev/null && usermod -p \"\" ${defaultUser} 2>/dev/null || true").append(NL)
             append("usermod -aG sudo ${defaultUser} 2>/dev/null || true").append(NL)
             append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
             append("chmod 0440 /etc/sudoers.d/${defaultUser}").append(NL)
 
-            append("chsh -s /usr/bin/zsh root 2>/dev/null || true").append(NL)
+            append("chsh -s \"\$SHELL_BIN\" root 2>/dev/null || true").append(NL)
             append("touch /root/.setup_done").append(NL)
             append("echo '[+] BOOTSTRAP COMPLETE'").append(NL)
         }.toString()
@@ -243,6 +295,10 @@ object ProotManager {
             append("if [ -f /root/.bootstrap_required ]; then").append(NL)
             append("    /bin/bash /root/bootstrap.sh").append(NL)
             append("    rm -f /root/.bootstrap_required").append(NL)
+            append("    # Restore debconf confmodule if bootstrap left it disabled").append(NL)
+            append("    if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
+            append("        mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
+            append("    fi").append(NL)
             append("fi").append(NL)
             
             append("# Restore passwd if it was previously diverted by mistake").append(NL)
@@ -274,11 +330,12 @@ object ProotManager {
 
             append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
             append("echo '[*] Starting session...'").append(NL)
+            append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
             append("if [ \$# -gt 0 ]; then").append(NL)
             append("    echo '[*] Running custom launcher command...'").append(NL)
-            append("    exec zsh -c \"\$*\"").append(NL)
+            append("    exec \"\$ENTRY_SHELL\" -c \"\$*\"").append(NL)
             append("else").append(NL)
-            append("    exec zsh --login").append(NL)
+            append("    exec \"\$ENTRY_SHELL\" --login").append(NL)
             append("fi").append(NL)
         }.toString()
         entryFile.writeText(script)
@@ -339,7 +396,7 @@ object ProotManager {
 
         val scripts = mapOf(
             "vpn-bypass" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
                 append("  echo \"Usage: vpn-bypass <command> [arguments...]\"").append(NL)
                 append("  exit 1").append(NL)
@@ -355,7 +412,7 @@ object ProotManager {
             }.toString(),
 
             "dcheck" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
                 append("  echo \"Usage: dcheck <command> [arguments...]\"").append(NL)
                 append("  exit 1").append(NL)
@@ -371,33 +428,72 @@ object ProotManager {
             }.toString(),
 
             "vpn-off" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"Usage: vpn-off <command> [arguments...]\"").append(NL)
-                append("  exit 1").append(NL)
+                append("  echo \"[*] Stopping global VPN service...\"").append(NL)
+                append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
+                append("  echo \"[-] Global VPN sniffer disabled.\"").append(NL)
+                append("  exit 0").append(NL)
                 append("fi").append(NL)
-                append("status_response=\$(curl -s http://127.0.0.1:1337/vpn)").append(NL)
                 append("was_running=false").append(NL)
-                append("if [[ \"\$status_response\" == *\"\\\"running\\\":true\"* ]]; then").append(NL)
+                append("if curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
                 append("  was_running=true").append(NL)
-                append("fi").append(NL)
-                append("if [ \"\$was_running\" = \"true\" ]; then").append(NL)
-                append("  echo \"[*] Temporarily disabling VPN…\"").append(NL)
+                append("  echo \"[*] Temporarily disabling VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
                 append("  sleep 1").append(NL)
                 append("fi").append(NL)
-                append("echo \"[*] Executing: \$@\"").append(NL)
+                append("echo \"[*] Executing (VPN off): \$@\"").append(NL)
                 append("\"\$@\"").append(NL)
                 append("exit_code=\$?").append(NL)
                 append("if [ \"\$was_running\" = \"true\" ]; then").append(NL)
-                append("  echo \"[*] Restoring VPN…\"").append(NL)
+                append("  echo \"[*] Restoring VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
                 append("fi").append(NL)
                 append("exit \$exit_code").append(NL)
             }.toString(),
 
+            "vpn-on" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("if [ \$# -eq 0 ]; then").append(NL)
+                append("  echo \"[*] Starting global VPN service...\"").append(NL)
+                append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
+                append("  echo \"[+] Global VPN sniffer enabled.\"").append(NL)
+                append("  exit 0").append(NL)
+                append("fi").append(NL)
+                append("if ! curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
+                append("  echo \"[*] Starting VPN\"").append(NL)
+                append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
+                append("  sleep 1").append(NL)
+                append("fi").append(NL)
+                append("echo \"[*] Executing (VPN on): \$@\"").append(NL)
+                append("\"\$@\"").append(NL)
+                append("exit \$?").append(NL)
+            }.toString(),
+
+            "ignore-vpn" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("if [ -z \"\$NETHUNTER_SESSION_ID\" ]; then").append(NL)
+                append("  echo \"[-] Error: NETHUNTER_SESSION_ID is not set in this terminal session.\"").append(NL)
+                append("  exit 1").append(NL)
+                append("fi").append(NL)
+                append("mode=\${1:-on}").append(NL)
+                append("if [ \"\$mode\" = \"on\" ]; then").append(NL)
+                append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=true\" >/dev/null").append(NL)
+                append("  echo \"[*] VPN sniffer bypassed for this session.\"").append(NL)
+                append("elif [ \"\$mode\" = \"off\" ]; then").append(NL)
+                append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=false\" >/dev/null").append(NL)
+                append("  echo \"[*] VPN sniffer routing restored for this session.\"").append(NL)
+                append("elif [ \"\$mode\" = \"status\" ]; then").append(NL)
+                append("  res=\$(curl -s \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID\")").append(NL)
+                append("  echo \"[*] VPN ignore status: \$res\"").append(NL)
+                append("else").append(NL)
+                append("  echo \"Usage: ignore-vpn [on|off|status]\"").append(NL)
+                append("  exit 1").append(NL)
+                append("fi").append(NL)
+            }.toString(),
+
             "nethunter-toast" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ -p /dev/stdin ]; then").append(NL)
                 append("  text=\$(cat)").append(NL)
                 append("else").append(NL)
@@ -407,18 +503,18 @@ object ProotManager {
             }.toString(),
 
             "nethunter-battery-status" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("curl -s http://127.0.0.1:1337/battery").append(NL)
             }.toString(),
 
             "nethunter-vibrate" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("duration=\${1:-500}").append(NL)
                 append("curl -s -X POST -d \"\$duration\" http://127.0.0.1:1337/vibrate").append(NL)
             }.toString(),
 
             "nethunter-tts-speak" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ -p /dev/stdin ]; then").append(NL)
                 append("  text=\$(cat)").append(NL)
                 append("else").append(NL)
@@ -428,12 +524,12 @@ object ProotManager {
             }.toString(),
 
             "nethunter-clipboard-get" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("curl -s http://127.0.0.1:1337/clipboard").append(NL)
             }.toString(),
 
             "nethunter-clipboard-set" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ -p /dev/stdin ]; then").append(NL)
                 append("  text=\$(cat)").append(NL)
                 append("else").append(NL)
@@ -443,7 +539,7 @@ object ProotManager {
             }.toString(),
 
             "nethunter-notification" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("title=\"NetHunter\"").append(NL)
                 append("content=\"\"").append(NL)
                 append("while getopts \"t:c:\" opt; do").append(NL)
@@ -460,17 +556,17 @@ object ProotManager {
             }.toString(),
 
             "nethunter-wifi-connectioninfo" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("curl -s http://127.0.0.1:1337/wifi").append(NL)
             }.toString(),
 
             "nethunter-location" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("curl -s http://127.0.0.1:1337/location").append(NL)
             }.toString(),
 
             "nethunter-volume" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
                 append("  curl -s http://127.0.0.1:1337/volume").append(NL)
                 append("else").append(NL)
@@ -479,13 +575,13 @@ object ProotManager {
             }.toString(),
 
             "nethunter-torch" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("state=\${1:-on}").append(NL)
                 append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch").append(NL)
             }.toString(),
 
             "nethunter-fix-postinst" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
                 append("  echo \"Usage: nethunter-fix-postinst <package-name>\"").append(NL)
                 append("  exit 1").append(NL)
@@ -499,7 +595,7 @@ object ProotManager {
             }.toString(),
 
             "nethunter-desktop" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
+                append("#!/bin/sh").append(NL)
                 append("action=\"\${1:-start}\"").append(NL)
                 append("VNC_PORT=5901").append(NL)
                 append("NO_VNC_PORT=6080").append(NL)
@@ -534,32 +630,29 @@ object ProotManager {
                 append("#!/bin/sh").append(NL)
                 append("unset SESSION_MANAGER").append(NL)
                 append("unset DBUS_SESSION_BUS_ADDRESS").append(NL)
-                append("[ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources").append(NL)
-                append("xsetroot -solid grey").append(NL)
-                append("dbus-launch --exit-with-session startxfce4").append(NL)
+                append("startxfce4 &").append(NL)
                 append("EOF").append(NL)
                 append("    chmod +x ~/.vnc/xstartup").append(NL)
-                append("    echo \"[*] Starting VNC Server on display :1 (port \$VNC_PORT)...\"").append(NL)
-                append("    vncserver :1 -geometry 1280x720 -depth 24").append(NL)
-                append("    echo \"[*] Launching noVNC Web bridge on port \$NO_VNC_PORT...\"").append(NL)
-                append("    nohup websockify --web /usr/share/novnc \$NO_VNC_PORT localhost:\$VNC_PORT >/dev/null 2>&1 &").append(NL)
-                append("    echo \"[+] Desktop environment started successfully!\"").append(NL)
-                append("    echo \"[+] VNC Port: \$VNC_PORT | noVNC Port: \$NO_VNC_PORT\"").append(NL)
+                append("    echo \"[*] Starting VNC server session on display :1 (port \$VNC_PORT)...\"").append(NL)
+                append("    vncserver :1 -geometry 1280x720 -depth 24 2>&1 | tee /tmp/vnc.log").append(NL)
+                append("    echo \"[*] Starting noVNC proxy websockify on port \$NO_VNC_PORT...\"").append(NL)
+                append("    websockify --web=/usr/share/novnc/ \$NO_VNC_PORT 127.0.0.1:\$VNC_PORT &>/dev/null &").append(NL)
+                append("    echo \"[+] XFCE4 Graphical desktop successfully launched on Display :1!\"").append(NL)
+                append("    echo \"[*] Open noVNC client at http://127.0.0.1:6080/vnc.html\"").append(NL)
                 append("    ;;").append(NL)
                 append("  stop)").append(NL)
-                append("    echo \"[*] Stopping VNC Server...\"").append(NL)
+                append("    echo \"[*] Killing VNC server session...\"").append(NL)
                 append("    vncserver -kill :1 2>/dev/null || true").append(NL)
                 append("    pkill -9 -f Xvnc 2>/dev/null || true").append(NL)
                 append("    pkill -9 -f Xtightvnc 2>/dev/null || true").append(NL)
                 append("    pkill -9 -f Xtigervnc 2>/dev/null || true").append(NL)
-                append("    echo \"[*] Stopping noVNC Web bridge...\"").append(NL)
                 append("    pkill -f websockify 2>/dev/null || true").append(NL)
                 append("    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true").append(NL)
-                append("    echo \"[+] Desktop environment stopped.\"").append(NL)
+                append("    echo \"[-] Graphical desktop session stopped.\"").append(NL)
                 append("    ;;").append(NL)
                 append("  status)").append(NL)
-                append("    echo \"=== PROCESS STATUS ===\"").append(NL)
-                append("    if pgrep -f \"Xvnc :1\" &>/dev/null || pgrep -f \"Xtightvnc :1\" &>/dev/null || pgrep -f \"Xtigervnc :1\" &>/dev/null; then").append(NL)
+                append("    echo \"=== DESKTOP SESSION STATUS ===\"").append(NL)
+                append("    if pgrep -f \"Xvnc|Xtightvnc|Xtigervnc\" &>/dev/null; then").append(NL)
                 append("      echo \"[+] VNC Server: RUNNING\"").append(NL)
                 append("    else").append(NL)
                 append("      echo \"[-] VNC Server: STOPPED\"").append(NL)
@@ -577,7 +670,9 @@ object ProotManager {
                 append("    exit 1").append(NL)
                 append("    ;;").append(NL)
                 append("esac").append(NL)
-            }.toString()
+            }.toString(),
+
+            // nethunter-notebook — temporarily disabled for later
         )
 
         for ((name, content) in scripts) {

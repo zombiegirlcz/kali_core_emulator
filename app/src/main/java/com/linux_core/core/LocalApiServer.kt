@@ -148,6 +148,8 @@ object LocalApiServer {
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
                 path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
                 path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
+                path.startsWith("/vpn/ignore") && method == "GET" -> handleVpnIgnoreGet(path, out)
+                path.startsWith("/vpn/ignore") && method == "POST" -> handleVpnIgnorePost(path, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -446,6 +448,56 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
+    }
+
+    private fun parseQueryParams(path: String): Map<String, String> {
+        val params = HashMap<String, String>()
+        val queryStart = path.indexOf('?')
+        if (queryStart != -1 && queryStart + 1 < path.length) {
+            val query = path.substring(queryStart + 1)
+            val pairs = query.split("&")
+            for (pair in pairs) {
+                val idx = pair.indexOf("=")
+                if (idx != -1) {
+                    try {
+                        val key = java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8")
+                        val value = if (idx + 1 < pair.length) {
+                            java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                        } else {
+                            ""
+                        }
+                        params[key] = value
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to decode query param: ${e.message}")
+                    }
+                }
+            }
+        }
+        return params
+    }
+
+    private fun handleVpnIgnoreGet(path: String, out: OutputStream) {
+        val params = parseQueryParams(path)
+        val sessionId = params["session_id"]
+        if (sessionId.isNullOrEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"session_id parameter is required\"}")
+            return
+        }
+        val isIgnored = TerminalService.isSessionVpnIgnoredById(sessionId)
+        sendResponse(out, 200, "OK", "{\"session_id\":\"$sessionId\",\"ignored\":$isIgnored}")
+    }
+
+    private fun handleVpnIgnorePost(path: String, out: OutputStream) {
+        val params = parseQueryParams(path)
+        val sessionId = params["session_id"]
+        val ignoredStr = params["ignored"] ?: "true"
+        if (sessionId.isNullOrEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"session_id parameter is required\"}")
+            return
+        }
+        val ignored = ignoredStr.toBoolean()
+        TerminalService.setSessionVpnIgnored(sessionId, ignored)
+        sendResponse(out, 200, "OK", "{\"session_id\":\"$sessionId\",\"ignored\":$ignored}")
     }
 }
 
