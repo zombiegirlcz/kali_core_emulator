@@ -14,13 +14,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 object VpnLogManager {
     private const val TAG = "VpnLogManager"
-    private const val MAX_LOGS = 250
+    private const val MAX_LOGS = 5000
 
     enum class AuditCategory {
         ALLOWED,
         BLOCKED,
         SUSPICIOUS,
-        CRITICAL
+        CRITICAL,
+        VERBOSE
     }
 
     data class LogEntry(
@@ -32,7 +33,9 @@ object VpnLogManager {
         val dstPort: Int,
         val size: Int,
         val category: AuditCategory,
-        val detail: String = ""
+        val detail: String = "",
+        val payloadHex: String? = null,
+        val entropy: Double = 0.0
     ) {
         fun toJsonObject(): JSONObject {
             return JSONObject().apply {
@@ -45,6 +48,8 @@ object VpnLogManager {
                 put("size", size)
                 put("category", category.name)
                 put("detail", detail)
+                put("entropy", entropy)
+                payloadHex?.let { put("payloadHex", it) }
             }
         }
     }
@@ -68,22 +73,17 @@ object VpnLogManager {
         
         // 1. Hourly mock data (last 24 hours)
         for (i in 0 until 24) {
-            // Emulate quiet hours (night) vs busy hours (day/evening)
             val isActiveHour = i in 9..23
             val baseDl = if (isActiveHour) 1024L * 1024 * 15 else 1024L * 1024 * 1
-            val baseUl = if (isActiveHour) 1024L * 1024 * 3 else (1024L * 1024) / 5 // 200 KB in bytes
+            val baseUl = if (isActiveHour) 1024L * 1024 * 3 else (1024L * 1024) / 5 
             
-            // Random fluctuations
             hourlyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 25)
             hourlyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 5)
             
-            // Simulate large file download at 2 PM (index 14) or 8 PM (index 20)
-            if (i == 14) {
-                hourlyDownload[i] += 1024L * 1024 * 420 // 420MB update
-            }
+            if (i == 14) hourlyDownload[i] += 1024L * 1024 * 420 
             if (i == 20) {
-                hourlyDownload[i] += 1024L * 1024 * 280 // 280MB rootfs parts
-                hourlyUpload[i] += 1024L * 1024 * 45 // large backup upload
+                hourlyDownload[i] += 1024L * 1024 * 280 
+                hourlyUpload[i] += 1024L * 1024 * 45 
             }
         }
 
@@ -96,27 +96,41 @@ object VpnLogManager {
             dailyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 180)
             dailyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 30)
             
-            // Add a few massive upgrade spikes
             if (i == 7 || i == 18 || i == 25) {
-                dailyDownload[i] += 1024L * 1024 * 950 // Near 1GB package downloads
+                dailyDownload[i] += 1024L * 1024 * 950 
                 dailyUpload[i] += 1024L * 1024 * 110
             }
         }
 
         // 3. Weekly mock data (last 12 weeks)
         for (i in 0 until 12) {
-            val baseDl = 1610612736L // 1.5 GB in bytes
-            val baseUl = 268435456L // 256 MB in bytes
+            val baseDl = 1610612736L 
+            val baseUl = 268435456L 
             
             weeklyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 1024).toLong()
             weeklyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 250).toLong()
             
-            // Simulate distro installation week (week 3)
             if (i == 3) {
-                weeklyDownload[i] += 1024L * 1024 * 1024 * 3L // extra 3GB
+                weeklyDownload[i] += 1024L * 1024 * 1024 * 3L 
                 weeklyUpload[i] += 1024L * 1024 * 500
             }
         }
+    }
+
+    private fun calculateEntropy(data: ByteArray): Double {
+        if (data.isEmpty()) return 0.0
+        val counts = IntArray(256)
+        for (b in data) {
+            counts[b.toInt() and 0xFF]++
+        }
+        var entropy = 0.0
+        for (count in counts) {
+            if (count > 0) {
+                val p = count.toDouble() / data.size
+                entropy -= p * (Math.log(p) / Math.log(2.0))
+            }
+        }
+        return entropy
     }
 
     fun logConnection(
@@ -127,8 +141,19 @@ object VpnLogManager {
         dstPort: Int,
         size: Int,
         category: AuditCategory,
-        detail: String = ""
+        detail: String = "",
+        data: ByteArray? = null
     ) {
+        val entropyVal = data?.let { calculateEntropy(it) } ?: 0.0
+        val payloadHex = data?.let { bytes ->
+            val hex = StringBuilder()
+            val maxBytes = minOf(bytes.size, 64)
+            for (i in 0 until maxBytes) {
+                hex.append(String.format("%02X", bytes[i]))
+            }
+            hex.toString()
+        }
+
         val entry = LogEntry(
             timestamp = System.currentTimeMillis(),
             protocol = protocol,
@@ -138,23 +163,24 @@ object VpnLogManager {
             dstPort = dstPort,
             size = size,
             category = category,
-            detail = detail
+            detail = detail,
+            payloadHex = payloadHex,
+            entropy = entropyVal
         )
         entries.add(entry)
         while (entries.size > MAX_LOGS) {
             entries.poll()
         }
 
-        // Add to telemetry stats across all timeframes dynamically
         val hourIndex = (System.currentTimeMillis() / (1000 * 60 * 60) % 24).toInt()
         val dayIndex = (System.currentTimeMillis() / (1000 * 60 * 60 * 24) % 30).toInt()
         val weekIndex = (System.currentTimeMillis() / (1000 * 60 * 60 * 24 * 7) % 12).toInt()
 
-        if (srcIp == "10.0.0.2") { // Sending out from client
+        if (srcIp == "10.0.0.2") { 
             hourlyUpload[hourIndex] += size.toLong()
             dailyUpload[dayIndex] += size.toLong()
             weeklyUpload[weekIndex] += size.toLong()
-        } else { // incoming
+        } else { 
             hourlyDownload[hourIndex] += size.toLong()
             dailyDownload[dayIndex] += size.toLong()
             weeklyDownload[weekIndex] += size.toLong()

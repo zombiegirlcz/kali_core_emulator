@@ -43,6 +43,12 @@ class VpnCaptureService : VpnService() {
 
         fun getCapturedPacketCount(): Long = instance?.packetCount?.get() ?: 0L
         fun getCapturedByteCount(): Long = instance?.byteCount?.get() ?: 0L
+
+        fun protectSocket(socket: java.net.DatagramSocket): Boolean {
+            val inst = instance ?: return false
+            inst.protect(socket)
+            return true
+        }
     }
 
     private val isServiceRunning = AtomicBoolean(false)
@@ -68,6 +74,7 @@ class VpnCaptureService : VpnService() {
         super.onCreate()
         instance = this
         createNotificationChannel()
+        VpnFirewallManager.init(applicationContext)
         Log.i(TAG, "Service created")
     }
 
@@ -102,17 +109,22 @@ class VpnCaptureService : VpnService() {
                 .setSession("NetHunter VPN")
                 .setMtu(customMtu)
                 .addAddress(VPN_ADDRESS, 32)
-                .addRoute("0.0.0.0", 0)
+            
+            if (VpnPeerManager.isEnabled()) {
+                builder.addAddress("10.9.0.${VpnPeerManager.getLocalPeerId()}", 24)
+            }
+
+            builder.addRoute("0.0.0.0", 0)
                 .addDnsServer(customDns)
                 .allowBypass()
 
-            // Exclude private subnets to prevent ADB/local API disconnects
+            // Exclude private subnets ONLY if they don't conflict with our VPN range
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 try {
-                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("10.0.0.0"), 8))
+                    // We avoid excluding 10.0.0.0/8 because our VPN is 10.0.0.2
                     builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
                     builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
-                    Log.i(TAG, "Excluded private subnets from VPN")
+                    Log.i(TAG, "Excluded non-conflicting private subnets from VPN")
                 } catch (e: Exception) {
                     Log.w(TAG, "Could not exclude private subnets: ${e.message}")
                 }
@@ -157,6 +169,20 @@ class VpnCaptureService : VpnService() {
                 }
             }
 
+            if (VpnPeerManager.isEnabled()) {
+                VpnPeerManager.initCallbacks { decryptedBytes ->
+                    try {
+                        vpnOutput?.write(decryptedBytes, 0, decryptedBytes.size)
+                        packetCount.incrementAndGet()
+                        byteCount.addAndGet(decryptedBytes.size.toLong())
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Error writing decrypted P2P packet to TUN: ${e.message}")
+                    }
+                }
+                // Re-trigger setEnabled to start UDP listeners
+                VpnPeerManager.setEnabled(true)
+            }
+
             natEngine = VpnNatEngine(this, writeToTun)
 
             // Start packet forwarding loop on background thread
@@ -191,6 +217,9 @@ class VpnCaptureService : VpnService() {
         isServiceRunning.set(false)
         onStateChangeListener?.invoke(false)
         handler.removeCallbacks(statsUpdater)
+
+        // Disable P2P and release sockets
+        VpnPeerManager.setEnabled(false)
 
         vpnThread?.interrupt()
         vpnThread = null

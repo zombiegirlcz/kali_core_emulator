@@ -20,12 +20,14 @@ class VpnNatEngine(
 ) {
     companion object {
         private const val TAG = "VpnNatEngine"
-        private const val LOCAL_IP_INT = 0x0A080002 // 10.8.0.2
+        private const val LOCAL_IP_INT = 0x0A000002 // 10.0.0.2
     }
 
     private val isRunning = AtomicBoolean(false)
     private var selector: Selector? = null
     private var selectorThread: Thread? = null
+    private var aiBrain: AIBrain? = null
+    private val lastPacketTimes = ConcurrentHashMap<String, Long>()
 
     // Session maps keyed by client source port
     private val tcpSessions = ConcurrentHashMap<Int, TcpSession>()
@@ -60,11 +62,67 @@ class VpnNatEngine(
     init {
         try {
             selector = Selector.open()
+            aiBrain = AIBrain(vpnService)
             isRunning.set(true)
             startSelectorLoop()
-            Log.i(TAG, "NAT Engine successfully initialized")
+            Log.i(TAG, "NAT Engine successfully initialized with AI Brain")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to open Selector: ${e.message}", e)
+            Log.e(TAG, "Failed to initialize NAT Engine: ${e.message}", e)
+        }
+    }
+
+    private fun calculateEntropy(data: ByteArray): Float {
+        if (data.isEmpty()) return 0.0f
+        val counts = IntArray(256)
+        for (b in data) {
+            counts[b.toInt() and 0xFF]++
+        }
+        var entropy = 0.0
+        for (count in counts) {
+            if (count > 0) {
+                val p = count.toDouble() / data.size
+                entropy -= p * (Math.log(p) / Math.log(2.0))
+            }
+        }
+        return entropy.toFloat()
+    }
+
+    private fun runInference(
+        protocol: Int,
+        srcPort: Int,
+        dstPort: Int,
+        payload: ByteArray?,
+        totalSize: Int
+    ): VpnLogManager.AuditCategory {
+        val brain = aiBrain ?: return VpnLogManager.AuditCategory.ALLOWED
+        
+        val sessionKey = "$protocol:$srcPort:$dstPort"
+        val now = System.currentTimeMillis()
+        val lastTime = lastPacketTimes[sessionKey] ?: now
+        val delta = (now - lastTime) / 1000.0f
+        lastPacketTimes[sessionKey] = now
+
+        val features = FloatArray(14)
+        features[0] = totalSize.toFloat()
+        features[1] = protocol.toFloat()
+        features[2] = delta
+        features[3] = srcPort.toFloat()
+        features[4] = dstPort.toFloat()
+        features[5] = payload?.let { calculateEntropy(it) } ?: 0.0f
+        
+        // b0-b7
+        if (payload != null) {
+            val limit = minOf(payload.size, 8)
+            for (i in 0 until limit) {
+                features[6 + i] = (payload[i].toInt() and 0xFF).toFloat()
+            }
+        }
+
+        val label = brain.classify(features)
+        return when (label) {
+            1 -> VpnLogManager.AuditCategory.VERBOSE // DNS / Info
+            2 -> VpnLogManager.AuditCategory.CRITICAL // Critical anomaly
+            else -> VpnLogManager.AuditCategory.ALLOWED
         }
     }
 
@@ -72,7 +130,25 @@ class VpnNatEngine(
         if (!isRunning.get() || length < 20) return
 
         val ipHeader = IpHeader(packetBuffer, 0)
+        
+        val rawData = ByteArray(length)
+        val pos = packetBuffer.position()
+        packetBuffer.position(0)
+        packetBuffer.get(rawData)
+        packetBuffer.position(pos)
+        val protoStr = when(ipHeader.protocol) { 6 -> "TCP"; 17 -> "UDP"; else -> "IP-${ipHeader.protocol}" }
+        VpnLogManager.logConnection(protoStr, intToIp(ipHeader.sourceAddress), 0, intToIp(ipHeader.destinationAddress), 0, length, VpnLogManager.AuditCategory.VERBOSE, "RAW TUN INTERCEPT", rawData)
+
         if (ipHeader.version != 4) return // Only support IPv4 in this userspace stack
+
+        val dstIp = ipHeader.destinationAddress
+        if (VpnPeerManager.isEnabled() && (dstIp and 0xFFFFFF00.toInt()) == 0x0A090000) {
+            val peerId = dstIp and 0x000000FF
+            if (peerId in 1..254) {
+                VpnPeerManager.sendPacketToPeer(peerId, rawData)
+                return
+            }
+        }
 
         when (ipHeader.protocol) {
             6 -> handleTcpPacket(packetBuffer, ipHeader)
@@ -87,23 +163,30 @@ class VpnNatEngine(
         val dstIp = ipHeader.destinationAddress
         val dstIpStr = intToIp(dstIp)
         
+        if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
+            val payloadLen = udpHeader.length - 8
+            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, if (payloadLen > 0) payloadLen else 0, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+            return
+        }
+        
         val payloadOffset = ipHeader.ihl + 8
         val payloadLen = udpHeader.length - 8
         if (payloadLen <= 0) return
 
         var session = udpSessions[srcPort]
         if (session == null) {
-            // Threat detection for UDP
-            var category = VpnLogManager.AuditCategory.ALLOWED
-            var detail = "Standard UDP transfer"
-            if (dstPort == 4444 || dstPort == 4443 || dstPort == 9999 || dstPort == 5555) {
-                category = VpnLogManager.AuditCategory.CRITICAL
-                detail = "High-risk port targeted via UDP!"
-            } else if (dstPort == 53) {
-                detail = "DNS Resolution lookup"
-            }
+            // Extraction of payload for AI brain
+            packetBuffer.position(payloadOffset)
+            val payloadForAi = ByteArray(minOf(payloadLen, 64))
+            packetBuffer.get(payloadForAi)
+            packetBuffer.position(0) // Reset position for subsequent use
 
-            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, category, detail)
+            // AI Inference
+            val aiCategory = runInference(17, srcPort, dstPort, payloadForAi, ipHeader.totalLength)
+            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
+                "AI: Detected critical network anomaly!" else "AI: Verified UDP stream"
+
+            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail)
 
             try {
                 val channel = DatagramChannel.open().apply {
@@ -139,6 +222,13 @@ class VpnNatEngine(
         try {
             packetBuffer.position(payloadOffset)
             packetBuffer.limit(payloadOffset + payloadLen)
+            
+            val payloadCopy = ByteArray(payloadLen)
+            packetBuffer.get(payloadCopy)
+            packetBuffer.position(payloadOffset) // reset for write
+            
+            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "UDP payload out", payloadCopy)
+
             session.datagramChannel?.write(packetBuffer)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write UDP data to WAN: ${e.message}")
@@ -153,6 +243,14 @@ class VpnNatEngine(
         val dstIp = ipHeader.destinationAddress
         val dstIpStr = intToIp(dstIp)
         
+        if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
+            if (tcpHeader.isSYN) {
+                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+                sendTcpRst(ipHeader, tcpHeader)
+            }
+            return
+        }
+        
         var session = tcpSessions[srcPort]
 
         if (tcpHeader.isSYN) {
@@ -161,20 +259,12 @@ class VpnNatEngine(
                 closeTcpSession(srcPort)
             }
             
-            // Threat detection filters
-            var category = VpnLogManager.AuditCategory.ALLOWED
-            var detail = "TCP Handshake handshake started"
-            if (dstPort == 4444 || dstPort == 4443 || dstPort == 9999) {
-                category = VpnLogManager.AuditCategory.CRITICAL
-                detail = "Reverse Shell gateway target detected!"
-            } else if (dstPort == 5555 || dstPort == 5037) {
-                category = VpnLogManager.AuditCategory.SUSPICIOUS
-                detail = "ADB / Remote Shell enumeration attempt"
-            } else if (dstPort == 22 || dstPort == 23 || dstPort == 80 || dstPort == 443) {
-                detail = "Standard web / SSH connection"
-            }
+            // AI Inference for TCP SYN (usually no payload yet, but we check headers)
+            val aiCategory = runInference(6, srcPort, dstPort, null, ipHeader.totalLength)
+            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
+                "AI: Detected high-risk TCP request!" else "AI: Verified TCP connection"
 
-            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, category, detail)
+            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, aiCategory, detail)
 
             try {
                 val channel = SocketChannel.open()
@@ -321,7 +411,7 @@ class VpnNatEngine(
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
                 
-                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "TCP payload transfer")
+                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "TCP payload out", payloadCopy.array())
 
                 if (session.socketChannel?.isConnected == true) {
                     try {
@@ -429,7 +519,7 @@ class VpnNatEngine(
                 
                 // Telemetry tracking for incoming WAN data
                 val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection("TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.ALLOWED, "Incoming TCP packets")
+                VpnLogManager.logConnection("TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "TCP payload in", payload)
 
                 // Wrap in TCP packet and write to TUN
                 sendTcpDataToClient(session, payload)
@@ -453,7 +543,7 @@ class VpnNatEngine(
                 
                 // Telemetry tracking for incoming WAN data
                 val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection("UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.ALLOWED, "Incoming UDP packets")
+                VpnLogManager.logConnection("UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "UDP payload in", payload)
 
                 // Wrap in UDP packet and write to TUN
                 sendUdpDataToClient(session, payload)

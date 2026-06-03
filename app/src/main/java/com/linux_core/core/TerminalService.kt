@@ -91,6 +91,17 @@ class TerminalService : Service() {
 
         fun getActiveSessionCount(): Int = sessions.size
 
+        private fun getSessionPid(session: TerminalSession): Int {
+            return try {
+                val field = session.javaClass.getDeclaredField("mPid")
+                field.isAccessible = true
+                field.get(session) as Int
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not get PID from session via reflection: ${e.message}")
+                -1
+            }
+        }
+
         fun createSession(
             context: Context,
             config: ProotConfig,
@@ -123,7 +134,19 @@ class TerminalService : Service() {
         }
 
         fun removeSession(session: TerminalSession) {
+            val pid = getSessionPid(session)
             session.finishIfRunning()
+            
+            if (pid > 0) {
+                try {
+                    // Force kill the entire process group to prevent zombies/leaks
+                    Runtime.getRuntime().exec("kill -9 -$pid")
+                    Log.i(TAG, "Force killed process group -$pid")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to kill process group for PID $pid: ${e.message}")
+                }
+            }
+
             sessions.remove(session)
             sessionClients.remove(session)
             
@@ -194,8 +217,19 @@ class TerminalService : Service() {
 
     fun stopAll() {
         Log.i(TAG, "Stopping all sessions")
-        sessions.forEach { sessionClients[it]?.currentView = null }
-        sessions.forEach { it.finishIfRunning() }
+        sessions.forEach { session ->
+            sessionClients[session]?.currentView = null
+            val pid = getSessionPid(session)
+            session.finishIfRunning()
+            if (pid > 0) {
+                try {
+                    Runtime.getRuntime().exec("kill -9 -$pid")
+                    Log.i(TAG, "Force killed session process group -$pid")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to kill group for PID $pid: ${e.message}")
+                }
+            }
+        }
         sessions.clear()
         sessionClients.clear()
         stopForeground(STOP_FOREGROUND_REMOVE)

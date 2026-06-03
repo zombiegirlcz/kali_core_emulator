@@ -48,21 +48,26 @@ object ProotManager {
 
         val setupDoneFile = File(homeDir, ".setup_done")
         val bootstrapRequired = File(homeDir, ".bootstrap_required")
+        val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         
         if (!setupDoneFile.exists() && !bootstrapRequired.exists()) {
             try {
                 bootstrapRequired.createNewFile()
                 Log.i(TAG, "Fresh install detected, created .bootstrap_required")
+                deployZshrc(context, rootfsDir, distroId)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create bootstrap sentinel: ${e.message}")
             }
         }
 
-        val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
+        deployVpnHelpDocument(homeDir)
+        val userHomeDir = File(rootfsDir, "home/$distroId")
+        if (userHomeDir.exists()) {
+            deployVpnHelpDocument(userHomeDir)
+        }
         deployApiScripts(rootfsDir)
-        deployZshrc(context, rootfsDir, distroId)
 
         val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
         deployBinaries(context, suffix)
@@ -200,7 +205,7 @@ object ProotManager {
             append("db_version() { return 0; }").append(NL)
             append("db_input() { return 0; }").append(NL)
             append("db_go() { return 0; }").append(NL)
-            append("db_get() { eval \"\$RET=''\"; return 0; }").append(NL)
+            append("db_get() { RET=''; return 0; }").append(NL)
             append("db_set() { return 0; }").append(NL)
             append("db_subst() { return 0; }").append(NL)
             append("db_fset() { return 0; }").append(NL)
@@ -226,7 +231,7 @@ object ProotManager {
             }
 
             if (!hasRoot) {
-                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf dpkg-realpath; do").append(NL)
+                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf dpkg-realpath systemd-sysusers systemd-tmpfiles journalctl; do").append(NL)
                 append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
                 append("    path=\"\$prefix/\$cmd\"").append(NL)
                 append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
@@ -242,8 +247,9 @@ object ProotManager {
 
             append("apt update 2>&1 || true").append(NL)
             append("echo '[*] Installing core packages...'").append(NL)
-            append("apt install -y --allow-unauthenticated perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip 2>&1 || true").append(NL)
-            append("# Restore debconf confmodule (real Perl now installed, debconf should work)").append(NL)
+            append("apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip 2>&1 || true").append(NL)
+            // Restore debconf confmodule (real Perl now installed, debconf should work)
+
             append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
             append("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
             append("  echo '[*] Restored debconf confmodule'").append(NL)
@@ -389,12 +395,50 @@ object ProotManager {
     }
 
     private fun deployApiScripts(rootfsDir: File) {
-        val binDir = File(rootfsDir, "usr/bin")
+        val binDir = File(rootfsDir, "usr/local/bin")
         if (!binDir.exists()) binDir.mkdirs()
 
         val NL = "\n"
 
         val scripts = mapOf(
+            "apt" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("# NetHunter AI Operator APT Wrapper").append(NL)
+                append("export DEBIAN_FRONTEND=noninteractive").append(NL)
+                append("# 1. Fix debconf syntax error if present").append(NL)
+                append("if [ -f /usr/share/debconf/confmodule ]; then").append(NL)
+                append("  sed -i \"s/eval \\\"\\\$RET=''\\\"/RET=''/g\" /usr/share/debconf/confmodule 2>/dev/null").append(NL)
+                append("fi").append(NL)
+                append("# 2. Reinforce diversions for systemd tools if missing").append(NL)
+                append("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do").append(NL)
+                append("  if [ -f \"/usr/bin/\$cmd\" ] && [ ! -L \"/usr/bin/\$cmd\" ]; then").append(NL)
+                append("    dpkg-divert --add --local --rename --divert \"/usr/bin/\$cmd.distrib\" \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
+                append("    ln -sf /bin/true \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
+                append("  fi").append(NL)
+                append("done").append(NL)
+                append("# 3. Run real apt").append(NL)
+                append("exec /usr/bin/apt \"$@\"").append(NL)
+            }.toString(),
+
+            "apt-get" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("# NetHunter AI Operator APT-GET Wrapper").append(NL)
+                append("export DEBIAN_FRONTEND=noninteractive").append(NL)
+                append("# 1. Fix debconf syntax error if present").append(NL)
+                append("if [ -f /usr/share/debconf/confmodule ]; then").append(NL)
+                append("  sed -i \"s/eval \\\"\\\$RET=''\\\"/RET=''/g\" /usr/share/debconf/confmodule 2>/dev/null").append(NL)
+                append("fi").append(NL)
+                append("# 2. Reinforce diversions for systemd tools if missing").append(NL)
+                append("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do").append(NL)
+                append("  if [ -f \"/usr/bin/\$cmd\" ] && [ ! -L \"/usr/bin/\$cmd\" ]; then").append(NL)
+                append("    dpkg-divert --add --local --rename --divert \"/usr/bin/\$cmd.distrib\" \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
+                append("    ln -sf /bin/true \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
+                append("  fi").append(NL)
+                append("done").append(NL)
+                append("# 3. Run real apt-get").append(NL)
+                append("exec /usr/bin/apt-get \"$@\"").append(NL)
+            }.toString(),
+
             "vpn-bypass" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
@@ -468,6 +512,84 @@ object ProotManager {
                 append("echo \"[*] Executing (VPN on): \$@\"").append(NL)
                 append("\"\$@\"").append(NL)
                 append("exit \$?").append(NL)
+            }.toString(),
+
+            "vpn-cli" to StringBuilder().apply {
+                append("#!/bin/bash").append(NL)
+                append("API_URL=\"http://127.0.0.1:1337\"").append(NL)
+                append("function usage() {").append(NL)
+                append("    echo \"Usage: vpn-cli [start|stop|status|logs|ignore|ai|chat]\"").append(NL)
+                append("    echo \"  chat          Open local AI Expert console\"").append(NL)
+                append("    echo \"  ai start      Start background monitor\"").append(NL)
+                append("    exit 1").append(NL)
+                append("}").append(NL)
+                append("case \"\$1\" in").append(NL)
+                append("    chat) python3 /usr/local/bin/ai-agent.py chat ;;").append(NL)
+                append("    start) curl -s -X POST \"\$API_URL/vpn/start\" | grep -q \"starting\" && echo \"✅ VPN starting...\" || echo \"❌ Failed to start VPN\" ;;").append(NL)
+                append("    stop) curl -s -X POST \"\$API_URL/vpn/stop\" | grep -q \"stopping\" && echo \"✅ VPN stopping...\" || echo \"❌ Failed to stop VPN\" ;;").append(NL)
+                append("    status)").append(NL)
+                append("        STATUS=\$(curl -s \"\$API_URL/vpn\")").append(NL)
+                append("        RUNNING=\$(echo \"\$STATUS\" | grep -o '\"running\":[^,]*' | cut -d: -f2)").append(NL)
+                append("        if [ \"\$RUNNING\" == \"true\" ]; then echo \"🟢 VPN is RUNNING\"; else echo \"🔴 VPN is STOPPED\"; fi").append(NL)
+                append("        ;;").append(NL)
+                append("    ai)").append(NL)
+                append("        case \"\$2\" in").append(NL)
+                append("            start) nohup python3 /usr/local/bin/ai-agent.py monitor >/tmp/ai-agent.log 2>&1 & echo \"🚀 AI Monitor started.\" ;;").append(NL)
+                append("            stop) pkill -f ai-agent.py && echo \"🛑 AI Monitor stopped.\" ;;").append(NL)
+                append("            status) pgrep -f ai-agent.py >/dev/null && echo \"🟢 AI Monitor is RUNNING\" || echo \"🔴 AI Monitor is STOPPED\" ;;").append(NL)
+                append("            *) echo \"Usage: vpn-cli ai [start|stop|status]\" ;;").append(NL)
+                append("        esac ;;").append(NL)
+                append("    *) usage ;;").append(NL)
+                append("esac").append(NL)
+            }.toString(),
+
+            "ai-agent.py" to StringBuilder().apply {
+                append("#!/usr/bin/python3").append(NL)
+                append("import requests, time, json, os, sys").append(NL)
+                append("API_URL = 'http://127.0.0.1:1337'").append(NL)
+                append("def get_logs():").append(NL)
+                append("    try: return requests.get(f'{API_URL}/vpn/logs').json()").append(NL)
+                append("    except: return []").append(NL)
+                append("def run_shell(cmd):").append(NL)
+                append("    try: return requests.post(f'{API_URL}/shell', data=cmd).json()").append(NL)
+                append("    except: return {'error': 'API unreachable'}").append(NL)
+                append("def analyze_log(log):").append(NL)
+                append("    src = log.get('srcIp')").append(NL)
+                append("    dst = log.get('dstIp')").append(NL)
+                append("    port = log.get('dstPort')").append(NL)
+                append("    entropy = log.get('entropy', 0)").append(NL)
+                append("    ans = f\"Provoz {src} -> {dst}:{port}. \"").append(NL)
+                append("    if log.get('category') == 'CRITICAL':").append(NL)
+                append("        ans += \"🔴 ANALÝZA: Kritická anomálie detekována! \"").append(NL)
+                append("        if entropy > 7.5: ans += \"Vysoká entropie (šifrovaný tunel). \"").append(NL)
+                append("        ans += f\"\\n👉 Tip: '!iptables -I OUTPUT -d {dst} -j DROP'\"").append(NL)
+                append("    else: ans += \"🟢 Vypadá to v pohodě.\"").append(NL)
+                append("    return ans").append(NL)
+                append("def chat_loop():").append(NL)
+                append("    print('🤖 NetHunter Local AI Expert (v1.0)')").append(NL)
+                append("    print('Ptej se na \"stav\" nebo piš !příkaz pro shell.')").append(NL)
+                append("    while True:").append(NL)
+                append("        user_input = input('👤 Ty: ').lower()").append(NL)
+                append("        if user_input in ['exit', 'quit']: break").append(NL)
+                append("        if 'stav' in user_input:").append(NL)
+                append("            logs = get_logs()").append(NL)
+                append("            print(f\"🤖 Agent: {analyze_log(logs[0]) if logs else 'Žádné logy.'}\")").append(NL)
+                append("        elif user_input.startswith('!'):").append(NL)
+                append("            res = run_shell(user_input[1:])").append(NL)
+                append("            print(f\"🤖 Shell: {res.get('stdout','')}{res.get('stderr','')}\")").append(NL)
+                append("        else: print(\"🤖 Agent: Sleduju provoz. Napiš 'stav' pro analýzu.\")").append(NL)
+                append("def monitor_loop():").append(NL)
+                append("    seen = set()").append(NL)
+                append("    while True:").append(NL)
+                append("        for l in get_logs():").append(NL)
+                append("            if f\"{l['timestamp']}:{l['srcIp']}\" not in seen:").append(NL)
+                append("                seen.add(f\"{l['timestamp']}:{l['srcIp']}\")").append(NL)
+                append("                if l.get('category') == 'CRITICAL':").append(NL)
+                append("                    requests.post(f'{API_URL}/toast', data=f\"AI: Detekován útok z {l['srcIp']}!\")").append(NL)
+                append("        time.sleep(5)").append(NL)
+                append("if __name__ == '__main__':").append(NL)
+                append("    if len(sys.argv) > 1 and sys.argv[1] == 'chat': chat_loop()").append(NL)
+                append("    else: monitor_loop()").append(NL)
             }.toString(),
 
             "ignore-vpn" to StringBuilder().apply {
@@ -713,6 +835,57 @@ object ProotManager {
         val userHome = File(rootfsDir, "home/$distroId")
         if (userHome.exists()) {
             File(userHome, ".zshrc").writeText(zshrcContent)
+        }
+    }
+
+    private fun deployVpnHelpDocument(targetDir: File) {
+        val helpFile = File(targetDir, "vpn_help.txt")
+        val content = """
+===================================================================
+   NETHUNTER AI OPERATOR - VPN CONTROLLER COMMAND LINE HELP
+===================================================================
+
+You can control and query the VPN gateway service directly from
+the command line using the following deployed scripts:
+
+1. ENABLE GLOBAL VPN SNIFFER
+   Command: vpn-on
+   Description: Starts the global VPN capture service.
+   Usage with command: vpn-on <command> (forces VPN on and runs command)
+
+2. DISABLE GLOBAL VPN SNIFFER
+   Command: vpn-off
+   Description: Stops the global VPN capture service.
+   Usage with command: vpn-off <command> (temporarily turns off VPN,
+                        runs the command, then restores VPN)
+
+3. BYPASS VPN FOR CURRENT SESSION
+   Command: ignore-vpn [on|off|status]
+   Description: Excludes or restores the current terminal session
+                from VPN sniffer intercept/routing.
+
+4. RUN SINGLE COMMAND BYPASSING VPN
+   Command: vpn-bypass <command> [args...]
+   Description: Runs specified command bypassing the VPN sniffer
+                using local loopback proxy.
+
+5. DIRECT API CALLS (CURL)
+   You can also interact with the Local API Server (port 1337):
+   • Check VPN Status:
+     curl -s http://127.0.0.1:1337/vpn
+   • Start VPN:
+     curl -s -X POST http://127.0.0.1:1337/vpn/start
+   • Stop VPN:
+     curl -s -X POST http://127.0.0.1:1337/vpn/stop
+
+===================================================================
+""".trimIndent()
+        try {
+            helpFile.writeText(content)
+            helpFile.setReadable(true, false)
+            Log.i(TAG, "Created VPN help document at: ${helpFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write vpn_help.txt: ${e.message}")
         }
     }
 }

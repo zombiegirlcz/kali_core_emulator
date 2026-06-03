@@ -1040,7 +1040,9 @@ class TerminalActivity : ComponentActivity() {
                     val builder = ProcessBuilder("/system/bin/sh", launcher, "nethunter-desktop start")
                     builder.directory(filesDir)
                     val process = builder.start()
-                    // Don't block, just spawn.
+                    // Wait for the process to finish to reap it (prevent zombie)
+                    val exitCode = process.waitFor()
+                    Log.i(TAG, "Desktop launcher process finished with exit code: $exitCode")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to start desktop process: ${e.message}")
                 }

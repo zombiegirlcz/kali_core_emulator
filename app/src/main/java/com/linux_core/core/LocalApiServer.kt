@@ -145,7 +145,9 @@ object LocalApiServer {
                 path == "/volume" && method == "GET" -> handleVolumeGet(context, out)
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
+                path == "/shell" && method == "POST" -> handleShell(body, out)
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
+                path == "/vpn/logs" && method == "GET" -> handleVpnLogs(out)
                 path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
                 path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
                 path.startsWith("/vpn/ignore") && method == "GET" -> handleVpnIgnoreGet(path, out)
@@ -408,6 +410,36 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
+    }
+
+    private fun handleShell(body: String, out: OutputStream) {
+        try {
+            val command = body.trim()
+            if (command.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+                return
+            }
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            val output = process.inputStream.bufferedReader().readText()
+            val error = process.errorStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+
+            val json = JSONObject().apply {
+                put("exit_code", exitCode)
+                put("stdout", output)
+                put("stderr", error)
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnLogs(out: OutputStream) {
+        val logs = VpnLogManager.getLogs()
+        val array = org.json.JSONArray()
+        logs.forEach { array.put(it.toJsonObject()) }
+        sendResponse(out, 200, "OK", array.toString())
     }
 
     private fun handleVpnStatus(context: Context, out: OutputStream) {

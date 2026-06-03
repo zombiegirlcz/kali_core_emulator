@@ -45,9 +45,9 @@ A state-of-the-art, highly optimized Android application designed to run full gu
 
 ---
 
-## 🌐 Integrated Android API Bridge (NetHunter API)
+## 🌐 Integrated Android API Bridge & CLI VPN Control
 
-The application starts a loopback API server listening at `127.0.0.1:1337` on the Android host, exposing native device sensors and hardware features directly to the guest Linux terminal via standard bash utilities:
+The application starts a loopback API server listening at `127.0.0.1:1337` on the Android host, exposing native device sensors and hardware features directly to the guest Linux terminal via standard bash utilities and specialized VPN management scripts:
 
 | Command | Action | Example usage |
 | :--- | :--- | :--- |
@@ -62,9 +62,33 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nethunter-location` | Retrieve current GPS coordinates in JSON | `nethunter-location` |
 | `nethunter-volume [level]` | Retrieve or set the media stream volume | `nethunter-volume 10` |
 | `nethunter-torch [on\|off]` | Turn the device flashlight on or off | `nethunter-torch on` |
-| `vpn-on` | Enable global VPN AdGuard Sniffer | `vpn-on` |
-| `vpn-off` | Disable global VPN AdGuard Sniffer | `vpn-off` |
-| `ignore-vpn [on\|off\|status]` | Toggle VPN bypass for the current session | `ignore-vpn on` |
+| `vpn-on` | Enable global VPN AdGuard Sniffer / NAT Engine | `vpn-on` |
+| `vpn-off` | Disable global VPN AdGuard Sniffer / NAT Engine | `vpn-off` |
+| `vpn-cli <action>` | Advanced VPN CLI to query logs, control service, or start monitor | `vpn-cli status` |
+| `vpn-bypass <cmd>` | Forces a command to bypass VPN and connect directly | `vpn-bypass curl ipinfo.io` |
+| `ignore-vpn [on\|off\|status]` | Toggle VPN bypass for the current shell session dynamically | `ignore-vpn on` |
+
+---
+
+## 🧠 AI Brain Integration (The Brain of the VPN)
+
+NetHunter AI Operator features an embedded **AI Inference Engine** (`AIBrain.kt`) that sits directly in the packet pathway:
+- **Packet Classification:** Every intercepted TCP/UDP session metadata is analyzed in real-time by a locally running lightweight neural network.
+- **Features Tracked:** Classifies flows based on packet size, protocol number, delta-time intervals, source/destination ports, and payload entropy (to detect hidden encrypted tunnels).
+- **Audit Logging:** Categorizes packets into `ALLOWED`, `VERBOSE`, `SUSPICIOUS`, or `CRITICAL` network anomalies.
+- **Hacker Console Interaction:** Users can execute `vpn-cli chat` to open a local AI Expert console or run `vpn-cli ai start` to spawn a background daemon that monitors connection streams and triggers Android toasts/alerts if high-risk intrusions or security anomalies are detected.
+
+---
+
+## 🛡️ Chroot Environment Protection & Process Control
+
+### 🧟 Zombie Process Resolution
+To prevent ghost background processes and memory leakages, the terminal session manager has been hardened to trace process hierarchies. When a terminal session is closed or restarted, the app automatically traverses `/proc/$pid/fd` and `/proc/$pid/stat` to discover all child/descendant processes spawned by the session. It sends termination signals to clean up the entire descendant tree, ensuring no zombie processes are left running on the Android host.
+
+### 📦 APT Installation Protection
+Under unrooted PRoot environments, packages using systemd or low-level capabilities (`setcap`, `sysctl`, `resolvconf`, etc.) often fail to install, causing packages to remain half-configured. NetHunter AI Operator intercepts these operations using wrapper scripts (`apt`, `apt-get`):
+- **Mock Helpers:** Redirects systemd controls to `/bin/true` to bypass failing service configurations.
+- **Post-Install Repair (`nethunter-fix-postinst`):** Exposes a utility to mock corrupted debian configuration scripts dynamically when `dpkg --configure -a` gets stuck, protecting the environment's integrity during complex tool installations.
 
 ---
 
@@ -79,51 +103,28 @@ The application integrates an advanced, fully customizable, and responsive overl
 
 ---
 
+## 📈 Major Version 3.0 Changelog (NetHunter App Store v3)
+
+This release implements secure peer-to-peer overlay capabilities, geo-proxy loop enhancements, and visual dashboard upgrades:
+
+### 1. Peer-to-Peer Mesh VPN (Tailscale-style)
+- **Overlay Networking:** Added a virtual subnet (`10.9.0.0/24`) mapped to custom P2P interfaces.
+- **STUN Hole Punching:** Queries public STUN servers (`stun.l.google.com:19302`) dynamically to resolve WAN sockets and punches holes through CGNAT routers.
+- **ECDH Cryptography:** Secures communications between peers using AES-128-GCM, with keys derived on-the-fly via native Elliptic Curve Diffie-Hellman (ECDH) key agreements.
+- **Serverless Pairing:** Allows direct peer pairing by pasting simple connection strings containing Node IDs, names, public keys, and resolved WAN addresses.
+
+### 2. High-Performance Proxy Loop Refactoring
+- **Interval Control:** Replaced unstable sleep-modulo logic with a volatile timestamp-tracking loop to guarantee exact rotation intervals.
+- **Interactive Geolocation Nodes:** Upgraded the "Worldwide Rotating Proxy" card to display country flags, resolved IP details, and segmented seg-selectors.
+- **Concurrent Ping Latency Checker:** Added a "PING ALL" diagnostics button, resolving all proxy nodes' latencies concurrently and displaying color-coded speed tags.
+
+---
+
 ## 📈 Major Version 2.0 Changelog
-
-This is the ultimate release of **NetHunter AI Operator**, introducing major core capabilities, UI upgrades, and bug fixes:
-
-### 1. AdGuard JNI C++ VPN Engine Integration
-- Replaced basic Android mock VPN with native AdGuard TCP/IP C++ stack (`libadguard-core.so` & `libadguard-dns.so`).
-- Implemented precise JNI structural mapping callback hooks, matching Smali deconstructed signatures.
-- Enforced Kotlin `@JvmField` properties on bridge models (`DnsRequestProcessedEvent`, `DnsProxySettings`, etc.) to prevent native JNI `NoSuchFieldError` crashes.
-
-### 2. High-Fidelity Interactive Telemetry
-- Upgraded the VPN Center traffic tracker into a fully populated, responsive diagnostic panel.
-- Added Hourly (24h), Weekly (12w), and Daily (30d) dataset arrays prefilled with cyber-themed distribution workloads.
-- Built pointer-coordinate tracking scopes on Canvas to render highlight cursor bars and float detailed tooltip overlay cards.
-- Added scrollable history breakdown logs showing upload-vs-download ratios.
-
-### 3. Session-Specific SOCKS5 Proxy Bypass
-- Developed high-efficiency userspace process-tree mapping. Traverses `/proc` using Breadth-First Search (BFS) to map socket inodes to their matching active `TerminalSession`.
-- Added `POST /vpn/ignore` endpoints on loopback loop, allowing users to execute `ignore-vpn [on|off]` to exclude active terminals from global VPN capture dynamically.
-- Integrated Orange-Gold ignored visual badges inside the UI.
-
-### 4. Categorized Distro-Session Tabs Drawer
-- Redesigned the left session manager drawer with a horizontal segmented tab bar (**ALL**, **KALI**, **PARROT**) to filter active terminal streams.
-- Added custom names database (`ConcurrentHashMap`) persisting session titles.
-- Long-pressing session items opens a styled `AlertDialog` + `EditText` input window.
-- Prepend cards with visual emojis (**🐉** for Kali, **Parrot** getting **🦜**).
-- Made tap targets thicker (`16dp` horizontal, `18dp` vertical padding) to avoid tap misses.
-
-### 5. System File Editor (Nano Integration)
-- Configured `TerminalActivity` as an exported, singleTask-based Document Viewer.
-- Intercepts VIEW and EDIT intent actions, copies files to guest `/tmp/` and automatically spawns `nano /tmp/nethunter_edit_<filename>` inside active shells.
-- Injects line-wiping sequences (`Ctrl+C` and `Ctrl+U`) to safely open files without command conflicts.
-
-### 6. Shell Script Portability Fix
-- Resolved an execution failure where API scripts inside `/usr/bin/` would fail with `/usr/bin/sh not found`.
-- Updated shebangs on all 18 guest scripts in `ProotManager.kt` from the Bionic host path `#!/system/bin/sh` to glibc-native chroot path `#!/bin/sh`.
-
-### 7. Resizing Zoom Precision & Persistence
-- Dampened pinch-to-zoom scaling by `0.15f` to increase layout sizing accuracy by ~6.6x.
-- Saved active sizes to `SharedPreferences`, restoring them on subsequent application restarts and new session creations.
-
-### 8. Native Libs Packing & Git-Tracking Fix
-- Resolved an issue where compiled `.so` files were omitted from release APKs, shrinking size to 2.21MB and causing load failures.
-- Added explicit sourceSets configuration block inside `build.gradle.kts`.
-- Overrode ignore lists via custom `jniLibs/.gitignore` filter blocks to force tracking of shared libraries.
-- Final packaged APK sizes: Debug (**55.5 MB**), Release (**43.5 MB**) containing all 10 compiled native architectures.
+- **AdGuard JNI C++ VPN Engine Integration:** Built native AdGuard TCP/IP C++ stack (`libadguard-core.so` & `libadguard-dns.so`) with precise JNI structural mapping.
+- **High-Fidelity Telemetry:** Upgraded the VPN traffic tracker to draw Download/Upload charts on Canvas.
+- **Session-Specific SOCKS5 Proxy Bypass:** Traversing `/proc` via BFS to map socket inodes to sessions and toggle VPN ignore modes.
+- **Nano Document Editor:** Spawns `nano` safely via view/edit intents from outer storage managers.
 
 ---
 
