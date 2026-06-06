@@ -661,7 +661,6 @@ class TerminalActivity : ComponentActivity() {
             setOnClickListener {
                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 addNewSession()
-                drawerLayout.closeDrawer(Gravity.START)
             }
         }
         drawerView.addView(btnAddSession)
@@ -1412,11 +1411,11 @@ class TerminalActivity : ComponentActivity() {
                     textSize = 14f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#A9B1D6"))
+                    val pad = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
+                    setPadding(pad, pad, pad, pad)
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        setMargins(8, 0, 8, 0)
-                    }
+                    )
                     layoutParams = params
                     setOnClickListener {
                         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -1429,7 +1428,6 @@ class TerminalActivity : ComponentActivity() {
                 row.setOnClickListener {
                     row.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     switchToSession(session)
-                    drawerLayout.closeDrawer(Gravity.START)
                 }
 
                 row.setOnLongClickListener {

@@ -67,7 +67,7 @@ object ProotManager {
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(userHomeDir)
         }
-        deployApiScripts(rootfsDir)
+        deployApiScripts(context, rootfsDir)
 
         val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
         deployBinaries(context, suffix)
@@ -394,7 +394,7 @@ object ProotManager {
         }
     }
 
-    private fun deployApiScripts(rootfsDir: File) {
+    private fun deployApiScripts(context: Context, rootfsDir: File) {
         val binDir = File(rootfsDir, "usr/local/bin")
         if (!binDir.exists()) binDir.mkdirs()
 
@@ -629,6 +629,11 @@ object ProotManager {
                 append("curl -s http://127.0.0.1:1337/battery").append(NL)
             }.toString(),
 
+            "nethunter-speech-input" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("curl -s http://127.0.0.1:1337/voice_input").append(NL)
+            }.toString(),
+
             "nethunter-vibrate" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("duration=\${1:-500}").append(NL)
@@ -808,6 +813,28 @@ object ProotManager {
                 Log.e("ProotManager", "Failed to deploy API script $name: ${e.message}")
             }
         }
+
+        // Deploy nethunter_agent.py and nethunter-agent-cli from assets
+        val assetsToDeploy = listOf(
+            "nethunter_agent.py" to "nethunter_agent.py",
+            "nethunter-agent-cli" to "nethunter-agent-cli"
+        )
+        for ((assetName, targetName) in assetsToDeploy) {
+            val destFile = File(binDir, targetName)
+            try {
+                context.assets.open(assetName).use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                destFile.setExecutable(true, false)
+                destFile.setReadable(true, false)
+                destFile.setWritable(true, false)
+                Log.i("ProotManager", "Successfully deployed agent script: $targetName")
+            } catch (e: Exception) {
+                Log.e("ProotManager", "Failed to deploy P2P/AI asset script $targetName: ${e.message}")
+            }
+        }
     }
 
     private fun deployZshrc(context: Context, rootfsDir: File, distroId: String) {
@@ -839,53 +866,77 @@ object ProotManager {
     }
 
     private fun deployVpnHelpDocument(targetDir: File) {
-        val helpFile = File(targetDir, "vpn_help.txt")
+        val helpFile = File(targetDir, "nethunter_docs.md")
         val content = """
-===================================================================
-   NETHUNTER AI OPERATOR - VPN CONTROLLER COMMAND LINE HELP
-===================================================================
+# 🐉 NetHunter AI Operator - Kompletní Dokumentace Funkcí
 
-You can control and query the VPN gateway service directly from
-the command line using the following deployed scripts:
+Tento dokument obsahuje přehled všech dostupných příkazů a API funkcí, které můžete používat z terminálu NetHunter AI Operator. Tyto příkazy zajišťují integraci s Android systémem a správu VPN.
 
-1. ENABLE GLOBAL VPN SNIFFER
-   Command: vpn-on
-   Description: Starts the global VPN capture service.
-   Usage with command: vpn-on <command> (forces VPN on and runs command)
+## 📱 Hardwarové a Systémové Funkce (Android API Bridge)
 
-2. DISABLE GLOBAL VPN SNIFFER
-   Command: vpn-off
-   Description: Stops the global VPN capture service.
-   Usage with command: vpn-off <command> (temporarily turns off VPN,
-                        runs the command, then restores VPN)
+Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovládat a číst senzory hostitelského zařízení.
 
-3. BYPASS VPN FOR CURRENT SESSION
-   Command: ignore-vpn [on|off|status]
-   Description: Excludes or restores the current terminal session
-                from VPN sniffer intercept/routing.
+| Příkaz | Popis | Příklad použití |
+| :--- | :--- | :--- |
+| `nethunter-battery-status` | Vypíše aktuální stav baterie ve formátu JSON. | `nethunter-battery-status` |
+| `nethunter-toast <msg>` | Zobrazí na obrazovce vyskakovací Toast upozornění. | `nethunter-toast "Úkol úspěšně dokončen!"` |
+| `nethunter-vibrate [ms]` | Rozvibruje zařízení (výchozí doba je 500ms). | `nethunter-vibrate 1000` |
+| `nethunter-tts-speak <text>` | Přečte zadaný text pomocí Text-to-Speech (syntéza řeči). | `echo "Firewall breach detected" | nethunter-tts-speak` |
+| `nethunter-clipboard-get` | Přečte obsah hostitelské schránky. | `nethunter-clipboard-get` |
+| `nethunter-clipboard-set <text>`| Zapíše text do hostitelské schránky. | `nethunter-clipboard-set "MojeTajneHeslo123"` |
+| `nethunter-notification -t <t> -c <c>`| Pošle standardní systémovou notifikaci. | `nethunter-notification -t "Upozornění" -c "Skenování hotovo"` |
+| `nethunter-wifi-connectioninfo`| Vrátí informace o Wi-Fi síti ve formátu JSON. | `nethunter-wifi-connectioninfo` |
+| `nethunter-location` | Vrátí aktuální GPS souřadnice ve formátu JSON. | `nethunter-location` |
+| `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
+| `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
 
-4. RUN SINGLE COMMAND BYPASSING VPN
-   Command: vpn-bypass <command> [args...]
-   Description: Runs specified command bypassing the VPN sniffer
-                using local loopback proxy.
+## 🛡️ Správa AdGuard VPN Firewallu
 
-5. DIRECT API CALLS (CURL)
-   You can also interact with the Local API Server (port 1337):
-   • Check VPN Status:
-     curl -s http://127.0.0.1:1337/vpn
-   • Start VPN:
-     curl -s -X POST http://127.0.0.1:1337/vpn/start
-   • Stop VPN:
-     curl -s -X POST http://127.0.0.1:1337/vpn/stop
+Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovacím strojem.
 
-===================================================================
+| Příkaz | Popis | Příklad použití |
+| :--- | :--- | :--- |
+| `vpn-on` | Zapne globální VPN / NAT. | `vpn-on` |
+| `vpn-off` | Vypne globální VPN / NAT. | `vpn-off` |
+| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní pro čtení logů, stavů či AI monitor. | `vpn-cli status` |
+| `vpn-bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `vpn-bypass curl ipinfo.io` |
+| `ignore-vpn [on|off|status]` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `ignore-vpn on` |
+
+## 🧠 AI Mozek VPN (Inference Engine)
+
+NetHunter AI Operator obsahuje lokální AI model pro analýzu síťového provozu, který klasifikuje pakety a detekuje anomálie.
+
+| Příkaz | Popis |
+| :--- | :--- |
+| `vpn-cli ai start` | Spustí na pozadí démona, který monitoruje spojení a upozorňuje na rizika (vyskakovací Toasty při detekci anomálie). |
+| `vpn-cli chat` | Otevře konzoli lokálního AI experta pro analýzu síťových dat. |
+
+## 🎙️ Hlasový Asistent
+
+Aplikace funguje také jako plnohodnotný hlasový asistent integrovaný do systému Android.
+Pro jeho správnou funkci je nutné provést následující kroky:
+
+1. **Nastavení API klíče:** V nastavení aplikace vložte platný API klíč vámi vybraného poskytovatele (OpenAI, Anthropic atd.).
+2. **Výchozí asistent:** V nastavení samotného Androidu (Aplikace -> Výchozí aplikace -> Digitální asistent) nastavte NetHunter AI Operator jako výchozího asistenta.
+3. **Oprávnění mikrofonu:** Ujistěte se, že má aplikace povoleno oprávnění přistupovat k mikrofonu.
+
+## 🌐 Přímé HTTP API Volání
+
+Všechny nástroje výše používají pod kapotou HTTP volání na localhost. Můžete je používat i přímo pomocí `curl`:
+
+* **Kontrola VPN stavu:** `curl -s http://127.0.0.1:1337/vpn`
+* **Zapnutí VPN:** `curl -s -X POST http://127.0.0.1:1337/vpn/start`
+* **Vypnutí VPN:** `curl -s -X POST http://127.0.0.1:1337/vpn/stop`
+
+---
+*Dokument byl automaticky vygenerován NetHunter AI Operatorem.*
 """.trimIndent()
         try {
             helpFile.writeText(content)
             helpFile.setReadable(true, false)
-            Log.i(TAG, "Created VPN help document at: ${helpFile.absolutePath}")
+            Log.i(TAG, "Created comprehensive manual at: ${helpFile.absolutePath}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to write vpn_help.txt: ${e.message}")
+            Log.e(TAG, "Failed to write nethunter_docs.md: ${e.message}")
         }
     }
 }

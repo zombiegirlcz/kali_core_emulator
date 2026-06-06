@@ -20,6 +20,11 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import android.app.NotificationManager
+import android.content.ComponentName
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -38,10 +43,12 @@ object LocalApiServer {
     private val executor = Executors.newCachedThreadPool()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private val handler = Handler(Looper.getMainLooper())
 
     fun start(context: Context) {
         if (isRunning) return
         isRunning = true
+        appContext = context.applicationContext
         initTts(context)
         executor.execute {
             try {
@@ -124,7 +131,7 @@ object LocalApiServer {
 
             routeRequest(context, method, path, body, out)
         } catch (e: Exception) {
-            Log.e(TAG, "Error handling connection: ${e.message}")
+            Log.e(TAG, "Error handling connection: ${e.message}", e)
         } finally {
             try { socket.close() } catch (e: Exception) {}
         }
@@ -152,9 +159,12 @@ object LocalApiServer {
                 path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
                 path.startsWith("/vpn/ignore") && method == "GET" -> handleVpnIgnoreGet(path, out)
                 path.startsWith("/vpn/ignore") && method == "POST" -> handleVpnIgnorePost(path, out)
+                path == "/agent/query" && method == "POST" -> handleAgentQuery(body, out)
+                path == "/voice_input" && method == "GET" -> handleVoiceInput(context, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
+            Log.e(TAG, "Error routing request: ${e.message}", e)
             sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
         }
     }
@@ -530,6 +540,205 @@ object LocalApiServer {
         val ignored = ignoredStr.toBoolean()
         TerminalService.setSessionVpnIgnored(sessionId, ignored)
         sendResponse(out, 200, "OK", "{\"session_id\":\"$sessionId\",\"ignored\":$ignored}")
+    }
+
+    /** Volatile status string updated during agent query processing.
+     *  NetHunterAssistantSession reads this for real-time UI updates. */
+    @Volatile
+    @JvmField
+    var currentAgentStatus: String = ""
+
+    private fun handleAgentQuery(body: String, out: OutputStream) {
+        val prompt = try {
+            if (body.trim().startsWith("{")) {
+                JSONObject(body).optString("prompt", "")
+            } else {
+                body.trim()
+            }
+        } catch (e: Exception) {
+            body.trim()
+        }
+
+        if (prompt.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Empty prompt\"}")
+            return
+        }
+
+        currentAgentStatus = "Connecting to agent..."
+
+        // Try daemon first (fast path)
+        try {
+            val url = java.net.URL("http://127.0.0.1:13338/query")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 2000
+            conn.readTimeout = 0
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+
+            val payload = JSONObject().put("prompt", prompt).toString()
+            conn.outputStream.use { os ->
+                os.write(payload.toByteArray(Charsets.UTF_8))
+            }
+
+            currentAgentStatus = "Agent is processing..."
+
+            if (conn.responseCode == 200) {
+                val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                currentAgentStatus = ""
+                sendResponse(out, 200, "OK", responseText)
+                return
+            } else {
+                val errText = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP ${conn.responseCode}"
+                currentAgentStatus = ""
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"Agent error: $errText\"}")
+                return
+            }
+        } catch (e: java.net.ConnectException) {
+            Log.w(TAG, "Agent daemon not reachable on port 13338, falling back to inline PRoot execution")
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "Agent daemon connect timeout, falling back to inline PRoot execution")
+        } catch (e: Exception) {
+            // For other errors during daemon communication (e.g. read timeout during processing),
+            // don't fall back - that means daemon IS running but query failed
+            currentAgentStatus = ""
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"Agent daemon error: ${e.message}\"}")
+            return
+        }
+
+        // Fallback: run agent inline via PRoot + launcher.sh
+        currentAgentStatus = "Starting agent..."
+        try {
+            val launcherScript = java.io.File(appContext?.filesDir, "launcher.sh")
+            if (!launcherScript.exists() || !launcherScript.canExecute()) {
+                currentAgentStatus = ""
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"launcher.sh not found. Please open a terminal session first.\"}")
+                return
+            }
+
+            currentAgentStatus = "Agent is processing..."
+            val pb = ProcessBuilder("sh", launcherScript.absolutePath,
+                "python3", "/usr/local/bin/nethunter_agent.py", "run-direct", prompt)
+            pb.directory(appContext?.filesDir)
+            pb.redirectErrorStream(true)
+            val process = pb.start()
+
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+
+            // Parse output: launcher.sh prepends "[*] Starting session..." and "[*] Running custom launcher command..."
+            // The actual agent response is everything after those lines
+            val lines = output.lines()
+            val agentOutput = lines.dropWhile { it.startsWith("[*]") || it.isBlank() }.joinToString("\n").trim()
+
+            val responseJson = if (agentOutput.isNotEmpty()) {
+                JSONObject().put("response", agentOutput).toString()
+            } else {
+                JSONObject().put("response", "Agent returned no response.").toString()
+            }
+            currentAgentStatus = ""
+            sendResponse(out, 200, "OK", responseJson)
+        } catch (e: Exception) {
+            Log.e(TAG, "Inline PRoot agent execution failed: ${e.message}", e)
+            currentAgentStatus = ""
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"Inline agent execution failed: ${e.message}\"}")
+        }
+    }
+
+    /** Application context reference, set during start(). */
+    private var appContext: Context? = null
+
+    private fun handleVoiceInput(context: Context, out: java.io.OutputStream) {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var resultText = ""
+        var errorMsg: String? = null
+
+        handler.post {
+            try {
+                if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                    errorMsg = "Speech recognition not available"
+                    latch.countDown()
+                    return@post
+                }
+
+                val googleService = ComponentName.unflattenFromString(
+                    "com.google.android.tts/com.google.android.apps.speech.tts.googletts.service.GoogleTTSRecognitionService"
+                )
+                val recognizer = if (googleService != null) {
+                    SpeechRecognizer.createSpeechRecognizer(context.applicationContext, googleService)
+                } else {
+                    SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
+                }
+
+                val listener = object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        Log.d("LocalApiServer", "SpeechRecognizer: onReadyForSpeech")
+                    }
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+                    override fun onError(error: Int) {
+                        val msg = when (error) {
+                            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+                            SpeechRecognizer.ERROR_CLIENT -> "Client side error"
+                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
+                            SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+                            SpeechRecognizer.ERROR_NO_MATCH -> "No match found"
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognizer busy"
+                            SpeechRecognizer.ERROR_SERVER -> "Server error"
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+                            else -> "Unknown error"
+                        }
+                        errorMsg = "Speech error: $msg ($error)"
+                        Log.e("LocalApiServer", "Speech error: $errorMsg")
+                        recognizer.destroy()
+                        latch.countDown()
+                    }
+                    override fun onResults(results: Bundle?) {
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        if (!matches.isNullOrEmpty()) {
+                            resultText = matches[0]
+                        } else {
+                            errorMsg = "No speech detected"
+                        }
+                        recognizer.destroy()
+                        latch.countDown()
+                    }
+                    override fun onPartialResults(partialResults: Bundle?) {}
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                }
+
+                recognizer.setRecognitionListener(listener)
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    setPackage("com.google.android.tts")
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                }
+                recognizer.startListening(intent)
+            } catch (e: Exception) {
+                errorMsg = "Exception: ${e.message}"
+                latch.countDown()
+            }
+        }
+
+        try {
+            // Wait up to 15 seconds for user speech
+            val completed = latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) {
+                sendResponse(out, 504, "Gateway Timeout", "{\"error\":\"Speech recognition timed out\"}")
+                return
+            }
+            if (errorMsg != null) {
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"$errorMsg\"}")
+                return
+            }
+            val response = JSONObject().put("text", resultText).toString()
+            sendResponse(out, 200, "OK", response)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
     }
 }
 

@@ -71,3 +71,11 @@ ignore-archiv.tar
 /.zshrc.parrot
 /HackerKeyboard.kt
 
+# Temporary and large files
+temp_agent.json
+query.json
+test_write.py
+replay_pid*.log
+*.apk
+/build/
+
