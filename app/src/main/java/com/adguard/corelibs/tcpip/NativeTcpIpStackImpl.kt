@@ -1,5 +1,7 @@
 package com.adguard.corelibs.tcpip
 
+import android.util.Log
+
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import com.adguard.corelibs.logger.NativeLogger
@@ -27,14 +29,16 @@ class NativeTcpIpStackImpl(
 
         init {
             try {
-                System.loadLibrary("a")
+                // System.loadLibrary("a")
                 System.loadLibrary("io_utils")
                 System.loadLibrary("common_native_jni")
                 System.loadLibrary("adguard-core")
             } catch (e: UnsatisfiedLinkError) {
                 android.util.Log.e("NativeTcpIpStackImpl", "Failed to load libraries: ${e.message}", e)
+                throw e
             }
         }
+
 
         @JvmStatic
         private external fun completeTcpConnectRequest(nativePtr: Long, reqId: Long, result: Int, redirectAddr: ByteArray, redirectPort: Int, forceDirectConnection: Boolean)
@@ -46,15 +50,22 @@ class NativeTcpIpStackImpl(
     private var nativePtr: Long = 0
     private val raisedConnections = ConcurrentHashMap<Long, Int>()
     private val syncRoot = Any()
-    private val callbacks: Callbacks
+
+    @JvmField
+    val callbacks: Callbacks
 
     init {
+        callbacks = Callbacks(this, listener, listenerExecutor, vpnService)
         val path = cacheDir?.absolutePath
         val fd = pfd.fd
         nativePtr = init(fd, mtu, path, proxyConfig)
-        callbacks = Callbacks(this, listener, listenerExecutor, vpnService)
+        if (nativePtr == 0L) {
+            throw IOException("Failed to initialize native TCP/IP stack")
+        }
         pfd.detachFd() // Native code takes ownership of the fd
     }
+
+    // Finalizer removed to prevent pthread_mutex_lock on destroyed mutex
 
     private fun checkOpen() {
         synchronized(syncRoot) {
@@ -175,57 +186,94 @@ class NativeTcpIpStackImpl(
         private val vpnService: VpnService
     ) {
         fun protect(socketFd: Int): Boolean {
-            return vpnService.protect(socketFd)
+            val result = vpnService.protect(socketFd)
+            Log.d("NativeTcpIpCallbacks", "protect(fd=$socketFd) -> $result")
+            if (!result) {
+                Log.e("NativeTcpIpCallbacks", "CRITICAL: VpnService.protect() returned false for fd=$socketFd — outbound socket will loop back into VPN tunnel!")
+            }
+            return result
         }
 
         fun onTcpConnectRequest(reqId: Long, srcIp: ByteArray, srcPort: Int, dstIp: ByteArray, dstPort: Int) {
             try {
                 val info = stack.constructConnectionInfo(Protocol.TCP.code, srcIp, srcPort, dstIp, dstPort)
+                Log.i("NativeTcpIpCallbacks", "TCP connect #$reqId: ${info.source} -> ${info.destination}")
                 raisedConnections[reqId] = 0
                 listenerExecutor.execute {
                     try {
                         val result = listener.onTcpConnectRequest(reqId, info)
+                        Log.d("NativeTcpIpCallbacks", "TCP #$reqId decision: ${result.resultType}, redirect=${result.redirectAddress}")
                         stack.completeTcpConnectRequest(reqId, result)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
+                        Log.e("NativeTcpIpCallbacks", "TCP #$reqId listener error: ${e.message}", e)
                         stack.completeTcpConnectRequest(reqId, ConnectionRequestResult.REJECT)
                     }
                 }
-            } catch (e: IOException) {
+            } catch (e: Throwable) {
+                Log.e("NativeTcpIpCallbacks", "TCP connect #$reqId fatal error: ${e.message}", e)
                 stack.completeTcpConnectRequest(reqId, ConnectionRequestResult.REJECT)
             }
         }
 
         fun onTcpClosed(reqId: Long) {
             raisedConnections.remove(reqId) ?: return
+            listenerExecutor.execute {
+                try {
+                    listener.onConnectionClosed(reqId)
+                } catch (e: Throwable) {
+                }
+            }
         }
 
         fun onTcpStatistics(reqId: Long, txBytes: Long, rxBytes: Long) {
-            // Stats callback (can be left empty or logged)
+            listenerExecutor.execute {
+                try {
+                    listener.onConnectionStats(reqId, txBytes, rxBytes)
+                } catch (e: Throwable) {
+                }
+            }
         }
 
         fun onUdpConnectRequest(reqId: Long, protoCode: Int, srcIp: ByteArray, srcPort: Int, dstIp: ByteArray, dstPort: Int) {
             try {
                 val info = stack.constructConnectionInfo(protoCode, srcIp, srcPort, dstIp, dstPort)
+                Log.i("NativeTcpIpCallbacks", "UDP connect #$reqId: ${info.source} -> ${info.destination} (proto=$protoCode)")
                 raisedConnections[reqId] = 0
                 listenerExecutor.execute {
                     try {
                         val result = listener.onUdpConnectRequest(reqId, info)
+                        Log.d("NativeTcpIpCallbacks", "UDP #$reqId decision: ${result.resultType}, redirect=${result.redirectAddress}")
                         stack.completeUdpConnectRequest(reqId, result)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
+                        Log.e("NativeTcpIpCallbacks", "UDP #$reqId listener error: ${e.message}", e)
                         stack.completeUdpConnectRequest(reqId, ConnectionRequestResult.REJECT)
                     }
                 }
-            } catch (e: IOException) {
+            } catch (e: Throwable) {
+                Log.e("NativeTcpIpCallbacks", "UDP connect #$reqId fatal error: ${e.message}", e)
                 stack.completeUdpConnectRequest(reqId, ConnectionRequestResult.REJECT)
             }
         }
 
         fun onUdpClosed(reqId: Long) {
             raisedConnections.remove(reqId) ?: return
+            listenerExecutor.execute {
+                try {
+                    listener.onUdpConnectionClosed(reqId)
+                } catch (e: Throwable) {
+                }
+            }
         }
 
         fun onUdpStatistics(reqId: Long, txBytes: Long, rxBytes: Long) {
-            // Stats callback
+            listenerExecutor.execute {
+                try {
+                    listener.onUdpConnectionStats(reqId, txBytes, rxBytes)
+                } catch (e: Throwable) {
+                }
+            }
         }
     }
+
 }
+

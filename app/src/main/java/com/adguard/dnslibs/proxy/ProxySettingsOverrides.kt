@@ -1,6 +1,8 @@
 package com.adguard.dnslibs.proxy
 
 class ProxySettingsOverrides {
-    @JvmField var upstreamTimeoutMs: Long = 0
-    @JvmField var fallbackTimeoutMs: Long = 0
+    @JvmField var blockEch: Boolean? = null
+    @JvmField var blockH3Alpn: Boolean? = null
+    @JvmField var upstreamTimeoutMs: Long? = null
+    @JvmField var fallbackTimeoutMs: Long? = null
 }

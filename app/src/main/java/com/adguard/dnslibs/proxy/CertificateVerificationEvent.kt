@@ -1,8 +1,15 @@
 package com.adguard.dnslibs.proxy
 
-import java.security.cert.X509Certificate
-
 class CertificateVerificationEvent {
-    @JvmField var certificate: X509Certificate? = null
+    @JvmField var certificate: ByteArray? = null
+    @JvmField var chain: List<ByteArray>? = null
     @JvmField var domain: String? = null
+
+    fun getCertificate(): ByteArray? {
+        return certificate
+    }
+
+    fun getChain(): List<ByteArray>? {
+        return chain
+    }
 }

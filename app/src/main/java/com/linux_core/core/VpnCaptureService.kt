@@ -44,10 +44,38 @@ class VpnCaptureService : VpnService() {
         fun getCapturedPacketCount(): Long = instance?.packetCount?.get() ?: 0L
         fun getCapturedByteCount(): Long = instance?.byteCount?.get() ?: 0L
 
+        @JvmStatic
+        fun protectSocket(socketFd: Int): Boolean {
+            return try {
+                instance?.protect(socketFd) ?: false
+            } catch (e: Exception) {
+                Log.e(TAG, "protectSocket(Int) failed: ${e.message}")
+                false
+            }
+        }
+
+        @JvmStatic
+        fun protectSocket(socket: java.net.Socket): Boolean {
+            return try {
+                val inst = instance ?: return false
+                inst.protect(socket)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "protectSocket(Socket) failed: ${e.message}")
+                false
+            }
+        }
+
+        @JvmStatic
         fun protectSocket(socket: java.net.DatagramSocket): Boolean {
-            val inst = instance ?: return false
-            inst.protect(socket)
-            return true
+            return try {
+                val inst = instance ?: return false
+                inst.protect(socket)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "protectSocket(DatagramSocket) failed: ${e.message}")
+                false
+            }
         }
     }
 
@@ -70,23 +98,42 @@ class VpnCaptureService : VpnService() {
         }
     }
 
+    private val vpnSync = Any()
+    private val writeLock = Any()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        VpnFirewallManager.init(applicationContext)
         Log.i(TAG, "Service created")
+
+        VpnProxyManager.onProxyChangedListener = {
+            if (isServiceRunning.get()) {
+                Log.i(TAG, "Proxy changed, restarting VPN engine...")
+                handler.post {
+                    synchronized(vpnSync) {
+                        stopVpn()
+                        startVpn()
+                    }
+                }
+            }
+        }
     }
+
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            stopVpn()
+            synchronized(vpnSync) {
+                stopVpn()
+            }
             return START_NOT_STICKY
         }
 
         if (intent?.action == ACTION_START) {
             if (!isServiceRunning.get()) {
-                startVpn()
+                synchronized(vpnSync) {
+                    startVpn()
+                }
             }
         }
 
@@ -94,8 +141,11 @@ class VpnCaptureService : VpnService() {
     }
 
     private fun startVpn() {
-        Log.i(TAG, "Starting VPN with Java NAT engine")
-        isServiceRunning.set(true)
+        Log.i(TAG, "Starting VPN with Java Userspace NAT Engine")
+        if (isServiceRunning.getAndSet(true)) {
+            Log.w(TAG, "VPN already running, skipping start")
+            return
+        }
         onStateChangeListener?.invoke(true)
 
         startForeground(NOTIFICATION_ID, buildNotification())
@@ -109,24 +159,60 @@ class VpnCaptureService : VpnService() {
                 .setSession("NetHunter VPN")
                 .setMtu(customMtu)
                 .addAddress(VPN_ADDRESS, 32)
+                .addAddress("2001:db8:1::2", 128)
+                .addRoute("::", 0)
             
             if (VpnPeerManager.isEnabled()) {
                 builder.addAddress("10.9.0.${VpnPeerManager.getLocalPeerId()}", 24)
             }
 
-            builder.addRoute("0.0.0.0", 0)
-                .addDnsServer(customDns)
-                .allowBypass()
-
-            // Exclude private subnets ONLY if they don't conflict with our VPN range
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                builder.addRoute("0.0.0.0", 0)
+                    .addDnsServer(customDns)
+                    .allowBypass()
                 try {
-                    // We avoid excluding 10.0.0.0/8 because our VPN is 10.0.0.2
                     builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
                     builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
                     Log.i(TAG, "Excluded non-conflicting private subnets from VPN")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Could not exclude private subnets: ${e.message}")
+                    Log.w(TAG, "Could not exclude routes: ${e.message}")
+                }
+            } else {
+                builder.addDnsServer(customDns)
+                    .allowBypass()
+                // For API < 33, add routes that cover the IPv4 space except private ranges (192.168.0.0/16 and 172.16.0.0/12)
+                val bypassRanges = listOf(
+                    "0.0.0.0" to 1,        // 0.0.0.0 - 127.255.255.255
+                    "128.0.0.0" to 3,      // 128.0.0.0 - 159.255.255.255
+                    "160.0.0.0" to 5,      // 160.0.0.0 - 167.255.255.255
+                    "168.0.0.0" to 6,      // 168.0.0.0 - 171.255.255.255
+                    "172.0.0.0" to 12,     // 172.0.0.0 - 172.15.255.255
+                    "172.32.0.0" to 11,    // 172.32.0.0 - 172.63.255.255
+                    "172.64.0.0" to 10,    // 172.64.0.0 - 172.127.255.255
+                    "172.128.0.0" to 9,    // 172.128.0.0 - 172.255.255.255
+                    "173.0.0.0" to 8,      // 173.0.0.0 - 173.255.255.255
+                    "174.0.0.0" to 7,      // 174.0.0.0 - 175.255.255.255
+                    "176.0.0.0" to 4,      // 176.0.0.0 - 191.255.255.255
+                    "192.0.0.0" to 9,      // 192.0.0.0 - 192.127.255.255
+                    "192.128.0.0" to 11,   // 192.128.0.0 - 192.159.255.255
+                    "192.160.0.0" to 13,   // 192.160.0.0 - 192.167.255.255
+                    "192.169.0.0" to 16,   // 192.169.0.0 - 192.169.255.255
+                    "192.170.0.0" to 15,   // 192.170.0.0 - 192.171.255.255
+                    "192.172.0.0" to 14,   // 192.172.0.0 - 192.175.255.255
+                    "192.176.0.0" to 12,   // 192.176.0.0 - 192.191.255.255
+                    "192.192.0.0" to 10,   // 192.192.0.0 - 192.255.255.255
+                    "193.0.0.0" to 8,      // 193.0.0.0 - 193.255.255.255
+                    "194.0.0.0" to 7,      // 194.0.0.0 - 195.255.255.255
+                    "196.0.0.0" to 6,      // 196.0.0.0 - 199.255.255.255
+                    "200.0.0.0" to 5,      // 200.0.0.0 - 207.255.255.255
+                    "208.0.0.0" to 4       // 208.0.0.0 - 223.255.255.255
+                )
+                for ((ip, prefix) in bypassRanges) {
+                    try {
+                        builder.addRoute(ip, prefix)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to add route: $ip/$prefix", e)
+                    }
                 }
             }
 
@@ -134,7 +220,7 @@ class VpnCaptureService : VpnService() {
             try {
                 builder.addDisallowedApplication(packageName)
                 builder.addDisallowedApplication("com.android.shell")
-                
+
                 val disallowedPackages = sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet()
                 disallowedPackages.forEach { pkg ->
                     try {
@@ -159,7 +245,9 @@ class VpnCaptureService : VpnService() {
             // Initialize Java NAT engine
             val writeToTun: (ByteArray, Int) -> Unit = { data, _ ->
                 try {
-                    vpnOutput?.write(data, 0, data.size)
+                    synchronized(writeLock) {
+                        vpnOutput?.write(data, 0, data.size)
+                    }
                     packetCount.incrementAndGet()
                     byteCount.addAndGet(data.size.toLong())
                 } catch (e: IOException) {
@@ -172,7 +260,9 @@ class VpnCaptureService : VpnService() {
             if (VpnPeerManager.isEnabled()) {
                 VpnPeerManager.initCallbacks { decryptedBytes ->
                     try {
-                        vpnOutput?.write(decryptedBytes, 0, decryptedBytes.size)
+                        synchronized(writeLock) {
+                            vpnOutput?.write(decryptedBytes, 0, decryptedBytes.size)
+                        }
                         packetCount.incrementAndGet()
                         byteCount.addAndGet(decryptedBytes.size.toLong())
                     } catch (e: IOException) {
@@ -187,14 +277,19 @@ class VpnCaptureService : VpnService() {
 
             // Start packet forwarding loop on background thread
             vpnThread = Thread({
-                val buffer = ByteArray(MTU)
+                val buffer = ByteArray(customMtu)
                 try {
-                    while (isServiceRunning.get()) {
-                        val pfd = vpnInterface ?: break
-                        val input = FileInputStream(pfd.fileDescriptor)
-                        val length = input.read(buffer)
-                        if (length > 0) {
-                            natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
+                    val pfd = vpnInterface
+                    if (pfd != null) {
+                        FileInputStream(pfd.fileDescriptor).use { input ->
+                            while (isServiceRunning.get()) {
+                                val length = input.read(buffer)
+                                if (length > 0) {
+                                    packetCount.incrementAndGet()
+                                    byteCount.addAndGet(length.toLong())
+                                    natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
+                                }
+                            }
                         }
                     }
                 } catch (e: IOException) {
@@ -205,7 +300,9 @@ class VpnCaptureService : VpnService() {
             }, "VpnNioThread").apply { start() }
 
             handler.post(statsUpdater)
-            Log.i(TAG, "VPN started successfully")
+            scheduleHealthCheck()
+            Log.i(TAG, "VPN started successfully with Java NAT Engine")
+
         } catch (e: Exception) {
             Log.e(TAG, "Error starting VPN: ${e.message}", e)
             stopVpn()
@@ -214,7 +311,10 @@ class VpnCaptureService : VpnService() {
 
     private fun stopVpn() {
         Log.i(TAG, "Stopping VPN")
-        isServiceRunning.set(false)
+        if (!isServiceRunning.getAndSet(false)) {
+            Log.w(TAG, "VPN already stopped, skipping stop")
+            return
+        }
         onStateChangeListener?.invoke(false)
         handler.removeCallbacks(statsUpdater)
 
@@ -222,6 +322,11 @@ class VpnCaptureService : VpnService() {
         VpnPeerManager.setEnabled(false)
 
         vpnThread?.interrupt()
+        try {
+            vpnThread?.join(1500)
+        } catch (e: InterruptedException) {
+            Log.e(TAG, "Interrupted while waiting for VPN thread to stop: ${e.message}")
+        }
         vpnThread = null
 
         natEngine?.stop()
@@ -245,11 +350,31 @@ class VpnCaptureService : VpnService() {
         stopSelf()
     }
 
+    private fun scheduleHealthCheck() {
+        val checkCount = intArrayOf(0)
+        val healthChecker = object : Runnable {
+            override fun run() {
+                if (!isServiceRunning.get()) return
+                checkCount[0]++
+                val threadAlive = vpnThread?.isAlive == true
+                val engineActive = natEngine != null
+                val pkts = packetCount.get()
+                val bytes = byteCount.get()
+                Log.i(TAG, "HEALTH CHECK #${checkCount[0]}: thread_alive=$threadAlive, engine=$engineActive, packets=$pkts, bytes=$bytes")
+                if (!threadAlive) {
+                    Log.e(TAG, "HEALTH CHECK: VPN read thread has DIED! Traffic will not flow.")
+                }
+                if (checkCount[0] <= 6) {
+                    handler.postDelayed(this, 5000)
+                }
+            }
+        }
+        handler.postDelayed(healthChecker, 5000)
+    }
+
     private fun buildNotification(): android.app.Notification {
         val count = packetCount.get()
-        val bytes = byteCount.get()
-        val formattedBytes = formatByteCount(bytes)
-
+        val formattedBytes = formatByteCount(byteCount.get())
         val contentText = "Forwarded: $count packets ($formattedBytes)"
 
         val openIntent = PendingIntent.getActivity(
@@ -318,7 +443,9 @@ class VpnCaptureService : VpnService() {
         isServiceRunning.set(false)
         stopVpn()
         instance = null
+        VpnProxyManager.onProxyChangedListener = null
         Log.i(TAG, "Service destroyed")
         super.onDestroy()
     }
+
 }

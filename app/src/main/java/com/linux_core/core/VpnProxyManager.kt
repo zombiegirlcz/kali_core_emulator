@@ -40,6 +40,10 @@ object VpnProxyManager {
     private val executor = Executors.newFixedThreadPool(2)
     private var rotationThread: Thread? = null
 
+    @Volatile
+    var onProxyChangedListener: (() -> Unit)? = null
+
+
     init {
         // Start time-based rotation background watcher
         startRotationLoop()
@@ -53,7 +57,9 @@ object VpnProxyManager {
             lastRotationTimeMs = System.currentTimeMillis()
         }
         Log.i(TAG, "Proxy sniffer redirection set to: $enabled")
+        onProxyChangedListener?.invoke()
     }
+
 
     fun getRotationMode(): Int = rotationMode.get()
 
@@ -71,8 +77,10 @@ object VpnProxyManager {
         if (index in proxyPool.indices) {
             selectedNodeIndex.set(index)
             Log.i(TAG, "Selected static proxy node: ${proxyPool[index].country}")
+            onProxyChangedListener?.invoke()
         }
     }
+
 
     fun getRotationInterval(): Int = rotationIntervalSeconds.get()
 
@@ -100,8 +108,10 @@ object VpnProxyManager {
             selectedNodeIndex.set(nextIdx)
             lastRotationTimeMs = System.currentTimeMillis()
             Log.d(TAG, "Random proxy rotated to: ${proxyPool[nextIdx].country}")
+            onProxyChangedListener?.invoke()
         }
     }
+
 
     fun measureProxyLatencies(callback: () -> Unit) {
         executor.submit {

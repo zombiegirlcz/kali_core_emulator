@@ -45,6 +45,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
+import androidx.lifecycle.lifecycleScope
+
 
 class TerminalActivity : ComponentActivity() {
     companion object {
@@ -202,6 +204,28 @@ class TerminalActivity : ComponentActivity() {
             }
         }
         topBar.addView(btnMenu)
+
+        // Menu button to finish activity and return to MainActivity
+        val btnGoToMenu = Button(this).apply {
+            text = "🏠"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#151620"))
+            setPadding(16, 4, 16, 4)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+            ).apply {
+                setMargins(0, 4, 12, 4)
+            }
+            layoutParams = params
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                finish()
+            }
+        }
+        topBar.addView(btnGoToMenu)
 
         // Symmetrical spacer to push GUI switch to the right
         val spacer = View(this).apply {
@@ -1931,6 +1955,26 @@ class TerminalActivity : ComponentActivity() {
 
     private fun setupAndStartSession() {
         Log.i(TAG, "setupAndStartSession")
+        val activeSessions = TerminalService.sessions
+        if (activeSessions.isNotEmpty()) {
+            Log.i(TAG, "Attaching to existing active session")
+            val lastSession = activeSessions.last()
+            val sessionId = TerminalService.getSessionId(lastSession)
+            val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "kali-arm64" else "kali-arm64"
+            val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
+            lifecycleScope.launch(Dispatchers.IO) {
+                val cfg = try {
+                    ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false)
+                } catch (e: Exception) {
+                    null
+                }
+                withContext(Dispatchers.Main) {
+                    config = cfg
+                    switchToSession(lastSession)
+                }
+            }
+            return
+        }
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
         val customCommand = intent.getStringExtra("customCommand")
@@ -1956,13 +2000,23 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun startSetup(rootfsDirName: String, mountStorage: Boolean, customCommand: String?, hasRoot: Boolean) {
-        config = try {
-            ProotManager.setupProotEnvironment(this, rootfsDirName, mountStorage, customCommand, hasRoot)
-        } catch (e: Exception) {
-            showError("Setup failed: ${e.message}"); return
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = try {
+                ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot)
+            } catch (e: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (result == null) {
+                    showError("Setup failed")
+                } else {
+                    config = result
+                    startTerminalSession(result)
+                }
+            }
         }
-        startTerminalSession(config!!)
     }
+
 
     private fun startTerminalSession(config: ProotConfig) {
         Log.i(TAG, "startTerminalSession")
@@ -2005,7 +2059,7 @@ class TerminalViewClientImpl : TerminalViewClient {
 
     override fun onScale(scale: Float): Float {
         activity?.changeTerminalFontSize(scale)
-        return scale
+        return 1.0f
     }
     override fun onSingleTapUp(e: MotionEvent) {
         Log.d("TerminalView", "onSingleTapUp")

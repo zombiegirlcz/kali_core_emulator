@@ -491,7 +491,7 @@ fun VpnDashboardTab() {
 
                     Column(modifier = Modifier.height(180.dp).fillMaxWidth()) {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(filteredApps.take(15)) { app: BypassedApp ->
+                            items(filteredApps) { app: BypassedApp ->
                                 val checked = disallowedPackages.contains(app.packageName)
                                 Row(
                                     modifier = Modifier

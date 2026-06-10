@@ -137,7 +137,43 @@ class VpnNatEngine(
         packetBuffer.get(rawData)
         packetBuffer.position(pos)
         val protoStr = when(ipHeader.protocol) { 6 -> "TCP"; 17 -> "UDP"; else -> "IP-${ipHeader.protocol}" }
-        VpnLogManager.logConnection(protoStr, intToIp(ipHeader.sourceAddress), 0, intToIp(ipHeader.destinationAddress), 0, length, VpnLogManager.AuditCategory.VERBOSE, "RAW TUN INTERCEPT", rawData)
+
+        var srcPort = 0
+        var dstPort = 0
+        var payloadBytes: ByteArray? = null
+        try {
+            if (ipHeader.protocol == 6) { // TCP
+                val tcpHeader = TcpHeader(packetBuffer, ipHeader.ihl)
+                srcPort = tcpHeader.sourcePort
+                dstPort = tcpHeader.destinationPort
+                val headerLen = ipHeader.ihl + tcpHeader.dataOffset
+                val payloadLen = ipHeader.totalLength - headerLen
+                if (payloadLen > 0 && headerLen + payloadLen <= length) {
+                    payloadBytes = ByteArray(payloadLen)
+                    val originalPos = packetBuffer.position()
+                    packetBuffer.position(headerLen)
+                    packetBuffer.get(payloadBytes)
+                    packetBuffer.position(originalPos)
+                }
+            } else if (ipHeader.protocol == 17) { // UDP
+                val udpHeader = UdpHeader(packetBuffer, ipHeader.ihl)
+                srcPort = udpHeader.sourcePort
+                dstPort = udpHeader.destinationPort
+                val payloadLen = udpHeader.length - 8
+                val payloadOffset = ipHeader.ihl + 8
+                if (payloadLen > 0 && payloadOffset + payloadLen <= length) {
+                    payloadBytes = ByteArray(payloadLen)
+                    val originalPos = packetBuffer.position()
+                    packetBuffer.position(payloadOffset)
+                    packetBuffer.get(payloadBytes)
+                    packetBuffer.position(originalPos)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing ports for raw log: ${e.message}")
+        }
+
+        // RAW TUN INTERCEPT log removed to prevent logging duplication and performance overhead
 
         if (ipHeader.version != 4) return // Only support IPv4 in this userspace stack
 
@@ -282,7 +318,9 @@ class VpnNatEngine(
                 // Asynchronous handshaker thread to connect and do proxy negotiation without blocking Selector loop
                 Thread {
                     try {
-                        val bypassedSession = getSessionForLocalPort(srcPort, isTcp = true)
+                        val bypassedSession = if (TerminalService.ignoredSessionIds.containsValue(true)) {
+                            getSessionForLocalPort(srcPort, isTcp = true)
+                        } else null
                         val isBypassed = bypassedSession != null && TerminalService.isSessionVpnIgnored(bypassedSession)
                         
                         val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()

@@ -20,12 +20,6 @@ class UpstreamSettings {
     }
 }
 
-class FilteringLogAction {
-    class RuleTemplate
-    enum class Option(val value: Int) {
-        NONE(0)
-    }
-}
 
 class DnsProxyInitException(initResult: DnsProxy.InitResult) : RuntimeException(initResult.description) {
     @JvmField val code: DnsProxy.InitErrorCode = initResult.code

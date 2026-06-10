@@ -8,7 +8,12 @@ enum class Protocol(val code: Int) {
 
     companion object {
         fun getByCode(code: Int): Protocol {
-            return values().firstOrNull { it.code == code } ?: UNKNOWN
+            return when (code) {
+                6 -> TCP
+                17 -> UDP
+                1 -> ICMP
+                else -> UNKNOWN
+            }
         }
     }
 }

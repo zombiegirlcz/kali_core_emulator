@@ -8,14 +8,16 @@ class DnsProxy private constructor() : Closeable {
     companion object {
         init {
             try {
-                System.loadLibrary("a")
+                // System.loadLibrary("a")
                 System.loadLibrary("io_utils")
                 System.loadLibrary("common_native_jni")
                 System.loadLibrary("adguard-dns")
             } catch (e: UnsatisfiedLinkError) {
                 android.util.Log.e("DnsProxy", "Failed to load libraries: ${e.message}", e)
+                throw e
             }
         }
+
 
         @JvmStatic
         private external fun setApplicationContext(context: Context)
@@ -82,22 +84,92 @@ class DnsProxy private constructor() : Closeable {
         }
 
         fun onCertificateVerification(event: CertificateVerificationEvent): String? {
-            return events?.onCertificateVerification(event)
+            try {
+                val certBytes = event.getCertificate() ?: return "No certificate found"
+                val factory = java.security.cert.CertificateFactory.getInstance("X.509")
+                
+                val certStream = java.io.ByteArrayInputStream(certBytes)
+                val leafCert = factory.generateCertificate(certStream) as java.security.cert.X509Certificate
+
+                val certChain = mutableListOf<java.security.cert.X509Certificate>()
+                certChain.add(leafCert)
+
+                val chainBytes = event.getChain()
+                if (chainBytes != null) {
+                    for (bytes in chainBytes) {
+                        val stream = java.io.ByteArrayInputStream(bytes)
+                        val cert = factory.generateCertificate(stream) as java.security.cert.X509Certificate
+                        certChain.add(cert)
+                    }
+                }
+
+                val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+                tmf.init(null as java.security.KeyStore?)
+
+                var verified = false
+                for (tm in tmf.trustManagers) {
+                    if (tm is javax.net.ssl.X509TrustManager) {
+                        try {
+                            val authType = leafCert.publicKey.algorithm ?: "RSA"
+                            tm.checkServerTrusted(certChain.toTypedArray(), authType)
+                            verified = true
+                            break
+                        } catch (e: java.security.cert.CertificateException) {
+
+                            return e.toString()
+                        }
+                    }
+                }
+                
+                if (!verified) {
+                    return "No X509TrustManager found"
+                }
+
+                val customError = events?.onCertificateVerification(event)
+                if (customError != null) {
+                    return customError
+                }
+
+                return null
+            } catch (e: Throwable) {
+                return e.toString()
+            }
         }
     }
 
     private var nativePtr: Long = 0
+    @Volatile
     private var state: State = State.NEW
+    @JvmField
+    var eventsAdapter: EventsAdapter? = null
 
     init {
         nativePtr = create()
     }
 
+    // Finalizer removed to prevent fatal SIGABRTs during GC
+
     constructor(context: Context, settings: DnsProxySettings) : this(context, settings, null)
 
     constructor(context: Context, settings: DnsProxySettings, events: DnsProxyEvents?) : this() {
         setApplicationContext(context)
+        if (settings.detectSearchDomains) {
+            val domains = DnsNetworkUtils.getDNSSearchDomains(context)
+            if (domains.isNotEmpty()) {
+                val fallbackDomains = settings.fallbackDomains
+                for (domain in domains) {
+                    val trimmed = domain.trim().trim('.')
+                    if (trimmed.isNotEmpty()) {
+                        val wildcardDomain = "*.$trimmed"
+                        if (!fallbackDomains.contains(wildcardDomain)) {
+                            fallbackDomains.add(wildcardDomain)
+                        }
+                    }
+                }
+            }
+        }
         val adapter = EventsAdapter(events)
+        this.eventsAdapter = adapter
         val result = init(nativePtr, settings, adapter)
         if (result.success) {
             state = State.INITIALIZED
@@ -123,13 +195,20 @@ class DnsProxy private constructor() : Closeable {
     }
 
     override fun close() {
-        if (state == State.INITIALIZED) {
-            deinit(nativePtr)
-            state = State.NEW
-        }
-        if (state == State.NEW) {
-            delete(nativePtr)
-            state = State.CLOSED
+        synchronized(this) {
+            if (state == State.INITIALIZED) {
+                deinit(nativePtr)
+                state = State.NEW
+            }
+            if (state == State.NEW) {
+                if (nativePtr != 0L) {
+                    delete(nativePtr)
+                    nativePtr = 0L
+                }
+                state = State.CLOSED
+            }
         }
     }
+
 }
+

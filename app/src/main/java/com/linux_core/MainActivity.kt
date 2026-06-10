@@ -31,6 +31,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -114,6 +118,17 @@ private fun requestAllFilesAccess(context: Context) {
 }
 
 class MainActivity : ComponentActivity() {
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 24 && resultCode == RESULT_OK) {
+            val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
+                action = com.linux_core.core.VpnCaptureService.ACTION_START
+            }
+            startService(intent)
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -169,7 +184,6 @@ fun MatrixBackground() {
             color = android.graphics.Color.parseColor("#00FF41")
             typeface = Typeface.MONOSPACE
             textAlign = Paint.Align.CENTER
-            setShadowLayer(5f, 0f, 0f, android.graphics.Color.parseColor("#00FF41"))
         }
     }
 
@@ -178,7 +192,6 @@ fun MatrixBackground() {
             color = android.graphics.Color.WHITE
             typeface = Typeface.MONOSPACE
             textAlign = Paint.Align.CENTER
-            setShadowLayer(8f, 0f, 0f, android.graphics.Color.WHITE)
         }
     }
 
@@ -220,7 +233,7 @@ fun MatrixBackground() {
                 if (dz < 10f || dz > maxZ - 10f) continue // Too close or too far to render
 
                 val scale = fov / dz
-                val pFontSize = 36f * scale
+                val pFontSize = Math.round(36f * scale).toFloat().coerceIn(10f, 120f)
                 textPaint.textSize = pFontSize
                 whitePaint.textSize = pFontSize
 
@@ -254,13 +267,14 @@ fun MatrixBackground() {
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
+    val sharedPrefs = remember { context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE) }
     var selectedDistro by remember { mutableStateOf(RootfsManager.DISTROS[0]) }
     var isExtracted by remember(selectedDistro) { mutableStateOf(RootfsManager.isRootfsExtracted(context, selectedDistro)) }
     var downloadProgress by remember { mutableStateOf(0) }
     var isDownloading by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
     var downloadJob by remember { mutableStateOf<Job?>(null) }
-    var mountStorage by remember { mutableStateOf(false) }
+    var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
     val scope = rememberCoroutineScope()
 
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
@@ -269,12 +283,14 @@ fun MainScreen() {
 
     var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
     var currentTab by remember { mutableStateOf("home") }
+    var activeSessionCount by remember { mutableStateOf(0) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasStoragePermission = hasAllFilesAccess(context)
+                activeSessionCount = com.linux_core.core.TerminalService.sessions.size
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -404,6 +420,7 @@ fun MainScreen() {
                             requestAllFilesAccess(context)
                         }
                         mountStorage = nextState
+                        sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
                     }
                 ) {
                     androidx.compose.material3.Switch(
@@ -413,6 +430,7 @@ fun MainScreen() {
                                 requestAllFilesAccess(context)
                             }
                             mountStorage = checked
+                            sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
                         },
                         colors = androidx.compose.material3.SwitchDefaults.colors(
                             checkedThumbColor = Color(0xFF00FF41),
@@ -939,6 +957,25 @@ fun MainScreen() {
                 containerColor = Color(0xFF0C0E14),
                 shape = RoundedCornerShape(12.dp)
             )
+        }
+
+        // Active Session Shortcut Button (Hamburger)
+        if (activeSessionCount > 0) {
+            IconButton(
+                onClick = {
+                    val intent = Intent(context, TerminalActivity::class.java)
+                    context.startActivity(intent)
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Menu,
+                    contentDescription = "Active Terminal",
+                    tint = Color(0xFF00FF41)
+                )
+            }
         }
     }
 }

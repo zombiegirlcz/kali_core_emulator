@@ -14,4 +14,5 @@ class ListenerSettings {
     @JvmField var protocol: Protocol? = null
     @JvmField var persistent: Boolean = false
     @JvmField var idleTimeoutMs: Long = 0
+    @JvmField var settingsOverrides: ProxySettingsOverrides? = null
 }
