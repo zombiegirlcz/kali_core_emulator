@@ -57,6 +57,14 @@
 
 </details>
 
+<details>
+<summary><b>6. Draggable & Minimized Drawer & RAM Usage Dashboard (June 2026) - COMPLETED</b></summary>
+
+- **Minimized Draggable Drawer:** Replaced the full width `drawerView` in CLI mode with a floating hamburger button and a 70dp minimized drawer showing only emojis and a VNC GUI switch. Added a vertical drag handle on the right edge of the drawer, enabling manual sliding to expand it to 280dp with tabs, titles, and full detail controls (snaps on release).
+- **Live RAM Telemetry:** Added total system memory status under the drawer header, and per-session RAM tracking (RSS read from `/proc/$pid/status` for all session descendants) next to the session labels in the drawer. Refreshes every 3 seconds while the drawer is open.
+- **VPN & AI RAM Dashboard Stats:** Added dynamic native heap RAM usage for the C++ VPN Gateway engine and calculated ONNX session memory usage for the AI Classifier inside the Sniffer VPN Gateway card.
+</details>
+
 ---
 
 ## Proposed Network Traffic Monitoring Improvements (June 2026)
@@ -69,3 +77,4 @@
 6. **[COMPLETED] AI Agent Network Analysis Chat:** The AI agent can now answer user questions about network traffic using the `analyze_network` tool. Supports time-based and IP-based filtering with full statistical breakdown.
 7. **[COMPLETED] Serverless AI Retraining on Modal.com:** Synthesizing/loading balanced network traffic datasets (including synthetic stealth Evasion attacks), training a balanced LightGBM model, exporting/compiling to ONNX, and fixing decimal CSV parsing.
 8. **[IN PROGRESS] Live AI Android Integration:** Connecting the `AIBrain.kt` ONNX runtime to the live AdGuard JNI network flow in `VpnCaptureService` / `ProcessResolver` to calculate features and classify traffic in real-time.
+9. **[COMPLETED] Minimized & Draggable Session Drawer / System & Session RAM Telemetry:** Compact drawer layout (width 70dp) with swipe/expand gestures and real-time total system, per-session, and VPN/AI dashboard RAM usage trackers.

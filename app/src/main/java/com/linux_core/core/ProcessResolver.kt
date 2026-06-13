@@ -246,4 +246,32 @@ object ProcessResolver {
         }
         return descendants
     }
+
+    fun getSessionMemoryUsage(session: TerminalSession): Long {
+        val shellPid = getSessionPid(session)
+        if (shellPid <= 0) return 0L
+        val descendants = getDescendantPids(shellPid)
+        var totalRss = 0L
+        for (pid in descendants) {
+            try {
+                val statusFile = File("/proc/$pid/status")
+                if (statusFile.exists()) {
+                    val lines = statusFile.readLines()
+                    for (line in lines) {
+                        if (line.startsWith("VmRSS:")) {
+                            val parts = line.trim().split(Regex("\\s+"))
+                            if (parts.size >= 2) {
+                                val valueKb = parts[1].toLongOrNull() ?: 0L
+                                totalRss += valueKb * 1024L
+                            }
+                            break
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+        return totalRss
+    }
 }

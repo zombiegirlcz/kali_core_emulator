@@ -27,6 +27,7 @@ class VpnNatEngine(
     private var selector: Selector? = null
     private var selectorThread: Thread? = null
     private var aiBrain: AIBrain? = null
+    private val historyStore = TrafficHistoryStore(vpnService)
     private val lastPacketTimes = ConcurrentHashMap<String, Long>()
 
     // Session maps keyed by client source port
@@ -103,9 +104,14 @@ class VpnNatEngine(
         return entropy.toFloat()
     }
 
+    // Pomocné mapy pro stavovou analýzu
+    private val sessionByteCounts = mutableMapOf<String, Long>()
+    private val sessionPacketCounts = mutableMapOf<String, Int>()
+
     private fun runInference(
         protocol: Int,
         srcPort: Int,
+        dstIpStr: String,
         dstPort: Int,
         payload: ByteArray?,
         totalSize: Int
@@ -118,13 +124,21 @@ class VpnNatEngine(
         val delta = (now - lastTime) / 1000.0f
         lastPacketTimes[sessionKey] = now
 
-        val features = FloatArray(14)
+        // --- STAVOVÁ ANALÝZA ---
+        val cumulativeBytes = (sessionByteCounts[sessionKey] ?: 0L) + totalSize
+        val packetCount = (sessionPacketCounts[sessionKey] ?: 0) + 1
+        sessionByteCounts[sessionKey] = cumulativeBytes
+        sessionPacketCounts[sessionKey] = packetCount
+
+        val currentEntropy = payload?.let { calculateEntropy(it) } ?: 0.0f
+
+        val features = FloatArray(18)
         features[0] = totalSize.toFloat()
         features[1] = protocol.toFloat()
         features[2] = delta
         features[3] = srcPort.toFloat()
         features[4] = dstPort.toFloat()
-        features[5] = payload?.let { calculateEntropy(it) } ?: 0.0f
+        features[5] = currentEntropy
         
         // b0-b7
         if (payload != null) {
@@ -134,11 +148,66 @@ class VpnNatEngine(
             }
         }
 
-        val label = brain.classify(features)
-        return when (label) {
-            1 -> VpnLogManager.AuditCategory.VERBOSE // DNS / Info
-            2 -> VpnLogManager.AuditCategory.CRITICAL // Critical anomaly
+        features[14] = (cumulativeBytes / 1024.0).toFloat()
+        features[15] = packetCount.toFloat()
+        features[16] = if (totalSize < 100 && packetCount > 50) 1.0f else 0.0f
+        features[17] = (payload?.size ?: 0).toFloat()
+
+        // 1. GLOBÁLNÍ ZNALOST (ONNX Model)
+        val strategyIndex = brain.classify(features)
+        
+        // 2. OSOBNÍ PAMĚŤ (Behavioral Profile)
+        val anomalyScore = UserProfileStore.getAnomalyScore(protocol, dstPort, currentEntropy, totalSize)
+
+        // LOGIKA SAMOUČENÍ: Pokud globální model říká, že je to SAFE, učíme se to jako TVŮJ zvyk.
+        if (strategyIndex == 0 && anomalyScore < 0.3f) {
+            UserProfileStore.learnNormalPattern(protocol, dstPort, currentEntropy, totalSize)
+        }
+
+        // Pokud globální model váhá, ale OSOBNÍ PAMĚŤ vidí anomálii
+        val finalDecision = if (strategyIndex == 0 && anomalyScore > 0.8f && packetCount > 10) {
+            Log.w(TAG, "🧠 PERSONAL MEMORY ALERT: Unusual behavior for this user at port $dstPort")
+            4 // Automaticky COUNTER pro neznámé chování
+        } else strategyIndex
+
+        // Zápis do analytické historie (pro 24h report)
+        historyStore.logSession("App_Session", dstIpStr, dstPort, null, totalSize.toLong(), currentEntropy, finalDecision)
+
+        if (finalDecision > 0) {
+            val strategy = when(finalDecision) {
+                1 -> OffensiveEngine.AttackStrategy.RECON
+                2 -> OffensiveEngine.AttackStrategy.EXPLOIT
+                3 -> OffensiveEngine.AttackStrategy.SPOOF
+                4 -> OffensiveEngine.AttackStrategy.COUNTER
+                else -> OffensiveEngine.AttackStrategy.RETREAT
+            }
+            
+            if (finalDecision < 4 || packetCount > 5) {
+                OffensiveEngine.execute(strategy, dstIpStr, dstPort)
+            }
+            saveTrainingSample(features, finalDecision)
+        }
+
+        return when (finalDecision) {
+            1, 2, 3, 4 -> VpnLogManager.AuditCategory.CRITICAL
             else -> VpnLogManager.AuditCategory.ALLOWED
+        }
+    }
+
+    private fun saveTrainingSample(features: FloatArray, label: Int) {
+        // Ukládá příznaky do CSV souboru v zařízení pro budoucí retraining brainu
+        try {
+            val logFile = java.io.File(vpnService.filesDir, "offensive_learning_data.csv")
+            val exists = logFile.exists()
+            val writer = java.io.FileWriter(logFile, true)
+            if (!exists) {
+                writer.write("size,proto,delta,src,dst,entropy,b0,b1,b2,b3,b4,b5,b6,b7,mss,nop,flood,p_len,label\n")
+            }
+            val line = features.joinToString(",") + ",$label\n"
+            writer.write(line)
+            writer.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Training data collection failed: ${e.message}")
         }
     }
 
@@ -257,9 +326,10 @@ class VpnNatEngine(
             packetBuffer.position(0) // Reset position for subsequent use
 
             // AI Inference
-            val aiCategory = runInference(17, srcPort, dstPort, payloadForAi, ipHeader.totalLength)
-            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
-                "AI: Detected critical network anomaly!" else "AI: Verified UDP stream"
+            val aiCategory = runInference(17, srcPort, dstIpStr, dstPort, payloadForAi, ipHeader.totalLength)
+            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) {
+                "AI: Detected critical network anomaly!"
+            } else "AI: Verified UDP stream"
 
             VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail)
 
@@ -336,9 +406,10 @@ class VpnNatEngine(
             }
             
             // AI Inference for TCP SYN (usually no payload yet, but we check headers)
-            val aiCategory = runInference(6, srcPort, dstPort, null, ipHeader.totalLength)
-            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
-                "AI: Detected high-risk TCP request!" else "AI: Verified TCP connection"
+            val aiCategory = runInference(6, srcPort, dstIpStr, dstPort, null, ipHeader.totalLength)
+            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) {
+                "AI: Detected high-risk TCP request!"
+            } else "AI: Verified TCP connection"
 
             VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, aiCategory, detail)
 

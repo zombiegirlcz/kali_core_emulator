@@ -14,24 +14,32 @@ class AIBrain(private val context: Context) {
 
     init {
         try {
-            val modelBytes = context.assets.open("vpn_brain.onnx").readBytes()
+            val modelBytes = context.assets.open("vpn_brain_v2.onnx").readBytes()
             ortSession = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
-            Log.i("AIBrain", "🧠 VPN Brain loaded successfully!")
+            Log.i("AIBrain", "🧠 Tactical VPN Brain v2 loaded successfully!")
         } catch (e: Exception) {
-            Log.e("AIBrain", "❌ Failed to load VPN Brain: ${e.message}")
+            Log.e("AIBrain", "❌ Failed to load Tactical VPN Brain: ${e.message}")
         }
     }
 
     /**
      * Predikce kategorie provozu.
-     * Vrací: 0=Normal, 1=DNS, 2=Critical
+     * Vrací: 0=Safe, 1=Recon, 2=Exploit, 3=Spoof, 4=Counter, 5=Retreat
      */
     fun classify(features: FloatArray): Int {
+        // --- Znalostní heuristiky (Offensive Knowledge) ---
+        val dstPort = if (features.size > 4) features[4].toInt() else 0
+        val totalSize = features[0].toInt()
+        
+        // Detekce známých útočných vzorů (Heuristika jako fallback)
+        if (dstPort == 4444 || dstPort == 8888) return 4 // Counter
+        if (totalSize > 1400 && dstPort == 53) return 3  // Spoof/Exfil
+
         if (ortSession == null) return 0
         
         try {
             val inputName = ortSession?.inputNames?.iterator()?.next() ?: "float_input"
-            val shape = longArrayOf(1, 14) // Batch size 1, 14 features
+            val shape = longArrayOf(1, 18) // Batch size 1, 18 features (NEW)
             
             var label = 0
             OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(features), shape).use { tensor ->

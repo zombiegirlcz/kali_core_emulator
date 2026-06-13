@@ -96,6 +96,14 @@ window_dump.xml
 *.json
 *mdmp
 *txt
+<<<<<<< Updated upstream
+=======
+*png
+# Exemptions
+!windows_app/
+!windows_app/*.py
+
+>>>>>>> Stashed changes
 
 # AI Datasets and Notebooks
 *.csv
@@ -104,9 +112,9 @@ window_dump.xml
 
 # Screenshots
 /screenshot/
-*.png
-*.jpg
-*.jpeg
+# *.png
+# *.jpg
+# *.jpeg
 
 # Security
 *.keystore

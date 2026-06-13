@@ -167,6 +167,21 @@ The application integrates an advanced, fully customizable, and responsive overl
 
 ---
 
+## 📈 Major Version 4.1 Changelog
+
+This release introduces UI modularity improvements and advanced resource monitoring metrics for both virtualization and networking components:
+
+### 1. Draggable & Minimized Session Drawer
+- **Clean CLI View:** Automatically hides the top navigation bar in CLI mode to maximize vertical terminal space. Added a floating corner hamburger button (`☰`) to open the session panel.
+- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast VNC GUI launcher. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
+
+### 2. Live Resource & RAM Telemetry
+- **Total System RAM:** Displays real-time total and used system memory in the expanded drawer header (e.g. `[RAM: 3.4 GB / 8.0 GB]`).
+- **Chroot Session RSS:** Loops through session descendant processes inside `/proc` and aggregates their resident set size (`VmRSS` from `/proc/$pid/status`) to show per-session RAM footprints (e.g. `Session 1 (12.4 MB)`). Updates every 3 seconds when the drawer is open.
+- **VPN Core & AI footprint:** Shows separate real-time memory stats in the VPN Gateway card: native heap allocation size for the C++ AdGuard engine, and the ONNX session memory footprint for the AI Brain.
+
+---
+
 ## 📈 Major Version 4.0 Changelog (NetHunter App Store v4)
 
 This release introduces the fully integrated **AI Brain Telemetry & Neural Classifier**, transforming the VPN into an intelligent, autonomous firewall capable of detecting and blocking advanced persistent threats (APTs) in real-time.
