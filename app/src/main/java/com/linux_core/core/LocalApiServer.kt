@@ -20,6 +20,13 @@ import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import android.app.NotificationManager
+import android.app.AppOpsManager
+import android.app.usage.UsageStatsManager
+import android.app.admin.DevicePolicyManager
+import android.os.PowerManager
+import android.os.Process
+import android.provider.Settings
+import android.net.Uri
 import android.content.ComponentName
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -50,10 +57,13 @@ object LocalApiServer {
         isRunning = true
         appContext = context.applicationContext
         initTts(context)
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
+        val bindAddress = if (shareLocalApi) "0.0.0.0" else "127.0.0.1"
         executor.execute {
             try {
-                serverSocket = ServerSocket(PORT, 50, InetAddress.getByName("127.0.0.1"))
-                Log.i(TAG, "Local API Server started on port $PORT")
+                serverSocket = ServerSocket(PORT, 50, InetAddress.getByName(bindAddress))
+                Log.i(TAG, "Local API Server started on $bindAddress:$PORT")
                 while (isRunning) {
                     val socket = serverSocket?.accept() ?: break
                     executor.execute { handleConnection(context, socket) }
@@ -62,6 +72,14 @@ object LocalApiServer {
                 Log.e(TAG, "Server socket exception: ${e.message}")
             }
         }
+    }
+
+    fun restart(context: Context) {
+        stop()
+        try {
+            Thread.sleep(200)
+        } catch (e: Exception) {}
+        start(context)
     }
 
     fun stop() {
@@ -148,19 +166,32 @@ object LocalApiServer {
                 path == "/clipboard" && method == "POST" -> handleClipboardSet(context, body, out)
                 path == "/notification" && method == "POST" -> handleNotification(context, body, out)
                 path == "/wifi" && method == "GET" -> handleWifi(context, out)
+                path == "/wifi" && method == "POST" -> handleWifiControl(context, body, out)
+                path == "/device/admin" && method == "GET" -> handleDeviceAdminStatus(context, out)
+                path == "/device/admin" && method == "POST" -> handleDeviceAdminRequest(context, out)
+                path == "/device/lock" && method == "POST" -> handleDeviceLock(context, out)
                 path == "/location" && method == "GET" -> handleLocation(context, out)
                 path == "/volume" && method == "GET" -> handleVolumeGet(context, out)
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
                 path == "/shell" && method == "POST" -> handleShell(body, out)
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
-                path == "/vpn/logs" && method == "GET" -> handleVpnLogs(out)
+                path.startsWith("/vpn/logs") && method == "GET" -> handleVpnLogs(path, out)
                 path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
                 path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
                 path.startsWith("/vpn/ignore") && method == "GET" -> handleVpnIgnoreGet(path, out)
                 path.startsWith("/vpn/ignore") && method == "POST" -> handleVpnIgnorePost(path, out)
                 path == "/agent/query" && method == "POST" -> handleAgentQuery(body, out)
+                path == "/api/share" && method == "GET" -> handleApiShareGet(context, out)
+                path == "/api/share" && method == "POST" -> handleApiSharePost(context, body, out)
                 path == "/voice_input" && method == "GET" -> handleVoiceInput(context, out)
+                path == "/apps/usage" && method == "GET" -> handleAppsUsage(context, out)
+                path == "/notifications/active" && method == "GET" -> handleNotificationsActive(context, out)
+                path == "/accessibility/hierarchy" && method == "GET" -> handleAccessibilityHierarchy(out)
+                path == "/battery/optimize" && method == "GET" -> handleBatteryOptimizeGet(context, out)
+                path == "/battery/optimize" && method == "POST" -> handleBatteryOptimizePost(context, out)
+                path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
+                path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -272,28 +303,71 @@ object LocalApiServer {
     }
 
     private fun handleClipboardGet(context: Context, out: OutputStream) {
-        Handler(Looper.getMainLooper()).post {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var clipboardText = ""
+        var errorMsg: String? = null
+
+        handler.post {
             try {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val clip = clipboard.primaryClip
-                val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(context).toString() else ""
-                sendResponse(out, 200, "OK", JSONObject().put("text", text).toString())
+                clipboardText = if (clip != null && clip.itemCount > 0) {
+                    clip.getItemAt(0).coerceToText(context).toString()
+                } else {
+                    ""
+                }
             } catch (e: Exception) {
-                sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+                errorMsg = e.message
+            } finally {
+                latch.countDown()
             }
+        }
+
+        try {
+            val completed = latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) {
+                sendResponse(out, 504, "Gateway Timeout", "{\"error\":\"Clipboard retrieval timed out\"}")
+                return
+            }
+            if (errorMsg != null) {
+                sendResponse(out, 500, "Internal Error", JSONObject().put("error", errorMsg).toString())
+                return
+            }
+            sendResponse(out, 200, "OK", JSONObject().put("text", clipboardText).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
     }
 
     private fun handleClipboardSet(context: Context, body: String, out: OutputStream) {
-        Handler(Looper.getMainLooper()).post {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var errorMsg: String? = null
+
+        handler.post {
             try {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val clip = android.content.ClipData.newPlainText("nethunter_api", body)
                 clipboard.setPrimaryClip(clip)
-                sendResponse(out, 200, "OK", "{\"status\":\"updated\"}")
             } catch (e: Exception) {
-                sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+                errorMsg = e.message
+            } finally {
+                latch.countDown()
             }
+        }
+
+        try {
+            val completed = latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) {
+                sendResponse(out, 504, "Gateway Timeout", "{\"error\":\"Clipboard update timed out\"}")
+                return
+            }
+            if (errorMsg != null) {
+                sendResponse(out, 500, "Internal Error", JSONObject().put("error", errorMsg).toString())
+                return
+            }
+            sendResponse(out, 200, "OK", "{\"status\":\"updated\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
     }
 
@@ -445,11 +519,34 @@ object LocalApiServer {
         }
     }
 
-    private fun handleVpnLogs(out: OutputStream) {
+    private fun handleVpnLogs(path: String, out: OutputStream) {
+        val params = parseQueryParams(path)
+        val format = params["format"]
         val logs = VpnLogManager.getLogs()
-        val array = org.json.JSONArray()
-        logs.forEach { array.put(it.toJsonObject()) }
-        sendResponse(out, 200, "OK", array.toString())
+        if (format == "csv" || path.contains("/csv")) {
+            val csv = StringBuilder()
+            csv.append("timestamp,protocol,srcIp,srcPort,dstIp,dstPort,size,category,detail,entropy,payloadHex\n")
+            for (log in logs) {
+                val escapedDetail = log.detail.replace("\"", "\"\"")
+                csv.append("${log.timestamp},${log.protocol},${log.srcIp},${log.srcPort},${log.dstIp},${log.dstPort},${log.size},${log.category.name},\"$escapedDetail\",${log.entropy},${log.payloadHex ?: ""}\n")
+            }
+            sendCsvResponse(out, 200, "OK", csv.toString())
+        } else {
+            val array = org.json.JSONArray()
+            logs.forEach { array.put(it.toJsonObject()) }
+            sendResponse(out, 200, "OK", array.toString())
+        }
+    }
+
+    private fun sendCsvResponse(out: OutputStream, statusCode: Int, statusText: String, csvResponse: String) {
+        val rawResponse = csvResponse.toByteArray(Charsets.UTF_8)
+        val headers = "HTTP/1.1 $statusCode $statusText\r\n" +
+                "Content-Type: text/csv\r\n" +
+                "Content-Length: ${rawResponse.size}\r\n" +
+                "Connection: close\r\n\r\n"
+        out.write(headers.toByteArray(Charsets.UTF_8))
+        out.write(rawResponse)
+        out.flush()
     }
 
     private fun handleVpnStatus(context: Context, out: OutputStream) {
@@ -566,7 +663,10 @@ object LocalApiServer {
 
         currentAgentStatus = "Connecting to agent..."
 
+        val launcherScript = java.io.File(appContext?.filesDir, "launcher.sh")
+
         // Try daemon first (fast path)
+        var daemonSuccess = false
         try {
             val url = java.net.URL("http://127.0.0.1:13338/query")
             val conn = url.openConnection() as java.net.HttpURLConnection
@@ -595,21 +695,56 @@ object LocalApiServer {
                 return
             }
         } catch (e: java.net.ConnectException) {
-            Log.w(TAG, "Agent daemon not reachable on port 13338, falling back to inline PRoot execution")
+            Log.w(TAG, "Agent daemon not reachable on port 13338, attempting to start it...")
         } catch (e: java.net.SocketTimeoutException) {
-            Log.w(TAG, "Agent daemon connect timeout, falling back to inline PRoot execution")
+            Log.w(TAG, "Agent daemon connect timeout, attempting to start it...")
         } catch (e: Exception) {
-            // For other errors during daemon communication (e.g. read timeout during processing),
-            // don't fall back - that means daemon IS running but query failed
             currentAgentStatus = ""
             sendResponse(out, 500, "Internal Error", "{\"error\":\"Agent daemon error: ${e.message}\"}")
             return
         }
 
+        // Self-healing: try to start the daemon
+        if (launcherScript.exists() && launcherScript.canExecute()) {
+            try {
+                currentAgentStatus = "Starting agent daemon..."
+                val pbStart = ProcessBuilder("sh", launcherScript.absolutePath, "nethunter-agent-cli", "start")
+                pbStart.directory(appContext?.filesDir)
+                val procStart = pbStart.start()
+                procStart.waitFor()
+                Thread.sleep(1500) // Give the daemon 1.5s to bind to the port
+
+                // Retry connecting to daemon
+                currentAgentStatus = "Connecting to agent..."
+                val url = java.net.URL("http://127.0.0.1:13338/query")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 3000
+                conn.readTimeout = 0
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+
+                val payload = JSONObject().put("prompt", prompt).toString()
+                conn.outputStream.use { os ->
+                    os.write(payload.toByteArray(Charsets.UTF_8))
+                }
+
+                currentAgentStatus = "Agent is processing..."
+
+                if (conn.responseCode == 200) {
+                    val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                    currentAgentStatus = ""
+                    sendResponse(out, 200, "OK", responseText)
+                    return
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Auto-starting agent daemon failed: ${e.message}, falling back to inline PRoot execution")
+            }
+        }
+
         // Fallback: run agent inline via PRoot + launcher.sh
         currentAgentStatus = "Starting agent..."
         try {
-            val launcherScript = java.io.File(appContext?.filesDir, "launcher.sh")
             if (!launcherScript.exists() || !launcherScript.canExecute()) {
                 currentAgentStatus = ""
                 sendResponse(out, 500, "Internal Error", "{\"error\":\"launcher.sh not found. Please open a terminal session first.\"}")
@@ -738,6 +873,257 @@ object LocalApiServer {
             sendResponse(out, 200, "OK", response)
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAppsUsage(context: Context, out: OutputStream) {
+        try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+            }
+            val granted = (mode == AppOpsManager.MODE_ALLOWED)
+
+            if (!granted) {
+                val json = JSONObject().apply {
+                    put("error", "Usage access permission not granted")
+                    put("needs_permission", "android.settings.USAGE_ACCESS_SETTINGS")
+                }.toString()
+                sendResponse(out, 200, "OK", json)
+                return
+            }
+
+            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val time = System.currentTimeMillis()
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 24 * 60 * 60 * 1000, time)
+            
+            val array = org.json.JSONArray()
+            if (stats != null) {
+                for (usageStats in stats) {
+                    val obj = JSONObject().apply {
+                        put("packageName", usageStats.packageName)
+                        put("totalTimeInForeground", usageStats.totalTimeInForeground)
+                        put("lastTimeUsed", usageStats.lastTimeUsed)
+                    }
+                    array.put(obj)
+                }
+            }
+            val response = JSONObject().put("apps", array).toString()
+            sendResponse(out, 200, "OK", response)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleNotificationsActive(context: Context, out: OutputStream) {
+        try {
+            val sets = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+            val enabled = sets != null && sets.contains(context.packageName)
+
+            if (!enabled) {
+                val json = JSONObject().apply {
+                    put("error", "Notification Access permission not granted")
+                    put("needs_permission", "android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+                }.toString()
+                sendResponse(out, 200, "OK", json)
+                return
+            }
+
+            val list = NetHunterNotificationListenerService.getActiveNotificationsList()
+            val array = org.json.JSONArray()
+            for (item in list) {
+                val obj = JSONObject().apply {
+                    put("package", item.packageName)
+                    put("id", item.id)
+                    put("title", item.title)
+                    put("text", item.text)
+                    put("post_time", item.postTime)
+                }
+                array.put(obj)
+            }
+            sendResponse(out, 200, "OK", JSONObject().put("notifications", array).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityHierarchy(out: OutputStream) {
+        try {
+            val enabled = NetHunterAccessibilityService.isServiceRunning()
+            if (!enabled) {
+                val json = JSONObject().apply {
+                    put("error", "Accessibility Service not enabled")
+                    put("needs_permission", "android.settings.ACCESSIBILITY_SETTINGS")
+                }.toString()
+                sendResponse(out, 200, "OK", json)
+                return
+            }
+
+            val hierarchy = NetHunterAccessibilityService.getScreenHierarchy()
+            sendResponse(out, 200, "OK", hierarchy)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleBatteryOptimizeGet(context: Context, out: OutputStream) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val isIgnoring = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                pm.isIgnoringBatteryOptimizations(context.packageName)
+            } else {
+                true
+            }
+            sendResponse(out, 200, "OK", "{\"ignored\":$isIgnoring}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleBatteryOptimizePost(context: Context, out: OutputStream) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                    try {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                        sendResponse(out, 200, "OK", "{\"status\":\"requested\"}")
+                    } catch (e: Exception) {
+                        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                        sendResponse(out, 200, "OK", "{\"status\":\"opened_settings\"}")
+                    }
+                } else {
+                    sendResponse(out, 200, "OK", "{\"status\":\"already_ignored\"}")
+                }
+            } else {
+                sendResponse(out, 200, "OK", "{\"status\":\"not_supported\"}")
+            }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleWifiControl(context: Context, body: String, out: OutputStream) {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val enable = body.trim().equals("on", ignoreCase = true) || body.trim().equals("true", ignoreCase = true)
+            @Suppress("DEPRECATION")
+            val success = wifiManager.setWifiEnabled(enable)
+            sendResponse(out, 200, "OK", "{\"status\":\"wifi_updated\",\"enabled\":$enable,\"success\":$success}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDeviceAdminStatus(context: Context, out: OutputStream) {
+        try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
+            val active = dpm.isAdminActive(adminComponent)
+            sendResponse(out, 200, "OK", "{\"active\":$active}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDeviceAdminRequest(context: Context, out: OutputStream) {
+        try {
+            val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
+            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Requesting Device Admin privileges for NetHunter Operator.")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            sendResponse(out, 200, "OK", "{\"status\":\"requested\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDeviceLock(context: Context, out: OutputStream) {
+        try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
+            if (dpm.isAdminActive(adminComponent)) {
+                dpm.lockNow()
+                sendResponse(out, 200, "OK", "{\"status\":\"locked\"}")
+            } else {
+                sendResponse(out, 200, "OK", "{\"error\":\"Device admin not active\",\"needs_activation\":\"/device/admin\"}")
+            }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleRootfsBackup(context: Context, out: OutputStream) {
+        try {
+            val distro = RootfsManager.DISTROS.find { it.id == "kali" } ?: RootfsManager.DISTROS.first()
+            var finalPath = ""
+            kotlinx.coroutines.runBlocking {
+                RootfsManager.backupRootfs(context, distro).collect { (progress, status) ->
+                    if (progress == 100) finalPath = status
+                }
+            }
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("status", "success")
+                put("path", finalPath)
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleRootfsRestore(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val fileName = json.optString("file", "")
+            if (fileName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"file parameter is required\"}")
+                return
+            }
+            
+            val downloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val backupFile = java.io.File(downloads, fileName)
+            if (!backupFile.exists()) {
+                sendResponse(out, 404, "Not Found", "{\"error\":\"Backup file not found in Downloads: $fileName\"}")
+                return
+            }
+
+            val distro = RootfsManager.DISTROS.find { it.id == "kali" } ?: RootfsManager.DISTROS.first()
+            kotlinx.coroutines.runBlocking {
+                RootfsManager.restoreRootfs(context, backupFile, distro).collect { }
+            }
+            sendResponse(out, 200, "OK", "{\"status\":\"restored\",\"path\":\"${backupFile.absolutePath}\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleApiShareGet(context: Context, out: OutputStream) {
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
+        sendResponse(out, 200, "OK", "{\"shared\":$shareLocalApi}")
+    }
+
+    private fun handleApiSharePost(context: Context, body: String, out: OutputStream) {
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val share = body.trim().equals("on", ignoreCase = true) || body.trim().equals("true", ignoreCase = true)
+        sharedPrefs.edit().putBoolean("share_local_api", share).apply()
+        sendResponse(out, 200, "OK", "{\"shared\":$share}")
+        // Restart the server on a separate thread to apply bind address changes
+        executor.execute {
+            restart(context)
         }
     }
 }

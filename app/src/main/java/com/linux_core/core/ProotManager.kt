@@ -44,6 +44,8 @@ object ProotManager {
         if (!homeDir.exists()) homeDir.mkdirs()
         if (!tmpDir.exists()) tmpDir.mkdirs()
 
+        updateResolvConf(context, rootfsDir)
+
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
 
         val setupDoneFile = File(homeDir, ".setup_done")
@@ -187,6 +189,48 @@ object ProotManager {
         }
     }
 
+    private fun updateResolvConf(context: Context, rootfsDir: File) {
+        try {
+            val etcDir = File(rootfsDir, "etc")
+            if (!etcDir.exists()) etcDir.mkdirs()
+            val resolvConf = File(etcDir, "resolv.conf")
+            
+            val dnsList = mutableListOf<String>()
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            if (connectivityManager != null) {
+                val activeNetwork = connectivityManager.activeNetwork
+                if (activeNetwork != null) {
+                    val linkProperties = connectivityManager.getLinkProperties(activeNetwork)
+                    if (linkProperties != null) {
+                        for (dns in linkProperties.dnsServers) {
+                            val ip = dns.hostAddress
+                            if (!ip.isNullOrEmpty() && !ip.contains(":")) {
+                                dnsList.add(ip)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (dnsList.isEmpty()) {
+                val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+                val customDns = sharedPrefs.getString("vpn_dns", "8.8.8.8") ?: "8.8.8.8"
+                dnsList.add(customDns)
+                if (customDns != "8.8.8.8") {
+                    dnsList.add("8.8.8.8")
+                }
+                dnsList.add("1.1.1.1")
+            }
+            
+            val content = dnsList.joinToString("\n") { "nameserver $it" } + "\n"
+            resolvConf.writeText(content)
+            resolvConf.setReadable(true, false)
+            resolvConf.setWritable(true, false)
+            Log.i(TAG, "Dynamically updated resolv.conf with DNS servers: $dnsList")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update resolv.conf: ${e.message}")
+        }
+    }
 
     private fun createMasterScript(homeDir: File, distroId: String, hasRoot: Boolean) {
         val masterFile = File(homeDir, "bootstrap.sh")
@@ -196,7 +240,7 @@ object ProotManager {
             append("export DEBCONF_NOWARNINGS=yes").append(NL)
             append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
             append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
-            append("echo 'nameserver 8.8.8.8' > /etc/resolv.conf").append(NL)
+            append("# DNS resolv.conf is dynamically managed by host app").append(NL)
             append("# Base ParrotOS /usr/bin/perl is a directory, breaking debconf Perl shebang.").append(NL)
             append("# Replace confmodule with dummy no-op shell functions during bootstrap.").append(NL)
             append("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then").append(NL)
@@ -321,6 +365,10 @@ object ProotManager {
             append("    local user_name=\"\$2\"").append(NL)
             append("    local zrc=\"\$target_home/.zshrc\"").append(NL)
             append("    [ ! -d \"\$target_home\" ] && return").append(NL)
+            append("    # Okamzita optimalizace startu (zruseni pomaleho MOTD)").append(NL)
+            append("    touch \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
+            append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
+            append("    # Zkopiruje se optimalizovany zshrc pouze v pripade, ze jeste vubec neexistuje").append(NL)
             append("    [ ! -f \"\$zrc\" ] && [ -f /etc/skel/.zshrc ] && cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
             append("    [ ! -f \"\$zrc\" ] && touch \"\$zrc\"").append(NL)
             append("    # Clean old fragments").append(NL)
@@ -546,7 +594,10 @@ object ProotManager {
                 append("        sz = log.get(\"size\")").append(NL)
                 append("        cat = log.get(\"category\")").append(NL)
                 append("        det = log.get(\"detail\")").append(NL)
-                append("        print(\"[%s] %s:%s -> %s:%s (%sB) - %s - %s\" % (p, src, sp, dst, dp, sz, cat, det))").append(NL)
+                append("        app = log.get(\"appName\", \"\")").append(NL)
+                append("        sess = log.get(\"sessionName\")").append(NL)
+                append("        proc_sess = (\"[%s » %s] \" % (sess, app)) if sess else ((\"[%s] \" % app) if app else \"\")").append(NL)
+                append("        print(\"[%s] %s%s:%s -> %s:%s (%sB) - %s - %s\" % (p, proc_sess, src, sp, dst, dp, sz, cat, det))").append(NL)
                 append("except Exception as e:").append(NL)
                 append("    print(\"Failed to parse logs:\", e)").append(NL)
                 append("'").append(NL)
@@ -576,6 +627,29 @@ object ProotManager {
                 append("def run_shell(cmd):").append(NL)
                 append("    try: return requests.post(f'{API_URL}/shell', data=cmd).json()").append(NL)
                 append("    except: return {'error': 'API unreachable'}").append(NL)
+                append("def analyze_network(filter_ip=None, minutes=60):").append(NL)
+                append("    logs = get_logs()").append(NL)
+                append("    now_ms = int(time.time() * 1000)").append(NL)
+                append("    cutoff = now_ms - (minutes * 60 * 1000)").append(NL)
+                append("    recent = [l for l in logs if l.get('timestamp',0) >= cutoff]").append(NL)
+                append("    if filter_ip: recent = [l for l in recent if l.get('srcIp')==filter_ip or l.get('dstIp')==filter_ip]").append(NL)
+                append("    if not recent: return 'Žádný provoz za posledních %d minut.' % minutes").append(NL)
+                append("    total = len(recent)").append(NL)
+                append("    anomalies = [l for l in recent if l.get('category') in ('CRITICAL','SUSPICIOUS')]").append(NL)
+                append("    dst_c = {}").append(NL)
+                append("    for l in recent: dst_c[l.get('dstIp','?')] = dst_c.get(l.get('dstIp','?'),0)+1").append(NL)
+                append("    top5 = sorted(dst_c.items(), key=lambda x:x[1], reverse=True)[:5]").append(NL)
+                append("    ent = [l.get('entropy',0) for l in recent if l.get('entropy',0)>0]").append(NL)
+                append("    avg_e = sum(ent)/len(ent) if ent else 0").append(NL)
+                append("    report = f'📊 Analýza posledních {minutes} minut:\\n'").append(NL)
+                append("    report += f'  Celkem spojení: {total}\\n'").append(NL)
+                append("    report += f'  Anomálie (CRITICAL/SUSPICIOUS): {len(anomalies)}\\n'").append(NL)
+                append("    report += f'  Průměrná entropie: {avg_e:.2f}\\n'").append(NL)
+                append("    report += f'  Top destinace: {top5}\\n'").append(NL)
+                append("    if anomalies:").append(NL)
+                append("        report += '  🔴 Podezřelé:\\n'").append(NL)
+                append("        for a in anomalies[:5]: report += f\"    {a.get('srcIp')} -> {a.get('dstIp')}:{a.get('dstPort')} [{a.get('category')}]\\n\"").append(NL)
+                append("    return report").append(NL)
                 append("def analyze_log(log):").append(NL)
                 append("    src = log.get('srcIp')").append(NL)
                 append("    dst = log.get('dstIp')").append(NL)
@@ -589,18 +663,29 @@ object ProotManager {
                 append("    else: ans += \"🟢 Vypadá to v pohodě.\"").append(NL)
                 append("    return ans").append(NL)
                 append("def chat_loop():").append(NL)
-                append("    print('🤖 NetHunter Local AI Expert (v1.0)')").append(NL)
-                append("    print('Ptej se na \"stav\" nebo piš !příkaz pro shell.')").append(NL)
+                append("    print('🤖 NetHunter Local AI Expert (v2.0)')").append(NL)
+                append("    print('Příkazy:')").append(NL)
+                append("    print('  stav       - Poslední spojení')").append(NL)
+                append("    print('  analýza    - Statistiky za poslední hodinu')").append(NL)
+                append("    print('  ip X.X.X.X - Provoz k/z konkrétní IP')").append(NL)
+                append("    print('  !příkaz    - Spustit shell příkaz')").append(NL)
+                append("    print('  exit       - Ukončit')").append(NL)
                 append("    while True:").append(NL)
-                append("        user_input = input('👤 Ty: ').lower()").append(NL)
-                append("        if user_input in ['exit', 'quit']: break").append(NL)
-                append("        if 'stav' in user_input:").append(NL)
+                append("        user_input = input('👤 Ty: ').strip()").append(NL)
+                append("        lower = user_input.lower()").append(NL)
+                append("        if lower in ['exit', 'quit']: break").append(NL)
+                append("        if 'stav' in lower:").append(NL)
                 append("            logs = get_logs()").append(NL)
                 append("            print(f\"🤖 Agent: {analyze_log(logs[0]) if logs else 'Žádné logy.'}\")").append(NL)
+                append("        elif lower.startswith('ip '):").append(NL)
+                append("            target_ip = user_input[3:].strip()").append(NL)
+                append("            print(f'🤖 Agent: {analyze_network(filter_ip=target_ip)}')").append(NL)
+                append("        elif 'analýza' in lower or 'analyza' in lower or 'analyz' in lower:").append(NL)
+                append("            print(f'🤖 Agent: {analyze_network()}')").append(NL)
                 append("        elif user_input.startswith('!'):").append(NL)
                 append("            res = run_shell(user_input[1:])").append(NL)
                 append("            print(f\"🤖 Shell: {res.get('stdout','')}{res.get('stderr','')}\")").append(NL)
-                append("        else: print(\"🤖 Agent: Sleduju provoz. Napiš 'stav' pro analýzu.\")").append(NL)
+                append("        else: print(\"🤖 Agent: Napiš 'stav', 'analýza', 'ip X.X.X.X' nebo '!příkaz'.\")").append(NL)
                 append("def monitor_loop():").append(NL)
                 append("    seen = set()").append(NL)
                 append("    while True:").append(NL)
@@ -822,6 +907,38 @@ object ProotManager {
                 append("esac").append(NL)
             }.toString(),
 
+            "nethunter-api" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("# NetHunter Local API Control CLI").append(NL)
+                append("API_URL=\"http://127.0.0.1:1337\"").append(NL)
+                append("usage() {").append(NL)
+                append("  echo \"Usage: nethunter-api share [on|off|status]\"").append(NL)
+                append("  exit 1").append(NL)
+                append("}").append(NL)
+                append("if [ \"\$1\" = \"share\" ]; then").append(NL)
+                append("  mode=\"\${2:-status}\"").append(NL)
+                append("  if [ \"\$mode\" = \"on\" ]; then").append(NL)
+                append("    res=\$(curl -s -X POST --data-binary \"on\" \"\$API_URL/api/share\")").append(NL)
+                append("    echo \"[+] API sharing enabled. Bind address updated to 0.0.0.0.\"").append(NL)
+                append("  elif [ \"\$mode\" = \"off\" ]; then").append(NL)
+                append("    res=\$(curl -s -X POST --data-binary \"off\" \"\$API_URL/api/share\")").append(NL)
+                append("    echo \"[-] API sharing disabled. Bind address restored to 127.0.0.1.\"").append(NL)
+                append("  elif [ \"\$mode\" = \"status\" ]; then").append(NL)
+                append("    res=\$(curl -s \"\$API_URL/api/share\")").append(NL)
+                append("    shared=\$(echo \"\$res\" | grep -o '\"shared\":[^,]*' | cut -d: -f2)").append(NL)
+                append("    if [ \"\$shared\" = \"true\" ]; then").append(NL)
+                append("      echo \"[+] API sharing is currently ENABLED (0.0.0.0)\"").append(NL)
+                append("    else").append(NL)
+                append("      echo \"[-] API sharing is currently DISABLED (127.0.0.1)\"").append(NL)
+                append("    fi").append(NL)
+                append("  else").append(NL)
+                append("    usage").append(NL)
+                append("  fi").append(NL)
+                append("else").append(NL)
+                append("  usage").append(NL)
+                append("fi").append(NL)
+            }.toString(),
+
             // nethunter-notebook — temporarily disabled for later
         )
 
@@ -895,6 +1012,25 @@ object ProotManager {
 
 Tento dokument obsahuje přehled všech dostupných příkazů a API funkcí, které můžete používat z terminálu NetHunter AI Operator. Tyto příkazy zajišťují integraci s Android systémem a správu VPN.
 
+## 🚀 Životní cyklus spouštění & struktura PRootu
+
+Při každém startu terminálu zajišťuje `ProotManager` inicializaci a úpravu virtuálního prostředí:
+
+### 📁 Vytvářené adresáře
+V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
+`system`, `dev`, `proc`, `sys`, `tmp`, `root`, `sdcard` (pokud je sdcard povolena), `bin`, `usr/bin`, `usr/sbin`, `sbin`, `lib`, `lib64`, `usr/lib`, `etc`.
+
+### 🏳️ Stavové soubory (Sentinely)
+- `/root/.hushlogin` - Vypíná výchozí uvítací zprávy shellu.
+- `/root/.bootstrap_required` - Vytvoří se při první instalaci a dává pokyn ke spuštění `bootstrap.sh`. Po dokončení se smaže.
+- `/root/.setup_done` - Vytvoří se po úspěšném dokončení bootstrap skriptu.
+
+### ⚙️ Automatické úpravy a opravy prostředí
+- **Přesměrování systemd příkazů:** Nástroje jako `systemctl`, `service`, `update-rc.d`, `resolvconf`, `journalctl` atd. jsou v unrooted prostředí přesměrovány na `/bin/true`, čímž se předchází selhání instalací balíčků.
+- **Oprava zavaděče (linker):** Dynamický zavaděč se kopíruje do `lib/ld-linux-aarch64.so.1` a `lib64/ld-linux-aarch64.so.1`. Knihovna `libtalloc.so.2` se umísťuje do `lib/libtalloc.so.2`.
+- **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
+- **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, dále `vpn-bypass`/`dcheck` pro obcházení filtru přes proxy (port 13339) a nástroje jako `nethunter-fix-postinst`.
+
 ## 📱 Hardwarové a Systémové Funkce (Android API Bridge)
 
 Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovládat a číst senzory hostitelského zařízení.
@@ -912,6 +1048,7 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-location` | Vrátí aktuální GPS souřadnice ve formátu JSON. | `nethunter-location` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
+| `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
 
 ## 🛡️ Správa AdGuard VPN Firewallu
 

@@ -32,12 +32,15 @@ class AIBrain(private val context: Context) {
         try {
             val inputName = ortSession?.inputNames?.iterator()?.next() ?: "float_input"
             val shape = longArrayOf(1, 14) // Batch size 1, 14 features
-            val tensor = OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(features), shape)
             
-            val result = ortSession?.run(Collections.singletonMap(inputName, tensor))
-            val output = result?.get(0)?.value as LongArray // LightGBM v ONNX vrací Long pro labely
-            
-            return output[0].toInt()
+            var label = 0
+            OnnxTensor.createTensor(ortEnv, FloatBuffer.wrap(features), shape).use { tensor ->
+                ortSession?.run(Collections.singletonMap(inputName, tensor))?.use { result ->
+                    val output = result.get(0).value as LongArray // LightGBM v ONNX vrací Long pro labely
+                    label = output[0].toInt()
+                }
+            }
+            return label
         } catch (e: Exception) {
             Log.e("AIBrain", "Inference error: ${e.message}")
             return 0

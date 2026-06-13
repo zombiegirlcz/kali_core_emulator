@@ -2,6 +2,8 @@ package com.linux_core.ui.vpn
 
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,7 +24,10 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.linux_core.core.VpnPeerManager
@@ -62,7 +67,7 @@ fun VpnMeshTab() {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Color(0xFF00FF41)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xDD0C0E14))
+                colors = CardDefaults.cardColors(containerColor = Color(0xE60C0E14))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -72,13 +77,14 @@ fun VpnMeshTab() {
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.DeviceHub, contentDescription = null, tint = Color(0xFF00FF41), modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Column {
-                                Text("P2P Mesh Network", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text("P2P Mesh Network Overlay", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 Text(
-                                    text = if (isP2PEnabled) "● status: active overlay" else "○ status: offline",
-                                    fontSize = 11.sp,
-                                    color = if (isP2PEnabled) Color(0xFF00FF66) else Color.Gray
+                                    text = if (isP2PEnabled) "STATUS: SECURE MESH OVERLAY ONLINE" else "STATUS: MESH SERVICE OFFLINE",
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (isP2PEnabled) Color(0xFF00FF41) else Color.Gray
                                 )
                             }
                         }
@@ -91,7 +97,7 @@ fun VpnMeshTab() {
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color(0xFF00FF41),
-                                checkedTrackColor = Color(0x8800FF41)
+                                checkedTrackColor = Color(0x6600FF41)
                             )
                         )
                     }
@@ -106,16 +112,16 @@ fun VpnMeshTab() {
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xBB0B0D13))
+                    colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            modifier = Modifier.padding(bottom = 10.dp)
                         ) {
                             Icon(Icons.Default.Settings, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Local Node Configuration", fontSize = 12.sp, color = Color.LightGray, fontWeight = FontWeight.Bold)
+                            Text("Local Mesh Node Configuration", fontSize = 12.sp, color = Color.LightGray, fontWeight = FontWeight.Bold)
                         }
 
                         Row(
@@ -132,10 +138,12 @@ fun VpnMeshTab() {
                                 },
                                 label = { Text("Peer ID (1-254)", fontSize = 10.sp, color = Color.Gray) },
                                 singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
+                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = Color(0xFF00FF41),
-                                    unfocusedBorderColor = Color(0xFF1E2026)
+                                    unfocusedBorderColor = Color(0xFF1E2026),
+                                    focusedContainerColor = Color(0xFF08090D),
+                                    unfocusedContainerColor = Color(0xFF08090D)
                                 ),
                                 modifier = Modifier.weight(1f).height(50.dp)
                             )
@@ -146,35 +154,39 @@ fun VpnMeshTab() {
                                     nodeNameText = it
                                     VpnPeerManager.setNodeName(it)
                                 },
-                                label = { Text("Node Name", fontSize = 10.sp, color = Color.Gray) },
+                                label = { Text("Node Hostname", fontSize = 10.sp, color = Color.Gray) },
                                 singleLine = true,
                                 textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = Color(0xFF00FF41),
-                                    unfocusedBorderColor = Color(0xFF1E2026)
+                                    unfocusedBorderColor = Color(0xFF1E2026),
+                                    focusedContainerColor = Color(0xFF08090D),
+                                    unfocusedContainerColor = Color(0xFF08090D)
                                 ),
                                 modifier = Modifier.weight(1.5f).height(50.dp)
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         // WAN IP / Connection Info Box
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(6.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x331E2026))
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF07080A)),
+                            border = BorderStroke(1.dp, Color(0x1AFFFFFF))
                         ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text("Resolved Public IP (STUN):", fontSize = 9.sp, color = Color.Gray)
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("RESOLVED PUBLIC ENDPOINT (STUN):", fontSize = 8.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                                 Text(
                                     text = localWanEndpoint,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF00FF41)
+                                    color = Color(0xFF00FF41),
+                                    fontFamily = FontFamily.Monospace
                                 )
 
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -182,23 +194,29 @@ fun VpnMeshTab() {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Connection String (Share this):", fontSize = 9.sp, color = Color.Gray)
+                                        Text("CONNECTION STRING (SHARE THIS):", fontSize = 8.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                                         Text(
                                             text = VpnPeerManager.getLocalConnectionString(),
                                             fontSize = 9.sp,
                                             color = Color.LightGray,
-                                            maxLines = 1
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     IconButton(
                                         onClick = {
                                             val connStr = VpnPeerManager.getLocalConnectionString()
                                             clipboardManager.setText(AnnotatedString(connStr))
-                                            Toast.makeText(context, "Copied connection string!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Copied connection string to clipboard!", Toast.LENGTH_SHORT).show()
                                         },
-                                        modifier = Modifier.size(30.dp)
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .background(Color(0x1100FF41), RoundedCornerShape(4.dp))
+                                            .border(1.dp, Color(0x3300FF41), RoundedCornerShape(4.dp))
                                     ) {
-                                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = Color(0xFF00FF41), modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = Color(0xFF00FF41), modifier = Modifier.size(12.dp))
                                     }
                                 }
                             }
@@ -213,47 +231,50 @@ fun VpnMeshTab() {
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xBB0B0D13))
+                    colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            modifier = Modifier.padding(bottom = 10.dp)
                         ) {
                             Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Connect to a New Peer", fontSize = 12.sp, color = Color.LightGray, fontWeight = FontWeight.Bold)
+                            Text("Connect to a Remote Mesh Peer", fontSize = 12.sp, color = Color.LightGray, fontWeight = FontWeight.Bold)
                         }
 
                         OutlinedTextField(
                             value = peerConnectionStringInput,
                             onValueChange = { peerConnectionStringInput = it },
-                            placeholder = { Text("Paste peer's connection string...", color = Color.DarkGray, fontSize = 11.sp) },
-                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 11.sp),
+                            placeholder = { Text("Paste remote node connection string here...", color = Color.DarkGray, fontSize = 11.sp) },
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color(0xFF00FF41),
-                                unfocusedBorderColor = Color(0xFF1E2026)
+                                unfocusedBorderColor = Color(0xFF1E2026),
+                                focusedContainerColor = Color(0xFF08090D),
+                                unfocusedContainerColor = Color(0xFF08090D)
                             ),
                             modifier = Modifier.fillMaxWidth().height(50.dp)
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
                         Button(
                             onClick = {
                                 if (VpnPeerManager.addPeerFromConnectionString(peerConnectionStringInput)) {
                                     peerConnectionStringInput = ""
-                                    Toast.makeText(context, "Peer successfully added!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Peer successfully paired!", Toast.LENGTH_SHORT).show()
                                     peerList = VpnPeerManager.peers.values.toList()
                                 } else {
                                     Toast.makeText(context, "Invalid connection string format", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF008F11)),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.fillMaxWidth().height(36.dp)
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, Color(0xFF00FF41)),
+                            modifier = Modifier.fillMaxWidth().height(38.dp)
                         ) {
-                            Text("ADD MESH PEER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("PAIR MESH PEER", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -263,7 +284,7 @@ fun VpnMeshTab() {
             item {
                 Text(
                     text = "Connected Overlay Mesh Nodes (${peerList.size})",
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = Color.Gray,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
@@ -275,10 +296,11 @@ fun VpnMeshTab() {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0x331E2026))
+                        colors = CardDefaults.cardColors(containerColor = Color(0x111E2026)),
+                        border = BorderStroke(1.dp, Color(0x11FFFFFF))
                     ) {
                         Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                            Text("No peers connected yet. Add one above!", color = Color.DarkGray, fontSize = 12.sp)
+                            Text("No paired nodes connected. Paste a connection string above.", color = Color.DarkGray, fontSize = 12.sp, textAlign = TextAlign.Center)
                         }
                     }
                 }
@@ -286,9 +308,9 @@ fun VpnMeshTab() {
                 items(peerList) { peer ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, Color(0x33FFFFFF)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0x11FFFFFF))
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0x22FFFFFF)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0x14FFFFFF))
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -308,19 +330,22 @@ fun VpnMeshTab() {
                                         text = "[10.9.0.${peer.peerId}]",
                                         fontSize = 11.sp,
                                         color = Color(0xFF00E5FF),
-                                        fontWeight = FontWeight.SemiBold
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "WAN IP: ${peer.wanIp}:${peer.wanPort}",
+                                    text = "WAN endpoint: ${peer.wanIp}:${peer.wanPort}",
                                     fontSize = 10.sp,
-                                    color = Color.Gray
+                                    color = Color.Gray,
+                                    fontFamily = FontFamily.Monospace
                                 )
                                 Text(
-                                    text = "Key: ${peer.publicKeyBase64.take(16)}...",
+                                    text = "Public key: ${peer.publicKeyBase64.take(16)}...",
                                     fontSize = 8.sp,
-                                    color = Color.DarkGray
+                                    color = Color.DarkGray,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
 
@@ -342,18 +367,25 @@ fun VpnMeshTab() {
                                     text = pingText,
                                     fontSize = 9.sp,
                                     color = pingColor,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier
+                                        .border(1.dp, pingColor, RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
                                 )
 
                                 IconButton(
                                     onClick = {
                                         VpnPeerManager.removePeer(peer.peerId)
                                         peerList = VpnPeerManager.peers.values.toList()
-                                        Toast.makeText(context, "Peer removed", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Peer node unpaired", Toast.LENGTH_SHORT).show()
                                     },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .background(Color(0x11FF3333), RoundedCornerShape(4.dp))
+                                        .border(1.dp, Color(0x33FF3333), RoundedCornerShape(4.dp))
                                 ) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF8F0011), modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFFFF3333), modifier = Modifier.size(14.dp))
                                 }
                             }
                         }

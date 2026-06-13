@@ -126,7 +126,11 @@ class MainActivity : ComponentActivity() {
             val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
                 action = com.linux_core.core.VpnCaptureService.ACTION_START
             }
-            startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {

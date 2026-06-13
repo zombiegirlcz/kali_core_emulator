@@ -11,7 +11,7 @@ CONFIG_PATH = os.path.expanduser("~/.config/nethunter/agent.json")
 PORT = 13338
 
 SYSTEM_PROMPT = """You are the NetHunter AI Operator, a helpful and expert security assistant integrated directly into this mobile Kali Linux / ParrotOS chroot environment.
-You have direct terminal access to assist the user. You can execute shell commands, read and write files, and control the VPN.
+You have direct terminal access to assist the user. You can execute shell commands, read and write files, control the VPN, and analyze network traffic.
 Use your tools when necessary to answer the user's request. Always respond with valid JSON in the following format:
 
 For tool calls:
@@ -32,11 +32,17 @@ Available tools:
 2. read_file(filepath: str) - Reads file content.
 3. write_file(filepath: str, content: str) - Writes content to a file.
 4. vpn_control(action: str) - Controls host VPN service. Actions: "start", "stop", "status".
+5. analyze_network(filter_ip: str|null, minutes: int) - Analyzes captured VPN traffic logs.
+   Returns statistics about connections from the last N minutes (default: 60).
+   If filter_ip is provided, shows only traffic to/from that specific IP address.
+   Returns: total connections, anomaly count, top destination IPs, top ports, average entropy, protocol breakdown.
 
 Rules:
 - Be concise. The final answer will be spoken aloud to the user via TTS.
 - If a command takes too long (e.g. ping without count), add parameters to make it non-blocking (e.g. ping -c 3).
 - Do not run interactive commands (e.g. nano, top). Use static alternatives (e.g. cat, ps).
+- When the user asks about network traffic, connections, IP addresses, threats, anomalies, or security analysis, use the analyze_network tool first.
+- Present network analysis results clearly: highlight any CRITICAL or SUSPICIOUS connections, mention top talkers, and suggest actions if anomalies are found.
 """
 
 # Tools implementation
@@ -85,6 +91,104 @@ def vpn_control(action):
     except Exception as e:
         return {"error": f"Failed to reach LocalApiServer: {e}"}
 
+def analyze_network(filter_ip=None, minutes=60):
+    """Fetch VPN traffic logs and compute statistics for the last N minutes."""
+    try:
+        url = "http://127.0.0.1:1337/vpn/logs"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as response:
+            logs = json.loads(response.read().decode('utf-8'))
+    except Exception as e:
+        return {"error": f"Failed to fetch VPN logs: {e}"}
+
+    import time
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - (minutes * 60 * 1000)
+
+    # Filter by time window
+    recent = [l for l in logs if l.get("timestamp", 0) >= cutoff_ms]
+
+    # Filter by IP if specified
+    if filter_ip:
+        recent = [l for l in recent if l.get("srcIp") == filter_ip or l.get("dstIp") == filter_ip]
+
+    if not recent:
+        return {
+            "total_connections": 0,
+            "message": f"No traffic found in the last {minutes} minutes" + (f" for IP {filter_ip}" if filter_ip else ""),
+            "anomalies": 0
+        }
+
+    # Compute statistics
+    total = len(recent)
+    anomalies = [l for l in recent if l.get("category") in ("CRITICAL", "SUSPICIOUS")]
+    blocked = [l for l in recent if l.get("category") == "BLOCKED"]
+
+    # Top destination IPs
+    dst_counts = {}
+    for l in recent:
+        dst = l.get("dstIp", "unknown")
+        dst_counts[dst] = dst_counts.get(dst, 0) + 1
+    top_dst = sorted(dst_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Top destination ports
+    port_counts = {}
+    for l in recent:
+        port = l.get("dstPort", 0)
+        port_counts[port] = port_counts.get(port, 0) + 1
+    top_ports = sorted(port_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Protocol breakdown
+    proto_counts = {}
+    for l in recent:
+        proto = l.get("protocol", "unknown")
+        proto_counts[proto] = proto_counts.get(proto, 0) + 1
+
+    # Average entropy
+    entropies = [l.get("entropy", 0) for l in recent if l.get("entropy", 0) > 0]
+    avg_entropy = sum(entropies) / len(entropies) if entropies else 0.0
+
+    # Total bytes
+    total_sent = sum(l.get("bytesSent", 0) for l in recent)
+    total_recv = sum(l.get("bytesReceived", 0) for l in recent)
+
+    # Top apps
+    app_counts = {}
+    for l in recent:
+        app = l.get("appName", "")
+        if app:
+            app_counts[app] = app_counts.get(app, 0) + 1
+    top_apps = sorted(app_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Anomaly details
+    anomaly_details = []
+    for a in anomalies[:10]:  # Limit to 10 most recent anomalies
+        anomaly_details.append({
+            "src": f"{a.get('srcIp')}:{a.get('srcPort')}",
+            "dst": f"{a.get('dstIp')}:{a.get('dstPort')}",
+            "protocol": a.get("protocol"),
+            "category": a.get("category"),
+            "detail": a.get("detail", ""),
+            "entropy": round(a.get("entropy", 0), 2),
+            "app": a.get("appName", "")
+        })
+
+    return {
+        "time_window_minutes": minutes,
+        "filter_ip": filter_ip,
+        "total_connections": total,
+        "anomaly_count": len(anomalies),
+        "blocked_count": len(blocked),
+        "top_destinations": [{"ip": ip, "count": c} for ip, c in top_dst],
+        "top_ports": [{"port": p, "count": c} for p, c in top_ports],
+        "protocols": proto_counts,
+        "average_entropy": round(avg_entropy, 3),
+        "bytes_sent": total_sent,
+        "bytes_received": total_recv,
+        "top_apps": [{"app": a, "count": c} for a, c in top_apps],
+        "anomaly_details": anomaly_details
+    }
+
 def execute_tool(name, args):
     if name == "run_shell_command":
         return run_shell_command(args.get("command", ""))
@@ -94,6 +198,11 @@ def execute_tool(name, args):
         return write_file(args.get("filepath", ""), args.get("content", ""))
     elif name == "vpn_control":
         return vpn_control(args.get("action", "status"))
+    elif name == "analyze_network":
+        return analyze_network(
+            filter_ip=args.get("filter_ip"),
+            minutes=int(args.get("minutes", 60))
+        )
     else:
         return {"error": f"Unknown tool: {name}"}
 

@@ -77,6 +77,34 @@ class VpnCaptureService : VpnService() {
                 false
             }
         }
+
+        @JvmStatic
+        fun getConnectionOwnerUid(protocolStr: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): Int {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1
+            val inst = instance ?: return -1
+            return try {
+                val protocol = if (protocolStr.equals("TCP", ignoreCase = true)) 6 else 17
+                val srcAddr = java.net.InetAddress.getByName(srcIp)
+                val dstAddr = java.net.InetAddress.getByName(dstIp)
+                val method = VpnService::class.java.getMethod(
+                    "checkConnectionOwner",
+                    Int::class.javaPrimitiveType,
+                    java.net.InetAddress::class.java,
+                    Int::class.javaPrimitiveType,
+                    java.net.InetAddress::class.java,
+                    Int::class.javaPrimitiveType
+                )
+                method.invoke(inst, protocol, srcAddr, srcPort, dstAddr, dstPort) as Int
+            } catch (e: Exception) {
+                Log.e(TAG, "getConnectionOwnerUid reflection failed: ${e.message}")
+                -1
+            }
+        }
+
+        @JvmStatic
+        fun getActiveSockets(context: Context): List<ActiveSocket> {
+            return instance?.natEngine?.getActiveSockets(context) ?: emptyList()
+        }
     }
 
     private val isServiceRunning = AtomicBoolean(false)
@@ -101,10 +129,68 @@ class VpnCaptureService : VpnService() {
     private val vpnSync = Any()
     private val writeLock = Any()
 
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    private fun acquireLocks() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "NetHunter:VpnCaptureServiceWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "WakeLock acquired for VpnCaptureService")
+            }
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "NetHunter:VpnCaptureServiceWifiLock")
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL, "NetHunter:VpnCaptureServiceWifiLock")
+                }.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "WifiLock acquired for VpnCaptureService")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire locks: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wakeLock = null
+            Log.i(TAG, "WakeLock released for VpnCaptureService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release WakeLock: ${e.message}")
+        }
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wifiLock = null
+            Log.i(TAG, "WifiLock released for VpnCaptureService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release WifiLock: ${e.message}")
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
+        acquireLocks()
         createNotificationChannel()
+        VpnLogManager.loadCustomBlocklist(this)
         Log.i(TAG, "Service created")
 
         VpnProxyManager.onProxyChangedListener = {
@@ -129,11 +215,10 @@ class VpnCaptureService : VpnService() {
             return START_NOT_STICKY
         }
 
-        if (intent?.action == ACTION_START) {
-            if (!isServiceRunning.get()) {
-                synchronized(vpnSync) {
-                    startVpn()
-                }
+        // Default to starting the VPN for any other actions (including ACTION_START, null, or system bindings)
+        if (!isServiceRunning.get()) {
+            synchronized(vpnSync) {
+                startVpn()
             }
         }
 
@@ -154,6 +239,18 @@ class VpnCaptureService : VpnService() {
             val sharedPrefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val customMtu = sharedPrefs.getString("vpn_mtu", MTU.toString())?.toIntOrNull() ?: MTU
             val customDns = sharedPrefs.getString("vpn_dns", VPN_DNS) ?: VPN_DNS
+            val dnsServers = mutableListOf<String>()
+            if (customDns != VPN_DNS && customDns.isNotBlank()) {
+                dnsServers.add(customDns)
+            } else {
+                val underlying = getUnderlyingDnsServers()
+                if (underlying.isNotEmpty()) {
+                    dnsServers.addAll(underlying)
+                } else {
+                    dnsServers.add(VPN_DNS)
+                }
+            }
+            Log.i(TAG, "Configured VPN DNS servers: $dnsServers")
             
             val builder = Builder()
                 .setSession("NetHunter VPN")
@@ -166,53 +263,80 @@ class VpnCaptureService : VpnService() {
                 builder.addAddress("10.9.0.${VpnPeerManager.getLocalPeerId()}", 24)
             }
 
+            val isAdbActive = isWirelessAdbActive()
+            if (isAdbActive) {
+                Log.i(TAG, "Wireless ADB connection detected. Excluding LAN from VPN routes.")
+            } else {
+                Log.i(TAG, "Wireless ADB not active. VPN will capture all LAN traffic.")
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 builder.addRoute("0.0.0.0", 0)
-                    .addDnsServer(customDns)
-                    .allowBypass()
-                try {
-                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
-                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
-                    Log.i(TAG, "Excluded non-conflicting private subnets from VPN")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not exclude routes: ${e.message}")
+                dnsServers.forEach { dns ->
+                    try {
+                        builder.addDnsServer(dns)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to add DNS: $dns: ${e.message}")
+                    }
+                }
+                builder.allowBypass()
+                if (isAdbActive) {
+                    try {
+                        builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
+                        builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
+                        Log.i(TAG, "Excluded non-conflicting private subnets from VPN")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not exclude routes: ${e.message}")
+                    }
                 }
             } else {
-                builder.addDnsServer(customDns)
-                    .allowBypass()
-                // For API < 33, add routes that cover the IPv4 space except private ranges (192.168.0.0/16 and 172.16.0.0/12)
-                val bypassRanges = listOf(
-                    "0.0.0.0" to 1,        // 0.0.0.0 - 127.255.255.255
-                    "128.0.0.0" to 3,      // 128.0.0.0 - 159.255.255.255
-                    "160.0.0.0" to 5,      // 160.0.0.0 - 167.255.255.255
-                    "168.0.0.0" to 6,      // 168.0.0.0 - 171.255.255.255
-                    "172.0.0.0" to 12,     // 172.0.0.0 - 172.15.255.255
-                    "172.32.0.0" to 11,    // 172.32.0.0 - 172.63.255.255
-                    "172.64.0.0" to 10,    // 172.64.0.0 - 172.127.255.255
-                    "172.128.0.0" to 9,    // 172.128.0.0 - 172.255.255.255
-                    "173.0.0.0" to 8,      // 173.0.0.0 - 173.255.255.255
-                    "174.0.0.0" to 7,      // 174.0.0.0 - 175.255.255.255
-                    "176.0.0.0" to 4,      // 176.0.0.0 - 191.255.255.255
-                    "192.0.0.0" to 9,      // 192.0.0.0 - 192.127.255.255
-                    "192.128.0.0" to 11,   // 192.128.0.0 - 192.159.255.255
-                    "192.160.0.0" to 13,   // 192.160.0.0 - 192.167.255.255
-                    "192.169.0.0" to 16,   // 192.169.0.0 - 192.169.255.255
-                    "192.170.0.0" to 15,   // 192.170.0.0 - 192.171.255.255
-                    "192.172.0.0" to 14,   // 192.172.0.0 - 192.175.255.255
-                    "192.176.0.0" to 12,   // 192.176.0.0 - 192.191.255.255
-                    "192.192.0.0" to 10,   // 192.192.0.0 - 192.255.255.255
-                    "193.0.0.0" to 8,      // 193.0.0.0 - 193.255.255.255
-                    "194.0.0.0" to 7,      // 194.0.0.0 - 195.255.255.255
-                    "196.0.0.0" to 6,      // 196.0.0.0 - 199.255.255.255
-                    "200.0.0.0" to 5,      // 200.0.0.0 - 207.255.255.255
-                    "208.0.0.0" to 4       // 208.0.0.0 - 223.255.255.255
-                )
-                for ((ip, prefix) in bypassRanges) {
+                dnsServers.forEach { dns ->
                     try {
-                        builder.addRoute(ip, prefix)
+                        builder.addDnsServer(dns)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to add route: $ip/$prefix", e)
+                        Log.w(TAG, "Failed to add DNS: $dns: ${e.message}")
                     }
+                }
+                builder.allowBypass()
+                
+                if (isAdbActive) {
+                    // For API < 33, add routes that cover the IPv4 space except private ranges (192.168.0.0/16 and 172.16.0.0/12)
+                    val bypassRanges = listOf(
+                        "0.0.0.0" to 1,        // 0.0.0.0 - 127.255.255.255
+                        "128.0.0.0" to 3,      // 128.0.0.0 - 159.255.255.255
+                        "160.0.0.0" to 5,      // 160.0.0.0 - 167.255.255.255
+                        "168.0.0.0" to 6,      // 168.0.0.0 - 171.255.255.255
+                        "172.0.0.0" to 12,     // 172.0.0.0 - 172.15.255.255
+                        "172.32.0.0" to 11,    // 172.32.0.0 - 172.63.255.255
+                        "172.64.0.0" to 10,    // 172.64.0.0 - 172.127.255.255
+                        "172.128.0.0" to 9,    // 172.128.0.0 - 172.255.255.255
+                        "173.0.0.0" to 8,      // 173.0.0.0 - 173.255.255.255
+                        "174.0.0.0" to 7,      // 174.0.0.0 - 175.255.255.255
+                        "176.0.0.0" to 4,      // 176.0.0.0 - 191.255.255.255
+                        "192.0.0.0" to 9,      // 192.0.0.0 - 192.127.255.255
+                        "192.128.0.0" to 11,   // 192.128.0.0 - 192.159.255.255
+                        "192.160.0.0" to 13,   // 192.160.0.0 - 192.167.255.255
+                        "192.169.0.0" to 16,   // 192.169.0.0 - 192.169.255.255
+                        "192.170.0.0" to 15,   // 192.170.0.0 - 192.171.255.255
+                        "192.172.0.0" to 14,   // 192.172.0.0 - 192.175.255.255
+                        "192.176.0.0" to 12,   // 192.176.0.0 - 192.191.255.255
+                        "192.192.0.0" to 10,   // 192.192.0.0 - 192.255.255.255
+                        "193.0.0.0" to 8,      // 193.0.0.0 - 193.255.255.255
+                        "194.0.0.0" to 7,      // 194.0.0.0 - 195.255.255.255
+                        "196.0.0.0" to 6,      // 196.0.0.0 - 199.255.255.255
+                        "200.0.0.0" to 5,      // 200.0.0.0 - 207.255.255.255
+                        "208.0.0.0" to 4       // 208.0.0.0 - 223.255.255.255
+                    )
+                    for ((ip, prefix) in bypassRanges) {
+                        try {
+                            builder.addRoute(ip, prefix)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to add route: $ip/$prefix", e)
+                        }
+                    }
+                } else {
+                    // Capture everything including LAN
+                    builder.addRoute("0.0.0.0", 0)
                 }
             }
 
@@ -372,6 +496,22 @@ class VpnCaptureService : VpnService() {
         handler.postDelayed(healthChecker, 5000)
     }
 
+    private fun isWirelessAdbActive(): Boolean {
+        try {
+            if (android.provider.Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1) {
+                return true
+            }
+            val process = Runtime.getRuntime().exec("getprop service.adb.tcp.port")
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            val port = reader.readLine()?.toIntOrNull() ?: -1
+            process.destroy()
+            if (port > 0) return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking ADB status: ${e.message}")
+        }
+        return false
+    }
+
     private fun buildNotification(): android.app.Notification {
         val count = packetCount.get()
         val formattedBytes = formatByteCount(byteCount.get())
@@ -440,12 +580,43 @@ class VpnCaptureService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
 
     override fun onDestroy() {
+        releaseLocks()
         isServiceRunning.set(false)
         stopVpn()
         instance = null
         VpnProxyManager.onProxyChangedListener = null
         Log.i(TAG, "Service destroyed")
         super.onDestroy()
+    }
+
+    private fun getUnderlyingDnsServers(): List<String> {
+        val dnsList = mutableListOf<String>()
+        try {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            if (connectivityManager != null) {
+                for (network in connectivityManager.allNetworks) {
+                    val capabilities = connectivityManager.getNetworkCapabilities(network)
+                    if (capabilities != null && (
+                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                    )) {
+                        val lp = connectivityManager.getLinkProperties(network)
+                        if (lp != null) {
+                            for (dns in lp.dnsServers) {
+                                val ip = dns.hostAddress
+                                if (!ip.isNullOrEmpty() && !ip.contains(":")) {
+                                    dnsList.add(ip)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting underlying DNS servers: ${e.message}")
+        }
+        return dnsList
     }
 
 }

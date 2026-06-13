@@ -48,6 +48,14 @@ class VpnNatEngine(
         var state = TcpState.CLOSED
         val sendQueue = ArrayList<ByteBuffer>()
         var lastActiveTime = System.currentTimeMillis()
+        
+        var bytesSent: Long = 0
+        var bytesReceived: Long = 0
+        var lastSpeedCalcTime: Long = System.currentTimeMillis()
+        var lastBytesSent: Long = 0
+        var lastBytesReceived: Long = 0
+        var speedUpload: Long = 0L
+        var speedDownload: Long = 0L
     }
 
     class UdpSession(
@@ -57,6 +65,14 @@ class VpnNatEngine(
     ) {
         var datagramChannel: DatagramChannel? = null
         var lastActiveTime = System.currentTimeMillis()
+
+        var bytesSent: Long = 0
+        var bytesReceived: Long = 0
+        var lastSpeedCalcTime: Long = System.currentTimeMillis()
+        var lastBytesSent: Long = 0
+        var lastBytesReceived: Long = 0
+        var speedUpload: Long = 0L
+        var speedDownload: Long = 0L
     }
 
     init {
@@ -201,13 +217,36 @@ class VpnNatEngine(
         
         if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
             val payloadLen = udpHeader.length - 8
-            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, if (payloadLen > 0) payloadLen else 0, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, if (payloadLen > 0) payloadLen else 0, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
             return
         }
         
         val payloadOffset = ipHeader.ihl + 8
         val payloadLen = udpHeader.length - 8
         if (payloadLen <= 0) return
+
+        // DNS parsing and custom blocklist matching
+        if (dstPort == 53) {
+            val originalPos = packetBuffer.position()
+            val dnsPayload = ByteArray(payloadLen)
+            packetBuffer.position(payloadOffset)
+            packetBuffer.get(dnsPayload)
+            packetBuffer.position(originalPos)
+            
+            val query = parseDnsQuery(dnsPayload)
+            if (query != null) {
+                val (domain, qType) = query
+                val isBlocked = VpnLogManager.isDomainBlocked(domain)
+                if (isBlocked) {
+                    VpnLogManager.logDnsQuery(domain, qType, VpnLogManager.AuditCategory.BLOCKED, "Blocked by custom rules")
+                    VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.BLOCKED, "DNS Blocked: $domain")
+                    sendDnsNxDomainResponse(packetBuffer, ipHeader, udpHeader, payloadLen)
+                    return
+                } else {
+                    VpnLogManager.logDnsQuery(domain, qType, VpnLogManager.AuditCategory.ALLOWED)
+                }
+            }
+        }
 
         var session = udpSessions[srcPort]
         if (session == null) {
@@ -222,7 +261,7 @@ class VpnNatEngine(
             val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
                 "AI: Detected critical network anomaly!" else "AI: Verified UDP stream"
 
-            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail)
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail)
 
             try {
                 val channel = DatagramChannel.open().apply {
@@ -251,7 +290,7 @@ class VpnNatEngine(
             }
         } else {
             // Update logged transfer size
-            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "UDP data chunk")
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "UDP data chunk")
         }
 
         session.lastActiveTime = System.currentTimeMillis()
@@ -263,9 +302,10 @@ class VpnNatEngine(
             packetBuffer.get(payloadCopy)
             packetBuffer.position(payloadOffset) // reset for write
             
-            VpnLogManager.logConnection("UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "UDP payload out", payloadCopy)
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "UDP payload out", payloadCopy)
 
             session.datagramChannel?.write(packetBuffer)
+            session.bytesSent += payloadLen
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write UDP data to WAN: ${e.message}")
             closeUdpSession(srcPort)
@@ -281,7 +321,7 @@ class VpnNatEngine(
         
         if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
             if (tcpHeader.isSYN) {
-                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
                 sendTcpRst(ipHeader, tcpHeader)
             }
             return
@@ -300,7 +340,7 @@ class VpnNatEngine(
             val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) 
                 "AI: Detected high-risk TCP request!" else "AI: Verified TCP connection"
 
-            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, aiCategory, detail)
+            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, aiCategory, detail)
 
             try {
                 val channel = SocketChannel.open()
@@ -326,7 +366,7 @@ class VpnNatEngine(
                         val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()
                         if (activeProxy != null) {
                             Log.i(TAG, "Routing session $srcPort through proxy: ${activeProxy.country} (${activeProxy.ip}:${activeProxy.port})")
-                            VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
+                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
                             
                             channel.connect(InetSocketAddress(activeProxy.ip, activeProxy.port))
                             channel.configureBlocking(true)
@@ -371,7 +411,7 @@ class VpnNatEngine(
                         } else {
                             if (isBypassed) {
                                 Log.i(TAG, "Routing session $srcPort directly (VPN bypass active)")
-                                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
+                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
                             }
                             channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
                         }
@@ -449,11 +489,12 @@ class VpnNatEngine(
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
                 
-                VpnLogManager.logConnection("TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "TCP payload out", payloadCopy.array())
+                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "TCP payload out", payloadCopy.array())
 
                 if (session.socketChannel?.isConnected == true) {
                     try {
                         session.socketChannel?.write(payloadCopy)
+                        session.bytesSent += payloadLen
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to write TCP data to WAN: ${e.message}")
                         closeTcpSession(srcPort, sendRst = true)
@@ -523,7 +564,9 @@ class VpnNatEngine(
                 // Flush any buffered outgoing payloads
                 while (session.sendQueue.isNotEmpty()) {
                     val data = session.sendQueue.removeAt(0)
+                    val len = data.remaining()
                     channel.write(data)
+                    session.bytesSent += len
                 }
                 Log.d(TAG, "WAN connection established for port ${session.clientPort}")
             }
@@ -551,13 +594,14 @@ class VpnNatEngine(
                 sendTcpFin(session)
                 closeTcpSession(session.clientPort)
             } else if (read > 0) {
+                session.bytesReceived += read
                 buffer.flip()
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
                 // Telemetry tracking for incoming WAN data
                 val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection("TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "TCP payload in", payload)
+                VpnLogManager.logConnection(vpnService, "TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "TCP payload in", payload)
 
                 // Wrap in TCP packet and write to TUN
                 sendTcpDataToClient(session, payload)
@@ -575,13 +619,14 @@ class VpnNatEngine(
             }
 
             if (read > 0) {
+                session.bytesReceived += read
                 buffer.flip()
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
                 // Telemetry tracking for incoming WAN data
                 val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection("UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "UDP payload in", payload)
+                VpnLogManager.logConnection(vpnService, "UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "UDP payload in", payload)
 
                 // Wrap in UDP packet and write to TUN
                 sendUdpDataToClient(session, payload)
@@ -906,9 +951,9 @@ class VpnNatEngine(
 
     private fun getSocketInodeForLocalPort(localPort: Int, isTcp: Boolean): Long? {
         val files = if (isTcp) {
-            listOf("/proc/net/tcp", "/proc/net/tcp6")
+            listOf("/proc/self/net/tcp", "/proc/self/net/tcp6")
         } else {
-            listOf("/proc/net/udp", "/proc/net/udp6")
+            listOf("/proc/self/net/udp", "/proc/self/net/udp6")
         }
         
         val portHex = String.format("%04X", localPort)
@@ -981,5 +1026,174 @@ class VpnNatEngine(
     private fun intToInetAddress(ip: Int): InetAddress {
         val buf = ByteBuffer.allocate(4).putInt(ip)
         return InetAddress.getByAddress(buf.array())
+    }
+
+    fun getActiveSockets(context: android.content.Context): List<ActiveSocket> {
+        val now = System.currentTimeMillis()
+        val list = ArrayList<ActiveSocket>()
+
+        // Update speeds and gather TCP active sockets
+        for (session in tcpSessions.values) {
+            val delta = (now - session.lastSpeedCalcTime) / 1000.0f
+            if (delta >= 0.5f) {
+                session.speedUpload = ((session.bytesSent - session.lastBytesSent) / delta).toLong().coerceAtLeast(0)
+                session.speedDownload = ((session.bytesReceived - session.lastBytesReceived) / delta).toLong().coerceAtLeast(0)
+                session.lastBytesSent = session.bytesSent
+                session.lastBytesReceived = session.bytesReceived
+                session.lastSpeedCalcTime = now
+            }
+            
+            val dstIpStr = intToIp(session.destinationAddress)
+            val resolved = ProcessResolver.resolve(context, "TCP", "10.0.0.2", session.clientPort, dstIpStr, session.destinationPort)
+            val flag = IpInfoResolver.getCached(dstIpStr)?.flagEmoji ?: "🌐"
+
+            list.add(
+                ActiveSocket(
+                    protocol = "TCP",
+                    srcIp = "10.0.0.2",
+                    srcPort = session.clientPort,
+                    dstIp = dstIpStr,
+                    dstPort = session.destinationPort,
+                    state = session.state.name,
+                    bytesSent = session.bytesSent,
+                    bytesReceived = session.bytesReceived,
+                    speedUpload = session.speedUpload,
+                    speedDownload = session.speedDownload,
+                    appName = resolved.appName,
+                    packageName = resolved.packageName,
+                    flagEmoji = flag
+                )
+            )
+        }
+
+        // Update speeds and gather UDP active sockets
+        for (session in udpSessions.values) {
+            val delta = (now - session.lastSpeedCalcTime) / 1000.0f
+            if (delta >= 0.5f) {
+                session.speedUpload = ((session.bytesSent - session.lastBytesSent) / delta).toLong().coerceAtLeast(0)
+                session.speedDownload = ((session.bytesReceived - session.lastBytesReceived) / delta).toLong().coerceAtLeast(0)
+                session.lastBytesSent = session.bytesSent
+                session.lastBytesReceived = session.bytesReceived
+                session.lastSpeedCalcTime = now
+            }
+
+            val dstIpStr = intToIp(session.destinationAddress)
+            val resolved = ProcessResolver.resolve(context, "UDP", "10.0.0.2", session.clientPort, dstIpStr, session.destinationPort)
+            val flag = IpInfoResolver.getCached(dstIpStr)?.flagEmoji ?: "🌐"
+
+            list.add(
+                ActiveSocket(
+                    protocol = "UDP",
+                    srcIp = "10.0.0.2",
+                    srcPort = session.clientPort,
+                    dstIp = dstIpStr,
+                    dstPort = session.destinationPort,
+                    state = "ESTABLISHED",
+                    bytesSent = session.bytesSent,
+                    bytesReceived = session.bytesReceived,
+                    speedUpload = session.speedUpload,
+                    speedDownload = session.speedDownload,
+                    appName = resolved.appName,
+                    packageName = resolved.packageName,
+                    flagEmoji = flag
+                )
+            )
+        }
+
+        return list
+    }
+
+    private fun parseDnsQuery(payload: ByteArray): Pair<String, String>? {
+        if (payload.size < 12) return null
+        var pos = 12
+        val domain = java.lang.StringBuilder()
+        try {
+            while (pos < payload.size) {
+                val len = payload[pos].toInt() and 0xFF
+                if (len == 0) {
+                    pos++
+                    break
+                }
+                if (pos + 1 + len > payload.size) return null
+                if (domain.isNotEmpty()) domain.append(".")
+                domain.append(String(payload, pos + 1, len, Charsets.US_ASCII))
+                pos += 1 + len
+            }
+            if (pos + 4 <= payload.size) {
+                val qType = ((payload[pos].toInt() and 0xFF) shl 8) or (payload[pos + 1].toInt() and 0xFF)
+                val qTypeStr = when(qType) {
+                    1 -> "A"
+                    28 -> "AAAA"
+                    5 -> "CNAME"
+                    15 -> "MX"
+                    16 -> "TXT"
+                    2 -> "NS"
+                    6 -> "SOA"
+                    12 -> "PTR"
+                    else -> "TYPE_$qType"
+                }
+                return Pair(domain.toString(), qTypeStr)
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+        return null
+    }
+
+    private fun sendDnsNxDomainResponse(
+        packetBuffer: ByteBuffer,
+        ipHeader: IpHeader,
+        udpHeader: UdpHeader,
+        payloadLen: Int
+    ) {
+        val originalPos = packetBuffer.position()
+        val dnsPayload = ByteArray(payloadLen)
+        packetBuffer.position(ipHeader.ihl + 8)
+        packetBuffer.get(dnsPayload)
+        packetBuffer.position(originalPos)
+        
+        if (dnsPayload.size < 12) return
+        
+        val dnsResponse = ByteArray(dnsPayload.size)
+        System.arraycopy(dnsPayload, 0, dnsResponse, 0, dnsPayload.size)
+        
+        dnsResponse[2] = 0x81.toByte()
+        dnsResponse[3] = 0x83.toByte()
+        
+        val ipLen = ipHeader.ihl + 8 + dnsResponse.size
+        val responseBytes = ByteArray(ipLen)
+        val respBuffer = ByteBuffer.wrap(responseBytes)
+        
+        respBuffer.put(0x45.toByte())
+        respBuffer.put(0x00.toByte())
+        respBuffer.putShort(ipLen.toShort())
+        respBuffer.putShort(0.toShort())
+        respBuffer.putShort(0x4000.toShort())
+        respBuffer.put(64.toByte())
+        respBuffer.put(17.toByte())
+        respBuffer.putShort(0.toShort())
+        
+        respBuffer.putInt(ipHeader.destinationAddress)
+        respBuffer.putInt(ipHeader.sourceAddress)
+        
+        respBuffer.putShort(udpHeader.destinationPort.toShort())
+        respBuffer.putShort(udpHeader.sourcePort.toShort())
+        respBuffer.putShort((8 + dnsResponse.size).toShort())
+        respBuffer.putShort(0.toShort())
+        
+        respBuffer.put(dnsResponse)
+        
+        var sum = 0
+        respBuffer.position(0)
+        for (i in 0 until 10) {
+            sum += respBuffer.getShort().toInt() and 0xFFFF
+        }
+        while (sum shr 16 > 0) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        val ipChecksum = (sum.inv() and 0xFFFF).toShort()
+        respBuffer.putShort(10, ipChecksum)
+        
+        writeToTun(responseBytes, responseBytes.size)
     }
 }

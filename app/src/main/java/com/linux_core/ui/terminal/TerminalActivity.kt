@@ -55,7 +55,6 @@ class TerminalActivity : ComponentActivity() {
         var instance: TerminalActivity? = null
     }
 
-    private lateinit var btnSniffer: Button
 
     private val vpnPrepareLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -154,9 +153,7 @@ class TerminalActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("terminal_prefs", MODE_PRIVATE)
         terminalFontSizeFloat = prefs.getFloat("font_size", 32f)
-        com.linux_core.core.VpnCaptureService.onStateChangeListener = { _ ->
-            updateSnifferButtonState()
-        }
+
         viewClient.setActivity(this)
         historyManager = com.linux_core.core.HistoryManager(this)
 
@@ -282,26 +279,6 @@ class TerminalActivity : ComponentActivity() {
         guiToggleLayout.addView(btnCli)
         guiToggleLayout.addView(btnGui)
 
-        btnSniffer = Button(this).apply {
-            text = "🔌 Sniff"
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#08090d"))
-            setPadding(12, 4, 12, 4)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-            ).apply {
-                setMargins(8, 0, 8, 0)
-            }
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                toggleSniffer()
-            }
-        }
-        topBar.addView(btnSniffer)
 
         btnTouchToggle = Button(this).apply {
             text = "🖱️ Mouse"
@@ -1095,7 +1072,6 @@ class TerminalActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
-        updateSnifferButtonState()
     }
 
     private fun stopVpnService() {
@@ -1103,41 +1079,12 @@ class TerminalActivity : ComponentActivity() {
             action = com.linux_core.core.VpnCaptureService.ACTION_STOP
         }
         startService(intent)
-        Handler(Looper.getMainLooper()).postDelayed({
-            updateSnifferButtonState()
-        }, 150)
     }
 
-    private fun toggleSniffer() {
-        if (com.linux_core.core.VpnCaptureService.isRunning()) {
-            stopVpnService()
-        } else {
-            val vpnIntent = android.net.VpnService.prepare(this)
-            if (vpnIntent != null) {
-                vpnPrepareLauncher.launch(vpnIntent)
-            } else {
-                startVpnServiceDirectly()
-            }
-        }
-    }
 
-    fun updateSnifferButtonState() {
-        runOnUiThread {
-            if (com.linux_core.core.VpnCaptureService.isRunning()) {
-                btnSniffer.text = "🔌 Sniff"
-                btnSniffer.setTextColor(Color.parseColor("#00FF41"))
-                btnSniffer.setBackgroundColor(Color.parseColor("#151620"))
-            } else {
-                btnSniffer.text = "🔌 Sniff"
-                btnSniffer.setTextColor(Color.WHITE)
-                btnSniffer.setBackgroundColor(Color.parseColor("#08090d"))
-            }
-        }
-    }
 
     override fun onResume() {
         super.onResume()
-        updateSnifferButtonState()
         Log.d(TAG, "onResume - requesting focus")
         terminalView.requestFocus()
         if (specialKeypadPanel.visibility != View.VISIBLE) {

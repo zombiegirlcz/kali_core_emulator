@@ -4,20 +4,31 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.linux_core.core.VpnCaptureService
@@ -43,6 +54,7 @@ fun VpnDashboardTab() {
     var rotationInterval by remember { mutableStateOf(VpnProxyManager.getRotationInterval().toString()) }
     var secondsRemaining by remember { mutableStateOf(VpnProxyManager.getSecondsRemaining()) }
     var isPinging by remember { mutableStateOf(false) }
+    var shareLocalApi by remember { mutableStateOf(sharedPrefs.getBoolean("share_local_api", false)) }
 
     data class BypassedApp(
         val name: String,
@@ -88,31 +100,104 @@ fun VpnDashboardTab() {
         }
     }
 
+    // Breathing pulse animation for active gateway status
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
     LazyColumn(
         modifier = Modifier.fillMaxWidth().fillMaxHeight(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            // Cyber VPN Diagnostics Panel
+            // Cyber VPN Diagnostics Panel (Neon glowing green/cyan card)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, Color(0xFF00FF41)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xDD0C0E14))
+                border = BorderStroke(
+                    width = 1.dp,
+                    brush = Brush.horizontalGradient(
+                        colors = if (isVpnRunning) {
+                            listOf(Color(0xFF00FF41), Color(0xFF00E5FF))
+                        } else {
+                            listOf(Color(0x331E2026), Color(0x331E2026))
+                        }
+                    )
+                ),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isVpnRunning) Color(0xE60A0D14) else Color(0xE608090D)
+                )
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(18.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("Sniffer VPN Service", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Text(
-                                text = if (isVpnRunning) "● active gateway online" else "○ gateway offline",
-                                fontSize = 11.sp,
-                                color = if (isVpnRunning) Color(0xFF00FF66) else Color.Gray
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Pulsing visual indicator
+                            Box(
+                                modifier = Modifier.size(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isVpnRunning) {
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        drawCircle(
+                                            color = Color(0xFF00FF41),
+                                            radius = size.minDimension / 2 * pulseScale,
+                                            alpha = pulseAlpha
+                                        )
+                                        drawCircle(
+                                            color = Color(0xFF00FF41),
+                                            radius = size.minDimension / 4
+                                        )
+                                    }
+                                } else {
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        drawCircle(
+                                            color = Color(0xFF8F0011),
+                                            radius = size.minDimension / 4
+                                        )
+                                        drawCircle(
+                                            color = Color(0xFF8F0011),
+                                            radius = size.minDimension / 2,
+                                            style = Stroke(width = 1.dp.toPx()),
+                                            alpha = 0.5f
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Sniffer VPN Gateway",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = if (isVpnRunning) "SECURE USERSPACE TUNNEL ACTIVE" else "GATEWAY STOPPED (BYPASSED)",
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (isVpnRunning) Color(0xFF00FF41) else Color.Gray
+                                )
+                            }
                         }
                         Switch(
                             checked = isVpnRunning,
@@ -127,31 +212,61 @@ fun VpnDashboardTab() {
                                             context.startActivityForResult(vpnIntent, 24)
                                         }
                                     } else {
-                                        context.startService(intent)
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                            context.startForegroundService(intent)
+                                        } else {
+                                            context.startService(intent)
+                                        }
                                     }
                                 } else {
-                                    context.startService(intent)
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                        context.startForegroundService(intent)
+                                    } else {
+                                        context.startService(intent)
+                                    }
                                 }
                                 isVpnRunning = checked
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color(0xFF00FF41),
-                                checkedTrackColor = Color(0x8800FF41)
+                                checkedTrackColor = Color(0x6600FF41),
+                                uncheckedThumbColor = Color.Gray,
+                                uncheckedTrackColor = Color(0x331E2026)
                             )
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
-                    Row(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Packets forwarded", fontSize = 10.sp, color = Color.Gray)
-                            Text("$packetCount pkts", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                            Text("FORWARDED DATA", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = "$packetCount pkts",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (isVpnRunning) Color(0xFF00FF41) else Color.White
+                            )
                         }
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Total bandwidth", fontSize = 10.sp, color = Color.Gray)
-                            val mb = byteCount / (1024f * 1024f)
-                            Text(String.format("%.2f MB", mb), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                            Text("BANDWIDTH USED", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            val formattedBytes = remember(byteCount) {
+                                if (byteCount < 1024) "$byteCount B"
+                                else {
+                                    val exp = (Math.log(byteCount.toDouble()) / Math.log(1024.0)).toInt()
+                                    val pre = "KMGTPE"[exp - 1]
+                                    String.format("%.2f %cB", byteCount / Math.pow(1024.0, exp.toDouble()), pre)
+                                }
+                            }
+                            Text(
+                                text = formattedBytes,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (isVpnRunning) Color(0xFF00E5FF) else Color.White
+                            )
                         }
                     }
                 }
@@ -159,12 +274,12 @@ fun VpnDashboardTab() {
         }
 
         item {
-            // Worldwide Rotating Proxy configuration
+            // Worldwide Rotating Proxy configuration (Glassmorphic cyber card)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xBB0B0D13))
+                colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -173,8 +288,12 @@ fun VpnDashboardTab() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Worldwide Rotating Proxy", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            Text("Route system packets through SOCKS5 tunnel nodes", fontSize = 10.sp, color = Color.Gray)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.NetworkCheck, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Rotating SOCKS5 Proxy Loop", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                            Text("Route outbound packets via anonymous nodes", fontSize = 10.sp, color = Color.Gray)
                         }
                         Switch(
                             checked = isProxyEnabled,
@@ -184,33 +303,47 @@ fun VpnDashboardTab() {
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color(0xFF00FF41),
-                                checkedTrackColor = Color(0x8800FF41)
+                                checkedTrackColor = Color(0x6600FF41)
                             )
                         )
                     }
 
                     if (isProxyEnabled) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
                         
-                        Text("Proxy Rotation Mode", fontSize = 11.sp, color = Color.LightGray)
+                        Text("ROTATION TRIGGER METHOD", fontSize = 10.sp, color = Color.LightGray, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            listOf("Static Node", "Random Sess.", "Time Loop").forEachIndexed { index, name ->
+                            listOf("Static IP", "Per Session", "Time Loop").forEachIndexed { index, name ->
                                 val active = proxyRotationMode == index
-                                Button(
-                                    onClick = {
-                                        proxyRotationMode = index
-                                        VpnProxyManager.setRotationMode(index)
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (active) Color(0xFF008F11) else Color(0x331E2026)
-                                    ),
-                                    shape = RoundedCornerShape(4.dp),
-                                    modifier = Modifier.weight(1f).height(30.dp)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(32.dp)
+                                        .background(
+                                            if (active) Color(0x3300FF41) else Color(0x111E2026),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (active) Color(0xFF00FF41) else Color(0x221E2026),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .clickable {
+                                            proxyRotationMode = index
+                                            VpnProxyManager.setRotationMode(index)
+                                        },
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Text(name, fontSize = 9.sp, color = Color.White)
+                                    Text(
+                                        text = name,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (active) Color(0xFF00FF41) else Color.Gray
+                                    )
                                 }
                             }
                         }
@@ -218,39 +351,41 @@ fun VpnDashboardTab() {
                         if (proxyRotationMode == 2) {
                             val totalSecs = VpnProxyManager.getRotationInterval().coerceAtLeast(1)
                             val progress = (secondsRemaining.toFloat() / totalSecs).coerceIn(0f, 1f)
-                            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                            Column(modifier = Modifier.padding(vertical = 12.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "Auto Rotating in: ${secondsRemaining}s",
-                                        color = Color(0xFF00FF41),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
+                                        text = "Time Loop Rotation: ${secondsRemaining}s remaining",
+                                        color = Color(0xFF00E5FF),
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                     Text(
                                         text = "${(progress * 100).toInt()}%",
                                         color = Color.Gray,
-                                        fontSize = 11.sp
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(4.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 LinearProgressIndicator(
                                     progress = progress,
-                                    color = Color(0xFF00FF41),
-                                    trackColor = Color(0x3300FF41),
+                                    color = Color(0xFF00E5FF),
+                                    trackColor = Color(0x2200E5FF),
                                     modifier = Modifier.fillMaxWidth().height(4.dp)
                                 )
                             }
 
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Interval (secs):", fontSize = 11.sp, color = Color.LightGray)
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Rotation Interval (Seconds):", fontSize = 11.sp, color = Color.LightGray)
                                 OutlinedTextField(
                                     value = rotationInterval,
                                     onValueChange = {
@@ -260,29 +395,39 @@ fun VpnDashboardTab() {
                                         }
                                     },
                                     singleLine = true,
-                                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
+                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        textAlign = TextAlign.Center
+                                    ),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = Color(0xFF00FF41),
-                                        unfocusedBorderColor = Color(0xFF1E2026)
+                                        unfocusedBorderColor = Color(0xFF1E2026),
+                                        focusedContainerColor = Color(0xFF08090D),
+                                        unfocusedContainerColor = Color(0xFF08090D)
                                     ),
-                                    modifier = Modifier.width(80.dp).height(45.dp)
+                                    modifier = Modifier.width(70.dp).height(40.dp)
                                 )
                             }
                         }
 
+                        Spacer(modifier = Modifier.height(14.dp))
+
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
                                 text = when (proxyRotationMode) {
-                                    0 -> "Available Proxy Locations:"
-                                    1 -> "Active Proxy Pool (Rotates per Session):"
-                                    else -> "Proxy Loop Pool:"
+                                    0 -> "SELECT STATIC NODE:"
+                                    1 -> "PROXY POOL LIST (DYNAMIC SESSION):"
+                                    else -> "TIME ROTATING POOL NODES:"
                                 },
-                                fontSize = 11.sp,
-                                color = Color.LightGray
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Gray
                             )
                             Button(
                                 onClick = {
@@ -293,13 +438,13 @@ fun VpnDashboardTab() {
                                 },
                                 enabled = !isPinging,
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0x3300FF41),
+                                    containerColor = Color(0x2200FF41),
                                     disabledContainerColor = Color(0x1100FF41)
                                 ),
                                 border = BorderStroke(1.dp, Color(0xFF00FF41)),
                                 shape = RoundedCornerShape(4.dp),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                modifier = Modifier.height(26.dp)
+                                modifier = Modifier.height(24.dp)
                             ) {
                                 if (isPinging) {
                                     CircularProgressIndicator(
@@ -308,14 +453,16 @@ fun VpnDashboardTab() {
                                         strokeWidth = 1.dp
                                     )
                                 } else {
-                                    Text("PING ALL", fontSize = 8.sp, color = Color(0xFF00FF41), fontWeight = FontWeight.Bold)
+                                    Text("PING NODES", fontSize = 8.sp, color = Color(0xFF00FF41), fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
 
+                        Spacer(modifier = Modifier.height(6.dp))
+
                         Column(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.padding(top = 6.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             VpnProxyManager.proxyPool.forEachIndexed { idx, node ->
                                 val isSelected = (proxyRotationMode == 0 && selectedProxyIndex == idx) || 
@@ -327,10 +474,13 @@ fun VpnDashboardTab() {
                                             selectedProxyIndex = idx
                                             VpnProxyManager.setSelectedNodeIndex(idx)
                                         },
-                                    shape = RoundedCornerShape(6.dp),
-                                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF00FF41) else Color(0x221E2026)),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = if (isSelected) Color(0xFF00FF41) else Color(0x1EFFFFFF)
+                                    ),
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (isSelected) Color(0x2200FF41) else Color(0x11FFFFFF)
+                                        containerColor = if (isSelected) Color(0x1A00FF41) else Color(0x11FFFFFF)
                                     )
                                 ) {
                                     Row(
@@ -353,6 +503,7 @@ fun VpnDashboardTab() {
                                                 Text(
                                                     text = "${node.ip}:${node.port}",
                                                     fontSize = 9.sp,
+                                                    fontFamily = FontFamily.Monospace,
                                                     color = Color.Gray
                                                 )
                                             }
@@ -376,6 +527,7 @@ fun VpnDashboardTab() {
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = pingColor,
+                                                fontFamily = FontFamily.Monospace,
                                                 modifier = Modifier
                                                     .border(1.dp, pingColor, RoundedCornerShape(4.dp))
                                                     .padding(horizontal = 5.dp, vertical = 1.dp)
@@ -386,7 +538,8 @@ fun VpnDashboardTab() {
                                                     text = "ACTIVE",
                                                     fontSize = 9.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF00FF41)
+                                                    color = Color(0xFF00FF41),
+                                                    fontFamily = FontFamily.Monospace
                                                 )
                                             }
                                         }
@@ -405,10 +558,15 @@ fun VpnDashboardTab() {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xBB0B0D13))
+                colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Advanced Sniffer Configuration", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.padding(bottom = 12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Tunnel Settings", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
                     
                     OutlinedTextField(
                         value = vpnMtu,
@@ -416,12 +574,14 @@ fun VpnDashboardTab() {
                             vpnMtu = it
                             sharedPrefs.edit().putString("vpn_mtu", it).apply()
                         },
-                        label = { Text("MTU (Default: 1500)", color = Color.Gray, fontSize = 11.sp) },
+                        label = { Text("MTU (Transmission Unit size)", color = Color.Gray, fontSize = 10.sp) },
                         singleLine = true,
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color(0xFF00FF41),
-                            unfocusedBorderColor = Color(0xFF1E2026)
+                            unfocusedBorderColor = Color(0xFF1E2026),
+                            focusedContainerColor = Color(0xFF08090D),
+                            unfocusedContainerColor = Color(0xFF08090D)
                         ),
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                     )
@@ -432,15 +592,42 @@ fun VpnDashboardTab() {
                             vpnDns = it
                             sharedPrefs.edit().putString("vpn_dns", it).apply()
                         },
-                        label = { Text("DNS Gateway Server", color = Color.Gray, fontSize = 11.sp) },
+                        label = { Text("Primary DNS Resolver", color = Color.Gray, fontSize = 10.sp) },
                         singleLine = true,
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = Color(0xFF00FF41),
-                            unfocusedBorderColor = Color(0xFF1E2026)
+                            unfocusedBorderColor = Color(0xFF1E2026),
+                            focusedContainerColor = Color(0xFF08090D),
+                            unfocusedContainerColor = Color(0xFF08090D)
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Share Local API", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                            Text("Allow devices on LAN to access HTTP API (0.0.0.0)", fontSize = 10.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = shareLocalApi,
+                            onCheckedChange = { checked ->
+                                shareLocalApi = checked
+                                sharedPrefs.edit().putBoolean("share_local_api", checked).apply()
+                                Thread {
+                                    com.linux_core.core.LocalApiServer.restart(context)
+                                }.start()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00FF41),
+                                checkedTrackColor = Color(0x6600FF41)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -451,11 +638,11 @@ fun VpnDashboardTab() {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                colors = CardDefaults.cardColors(containerColor = Color(0xBB0B0D13))
+                colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Bypassed Applications", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("Check applications to let them bypass Sniffer VPN routing", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 12.dp))
+                    Text("VPN Bypassed Applications", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("Exempt apps from VPN routing (e.g. termux or admin apps)", fontSize = 10.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 12.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -464,17 +651,20 @@ fun VpnDashboardTab() {
                         OutlinedTextField(
                             value = appSearchQuery,
                             onValueChange = { appSearchQuery = it },
-                            placeholder = { Text("Search apps…", color = Color.DarkGray, fontSize = 12.sp) },
+                            placeholder = { Text("Search by name or package…", color = Color.DarkGray, fontSize = 11.sp) },
                             singleLine = true,
                             textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color(0xFF00FF41),
-                                unfocusedBorderColor = Color(0xFF1E2026)
+                                unfocusedBorderColor = Color(0xFF1E2026),
+                                focusedContainerColor = Color(0xFF08090D),
+                                unfocusedContainerColor = Color(0xFF08090D)
                             ),
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp)) },
                             modifier = Modifier.weight(1f).height(48.dp)
                         )
                         if (disallowedPackages.isNotEmpty()) {
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
                                     disallowedPackages = emptySet()
@@ -482,9 +672,10 @@ fun VpnDashboardTab() {
                                 },
                                 shape = RoundedCornerShape(4.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8F0011)),
-                                modifier = Modifier.height(48.dp)
+                                modifier = Modifier.height(48.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp)
                             ) {
-                                Text("Clear", fontSize = 10.sp, color = Color.White)
+                                Text("CLEAR", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -502,7 +693,7 @@ fun VpnDashboardTab() {
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(app.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                        Text(app.packageName, fontSize = 9.sp, color = Color.Gray)
+                                        Text(app.packageName, fontSize = 9.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
                                     }
                                     Checkbox(
                                         checked = checked,
@@ -512,7 +703,8 @@ fun VpnDashboardTab() {
                                             sharedPrefs.edit().putStringSet("disallowed_packages", nextSet).apply()
                                         },
                                         colors = CheckboxDefaults.colors(
-                                            checkedColor = Color(0xFF00FF41)
+                                            checkedColor = Color(0xFF00FF41),
+                                            checkmarkColor = Color.Black
                                         )
                                     )
                                 }

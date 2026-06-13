@@ -59,12 +59,19 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nethunter-clipboard-set <text>`| Write text to the host clipboard | `nethunter-clipboard-set "GeneratedPassword123"` |
 | `nethunter-notification -t <t> -c <c>`| Post a standard system notification | `nethunter-notification -t "NetHunter Alert" -c "Scan completed"` |
 | `nethunter-wifi-connectioninfo`| Retrieve current Wi-Fi network details in JSON | `nethunter-wifi-connectioninfo` |
+| `nethunter-wifi-control [on\|off]`| Turn the host Wi-Fi interface on or off | `nethunter-wifi-control off` |
+| `nethunter-device-admin [status\|request\|lock]`| Manage Device Admin: query status, request privileges, or force lock screen | `nethunter-device-admin lock` |
 | `nethunter-location` | Retrieve current GPS coordinates in JSON | `nethunter-location` |
 | `nethunter-volume [level]` | Retrieve or set the media stream volume | `nethunter-volume 10` |
 | `nethunter-torch [on\|off]` | Turn the device flashlight on or off | `nethunter-torch on` |
+| `nethunter-apps-usage` | Retrieve detailed app usage statistics (last 24h) | `nethunter-apps-usage` |
+| `nethunter-notifications-active`| Retrieve a list of current active notifications | `nethunter-notifications-active` |
+| `nethunter-accessibility-hierarchy`| Extract and output the active UI text hierarchy in JSON | `nethunter-accessibility-hierarchy` |
+| `nethunter-battery-optimize [status\|request]`| Check battery optimization status or request settings prompt | `nethunter-battery-optimize request` |
+| `nethunter-api share [on\|off\|status]`| Control whether the loopback HTTP API is shared externally (0.0.0.0 vs 127.0.0.1) | `nethunter-api share on` |
 | `vpn-on` | Enable global VPN AdGuard Sniffer / NAT Engine | `vpn-on` |
 | `vpn-off` | Disable global VPN AdGuard Sniffer / NAT Engine | `vpn-off` |
-| `vpn-cli <action>` | Advanced VPN CLI to query logs, control service, or start monitor | `vpn-cli status` |
+| `vpn-cli <action>` | Advanced VPN CLI: control service (start/stop/status), fetch logs (logs), manage bypass (ignore), or start AI monitor (ai/chat) | `vpn-cli logs` |
 | `vpn-bypass <cmd>` | Forces a command to bypass VPN and connect directly | `vpn-bypass curl ipinfo.io` |
 | `ignore-vpn [on\|off\|status]` | Toggle VPN bypass for the current shell session dynamically | `ignore-vpn on` |
 
@@ -90,7 +97,64 @@ Under unrooted PRoot environments, packages using systemd or low-level capabilit
 - **Mock Helpers:** Redirects systemd controls to `/bin/true` to bypass failing service configurations.
 - **Post-Install Repair (`nethunter-fix-postinst`):** Exposes a utility to mock corrupted debian configuration scripts dynamically when `dpkg --configure -a` gets stuck, protecting the environment's integrity during complex tool installations.
 
+### 🚀 PRoot Container Startup & Setup Lifecycle
+
+Every time a terminal session is launched, `ProotManager.kt` ensures the virtualized environment is fully prepared, configured, and bridged to the Android host services.
+
+#### 1. Directory Structure Creation
+Before booting PRoot, the manager verifies and creates the following critical directories inside the guest `rootfs`:
+- System mounts: `system`, `dev`, `proc`, `sys`
+- User environments: `root`, `home/kali` (or `home/parrot`)
+- Temporary and shared files: `tmp`, `sdcard` (if storage mounting is enabled)
+- Unix standard paths: `bin`, `usr/bin`, `usr/sbin`, `sbin`, `lib`, `lib64`, `usr/lib`, `etc`
+
+#### 2. Startup Sentinel Files
+To track the state of the guest container, the following sentinel files are managed in `/root/`:
+- `.hushlogin`: Automatically created to silence default login shell banners.
+- `.bootstrap_required`: Created on fresh installations to flag that the system needs to run `bootstrap.sh`. Removed once the first initialization completes.
+- `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
+
+#### 3. Execution Entrypoints & Scripts
+- **`launcher.sh`** (Android Host): A shell script generated dynamically in the app's files directory. It sets environment variables (`HOME=/root`, `USER=root`, `PATH`, `TERM=xterm-256color`, `LANG=C.UTF-8`), performs diagnostics, checks for dynamic loader combinations (`proot` + `loader` + `libtalloc.so.2` vs. standalone), and launches the guest shell with appropriate flag mounts (`-v 0 --kill-on-exit --link2symlink -0`).
+- **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
+- **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
+
+#### 4. Shared Library & Dynamic Linker Fixes
+To prevent core dump or execution crashes in the sandboxed chroot:
+- The system loader is copied into the guest `lib/ld-linux-aarch64.so.1` and `lib64/ld-linux-aarch64.so.1`.
+- The helper library `libtalloc.so.2` is deployed into guest `lib/libtalloc.so.2`.
+- Any broken symbolic links for `bin/sh` and `bin/bash` in the guest OS are automatically dereferenced and replaced with solid binaries to prevent loader failures.
+
+#### 5. Deployed Helper Scripts (Guest `/usr/local/bin/`)
+At startup, `ProotManager` deploys a rich set of command-line tools into `/usr/local/bin/`:
+- **System Wrappers:**
+  - `apt` & `apt-get`: Mitigates `debconf` perl crashes and ensures systemd command diversions are kept active after upgrades.
+  - `nethunter-fix-postinst`: Easily mocks failing post-installation packages (`.postinst`) to `/bin/true` to unblock stuck `dpkg --configure -a` configurations.
+- **VPN Control & Bypass:**
+  - `vpn-on` / `vpn-off`: Starts or stops the global AdGuard JNI sniffer using Local API Server commands.
+  - `vpn-bypass` / `dcheck`: Automatically routes the given command via local proxy on port `13339` to bypass AdGuard capture.
+  - `vpn-cli`: Full Command Line Interface to query VPN stats, get logs, manage exclusions, or boot the local AI agent.
+  - `ignore-vpn`: Toggles dynamic VPN bypass for the active shell session.
+- **AI & Local Agent Integration:**
+  - `ai-agent.py`: Runs interactive AI consultations or streams background network flow inspection.
+  - `nethunter-agent-cli` / `nethunter_agent.py`: P2P mesh network pairing and local communication utilities.
+- **Android API Bridges:** Commands that invoke host sensors, device actions, and notifications via the local server:
+  - `nethunter-toast <msg>`: System-wide pop-up notification.
+  - `nethunter-battery-status`: Battery charge levels and thermals.
+  - `nethunter-speech-input`: Input voice capture.
+  - `nethunter-vibrate [ms]`: Device vibration command.
+  - `nethunter-tts-speak <text>`: Text-To-Speech engine.
+  - `nethunter-clipboard-get` / `nethunter-clipboard-set`: Clipboard operations.
+  - `nethunter-notification`: Standard Android status bar notifications.
+  - `nethunter-wifi-connectioninfo`: Wireless network SSID and state.
+  - `nethunter-location`: GPS coordinates.
+  - `nethunter-volume [level]`: Audio volume settings.
+  - `nethunter-torch [on|off]`: Camera flashlight switch.
+- **Desktop Environment:**
+  - `nethunter-desktop [start|stop|status]`: Automates setup and execution of an XFCE4 session running over TigerVNC and websockify (`noVNC` on port `6080`).
+
 ---
+
 
 ## ⌨️ Premium Termius-style Hacker Keyboard
 
@@ -100,6 +164,43 @@ The application integrates an advanced, fully customizable, and responsive overl
 3. **🧭 Navigation**: Navigational arrows, `Home`, `End`, `Page Up`, and `Page Down` (directly mapped to match guest zsh bindings).
 4. **⚡ Combos**: 19 prepackaged Ctrl combinations (`^C`, `^Z`, `^X`, `^S`, etc.) sent directly as ASCII control bytes.
 5. **🛠️ F-Keys**: Function keys F1 through F20 (including standard xterm mappings for higher-order keys F13–F20).
+
+---
+
+## 📈 Major Version 4.0 Changelog (NetHunter App Store v4)
+
+This release introduces the fully integrated **AI Brain Telemetry & Neural Classifier**, transforming the VPN into an intelligent, autonomous firewall capable of detecting and blocking advanced persistent threats (APTs) in real-time.
+
+### 1. Embedded AI Inference Engine (LightGBM ONNX)
+- **Live Packet Classification:** Connected the `AIBrain.kt` ONNX runtime to the live AdGuard JNI network flow. Extracted 14-dimensional features (size, delta-time, protocol, entropy, etc.) are fed into the neural network for every TCP/UDP session.
+- **Evasion-Hardened Detection:** The AI model is trained on a balanced synthetic dataset, specifically hardened against stealth evasion techniques (Low-and-Slow Scans, Stealthy HTTPS C2 Beacons, and DNS Tunneling Data Exfiltration).
+- **Zero Memory Leaks:** Implemented strict native JNI pointer garbage collection (`use` blocks for `OnnxTensor` and `OrtSession.Result`) to ensure the VPN runs endlessly without memory overflow during high-frequency packet interception.
+
+### 2. Conversational AI Network Agent
+- **ReAct Log Analysis:** Added `analyze_network` tool to the local `ai-agent.py`. The AI agent can now fetch, filter, and break down network telemetry directly from the host.
+- **Hacker Console Integration:** Execute `vpn-cli chat` to open a local AI Expert console or run `vpn-cli ai start` for background monitoring and automated system toasts upon critical anomaly detection.
+
+### 3. App-level Attribution & Premium Dashboard
+- **Process Traversal:** Socket-to-process tracker using BFS `/proc` traversal to attribute network flows to specific chroot binaries.
+- **Real-time Flow Visualizer:** Interactive scatter diagrams for entropy metrics and real-time active socket connection cards with immediate block actions.
+- **Threat Intelligence:** Resolved GeoIP lookups and integrated country flag emojis directly into the traffic logs.
+
+---
+
+## 📈 Major Version 3.1 Changelog
+
+This release stabilizes the native AdGuard JNI bridge layer, addressing security vulnerabilities, JNI contract mismatches, and memory management invariants:
+
+### 1. SSL/TLS Certificate Verification & Parity Restored
+- **Trust Store Integration:** Restored full X.509 chain verification inside `EventsAdapter` utilizing `CertificateFactory` and `TrustManagerFactory` backed by the default Android KeyStore / CA trust store. This closes a critical MITM vulnerability where invalid/self-signed certificates were accepted by default.
+- **JNI Contract Parity:** Refactored `CertificateVerificationEvent` to use raw DER byte arrays (`ByteArray?`) and added the missing `@JvmField var chain: List<ByteArray>?` field, along with getter methods expected by the native library to prevent class-loading/method lookup exceptions.
+- **Search Domain Bootstrap:** Restored local search domain suffix discovery via `ConnectivityManager` and `LinkProperties` parsing, registering wildcard suffixes (e.g. `*.local`) to prevent local network hostname leaks to public resolvers.
+
+### 2. Native Stack Lifecycle & Memory Safety
+- **Kernel File Descriptor Leak Guard:** Added validation checks in `NativeTcpIpStackImpl` constructor to prevent detaching the `ParcelFileDescriptor` using `pfd.detachFd()` when native `init()` fails, avoiding permanent file descriptor leaks.
+- **JNI Callback Exception Safety:** Wrapped all TCP and UDP callback dispatches in `NativeTcpIpStackImpl.Callbacks` inside `try-catch (e: Throwable)` blocks, catching `RejectedExecutionException` during shutdowns and completing requests with `REJECT` to prevent JNI process-level crashes.
+- **Teardown Thread-Safety:** Synchronized `DnsProxy.close()` to prevent double-free SEGFAULTs and guaranteed `nativePtr` resets to `0L` after deallocation.
+- **ABI Filters Guard:** Implemented `ndk.abiFilters` for `arm64-v8a` inside `defaultConfig` in Gradle configurations to prevent runtime loading crashes on non-arm64 devices.
 
 ---
 

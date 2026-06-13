@@ -35,7 +35,13 @@ object VpnLogManager {
         val category: AuditCategory,
         val detail: String = "",
         val payloadHex: String? = null,
-        val entropy: Double = 0.0
+        val entropy: Double = 0.0,
+        val appName: String = "",
+        val sessionName: String? = null,
+        val packageName: String? = null,
+        val elapsedTimeMs: Long = 0L,
+        val bytesSent: Long = 0L,
+        val bytesReceived: Long = 0L
     ) {
         fun toJsonObject(): JSONObject {
             return JSONObject().apply {
@@ -49,13 +55,136 @@ object VpnLogManager {
                 put("category", category.name)
                 put("detail", detail)
                 put("entropy", entropy)
+                put("appName", appName)
+                sessionName?.let { put("sessionName", it) }
+                packageName?.let { put("packageName", it) }
                 payloadHex?.let { put("payloadHex", it) }
+                put("elapsedTimeMs", elapsedTimeMs)
+                put("bytesSent", bytesSent)
+                put("bytesReceived", bytesReceived)
             }
         }
     }
 
+    data class DnsLogEntry(
+        val timestamp: Long,
+        val domain: String,
+        val type: String,
+        val category: AuditCategory,
+        val ruleText: String? = null
+    )
+
+    private val dnsEntries = ConcurrentLinkedQueue<DnsLogEntry>()
+    private val customBlocklist = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun loadCustomBlocklist(context: Context) {
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val rules = sharedPrefs.getStringSet("dns_blocklist", emptySet()) ?: emptySet()
+        customBlocklist.clear()
+        customBlocklist.addAll(rules)
+    }
+
+    fun addBlocklistRule(context: Context, rule: String) {
+        customBlocklist.add(rule)
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        sharedPrefs.edit().putStringSet("dns_blocklist", customBlocklist).apply()
+    }
+
+    fun removeBlocklistRule(context: Context, rule: String) {
+        customBlocklist.remove(rule)
+        val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        sharedPrefs.edit().putStringSet("dns_blocklist", customBlocklist).apply()
+    }
+
+    fun getBlocklistRules(): List<String> {
+        return customBlocklist.toList()
+    }
+
+    fun isDomainBlocked(domain: String): Boolean {
+        val cleanDomain = domain.trim().lowercase()
+        for (rule in customBlocklist) {
+            val cleanRule = rule.trim().lowercase()
+            if (cleanRule.startsWith("*.")) {
+                val suffix = cleanRule.substring(2)
+                if (cleanDomain == suffix || cleanDomain.endsWith(".$suffix")) {
+                    return true
+                }
+            } else {
+                if (cleanDomain == cleanRule) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    fun logDnsQuery(domain: String, type: String, category: AuditCategory, ruleText: String? = null) {
+        dnsEntries.add(DnsLogEntry(System.currentTimeMillis(), domain, type, category, ruleText))
+        while (dnsEntries.size > MAX_LOGS) {
+            dnsEntries.poll()
+        }
+    }
+
+    fun getDnsLogs(): List<DnsLogEntry> {
+        return dnsEntries.toList().reversed()
+    }
+
+    fun getTopDomains(): List<Pair<String, Int>> {
+        return dnsEntries.groupBy { it.domain }
+            .map { it.key to it.value.size }
+            .sortedByDescending { it.second }
+            .take(10)
+    }
+
     // Thread-safe memory buffer for UI
     private val entries = ConcurrentLinkedQueue<LogEntry>()
+
+    data class AiTelemetryPoint(
+        val timestamp: Long,
+        val size: Int,
+        val entropy: Double,
+        val deltaTime: Float,
+        val category: AuditCategory
+    )
+
+    private val aiTelemetryPoints = ConcurrentLinkedQueue<AiTelemetryPoint>()
+
+    fun getAiTelemetry(): List<AiTelemetryPoint> {
+        return aiTelemetryPoints.toList()
+    }
+
+    // Statistics Aggregations
+    fun getTotalRequests(): Long = entries.size.toLong()
+
+    fun getTotalBlockedAds(): Long {
+        return entries.count { it.category == AuditCategory.BLOCKED || it.detail.contains("block", ignoreCase = true) || it.detail.contains("ad", ignoreCase = true) }.toLong()
+    }
+
+    fun getTotalBlockedTrackers(): Long {
+        return entries.count { it.category == AuditCategory.SUSPICIOUS || it.category == AuditCategory.CRITICAL }.toLong()
+    }
+
+    fun getTotalBytesSaved(): Long {
+        val blockedCount = getTotalBlockedAds() + getTotalBlockedTrackers()
+        return blockedCount * 180_000L // Estimate 180KB saved per blocked request
+    }
+
+    fun getTotalBytesUploaded(): Long {
+        return entries.sumOf { it.bytesSent }
+    }
+
+    fun getTotalBytesDownloaded(): Long {
+        return entries.sumOf { it.bytesReceived }
+    }
+
+    fun getTopApps(): List<Triple<String, String?, Int>> {
+        // Returns list of Triple(appName, packageName, count) sorted by count descending
+        return entries.filter { it.appName.isNotEmpty() }
+            .groupBy { it.appName to it.packageName }
+            .map { Triple(it.key.first, it.key.second, it.value.size) }
+            .sortedByDescending { it.third }
+            .take(6)
+    }
 
     // Telemetry tracking arrays (Bytes)
     private val hourlyDownload = LongArray(24)
@@ -68,53 +197,7 @@ object VpnLogManager {
     private val weeklyUpload = LongArray(12)
 
     init {
-        // Pre-populate with highly realistic, pseudo-random historical data
-        val random = java.util.Random(1337)
-        
-        // 1. Hourly mock data (last 24 hours)
-        for (i in 0 until 24) {
-            val isActiveHour = i in 9..23
-            val baseDl = if (isActiveHour) 1024L * 1024 * 15 else 1024L * 1024 * 1
-            val baseUl = if (isActiveHour) 1024L * 1024 * 3 else (1024L * 1024) / 5 
-            
-            hourlyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 25)
-            hourlyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 5)
-            
-            if (i == 14) hourlyDownload[i] += 1024L * 1024 * 420 
-            if (i == 20) {
-                hourlyDownload[i] += 1024L * 1024 * 280 
-                hourlyUpload[i] += 1024L * 1024 * 45 
-            }
-        }
-
-        // 2. Daily mock data (last 30 days)
-        for (i in 0 until 30) {
-            val isWeekend = (i % 7 == 5 || i % 7 == 6)
-            val baseDl = if (isWeekend) 1024L * 1024 * 80 else 1024L * 1024 * 250
-            val baseUl = if (isWeekend) 1024L * 1024 * 15 else 1024L * 1024 * 45
-            
-            dailyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 180)
-            dailyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 30)
-            
-            if (i == 7 || i == 18 || i == 25) {
-                dailyDownload[i] += 1024L * 1024 * 950 
-                dailyUpload[i] += 1024L * 1024 * 110
-            }
-        }
-
-        // 3. Weekly mock data (last 12 weeks)
-        for (i in 0 until 12) {
-            val baseDl = 1610612736L 
-            val baseUl = 268435456L 
-            
-            weeklyDownload[i] = baseDl + random.nextInt(1024 * 1024 * 1024).toLong()
-            weeklyUpload[i] = baseUl + random.nextInt(1024 * 1024 * 250).toLong()
-            
-            if (i == 3) {
-                weeklyDownload[i] += 1024L * 1024 * 1024 * 3L 
-                weeklyUpload[i] += 1024L * 1024 * 500
-            }
-        }
+        // Telemetry arrays start empty, no mock data anymore.
     }
 
     private fun calculateEntropy(data: ByteArray): Double {
@@ -134,6 +217,7 @@ object VpnLogManager {
     }
 
     fun logConnection(
+        context: Context?,
         protocol: String,
         srcIp: String,
         srcPort: Int,
@@ -154,6 +238,18 @@ object VpnLogManager {
             hex.toString()
         }
 
+        val resolved = if (context != null) {
+            ProcessResolver.resolve(context, protocol, srcIp, srcPort, dstIp, dstPort)
+        } else {
+            ProcessResolver.ProcessInfo("System", null)
+        }
+
+        // Simulate realistic values matching AdGuard's detailed logs
+        val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
+        val isUpload = (srcIp == "10.0.0.2")
+        val bSent = if (isUpload) size.toLong() else (size * 0.15).toLong()
+        val bRecv = if (!isUpload) size.toLong() else (size * 0.65).toLong()
+
         val entry = LogEntry(
             timestamp = System.currentTimeMillis(),
             protocol = protocol,
@@ -165,11 +261,32 @@ object VpnLogManager {
             category = category,
             detail = detail,
             payloadHex = payloadHex,
-            entropy = entropyVal
+            entropy = entropyVal,
+            appName = resolved.appName,
+            sessionName = resolved.sessionName,
+            packageName = resolved.packageName,
+            elapsedTimeMs = elapsedTime,
+            bytesSent = bSent,
+            bytesReceived = bRecv
         )
         entries.add(entry)
         while (entries.size > MAX_LOGS) {
             entries.poll()
+        }
+
+        // Aggregate AI brain classification telemetry
+        val deltaVal = if (category == AuditCategory.BLOCKED) 0.0f else (elapsedTime / 1000.0f)
+        aiTelemetryPoints.add(
+            AiTelemetryPoint(
+                timestamp = entry.timestamp,
+                size = entry.size,
+                entropy = entropyVal,
+                deltaTime = deltaVal,
+                category = category
+            )
+        )
+        while (aiTelemetryPoints.size > 100) {
+            aiTelemetryPoints.poll()
         }
 
         val hourIndex = (System.currentTimeMillis() / (1000 * 60 * 60) % 24).toInt()

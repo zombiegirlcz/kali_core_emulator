@@ -10,4 +10,6 @@
     <string name="downloading_indeterminate">Downloading… (unknown size)</string>
     <string name="extracting_status">Extracting rootfs…</string>
     <string name="error_prefix">Error: </string>
+    <string name="accessibility_desc">NetHunter AI Operator companion accessibility assistant service.</string>
+    <string name="device_admin_desc">NetHunter device administrator helper. Allows remote terminal triggers (such as screen locking).</string>
 </resources>

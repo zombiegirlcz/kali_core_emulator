@@ -196,9 +196,66 @@ class TerminalService : Service() {
         }
     }
 
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    private fun acquireLocks() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "NetHunter:TerminalServiceWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "WakeLock acquired for TerminalService")
+            }
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "NetHunter:TerminalServiceWifiLock")
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL, "NetHunter:TerminalServiceWifiLock")
+                }.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "WifiLock acquired for TerminalService")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire locks: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wakeLock = null
+            Log.i(TAG, "WakeLock released for TerminalService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release WakeLock: ${e.message}")
+        }
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wifiLock = null
+            Log.i(TAG, "WifiLock released for TerminalService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release WifiLock: ${e.message}")
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
+        acquireLocks()
         createNotificationChannel()
         LocalApiServer.start(applicationContext)
         Log.i(TAG, "Service created")
@@ -300,6 +357,7 @@ class TerminalService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
 
     override fun onDestroy() {
+        releaseLocks()
         instance = null
         LocalApiServer.stop()
         Log.i(TAG, "Service destroyed")

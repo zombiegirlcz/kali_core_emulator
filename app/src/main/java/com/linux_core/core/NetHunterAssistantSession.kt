@@ -23,6 +23,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +40,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONObject
@@ -53,6 +62,12 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 import java.util.concurrent.Executors
+
+data class ChatMessage(
+    val text: String,
+    val isUser: Boolean,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(context), TextToSpeech.OnInitListener {
     companion object {
@@ -98,9 +113,10 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
     private val handler = Handler(Looper.getMainLooper())
 
     // UI States
+    private val messages = mutableStateListOf<ChatMessage>()
     private var statusState = mutableStateOf("Initializing...")
-    private var speechTextState = mutableStateOf("")
     private var isListeningState = mutableStateOf(false)
+    private var inputTextState = mutableStateOf("")
 
     override fun onCreate() {
         super.onCreate()
@@ -108,14 +124,23 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
         // Window settings for assistant overlay
         val dialog = window ?: return
         val win = dialog.window ?: return
+        
+        // Ensure the window is focusable and alt-focusable is cleared so keyboard doesn't overlap the overlay
+        win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+        win.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+        win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
         val lp = win.attributes
         lp.gravity = Gravity.BOTTOM or Gravity.FILL_HORIZONTAL
         lp.width = WindowManager.LayoutParams.MATCH_PARENT
-        lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+        lp.height = WindowManager.LayoutParams.MATCH_PARENT
         win.attributes = lp
 
         // Initialize TTS
         tts = TextToSpeech(context, this)
+
+        // Add system greeting message
+        messages.add(ChatMessage("System ready. Type a command or tap the microphone to speak.", isUser = false))
     }
 
     override fun onInit(status: Int) {
@@ -227,32 +252,28 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
                             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
                             else -> "Unknown error"
                         }
-                        statusState.value = "Error: $errorMsg"
+                        statusState.value = "Speech recognizer: $errorMsg"
                         Log.w(TAG, "SpeechRecognizer Error: $errorMsg ($error)")
-                        
-                        // Close assistant after short delay on error
-                        handler.postDelayed({ finish() }, 2000)
                     }
 
                     override fun onResults(results: Bundle?) {
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         if (!matches.isNullOrEmpty()) {
                             val resultText = matches[0]
-                            speechTextState.value = resultText
                             statusState.value = "Thinking..."
                             
                             // Send query to python agent
                             sendQueryToAgent(resultText)
                         } else {
-                            statusState.value = "No speech detected"
-                            handler.postDelayed({ finish() }, 1500)
+                            statusState.value = "Ready"
                         }
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
                         val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         if (!matches.isNullOrEmpty()) {
-                            speechTextState.value = matches[0]
+                            // Update input text field dynamically as user speaks
+                            inputTextState.value = matches[0]
                         }
                     }
 
@@ -265,6 +286,10 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                // Keep listening longer to prevent early cutoff
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
             }
             Log.i(TAG, "Calling speechRecognizer?.startListening(intent)")
             speechRecognizer?.startListening(intent)
@@ -282,6 +307,11 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
     }
 
     private fun sendQueryToAgent(prompt: String) {
+        // Add prompt immediately to list of messages
+        handler.post {
+            messages.add(ChatMessage(prompt, isUser = true))
+        }
+
         executor.execute {
             var isQueryRunning = true
             val kaliStatusFile = java.io.File(context.filesDir, "kali-arm64/tmp/nethunter_agent_status.json")
@@ -348,20 +378,25 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
                     val reply = json.optString("response", "")
                     
                     handler.post {
-                        statusState.value = "Speaking..."
+                        statusState.value = "Ready"
+                        messages.add(ChatMessage(reply, isUser = false))
                         speakResponse(reply)
                     }
                 } else {
                     handler.post {
-                        statusState.value = "Agent error"
-                        speakResponse("Sorry, there was an error communicating with the agent.")
+                        statusState.value = "Error"
+                        val errorText = "Sorry, there was an error communicating with the agent."
+                        messages.add(ChatMessage(errorText, isUser = false))
+                        speakResponse(errorText)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error querying agent: ${e.message}")
                 handler.post {
-                    statusState.value = "Agent offline"
-                    speakResponse("Sorry, I could not reach the Hunter agent server. Please make sure the daemon is running.")
+                    statusState.value = "Offline"
+                    val errorText = "Sorry, I could not reach the Hunter agent server. Please make sure the daemon is running."
+                    messages.add(ChatMessage(errorText, isUser = false))
+                    speakResponse(errorText)
                 }
             } finally {
                 isQueryRunning = false
@@ -375,31 +410,27 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
     private fun speakResponse(text: String) {
         if (ttsReady && tts != null) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nethunter_assistant_speech")
-            
-            // Periodically check if TTS is still speaking, then finish session
-            val checkSpeaking = object : Runnable {
-                override fun run() {
-                    if (tts?.isSpeaking == true) {
-                        handler.postDelayed(this, 500)
-                    } else {
-                        finish() // Close overlay when done speaking
-                    }
-                }
-            }
-            handler.postDelayed(checkSpeaking, 1000)
         } else {
             Toast.makeText(context, text, Toast.LENGTH_LONG).show()
-            finish()
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun AssistantOverlayLayout() {
         val status by statusState
-        val speechText by speechTextState
         val isListening by isListeningState
+        var inputText by inputTextState
+        val listState = rememberLazyListState()
 
-        // Micro-animations for pulsing glowing indicator
+        // Auto scroll to bottom when messages list size changes
+        LaunchedEffect(messages.size) {
+            if (messages.isNotEmpty()) {
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
+
+        // Micro-animations for pulsing glowing indicator when listening
         val infiniteTransition = rememberInfiniteTransition(label = "pulse")
         val scale by infiniteTransition.animateFloat(
             initialValue = 1f,
@@ -411,75 +442,246 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
             label = "scale"
         )
 
-        Card(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, Color(0xFF00FF41)),
-            colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14))
+                .fillMaxSize()
+                .background(Color.Transparent),
+            contentAlignment = Alignment.BottomCenter
         ) {
-            Column(
+            // Invisible background click handler to close assistant
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Transparent)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        finish()
+                    }
+            )
+
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Glow line header
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(0.2f)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color(0xFF00FF41))
-                )
-                
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Pulsing Microphone indicator
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .scale(scale)
-                            .border(1.5.dp, Color(0xFF00FF41), CircleShape)
-                            .background(
-                                Brush.radialGradient(
-                                    colors = listOf(Color(0x3300FF41), Color.Transparent)
-                                ),
-                                CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
+                    .padding(12.dp)
+                    .heightIn(max = 450.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        enabled = true
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(Color(0xFF00FF41), CircleShape)
-                        )
+                        // Dummy click to block click propagation to parent background dismisser
+                    },
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, Color(0xFF00FF41)),
+                colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Header Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Small pulsing LED indicator
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .scale(scale)
+                                    .background(
+                                        if (isListening) Color(0xFF00FF41) else Color(0xFF555555),
+                                        CircleShape
+                                    )
+                            )
+                            Text(
+                                text = "[ STATUS: ${status.uppercase()} ]",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FF41),
+                                letterSpacing = 1.sp
+                            )
+                        }
+
+                        // Close Button
+                        IconButton(
+                            onClick = { finish() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text(
+                                text = "✕",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF888888)
+                            )
+                        }
                     }
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = status.uppercase(),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF00FF41),
-                            letterSpacing = 1.sp
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Scrollable Chat Message History
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .background(Color(0x33000000), RoundedCornerShape(8.dp))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(messages) { msg ->
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = if (msg.isUser) Alignment.End else Alignment.Start
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 12.dp,
+                                                topEnd = 12.dp,
+                                                bottomStart = if (msg.isUser) 12.dp else 2.dp,
+                                                bottomEnd = if (msg.isUser) 2.dp else 12.dp
+                                            )
+                                        )
+                                        .background(
+                                            if (msg.isUser) {
+                                                Brush.horizontalGradient(
+                                                    colors = listOf(Color(0xAA00FF41), Color(0xAA00AA2B))
+                                                )
+                                            } else {
+                                                Brush.horizontalGradient(
+                                                    colors = listOf(Color(0xFF161A22), Color(0xFF1E2430))
+                                                )
+                                            }
+                                        )
+                                        .border(
+                                            0.5.dp,
+                                            if (msg.isUser) Color(0xFF00FF41) else Color(0x33FFFFFF),
+                                            RoundedCornerShape(
+                                                topStart = 12.dp,
+                                                topEnd = 12.dp,
+                                                bottomStart = if (msg.isUser) 12.dp else 2.dp,
+                                                bottomEnd = if (msg.isUser) 2.dp else 12.dp
+                                            )
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = msg.text,
+                                        color = if (msg.isUser) Color.Black else Color(0xFFECEFF4),
+                                        fontSize = 14.sp,
+                                        fontFamily = if (msg.isUser) FontFamily.Default else FontFamily.Monospace,
+                                        fontWeight = if (msg.isUser) FontWeight.Medium else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Bottom Input Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Speech/Mic Action
+                        IconButton(
+                            onClick = {
+                                if (isListening) {
+                                    stopListening()
+                                    statusState.value = "Ready"
+                                } else {
+                                    startSpeechRecognition()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(
+                                    if (isListening) Color(0xFF00FF41) else Color(0x33FFFFFF),
+                                    CircleShape
+                                )
+                        ) {
+                            Text(
+                                text = if (isListening) "🎙" else "🎤",
+                                fontSize = 18.sp
+                            )
+                        }
+
+                        // Text Input Bar
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(52.dp),
+                            placeholder = {
+                                Text(
+                                    "Type a message...",
+                                    color = Color.Gray,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = Color(0xFF00FF41),
+                                focusedBorderColor = Color(0xFF00FF41),
+                                unfocusedBorderColor = Color(0x44FFFFFF),
+                                focusedContainerColor = Color(0xFF101216),
+                                unfocusedContainerColor = Color(0xFF101216)
+                            ),
+                            shape = RoundedCornerShape(26.dp),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                imeAction = ImeAction.Send
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onSend = {
+                                    if (inputText.trim().isNotEmpty()) {
+                                        sendQueryToAgent(inputText.trim())
+                                        inputText = ""
+                                    }
+                                }
+                            )
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (speechText.isEmpty()) "Say something..." else speechText,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (speechText.isEmpty()) Color.DarkGray else Color.White
-                        )
+
+                        // Send Button
+                        IconButton(
+                            onClick = {
+                                if (inputText.trim().isNotEmpty()) {
+                                    sendQueryToAgent(inputText.trim())
+                                    inputText = ""
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(Color(0xFF00FF41), CircleShape),
+                            enabled = inputText.trim().isNotEmpty()
+                        ) {
+                            Text(
+                                text = "➤",
+                                color = Color.Black,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
+

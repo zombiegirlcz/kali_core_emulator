@@ -45,13 +45,14 @@ __pycache__/
 
 # Copilot/Gemini session artifacts
 .copilot/
-AGENT.md
-AGENTS.md
-agent.md
+# AGENT.md
+# AGENTS.md
+# agent.md
 .tasks/
-
+GEMINI.md
 # Local backup archive
-ignore-archiv.tar
+ignore-archi
+v.tar
 
 # IDE, AI tools, and plugin directories
 /.ai/
@@ -75,7 +76,38 @@ ignore-archiv.tar
 temp_agent.json
 query.json
 test_write.py
-replay_pid*.log
-*.apk
+*.log
 /build/
+.vscode
+tombstone_00
+tombstone_01
+window_dump_ok.xml
+window_dump.xml
+*.logcat
+*.apk
+*.tar
+*.lock
+*.xml
+*py
+*.zip
+*.sh
+*.bat
+*.ps1
+*.json
+*mdmp
+*txt
 
+# AI Datasets and Notebooks
+*.csv
+*.jsonl
+/scratch/
+
+# Screenshots
+/screenshot/
+*.png
+*.jpg
+*.jpeg
+
+# Security
+*.keystore
+*.jks
