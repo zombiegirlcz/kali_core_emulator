@@ -19,9 +19,6 @@ android {
         versionName = "4.1-AI-FIX"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        ndk {
-            abiFilters.add("arm64-v8a")
-        }
     }
 
     signingConfigs {
@@ -30,6 +27,12 @@ android {
             storePassword = "password123"
             keyAlias = "releaseKey"
             keyPassword = "password123"
+        }
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
@@ -45,6 +48,7 @@ android {
         getByName("debug") {
             isJniDebuggable = true
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
