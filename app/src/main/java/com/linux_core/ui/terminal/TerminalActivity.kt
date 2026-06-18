@@ -92,6 +92,7 @@ class TerminalActivity : ComponentActivity() {
     private var isDrawerExpanded = false
     private lateinit var btnFloatingMenu: TextView
     private lateinit var topBar: LinearLayout
+    private lateinit var statusTitle: TextView
     private var drawerUpdateHandler = Handler(Looper.getMainLooper())
     private val drawerRamUpdater = object : Runnable {
         override fun run() {
@@ -191,11 +192,13 @@ class TerminalActivity : ComponentActivity() {
         // Active top bar with menu button, spacer, and GUI switch
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#08090d"))
+            background = createRoundedDrawable(Color.parseColor("#07080a"), 0f)
+            val padVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
+            setPadding(8, padVert, 8, padVert)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE // Hidden by default in CLI mode
+            visibility = View.VISIBLE // Visible by default in both CLI and GUI
         }
 
         // Hamburger Menu button on the left of topBar to slide drawer open
@@ -203,14 +206,14 @@ class TerminalActivity : ComponentActivity() {
             text = "☰"
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#151620"))
-            setPadding(16, 4, 16, 4)
+            setTextColor(Color.parseColor("#00FF41"))
+            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
+            setPadding(12, 0, 12, 0)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
             ).apply {
-                setMargins(12, 4, 12, 4)
+                setMargins(8, 0, 8, 0)
             }
             layoutParams = params
             setOnClickListener {
@@ -233,13 +236,13 @@ class TerminalActivity : ComponentActivity() {
             textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#151620"))
-            setPadding(16, 4, 16, 4)
+            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
+            setPadding(12, 0, 12, 0)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
             ).apply {
-                setMargins(0, 4, 12, 4)
+                setMargins(0, 0, 8, 0)
             }
             layoutParams = params
             setOnClickListener {
@@ -249,18 +252,38 @@ class TerminalActivity : ComponentActivity() {
         }
         topBar.addView(btnGoToMenu)
 
-        // Symmetrical spacer to push GUI switch to the right
-        val spacer = View(this).apply {
+        val spacer1 = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
-        topBar.addView(spacer)
+        topBar.addView(spacer1)
+
+        statusTitle = TextView(this).apply {
+            text = "🐉 KALI"
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD))
+            setTextColor(Color.parseColor("#00FF41"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        topBar.addView(statusTitle)
+
+        val spacer2 = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+        topBar.addView(spacer2)
 
         // CLI/GUI Switch on the right side of topBar
         val guiToggleLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
+            setPadding(2, 2, 2, 2)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(8, 0, 16, 0)
+                setMargins(8, 0, 8, 0)
             }
             gravity = Gravity.CENTER
         }
@@ -269,12 +292,12 @@ class TerminalActivity : ComponentActivity() {
             text = "🐚 CLI"
             textSize = 10f
             typeface = Typeface.MONOSPACE
-            setTextColor(Color.parseColor("#00FF41")) // Deep Matrix Green initially highlighted
-            setBackgroundColor(Color.parseColor("#151620"))
-            setPadding(12, 4, 12, 4)
+            setTextColor(Color.BLACK)
+            background = createRoundedDrawable(Color.parseColor("#00FF41"), 4f)
+            setPadding(10, 0, 10, 0)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+                    TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt()
             )
             layoutParams = params
             setOnClickListener {
@@ -288,11 +311,11 @@ class TerminalActivity : ComponentActivity() {
             textSize = 10f
             typeface = Typeface.MONOSPACE
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#08090d"))
-            setPadding(12, 4, 12, 4)
+            background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
+            setPadding(10, 0, 10, 0)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+                    TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt()
             )
             layoutParams = params
             setOnClickListener {
@@ -304,14 +327,13 @@ class TerminalActivity : ComponentActivity() {
         guiToggleLayout.addView(btnCli)
         guiToggleLayout.addView(btnGui)
 
-
         btnTouchToggle = Button(this).apply {
-            text = "🖱️ Mouse"
+            text = "🖱️ Trackpad"
             textSize = 10f
             typeface = Typeface.MONOSPACE
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#151620"))
-            setPadding(12, 4, 12, 4)
+            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
+            setPadding(12, 0, 12, 0)
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
                     TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
@@ -329,6 +351,15 @@ class TerminalActivity : ComponentActivity() {
         topBar.addView(guiToggleLayout)
 
         mainLayout.addView(topBar)
+
+        val topBarDivider = View(this).apply {
+            setBackgroundColor(Color.parseColor("#1e2026"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt()
+            )
+        }
+        mainLayout.addView(topBarDivider)
 
         // Terminal view container (takes weight = 1f to fill remaining screen space)
         val terminalContainer = FrameLayout(this).apply {
@@ -802,10 +833,10 @@ class TerminalActivity : ComponentActivity() {
     private fun switchViewMode(mode: String) {
         activeViewMode = mode
         if (mode == "CLI") {
-            btnCli.setTextColor(Color.parseColor("#00FF41"))
-            btnCli.setBackgroundColor(Color.parseColor("#151620"))
+            btnCli.setTextColor(Color.BLACK)
+            btnCli.background = createRoundedDrawable(Color.parseColor("#00FF41"), 4f)
             btnGui.setTextColor(Color.WHITE)
-            btnGui.setBackgroundColor(Color.parseColor("#08090d"))
+            btnGui.background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
 
             terminalView.visibility = View.VISIBLE
             suggestionBar.visibility = if (historyManager.getSuggestions(currentCommand.toString()).isNotEmpty()) View.VISIBLE else View.GONE
@@ -813,15 +844,15 @@ class TerminalActivity : ComponentActivity() {
             guiContainer.visibility = View.GONE
             btnTouchToggle.visibility = View.GONE
             
-            topBar.visibility = View.GONE
-            btnFloatingMenu.visibility = View.VISIBLE
+            topBar.visibility = View.VISIBLE
+            btnFloatingMenu.visibility = View.GONE
             
             showSoftKeyboard()
         } else {
-            btnGui.setTextColor(Color.parseColor("#00FF41"))
-            btnGui.setBackgroundColor(Color.parseColor("#151620"))
+            btnGui.setTextColor(Color.BLACK)
+            btnGui.background = createRoundedDrawable(Color.parseColor("#00FF41"), 4f)
             btnCli.setTextColor(Color.WHITE)
-            btnCli.setBackgroundColor(Color.parseColor("#08090d"))
+            btnCli.background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
 
             terminalView.visibility = View.GONE
             suggestionBar.visibility = View.GONE
@@ -839,6 +870,7 @@ class TerminalActivity : ComponentActivity() {
 
             checkAndLoadGui()
         }
+        updateTopbarTitle()
     }
 
     private fun isPortOpen(port: Int): Boolean {
@@ -1445,21 +1477,42 @@ class TerminalActivity : ComponentActivity() {
             if (isDrawerExpanded) {
                 // Expanded mode padding & visibility
                 drawerViewContentLayout.setPadding(
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
                 )
                 drawerHeader.visibility = View.VISIBLE
-                drawerHeader.text = "🐚 NETHUNTER SESSIONS\n[RAM: ${getTotalRamUsage()}]"
+                
+                // Futuristic console header
+                val ssb = android.text.SpannableStringBuilder()
+                ssb.append("🛰️ OPERATOR CONSOLE\n")
+                val startRam = ssb.length
+                ssb.append("[RAM: ${getTotalRamUsage()}]")
+                ssb.setSpan(
+                    android.text.style.ForegroundColorSpan(Color.parseColor("#00FF41")),
+                    0, startRam,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                ssb.setSpan(
+                    android.text.style.ForegroundColorSpan(Color.parseColor("#00E5FF")),
+                    startRam, ssb.length,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                drawerHeader.text = ssb
+                
                 tabLayout.visibility = View.VISIBLE
                 btnAddSession.visibility = View.VISIBLE
                 
                 // Update drawer tab button styling
                 drawerTabButtons.forEach { (tabCode, btn) ->
                     val isSel = (tabCode == activeDrawerTab)
-                    btn.setTextColor(if (isSel) Color.parseColor("#00FF41") else Color.WHITE)
-                    btn.setBackgroundColor(if (isSel) Color.parseColor("#151620") else Color.parseColor("#08090d"))
+                    btn.setTextColor(if (isSel) Color.BLACK else Color.WHITE)
+                    btn.background = if (isSel) {
+                        createRoundedDrawable(Color.parseColor("#00FF41"), 6f)
+                    } else {
+                        createRoundedDrawable(Color.parseColor("#12131a"), 6f, Color.parseColor("#1e2026"), 1f)
+                    }
                 }
             } else {
                 // Minimized mode padding & visibility
@@ -1482,13 +1535,12 @@ class TerminalActivity : ComponentActivity() {
                 val btnGuiToggleMin = Button(this).apply {
                     text = "🖥️"
                     textSize = 14f
-                    setBackgroundColor(Color.parseColor("#151620"))
                     setTextColor(Color.WHITE)
-                    val params = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 44f, resources.displayMetrics).toInt()
-                    ).apply {
+                    background = createCircularDrawable(Color.parseColor("#12131a"), Color.parseColor("#1e2026"), 1f)
+                    val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
+                    val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
                         setMargins(0, 4, 0, 16)
+                        gravity = Gravity.CENTER_HORIZONTAL
                     }
                     layoutParams = params
                     setOnClickListener {
@@ -1511,63 +1563,96 @@ class TerminalActivity : ComponentActivity() {
                 }
 
                 val isActive = (session == currentSession)
+                val isIgnored = TerminalService.isSessionVpnIgnored(session)
+                val isParrot = distro.contains("parrot")
+                val distroBadge = if (isParrot) "🦜" else "🐉"
+                val memBytes = com.linux_core.core.ProcessResolver.getSessionMemoryUsage(session)
+                val memMb = memBytes.toDouble() / (1024.0 * 1024.0)
+                val memStr = String.format(java.util.Locale.US, "%.1f MB", memMb)
                 
                 // Vertical container row for the session card
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER
-                    setBackgroundColor(if (isActive) Color.parseColor("#151620") else Color.parseColor("#0c0d12"))
+                    gravity = Gravity.CENTER_VERTICAL
                     
-                    val pxPaddingHoriz = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 16f else 8f, resources.displayMetrics).toInt()
-                    val pxPaddingVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 18f else 12f, resources.displayMetrics).toInt()
+                    val pxPaddingHoriz = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 12f else 6f, resources.displayMetrics).toInt()
+                    val pxPaddingVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 12f else 8f, resources.displayMetrics).toInt()
                     setPadding(pxPaddingHoriz, pxPaddingVert, pxPaddingHoriz, pxPaddingVert)
+                    
+                    background = if (isActive) {
+                        createRoundedDrawable(Color.parseColor("#121b16"), 8f, Color.parseColor("#00FF41"), 1f)
+                    } else if (isIgnored) {
+                        createRoundedDrawable(Color.parseColor("#1c150c"), 8f, Color.parseColor("#FF9900"), 1f)
+                    } else {
+                        createRoundedDrawable(Color.parseColor("#090a0f"), 8f, Color.parseColor("#1e2026"), 1f)
+                    }
                     
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply {
-                        setMargins(0, 4, 0, 4)
+                        setMargins(0, 6, 0, 6)
                     }
                     layoutParams = params
                 }
 
-                // Glow/Indicator vertical line on the left side of the row
-                val indicator = View(this).apply {
-                    setBackgroundColor(if (isActive) Color.parseColor("#00FF41") else Color.TRANSPARENT)
-                    val params = LinearLayout.LayoutParams(
-                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
-                        LinearLayout.LayoutParams.MATCH_PARENT
-                    )
-                    layoutParams = params
+                // Glow/Indicator vertical line on the left side of the row (only in expanded mode)
+                if (isDrawerExpanded) {
+                    val indicator = View(this).apply {
+                        val colorStr = if (isActive) "#00FF41" else if (isIgnored) "#FF9900" else "#20222e"
+                        background = createRoundedDrawable(Color.parseColor(colorStr), 2f)
+                        val params = LinearLayout.LayoutParams(
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
+                        ).apply {
+                            setMargins(0, 0, 10, 0)
+                        }
+                        layoutParams = params
+                    }
+                    row.addView(indicator)
                 }
-                row.addView(indicator)
-
-                // Session Text label
-                val isIgnored = TerminalService.isSessionVpnIgnored(session)
-                val isParrot = distro.contains("parrot")
-                val distroBadge = if (isParrot) "🦜" else "🐉"
-                
-                val memBytes = com.linux_core.core.ProcessResolver.getSessionMemoryUsage(session)
-                val memStr = formatBytes(memBytes)
 
                 if (isDrawerExpanded) {
                     val label = TextView(this).apply {
                         val customName = TerminalService.getSessionName(session)
                         val baseText = if (!customName.isNullOrEmpty()) customName else "Session ${i + 1}"
-                        text = "${distroBadge} ${baseText} ($memStr)" + (if (isIgnored) " [VPN IGNORED]" else "")
-                        textSize = 13f
-                        typeface = Typeface.MONOSPACE
-                        if (isActive) {
-                            setTextColor(Color.parseColor("#00FF41"))
-                        } else if (isIgnored) {
-                            setTextColor(Color.parseColor("#FF9900")) // Gold/Orange for bypassed session
-                        } else {
-                            setTextColor(Color.WHITE)
+                        
+                        val ssbLabel = android.text.SpannableStringBuilder()
+                        ssbLabel.append("$distroBadge ")
+                        val nameStart = ssbLabel.length
+                        ssbLabel.append(baseText)
+                        ssbLabel.setSpan(
+                            android.text.style.ForegroundColorSpan(if (isActive) Color.parseColor("#00FF41") else Color.WHITE),
+                            nameStart, ssbLabel.length,
+                            android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        
+                        ssbLabel.append("\n")
+                        val memStart = ssbLabel.length
+                        ssbLabel.append("  RAM: $memStr")
+                        ssbLabel.setSpan(
+                            android.text.style.ForegroundColorSpan(Color.parseColor("#A9B1D6")),
+                            memStart, ssbLabel.length,
+                            android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        
+                        if (isIgnored) {
+                            ssbLabel.append(" ")
+                            val vpnStart = ssbLabel.length
+                            ssbLabel.append("[BYPASS]")
+                            ssbLabel.setSpan(
+                                android.text.style.ForegroundColorSpan(Color.parseColor("#FF9900")),
+                                vpnStart, ssbLabel.length,
+                                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
                         }
+                        
+                        text = ssbLabel
+                        textSize = 12f
+                        typeface = Typeface.MONOSPACE
+                        
                         val params = LinearLayout.LayoutParams(
                             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                        ).apply {
-                            setMargins(16, 0, 16, 0)
-                        }
+                        )
                         layoutParams = params
                     }
                     row.addView(label)
@@ -1575,14 +1660,15 @@ class TerminalActivity : ComponentActivity() {
                     // Quick Close Button on the right
                     val btnClose = TextView(this).apply {
                         text = "✕"
-                        textSize = 14f
+                        textSize = 12f
                         setTypeface(Typeface.DEFAULT_BOLD)
                         setTextColor(Color.parseColor("#A9B1D6"))
-                        val pad = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
-                        setPadding(pad, pad, pad, pad)
-                        val params = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                        )
+                        gravity = Gravity.CENTER
+                        background = createRoundedDrawable(Color.parseColor("#1c1d27"), 12f)
+                        val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
+                        val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                            setMargins(8, 0, 0, 0)
+                        }
                         layoutParams = params
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -1591,15 +1677,19 @@ class TerminalActivity : ComponentActivity() {
                     }
                     row.addView(btnClose)
                 } else {
-                    // Minimized Mode: Show ONLY the distro badge emoji
+                    // Minimized Mode: Show ONLY the distro badge emoji centered in a circular outline
                     val emojiLabel = TextView(this).apply {
                         text = distroBadge
-                        textSize = 20f
+                        textSize = 18f
                         gravity = Gravity.CENTER
-                        val params = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply {
-                            setMargins(0, 0, 0, 0)
+                        background = if (isActive) {
+                            createCircularDrawable(Color.parseColor("#121b16"), Color.parseColor("#00FF41"), 1.5f)
+                        } else {
+                            createCircularDrawable(Color.parseColor("#090a0f"), Color.parseColor("#1e2026"), 1f)
+                        }
+                        val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
+                        val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                            gravity = Gravity.CENTER_HORIZONTAL
                         }
                         layoutParams = params
                     }
@@ -1621,6 +1711,62 @@ class TerminalActivity : ComponentActivity() {
                 }
 
                 sessionDrawerContainer.addView(row)
+            }
+        }
+    }
+
+    private fun createRoundedDrawable(
+        backgroundColor: Int,
+        cornerRadiusDp: Float,
+        strokeColor: Int = 0,
+        strokeWidthDp: Float = 0f
+    ): android.graphics.drawable.GradientDrawable {
+        return android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            setColor(backgroundColor)
+            val radiusPx = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, cornerRadiusDp, resources.displayMetrics
+            )
+            setCornerRadius(radiusPx)
+            if (strokeColor != 0 && strokeWidthDp > 0f) {
+                val strokeWidthPx = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, strokeWidthDp, resources.displayMetrics
+                ).toInt()
+                setStroke(strokeWidthPx, strokeColor)
+            }
+        }
+    }
+
+    private fun createCircularDrawable(
+        backgroundColor: Int,
+        strokeColor: Int = 0,
+        strokeWidthDp: Float = 0f
+    ): android.graphics.drawable.GradientDrawable {
+        return android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(backgroundColor)
+            if (strokeColor != 0 && strokeWidthDp > 0f) {
+                val strokeWidthPx = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, strokeWidthDp, resources.displayMetrics
+                ).toInt()
+                setStroke(strokeWidthPx, strokeColor)
+            }
+        }
+    }
+
+    private fun updateTopbarTitle() {
+        runOnUiThread {
+            if (!::statusTitle.isInitialized) return@runOnUiThread
+            val session = currentSession
+            if (session != null) {
+                val distro = TerminalService.getSessionDistro(session)
+                val isParrot = distro.contains("parrot")
+                val distroBadge = if (isParrot) "🦜 PARROT OS" else "🐉 KALI NetHunter"
+                statusTitle.text = "$distroBadge [${activeViewMode}]"
+                statusTitle.setTextColor(if (isParrot) Color.parseColor("#00E5FF") else Color.parseColor("#00FF41"))
+            } else {
+                statusTitle.text = "🐉 NETHUNTER OPERATOR"
+                statusTitle.setTextColor(Color.parseColor("#00FF41"))
             }
         }
     }
@@ -1713,6 +1859,7 @@ class TerminalActivity : ComponentActivity() {
             terminalView.onScreenUpdated()
         }
         updateSessionDrawer()
+        updateTopbarTitle()
     }
 
     private fun closeSession(session: TerminalSession) {

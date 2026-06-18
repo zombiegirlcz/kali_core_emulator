@@ -13,16 +13,24 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.animation.core.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,6 +41,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -323,219 +343,363 @@ fun MainScreen() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                horizontalArrangement = Arrangement.Center
+                    .padding(bottom = 20.dp)
+                    .background(Color(0xE60D0E15), RoundedCornerShape(12.dp))
+                    .border(1.dp, Color(0x3300FF41), RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
-                    onClick = { currentTab = "home" },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentTab == "home") Color(0xFF008F11) else Color(0xCC1E2026)
-                    ),
-                    shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
-                    modifier = Modifier.weight(1f).height(40.dp)
+                val isHome = (currentTab == "home")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isHome) Color(0xFF008F11) else Color.Transparent)
+                        .clickable { currentTab = "home" }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("Distros", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Terminal,
+                            contentDescription = "Distros",
+                            tint = if (isHome) Color.White else Color.Gray,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "GUEST DISTROS",
+                            color = if (isHome) Color.White else Color.Gray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
                 }
-                Spacer(modifier = Modifier.width(2.dp))
-                Button(
-                    onClick = { currentTab = "vpn_center" },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (currentTab == "vpn_center") Color(0xFF008F11) else Color(0xCC1E2026)
-                    ),
-                    shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
-                    modifier = Modifier.weight(1f).height(40.dp)
+                Spacer(modifier = Modifier.width(4.dp))
+                val isVpn = (currentTab == "vpn_center")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isVpn) Color(0xFF008F11) else Color.Transparent)
+                        .clickable { currentTab = "vpn_center" }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("VPN Center", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Shield,
+                            contentDescription = "VPN Center",
+                            tint = if (isVpn) Color.White else Color.Gray,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "VPN GATEWAY",
+                            color = if (isVpn) Color.White else Color.Gray,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
                 }
             }
 
             if (currentTab == "home") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color(0xFF00FF41), CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "NETHUNTER // GUEST OS",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color(0xFF00FF41),
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                }
                 Text(
-                    text = "linux-distro",
-                    fontSize = 28.sp,
+                    text = "SELECT ACTIVE LINUX ENVIRONMENT",
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00FF41), // Matrix Green
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-
-                Text(
-                    text = "Select active guest environment",
-                    fontSize = 14.sp,
-                    color = Color.LightGray,
-                    modifier = Modifier.padding(bottom = 32.dp)
+                    color = Color.Gray,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.padding(bottom = 24.dp)
                 )
 
                 // Distro Selector Cards
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                        .padding(bottom = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     RootfsManager.DISTROS.forEach { distro ->
                         val isSelected = (distro == selectedDistro)
-                        val cardBorder = if (isSelected) {
-                            BorderStroke(2.dp, Color(0xFF00FF41))
+                        val exists = RootfsManager.isRootfsExtracted(context, distro)
+                        val activeColor = if (distro.id == "kali") Color(0xFF00B0FF) else Color(0xFF00FF9F)
+                        val borderBrush = if (isSelected) {
+                            Brush.horizontalGradient(
+                                colors = if (distro.id == "kali") {
+                                    listOf(Color(0xFF0052D4), Color(0xFF4364F7), Color(0xFF00D2FF))
+                                } else {
+                                    listOf(Color(0xFF11998E), Color(0xFF38EF7D), Color(0xFF00FF9F))
+                                }
+                            )
                         } else {
-                            BorderStroke(1.dp, Color(0xFF1E2026))
+                            Brush.horizontalGradient(colors = listOf(Color(0xFF1E2026), Color(0xFF1E2026)))
                         }
 
                         Card(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 8.dp)
                                 .clickable(enabled = !isDownloading) {
                                     selectedDistro = distro
                                 },
-                            shape = RoundedCornerShape(12.dp),
-                            border = cardBorder,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderBrush),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) Color(0xDD12141C) else Color(0xDD0B0D13)
+                                containerColor = if (isSelected) Color(0xF20F111A) else Color(0xE608090D)
                             )
                         ) {
                             Column(
                                 modifier = Modifier.padding(16.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .background(
+                                            if (isSelected) activeColor.copy(alpha = 0.15f) else Color(0xFF12131A),
+                                            CircleShape
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) activeColor.copy(alpha = 0.5f) else Color(0xFF1E2026),
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (distro.id == "kali") "🐉" else "🦜",
+                                        fontSize = 28.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
                                 Text(
                                     text = distro.name,
-                                    fontSize = 15.sp,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isSelected) Color.White else Color.Gray,
-                                    modifier = Modifier.padding(bottom = 6.dp)
+                                    color = if (isSelected) Color.White else Color.LightGray,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                 )
-                                val exists = RootfsManager.isRootfsExtracted(context, distro)
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = if (exists) "Installed" else "Not Ready",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (exists) Color(0xFF00FF66) else Color.DarkGray
+                                    text = if (distro.id == "kali") "PenTesting Env" else "Privacy OS",
+                                    fontSize = 9.sp,
+                                    color = Color.Gray,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(if (exists) Color(0xFF00FF66) else Color.DarkGray, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (exists) "INSTALLED" else "NOT READY",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (exists) Color(0xFF00FF66) else Color.DarkGray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Mount /sdcard storage card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0x3300FF41)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isDownloading) {
+                                val nextState = !mountStorage
+                                if (nextState && !hasStoragePermission) {
+                                    requestAllFilesAccess(context)
+                                }
+                                mountStorage = nextState
+                                sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
+                            }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color(0x1A00FF41), CircleShape)
+                                    .border(1.dp, Color(0x3300FF41), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Storage,
+                                    contentDescription = "Storage",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
-                        }
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(bottom = 24.dp).clickable(enabled = !isDownloading) {
-                        val nextState = !mountStorage
-                        if (nextState && !hasStoragePermission) {
-                            requestAllFilesAccess(context)
-                        }
-                        mountStorage = nextState
-                        sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
-                    }
-                ) {
-                    androidx.compose.material3.Switch(
-                        checked = mountStorage,
-                        onCheckedChange = { checked ->
-                            if (checked && !hasStoragePermission) {
-                                requestAllFilesAccess(context)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Mount Shared Storage",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                Text(
+                                    text = "Map internal storage to /sdcard inside guest",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                if (mountStorage && !hasStoragePermission) {
+                                    Text(
+                                        text = "Files Access Required (Tap to Grant)",
+                                        color = Color(0xFFFF3333),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        modifier = Modifier.clickable { requestAllFilesAccess(context) }
+                                    )
+                                }
                             }
-                            mountStorage = checked
-                            sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
-                        },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(
-                            checkedThumbColor = Color(0xFF00FF41),
-                            checkedTrackColor = Color(0x8800FF41)
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Mount /sdcard Storage",
-                            color = Color.LightGray,
-                            fontSize = 14.sp
-                        )
-                        if (mountStorage && !hasStoragePermission) {
-                            Text(
-                                text = "All Files Access required! Tap to grant.",
-                                color = Color(0xFFFF3333),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { requestAllFilesAccess(context) }
-                            )
                         }
+                        androidx.compose.material3.Switch(
+                            checked = mountStorage,
+                            onCheckedChange = { checked ->
+                                if (checked && !hasStoragePermission) {
+                                    requestAllFilesAccess(context)
+                                }
+                                mountStorage = checked
+                                sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
+                            },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00FF41),
+                                checkedTrackColor = Color(0x6600FF41),
+                                uncheckedThumbColor = Color.Gray,
+                                uncheckedTrackColor = Color(0xFF1E2026)
+                            )
+                        )
                     }
                 }
 
-                // Action Flow — isDownloading has HIGHEST priority so progress is always visible
+                // Action Flow — isDownloading has HIGHEST priority
                 if (isDownloading) {
-                    // Universal progress display (backup, restore, reinstall, install)
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, Color(0xFF00FF41)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xDD0C0E14))
+                        colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14))
                     ) {
                         Column(
-                            modifier = Modifier.padding(24.dp),
+                            modifier = Modifier.padding(20.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(
-                                text = statusText,
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(bottom = 12.dp)
-                            )
-
-                            // Progress bar — always visible
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Downloading",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = statusText,
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(6.dp)
-                                    .padding(horizontal = 8.dp)
+                                    .background(Color(0xFF1E2026), RoundedCornerShape(3.dp))
                             ) {
-                                Canvas(modifier = Modifier.fillMaxSize()) {
-                                    // Background track
-                                    drawRoundRect(
-                                        color = Color(0xFF1E2026),
-                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-                                    )
-                                    // Filled progress
-                                    val fraction = if (downloadProgress > 0) downloadProgress / 100f else 0f
-                                    drawRoundRect(
-                                        color = Color(0xFF00FF41),
-                                        size = androidx.compose.ui.geometry.Size(
-                                            size.width * fraction,
-                                            size.height
-                                        ),
-                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-                                    )
-                                }
+                                val fraction = if (downloadProgress > 0) downloadProgress / 100f else 0f
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .fillMaxWidth(fraction)
+                                        .background(
+                                            Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF))),
+                                            RoundedCornerShape(3.dp)
+                                        )
+                                )
                             }
                             Spacer(modifier = Modifier.height(8.dp))
-                            // Percentage — always visible
                             Text(
                                 text = if (downloadProgress >= 0) "$downloadProgress%" else "…",
                                 color = Color(0xFF00FF41),
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                             )
-
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
                             Button(
                                 onClick = {
                                     downloadJob?.cancel()
                                     isDownloading = false
                                     statusText = ""
                                     downloadProgress = 0
-                                    // Re-check extraction state after cancel
                                     isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
                                 },
                                 shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF8F0011)
-                                ),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8F0011)),
                                 modifier = Modifier.fillMaxWidth().height(42.dp)
                             ) {
-                                Text("CANCEL", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("ABORT OPERATION", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                             }
                         }
                     }
                 } else if (isExtracted) {
+                    val activeBrandGradient = if (selectedDistro.id == "kali") {
+                        Brush.horizontalGradient(listOf(Color(0xFF0052D4), Color(0xFF4364F7)))
+                    } else {
+                        Brush.horizontalGradient(listOf(Color(0xFF11998E), Color(0xFF38EF7D)))
+                    }
+
                     Button(
                         onClick = {
                             val intent = Intent(context, TerminalActivity::class.java).apply {
@@ -544,219 +708,282 @@ fun MainScreen() {
                             }
                             context.startActivity(intent)
                         },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF008F11) // Darker Matrix Green
-                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(52.dp)
+                            .background(activeBrandGradient, RoundedCornerShape(10.dp))
                     ) {
-                        Text(
-                            text = "LAUNCH " + selectedDistro.name.uppercase(),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = Color.White
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Launch",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "BOOT UP " + selectedDistro.name.uppercase(),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                    // More Options Expandable Cyber Panel
-                    Button(
-                        onClick = { isMoreMenuExpanded = !isMoreMenuExpanded },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xCC1E2026) // Sleek dark grey button, slightly transparent
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
+                    // Collapsible Advanced Guest Management Tools
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, if (isMoreMenuExpanded) Color(0xFF00FF41) else Color(0xFF1E2026)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
                     ) {
-                        Text(
-                            text = if (isMoreMenuExpanded) "HIDE OPTIONS" else "MORE OPTIONS",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = Color(0xFF00FF41) // Accented green text
-                        )
-                    }
-
-                    if (isMoreMenuExpanded) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13))
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isMoreMenuExpanded = !isMoreMenuExpanded }
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(
-                                    text = "GUEST MANAGEMENT TOOLS",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF00FF41)
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    // Backup Button
-                                    Button(
-                                        onClick = {
-                                            if (!hasStoragePermission) {
-                                                requestAllFilesAccess(context)
-                                            } else {
-                                                isMoreMenuExpanded = false
-                                                downloadJob = scope.launch {
-                                                    isDownloading = true
-                                                    try {
-                                                        statusText = "Backing up rootfs…"
-                                                        downloadProgress = 0
-                                                        RootfsManager.backupRootfs(context, selectedDistro).collect { (progress, status) ->
-                                                            downloadProgress = progress
-                                                            statusText = status
-                                                        }
-                                                        Toast.makeText(context, "Backup saved to Downloads folder!", Toast.LENGTH_LONG).show()
-                                                    } catch (e: kotlinx.coroutines.CancellationException) {
-                                                        throw e
-                                                    } catch (e: Exception) {
-                                                        Toast.makeText(context, "Backup failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                                    } finally {
-                                                        isDownloading = false
-                                                        statusText = ""
-                                                        downloadProgress = 0
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                        modifier = Modifier.weight(1f).height(42.dp)
-                                    ) {
-                                        Text("BACKUP", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-
-                                    // Restore Button
-                                    Button(
-                                        onClick = {
-                                            if (!hasStoragePermission) {
-                                                requestAllFilesAccess(context)
-                                            } else {
-                                                backupFiles = RootfsManager.getBackupFiles(selectedDistro)
-                                                showRestoreDialog = true
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                        modifier = Modifier.weight(1f).height(42.dp)
-                                    ) {
-                                        Text("RESTORE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = "Settings",
+                                        tint = if (isMoreMenuExpanded) Color(0xFF00FF41) else Color.Gray,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "ADVANCED GUEST MANAGEMENT",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isMoreMenuExpanded) Color.White else Color.Gray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
                                 }
-
-                                // Reinstall Button
-                                Button(
-                                    onClick = {
-                                        downloadJob = scope.launch {
-                                            isDownloading = true
-                                            isMoreMenuExpanded = false
-                                            try {
-                                                val cacheDir = File(context.filesDir, selectedDistro.id)
-                                                val archiveFile = File(cacheDir, selectedDistro.tarFileName)
-                                                
-                                                statusText = "Reinstalling: Deleting old files…"
-                                                val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
-                                                if (rootfsDir.exists()) {
-                                                    rootfsDir.deleteRecursively()
-                                                }
-                                                isExtracted = false
-                                                downloadProgress = 0
-
-                                                val hasArchive = archiveFile.exists() && archiveFile.length() > 0
-                                                if (!hasArchive) {
-                                                    statusText = "Reinstalling: Downloading rootfs archive…"
-                                                    RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
-                                                        downloadProgress = progress
+                                Icon(
+                                    imageVector = if (isMoreMenuExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = "Expand",
+                                    tint = Color.Gray,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            if (isMoreMenuExpanded) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp)
+                                        .height(1.dp)
+                                        .background(Color(0xFF1E2026))
+                                )
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                if (!hasStoragePermission) {
+                                                    requestAllFilesAccess(context)
+                                                } else {
+                                                    isMoreMenuExpanded = false
+                                                    downloadJob = scope.launch {
+                                                        isDownloading = true
+                                                        try {
+                                                            statusText = "Backing up rootfs…"
+                                                            downloadProgress = 0
+                                                            RootfsManager.backupRootfs(context, selectedDistro).collect { (progress, status) ->
+                                                                downloadProgress = progress
+                                                                statusText = status
+                                                            }
+                                                            Toast.makeText(context, "Backup saved to Downloads folder!", Toast.LENGTH_LONG).show()
+                                                        } catch (e: kotlinx.coroutines.CancellationException) {
+                                                            throw e
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(context, "Backup failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                        } finally {
+                                                            isDownloading = false
+                                                            statusText = ""
+                                                            downloadProgress = 0
+                                                        }
                                                     }
-                                                    downloadProgress = 0
                                                 }
-
-                                                statusText = "Reinstalling: Extracting filesystem…"
-                                                RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
-                                                    downloadProgress = progress
-                                                }
-
-                                                isExtracted = true
-                                                statusText = ""
-                                                Toast.makeText(context, "Reinstallation complete!", Toast.LENGTH_LONG).show()
-                                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                throw e
-                                            } catch (e: Exception) {
-                                                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                Toast.makeText(context, "Reinstallation failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                            } finally {
-                                                isDownloading = false
-                                                statusText = ""
-                                                downloadProgress = 0
+                                            },
+                                            shape = RoundedCornerShape(6.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(40.dp)
+                                                .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.Backup, contentDescription = "Backup", tint = Color.LightGray, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("BACKUP", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.LightGray, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                                             }
                                         }
-                                    },
-                                    shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8F0011)),
-                                    modifier = Modifier.fillMaxWidth().height(42.dp)
-                                ) {
-                                    Text("REINSTALL (REEXTRACT)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+
+                                        Button(
+                                            onClick = {
+                                                if (!hasStoragePermission) {
+                                                    requestAllFilesAccess(context)
+                                                } else {
+                                                    backupFiles = RootfsManager.getBackupFiles(selectedDistro)
+                                                    showRestoreDialog = true
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(6.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(40.dp)
+                                                .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp))
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Default.FolderOpen, contentDescription = "Restore", tint = Color.LightGray, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("RESTORE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.LightGray, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                            }
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            downloadJob = scope.launch {
+                                                isDownloading = true
+                                                isMoreMenuExpanded = false
+                                                try {
+                                                    val cacheDir = File(context.filesDir, selectedDistro.id)
+                                                    val archiveFile = File(cacheDir, selectedDistro.tarFileName)
+
+                                                    statusText = "Reinstalling: Deleting old files…"
+                                                    val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
+                                                    if (rootfsDir.exists()) {
+                                                        rootfsDir.deleteRecursively()
+                                                    }
+                                                    isExtracted = false
+                                                    downloadProgress = 0
+
+                                                    val hasArchive = archiveFile.exists() && archiveFile.length() > 0
+                                                    if (!hasArchive) {
+                                                        statusText = "Reinstalling: Downloading rootfs archive…"
+                                                        RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
+                                                            downloadProgress = progress
+                                                        }
+                                                        downloadProgress = 0
+                                                    }
+
+                                                    statusText = "Reinstalling: Extracting filesystem…"
+                                                    RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
+                                                        downloadProgress = progress
+                                                    }
+
+                                                    isExtracted = true
+                                                    statusText = ""
+                                                    Toast.makeText(context, "Reinstallation complete!", Toast.LENGTH_LONG).show()
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                    throw e
+                                                } catch (e: Exception) {
+                                                    isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                    Toast.makeText(context, "Reinstallation failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                } finally {
+                                                    isDownloading = false
+                                                    statusText = ""
+                                                    downloadProgress = 0
+                                                }
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FF3333)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .border(1.dp, Color(0x66FF3333), RoundedCornerShape(6.dp))
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Refresh, contentDescription = "Reinstall", tint = Color(0xFFFF5555), modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("REINSTALL (DESTROY & REBUILD)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF5555), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Custom 1x1 Script Launchers Card
                     var customCommandText by remember { mutableStateOf("") }
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0xFF1E2026)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0x770B0D13))
+                        border = BorderStroke(1.dp, Color(0x3300FF41)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0x660B0D13))
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
+                            modifier = Modifier.padding(14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(bottom = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Android,
+                                    contentDescription = "Android Shortcut",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "1x1 WIDGET SHORTCUTS",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF00FF41),
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
                             Text(
-                                text = "1x1 Home Screen Launchers",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00FF41),
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-                            Text(
-                                text = "Create desktop icons to run specific scripts directly",
-                                fontSize = 11.sp,
+                                text = "Pin launch triggers directly to Android home screen",
+                                fontSize = 10.sp,
                                 color = Color.Gray,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                 modifier = Modifier.padding(bottom = 12.dp)
                             )
+
                             androidx.compose.material3.OutlinedTextField(
                                 value = customCommandText,
                                 onValueChange = { customCommandText = it },
-                                placeholder = { Text("e.g. nethunter-vibrate 1000", color = Color.DarkGray, fontSize = 12.sp) },
+                                placeholder = { Text("e.g. systemctl start nginx", color = Color.DarkGray, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
                                 singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                                leadingIcon = { Text("$", color = Color(0xFF00FF41), fontWeight = FontWeight.Bold, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, modifier = Modifier.padding(start = 8.dp)) },
+                                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
                                 colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                     focusedBorderColor = Color(0xFF00FF41),
-                                    unfocusedBorderColor = Color(0xFF1E2026)
+                                    unfocusedBorderColor = Color(0xFF1E2026),
+                                    focusedContainerColor = Color(0xFF07080A),
+                                    unfocusedContainerColor = Color(0xFF07080A)
                                 ),
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp)
                             )
-                            Row(modifier = Modifier.fillMaxWidth()) {
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Button(
                                     onClick = {
                                         val cmd = customCommandText.trim().ifEmpty { null }
@@ -764,12 +991,15 @@ fun MainScreen() {
                                         Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
                                     },
                                     shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                    modifier = Modifier.weight(1f).height(38.dp)
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp)
+                                        .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp))
                                 ) {
-                                    Text("PIN KALI 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                                    Text("PIN KALI 1x1", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
+
                                 Button(
                                     onClick = {
                                         val cmd = customCommandText.trim().ifEmpty { null }
@@ -777,16 +1007,18 @@ fun MainScreen() {
                                         Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
                                     },
                                     shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E2026)),
-                                    modifier = Modifier.weight(1f).height(38.dp)
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp)
+                                        .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp))
                                 ) {
-                                    Text("PIN PARROT 1x1", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41))
+                                    Text("PIN PARROT 1x1", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00FF41), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                                 }
                             }
                         }
                     }
                 } else {
-                    // Not extracted and not downloading — show INSTALL button
                     Button(
                         onClick = {
                             downloadJob = scope.launch {
@@ -796,13 +1028,11 @@ fun MainScreen() {
                                     RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
                                         downloadProgress = progress
                                     }
-
                                     downloadProgress = 0
                                     statusText = "Extracting rootfs filesystem…"
                                     RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
                                         downloadProgress = progress
                                     }
-
                                     isExtracted = true
                                     statusText = ""
                                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -820,20 +1050,29 @@ fun MainScreen() {
                                 }
                             }
                         },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF008F11)
-                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(52.dp)
+                            .background(Brush.horizontalGradient(listOf(Color(0xFF008F11), Color(0xFF00FF41))), RoundedCornerShape(10.dp))
                     ) {
-                        Text(
-                            text = "INSTALL " + selectedDistro.name.uppercase(),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = Color.White
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Install",
+                                tint = Color.Black,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "DEPLOY " + selectedDistro.name.uppercase(),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.Black,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+                        }
                     }
                 }
             } else {
@@ -849,7 +1088,8 @@ fun MainScreen() {
                         text = "SELECT BACKUP TO RESTORE",
                         color = Color(0xFF00FF41),
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontSize = 15.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                     )
                 },
                 text = {
@@ -861,7 +1101,8 @@ fun MainScreen() {
                             Text(
                                 text = "No backup archives (.tar.gz) found in Downloads folder.",
                                 color = Color.LightGray,
-                                fontSize = 13.sp
+                                fontSize = 13.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                             )
                         }
                     } else {
@@ -927,13 +1168,15 @@ fun MainScreen() {
                                                 color = Color.White,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                                 maxLines = 1
                                             )
                                             Spacer(modifier = Modifier.height(4.dp))
                                             Text(
                                                 text = "$dateStr | ${String.format("%.1f MB", sizeMb)}",
                                                 color = Color.Gray,
-                                                fontSize = 10.sp
+                                                fontSize = 10.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                             )
                                         }
                                         Spacer(modifier = Modifier.width(8.dp))
@@ -941,7 +1184,8 @@ fun MainScreen() {
                                             text = "RESTORE",
                                             color = Color(0xFF00FF41),
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
+                                            fontSize = 11.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                         )
                                     }
                                 }

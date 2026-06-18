@@ -45,11 +45,9 @@ __pycache__/
 
 # Copilot/Gemini session artifacts
 .copilot/
-# AGENT.md
-# AGENTS.md
-# agent.md
 .tasks/
 GEMINI.md
+
 # Local backup archive
 ignore-archi
 v.tar
@@ -96,14 +94,11 @@ window_dump.xml
 *.json
 *mdmp
 *txt
-<<<<<<< Updated upstream
-=======
 *png
+
 # Exemptions
 !windows_app/
 !windows_app/*.py
-
->>>>>>> Stashed changes
 
 # AI Datasets and Notebooks
 *.csv
@@ -112,10 +107,10 @@ window_dump.xml
 
 # Screenshots
 /screenshot/
-# *.png
-# *.jpg
-# *.jpeg
 
 # Security
 *.keystore
 *.jks
+
+# Old build artifacts
+app/build_old/
