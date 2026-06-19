@@ -98,6 +98,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.drawerlayout)
 
+    implementation("androidx.viewpager2:viewpager2:1.1.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
 

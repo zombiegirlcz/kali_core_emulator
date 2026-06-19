@@ -27,6 +27,7 @@ enum class KeyType(val label: String) {
     // Row 2 - Modifikátory
     ALT("Alt"),
     CTRL("Ctrl"),
+    SHIFT("Shift"),
 
     // Row 3 - Speciální znaky
     BACKSLASH("\\"),
@@ -110,7 +111,7 @@ object HackerKeyboardRows {
     )
 
     val row2Modifiers = listOf(
-        KeyType.ALT, KeyType.CTRL
+        KeyType.ALT, KeyType.CTRL, KeyType.SHIFT
     )
 
     val row3Symbols = listOf(

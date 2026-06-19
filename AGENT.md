@@ -65,9 +65,17 @@
 - **VPN & AI RAM Dashboard Stats:** Added dynamic native heap RAM usage for the C++ VPN Gateway engine and calculated ONNX session memory usage for the AI Classifier inside the Sniffer VPN Gateway card.
 </details>
 
+<details>
+<summary><b>7. Parrot OS Zshrc Bootstrap Fix & Self-Healing Backups (June 2026) - COMPLETED</b></summary>
+
+- **Bootstrap Race Condition Fix:** Unconditionally deployed optimized `.zshrc` templates and created `.zshrc.nethunter` backup templates in `/etc/skel` and `/root` during initial preparation, preventing distro package manager installations from overwriting or corrupting them during bootstrap.
+- **Auto-Restoration:** Modified `bootstrap.sh` to copy the backup configurations to the appropriate homes (including user `/home/parrot`) at the end of the initial installation.
+- **Entrypoint Protection:** Updated `setup_user_zsh` in `entrypoint.sh` to copy from the backup templates only when `.zshrc` is completely missing, ensuring the Parrot OS environment starts with a working terminal logo, API commands, and feedback links, while preserving custom user modifications.
+</details>
+
 ---
 
-## Proposed Network Traffic Monitoring Improvements (June 2026)
+## Proposed Network Traffic Monitoring Improvements & Next Goals (June 2026)
 
 1. **[COMPLETED] App-level Attribution & Process Identification / AdGuard Premium UI:** Socket-to-process tracker and full visual dashboard.
 2. **[COMPLETED] Threat Intelligence & IP Geolocation (IP Info):** Resolved country flag emojis, city/country GeoIP lookups, and threat warning details cards.
@@ -78,3 +86,4 @@
 7. **[COMPLETED] Serverless AI Retraining on Modal.com:** Synthesizing/loading balanced network traffic datasets (including synthetic stealth Evasion attacks), training a balanced LightGBM model, exporting/compiling to ONNX, and fixing decimal CSV parsing.
 8. **[IN PROGRESS] Live AI Android Integration:** Connecting the `AIBrain.kt` ONNX runtime to the live AdGuard JNI network flow in `VpnCaptureService` / `ProcessResolver` to calculate features and classify traffic in real-time.
 9. **[COMPLETED] Minimized & Draggable Session Drawer / System & Session RAM Telemetry:** Compact drawer layout (width 70dp) with swipe/expand gestures and real-time total system, per-session, and VPN/AI dashboard RAM usage trackers.
+10. **[COMPLETED] Refactoring Keyboard / Key Bindings:** Designing a premium custom keyboard bar and key layout inside the CLI terminal to simplify shortcut input (Ctrl, Alt, Tab, arrow keys) and improve accessibility.

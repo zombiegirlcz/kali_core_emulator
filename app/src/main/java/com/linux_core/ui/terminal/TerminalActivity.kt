@@ -106,8 +106,10 @@ class TerminalActivity : ComponentActivity() {
     // Keyboard Toolbar and Special Keypad Panel states
     var customCtrlActive = false
     var customAltActive = false
+    var customShiftActive = false
     private lateinit var btnCtrl: Button
     private lateinit var btnAlt: Button
+    private lateinit var btnShift: Button
     private lateinit var btnToggleKeypad: Button
     private lateinit var specialKeypadPanel: LinearLayout
     private lateinit var tabContainer: LinearLayout
@@ -127,7 +129,7 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var guiPlaceholderDesc: TextView
     private lateinit var btnStartGui: Button
     private lateinit var guiProgress: ProgressBar
-    private lateinit var toolbarScroll: HorizontalScrollView
+    private lateinit var toolbarScroll: View
     private val guiScope = CoroutineScope(Dispatchers.Main + Job())
     private var pendingNanoCommand: String? = null
     private lateinit var btnTouchToggle: Button
@@ -1896,73 +1898,181 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    private fun buildExtraKeysToolbar(): HorizontalScrollView {
-        val scroll = HorizontalScrollView(this).apply {
+    private fun buildExtraKeysToolbar(): View {
+        val rootContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#0d0e15"))
-            setPadding(4, 4, 4, 4)
-            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(Color.parseColor("#090a0f"))
+            setPadding(0, 4, 0, 4)
         }
 
-        val layout = LinearLayout(this).apply {
+        // Setup ViewPager2
+        val viewPager = androidx.viewpager2.widget.ViewPager2(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 48f, resources.displayMetrics).toInt())
+        }
+
+        // Setup Dot indicator layout
+        val dotsLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt()
+            ).apply {
+                setMargins(0, 2, 0, 4)
+            }
         }
 
-        val toolbarKeys = listOf(
+        // Define Pages
+        val page1 = listOf(
             "ESC" to { sendKey("\u001b") },
             "TAB" to { sendKey("\t") },
             "CTRL" to { toggleCtrlModifier() },
             "ALT" to { toggleAltModifier() },
+            "SHIFT" to { toggleShiftModifier() },
+            "⌨️" to { toggleSpecialKeypad(specialKeypadPanel.visibility == View.GONE) }
+        )
+
+        val page2 = listOf(
             "|" to { sendKey("|") },
-            "-" to { sendKey("-") },
-            "_" to { sendKey("_") },
             "/" to { sendKey("/") },
             "\\" to { sendKey("\\") },
             ":" to { sendKey(":") },
-            "⌨️ Keypad" to { toggleSpecialKeypad(specialKeypadPanel.visibility == View.GONE) }
+            "-" to { sendKey("-") },
+            "_" to { sendKey("_") },
+            "~" to { sendKey("~") },
+            "=" to { sendKey("=") }
         )
 
-        for ((label, action) in toolbarKeys) {
-            val btn = Button(this).apply {
-                text = label
-                textSize = 12f
-                typeface = Typeface.MONOSPACE
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#181926"))
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                        TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
-                ).apply {
-                    setMargins(6, 4, 6, 4)
+        val page3 = listOf(
+            "←" to { sendKey("\u001b[D") },
+            "↑" to { sendKey("\u001b[A") },
+            "↓" to { sendKey("\u001b[B") },
+            "→" to { sendKey("\u001b[C") },
+            "Home" to { sendKey("\u001b[H") },
+            "End" to { sendKey("\u001b[F") }
+        )
+
+        val page4 = listOf(
+            "F1" to { sendKey("\u001bOP") },
+            "F2" to { sendKey("\u001bOQ") },
+            "F3" to { sendKey("\u001bOR") },
+            "F4" to { sendKey("\u001bOS") },
+            "F5" to { sendKey("\u001b[15~") },
+            "F6" to { sendKey("\u001b[17~") },
+            "F7" to { sendKey("\u001b[18~") },
+            "F8" to { sendKey("\u001b[19~") }
+        )
+
+        val pages = listOf(page1, page2, page3, page4)
+
+        // ViewPager2 Adapter
+        viewPager.adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
+            override fun getItemCount(): Int = pages.size
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): androidx.recyclerview.widget.RecyclerView.ViewHolder {
+                val container = LinearLayout(parent.context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(12, 0, 12, 0)
                 }
-                layoutParams = params
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    action()
+                return object : androidx.recyclerview.widget.RecyclerView.ViewHolder(container) {}
+            }
+
+            override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
+                val container = holder.itemView as LinearLayout
+                container.removeAllViews()
+                
+                val keys = pages[position]
+                for ((label, action) in keys) {
+                    val btn = Button(holder.itemView.context).apply {
+                        text = label
+                        textSize = 12f
+                        typeface = Typeface.MONOSPACE
+                        setTextColor(Color.WHITE)
+                        
+                        // Premium Visual style: dark cards with rounded corners
+                        val isModifier = label == "CTRL" || label == "ALT" || label == "SHIFT"
+                        val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
+                            setColor(Color.parseColor(if (isModifier) "#121320" else "#1c1d30"))
+                            cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics)
+                            setStroke(
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
+                                Color.parseColor("#2a2b45")
+                            )
+                        }
+                        background = bgDrawable
+
+                        val params = LinearLayout.LayoutParams(0, TypedValue.applyDimension(
+                            TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt(), 1f
+                        ).apply {
+                            setMargins(4, 2, 4, 2)
+                        }
+                        layoutParams = params
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            action()
+                        }
+                    }
+
+                    if (label == "CTRL") btnCtrl = btn
+                    if (label == "ALT") btnAlt = btn
+                    if (label == "SHIFT") btnShift = btn
+                    if (label == "⌨️") btnToggleKeypad = btn
+
+                    container.addView(btn)
                 }
             }
-            if (label == "CTRL") btnCtrl = btn
-            if (label == "ALT") btnAlt = btn
-            if (label == "⌨️ Keypad") btnToggleKeypad = btn
-
-            layout.addView(btn)
         }
 
-        scroll.addView(layout)
-        return scroll
+        // Initialize dots indicator
+        val dotViews = ArrayList<View>()
+        for (i in pages.indices) {
+            val dot = View(this).apply {
+                val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
+                val params = LinearLayout.LayoutParams(size, size).apply {
+                    setMargins(6, 0, 6, 0)
+                }
+                layoutParams = params
+                val drawable = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(Color.parseColor("#44475a"))
+                }
+                background = drawable
+            }
+            dotsLayout.addView(dot)
+            dotViews.add(dot)
+        }
+
+        // Listen to page changes to update active dot indicators
+        viewPager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                for (i in dotViews.indices) {
+                    val active = (i == position)
+                    val drawable = dotViews[i].background as android.graphics.drawable.GradientDrawable
+                    drawable.setColor(Color.parseColor(if (active) "#00FF41" else "#44475a"))
+                }
+            }
+        })
+
+        rootContainer.addView(viewPager)
+        rootContainer.addView(dotsLayout)
+        return rootContainer
     }
 
     private fun buildSpecialKeypadPanel(): LinearLayout {
         specialKeypadPanel = LinearLayout(this).apply {
             val heightPx = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, 260f, resources.displayMetrics).toInt()
+                TypedValue.COMPLEX_UNIT_DIP, 200f, resources.displayMetrics).toInt()
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, heightPx)
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0c0d12"))
+            setBackgroundColor(Color.parseColor("#08090d"))
             visibility = View.GONE
         }
 
@@ -1971,7 +2081,7 @@ class TerminalActivity : ComponentActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             isHorizontalScrollBarEnabled = false
-            setBackgroundColor(Color.parseColor("#08090d"))
+            setBackgroundColor(Color.parseColor("#06070a"))
             setPadding(4, 4, 4, 4)
         }
 
@@ -2045,13 +2155,16 @@ class TerminalActivity : ComponentActivity() {
     private fun updateTabStyles() {
         for ((tab, btn) in tabButtons) {
             val isActive = (tab == activeKeyboardTab)
-            if (isActive) {
-                btn.setTextColor(Color.parseColor("#00FF41")) // Deep matrix green
-                btn.setBackgroundColor(Color.parseColor("#151620")) // Active background
-            } else {
-                btn.setTextColor(Color.WHITE)
-                btn.setBackgroundColor(Color.parseColor("#08090d")) // Inactive background
+            val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor(if (isActive) "#151620" else "#08090d"))
+                cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
+                setStroke(
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.5f, resources.displayMetrics).toInt(),
+                    Color.parseColor(if (isActive) "#00FF41" else "#2a2b45")
+                )
             }
+            btn.background = bgDrawable
+            btn.setTextColor(if (isActive) Color.parseColor("#00FF41") else Color.WHITE)
         }
     }
 
@@ -2074,7 +2187,7 @@ class TerminalActivity : ComponentActivity() {
 
         var currentRow: LinearLayout? = null
         val rowHeight = TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP, 44f, resources.displayMetrics).toInt()
+            TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
 
         for (i in keys.indices) {
             if (i % columns == 0) {
@@ -2083,7 +2196,7 @@ class TerminalActivity : ComponentActivity() {
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, rowHeight
                     ).apply {
-                        setMargins(0, 4, 0, 4)
+                        setMargins(0, 3, 0, 3)
                     }
                 }
                 keysContainer.addView(currentRow)
@@ -2096,9 +2209,19 @@ class TerminalActivity : ComponentActivity() {
                 isAllCaps = false
                 typeface = Typeface.MONOSPACE
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#151620")) // Deep cyber black background
+                
+                val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#151620"))
+                    cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
+                    setStroke(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
+                        Color.parseColor("#2a2b45")
+                    )
+                }
+                background = bgDrawable
+
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    setMargins(4, 0, 4, 0)
+                    setMargins(3, 0, 3, 0)
                 }
                 setOnClickListener {
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -2202,13 +2325,17 @@ class TerminalActivity : ComponentActivity() {
             KeyType.F19 -> "\u001b[33~"
             KeyType.F20 -> "\u001b[34~"
 
-            // Alt and Ctrl keys (as fallbacks if needed)
+            // Alt, Ctrl and Shift keys (as fallbacks if needed)
             KeyType.ALT -> {
                 toggleAltModifier()
                 return
             }
             KeyType.CTRL -> {
                 toggleCtrlModifier()
+                return
+            }
+            KeyType.SHIFT -> {
+                toggleShiftModifier()
                 return
             }
 
@@ -2248,6 +2375,18 @@ class TerminalActivity : ComponentActivity() {
         terminalView.requestFocus()
     }
 
+    private fun toggleShiftModifier() {
+        customShiftActive = !customShiftActive
+        if (customShiftActive) {
+            btnShift.setBackgroundColor(Color.parseColor("#ff0033")) // Kali Red
+            btnShift.setTextColor(Color.WHITE)
+        } else {
+            btnShift.setBackgroundColor(Color.parseColor("#181926"))
+            btnShift.setTextColor(Color.WHITE)
+        }
+        terminalView.requestFocus()
+    }
+
     fun toggleSpecialKeypad(show: Boolean) {
         if (show) {
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
@@ -2267,11 +2406,14 @@ class TerminalActivity : ComponentActivity() {
     fun resetModifiers() {
         customCtrlActive = false
         customAltActive = false
+        customShiftActive = false
         runOnUiThread {
             btnCtrl.setBackgroundColor(Color.parseColor("#181926"))
             btnCtrl.setTextColor(Color.WHITE)
             btnAlt.setBackgroundColor(Color.parseColor("#181926"))
             btnAlt.setTextColor(Color.WHITE)
+            btnShift.setBackgroundColor(Color.parseColor("#181926"))
+            btnShift.setTextColor(Color.WHITE)
         }
     }
 
@@ -2435,12 +2577,13 @@ class TerminalViewClientImpl : TerminalViewClient {
     override fun onLongPress(event: MotionEvent) = false
     override fun readControlKey() = false
     override fun readAltKey() = false
-    override fun readShiftKey() = false
+    override fun readShiftKey() = activity?.customShiftActive == true
     override fun readFnKey() = false
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
         val act = activity
         val finalCtrl = ctrlDown || (act?.customCtrlActive == true)
         val finalAlt = act?.customAltActive == true
+        val finalShift = act?.customShiftActive == true
 
         if (finalCtrl) {
             act?.resetModifiers()
@@ -2460,9 +2603,19 @@ class TerminalViewClientImpl : TerminalViewClient {
             return true
         }
 
-        act?.onTerminalInput(codePoint)
-        val input = StringBuilder().appendCodePoint(codePoint).toString()
-        Log.d("TerminalView", "onCodePoint: $input ($codePoint)")
+        var processedCodePoint = codePoint
+        if (finalShift) {
+            act?.resetModifiers()
+            val ch = codePoint.toChar()
+            if (ch.isLowerCase()) {
+                processedCodePoint = ch.uppercaseChar().code
+            }
+        } else {
+            act?.onTerminalInput(codePoint)
+        }
+
+        val input = StringBuilder().appendCodePoint(processedCodePoint).toString()
+        Log.d("TerminalView", "onCodePoint: $input ($processedCodePoint)")
         session.write(input)
         return true
     }

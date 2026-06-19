@@ -52,11 +52,12 @@ object ProotManager {
         val bootstrapRequired = File(homeDir, ".bootstrap_required")
         val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         
+        deployZshrc(context, rootfsDir, distroId)
+        
         if (!setupDoneFile.exists() && !bootstrapRequired.exists()) {
             try {
                 bootstrapRequired.createNewFile()
                 Log.i(TAG, "Fresh install detected, created .bootstrap_required")
-                deployZshrc(context, rootfsDir, distroId)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create bootstrap sentinel: ${e.message}")
             }
@@ -327,6 +328,12 @@ object ProotManager {
             append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
             append("chmod 0440 /etc/sudoers.d/${defaultUser}").append(NL)
 
+            append("echo '[*] Restoring clean NetHunter Zshrc configurations...'").append(NL)
+            append("[ -f /etc/skel/.zshrc.nethunter ] && cp /etc/skel/.zshrc.nethunter /etc/skel/.zshrc").append(NL)
+            append("[ -f /root/.zshrc.nethunter ] && cp /root/.zshrc.nethunter /root/.zshrc").append(NL)
+            append("[ -f /etc/skel/.zshrc.nethunter ] && [ -d /home/${defaultUser} ] && cp /etc/skel/.zshrc.nethunter /home/${defaultUser}/.zshrc").append(NL)
+            append("chown -R ${defaultUser}:${defaultUser} /home/${defaultUser}/.zshrc 2>/dev/null || true").append(NL)
+
             append("chsh -s \"\$SHELL_BIN\" root 2>/dev/null || true").append(NL)
             append("touch /root/.setup_done").append(NL)
             append("echo '[+] BOOTSTRAP COMPLETE'").append(NL)
@@ -368,9 +375,14 @@ object ProotManager {
             append("    # Okamzita optimalizace startu (zruseni pomaleho MOTD)").append(NL)
             append("    touch \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
             append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
-            append("    # Zkopiruje se optimalizovany zshrc pouze v pripade, ze jeste vubec neexistuje").append(NL)
-            append("    [ ! -f \"\$zrc\" ] && [ -f /etc/skel/.zshrc ] && cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
-            append("    [ ! -f \"\$zrc\" ] && touch \"\$zrc\"").append(NL)
+            append("    # Zkopiruje se optimalizovany zshrc pouze pokud neexistuje").append(NL)
+            append("    if [ ! -f \"\$zrc\" ]; then").append(NL)
+            append("        if [ -f /etc/skel/.zshrc.nethunter ]; then").append(NL)
+            append("            cp /etc/skel/.zshrc.nethunter \"\$zrc\"").append(NL)
+            append("        elif [ -f /etc/skel/.zshrc ]; then").append(NL)
+            append("            cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
+            append("        fi").append(NL)
+            append("    fi").append(NL)
             append("    # Clean old fragments").append(NL)
             append("    sed -i '/NetHunter AI Operator/d' \"\$zrc\" 2>/dev/null || true").append(NL)
             append("    sed -i '/FORCE_ZSH_/d' \"\$zrc\" 2>/dev/null || true").append(NL)
@@ -986,22 +998,33 @@ object ProotManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read zshrc asset $assetName: ${e.message}")
             return
-        }
+        }.replace("\r\n", "\n").replace("\r", "\n")
 
-        // 1. Write to /etc/skel/.zshrc
+        // 1. Write to /etc/skel
         val skelDir = File(rootfsDir, "etc/skel")
         if (!skelDir.exists()) skelDir.mkdirs()
-        File(skelDir, ".zshrc").writeText(zshrcContent)
+        File(skelDir, ".zshrc.nethunter").writeText(zshrcContent)
+        val skelZshrc = File(skelDir, ".zshrc")
+        if (!skelZshrc.exists()) {
+            skelZshrc.writeText(zshrcContent)
+        }
 
-        // 2. Write to /root/.zshrc
+        // 2. Write to /root
         val rootHome = File(rootfsDir, "root")
         if (!rootHome.exists()) rootHome.mkdirs()
-        File(rootHome, ".zshrc").writeText(zshrcContent)
+        File(rootHome, ".zshrc.nethunter").writeText(zshrcContent)
+        val rootZshrc = File(rootHome, ".zshrc")
+        if (!rootZshrc.exists()) {
+            rootZshrc.writeText(zshrcContent)
+        }
 
-        // 3. Write to /home/$distroId/.zshrc
+        // 3. Write to /home/$distroId
         val userHome = File(rootfsDir, "home/$distroId")
-        if (userHome.exists()) {
-            File(userHome, ".zshrc").writeText(zshrcContent)
+        if (!userHome.exists()) userHome.mkdirs()
+        File(userHome, ".zshrc.nethunter").writeText(zshrcContent)
+        val userZshrc = File(userHome, ".zshrc")
+        if (!userZshrc.exists()) {
+            userZshrc.writeText(zshrcContent)
         }
     }
 
