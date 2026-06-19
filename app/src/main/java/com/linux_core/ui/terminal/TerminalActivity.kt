@@ -2447,6 +2447,7 @@ class TerminalActivity : ComponentActivity() {
                 val cfg = try {
                     ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false)
                 } catch (e: Exception) {
+                    Log.e(TAG, "Attach setup failed for $distroName", e)
                     null
                 }
                 withContext(Dispatchers.Main) {
@@ -2485,11 +2486,12 @@ class TerminalActivity : ComponentActivity() {
             val result = try {
                 ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot)
             } catch (e: Exception) {
+                Log.e(TAG, "Setup failed for $rootfsDirName", e)
                 null
             }
             withContext(Dispatchers.Main) {
                 if (result == null) {
-                    showError("Setup failed")
+                    showError("Setup failed: $rootfsDirName")
                 } else {
                     config = result
                     startTerminalSession(result)

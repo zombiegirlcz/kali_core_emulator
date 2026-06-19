@@ -66,6 +66,7 @@ object ProotManager {
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
         deployVpnHelpDocument(homeDir)
+        deployMotd(rootfsDir, distroId)
         val userHomeDir = File(rootfsDir, "home/$distroId")
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(userHomeDir)
@@ -1018,13 +1019,23 @@ object ProotManager {
             rootZshrc.writeText(zshrcContent)
         }
 
-        // 3. Write to /home/$distroId
-        val userHome = File(rootfsDir, "home/$distroId")
-        if (!userHome.exists()) userHome.mkdirs()
-        File(userHome, ".zshrc.nethunter").writeText(zshrcContent)
-        val userZshrc = File(userHome, ".zshrc")
-        if (!userZshrc.exists()) {
-            userZshrc.writeText(zshrcContent)
+        // 3. Write to /home/$distroId (skip gracefully if home dir doesn't exist yet — bootstrap.sh handles first-time)
+        try {
+            val userHome = File(rootfsDir, "home/$distroId")
+            val homeParent = userHome.parentFile
+            if (homeParent != null && !homeParent.exists()) homeParent.mkdirs()
+            if (!userHome.exists()) userHome.mkdirs()
+            if (userHome.exists()) {
+                File(userHome, ".zshrc.nethunter").writeText(zshrcContent)
+                val userZshrc = File(userHome, ".zshrc")
+                if (!userZshrc.exists()) {
+                    userZshrc.writeText(zshrcContent)
+                }
+            } else {
+                Log.w(TAG, "deployZshrc: /home/$distroId doesn't exist, will be handled by bootstrap.sh")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "deployZshrc: /home/$distroId write skipped (${e.message}), will be handled by bootstrap.sh")
         }
     }
 
@@ -1120,6 +1131,58 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
             Log.i(TAG, "Created comprehensive manual at: ${helpFile.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write nethunter_docs.md: ${e.message}")
+        }
+    }
+
+    private fun deployMotd(rootfsDir: File, distroId: String) {
+        val etcDir = File(rootfsDir, "etc")
+        if (!etcDir.exists()) etcDir.mkdirs()
+
+        val isParrot = distroId == "parrot"
+
+        val banner = if (isParrot) """
+            |  \033[1;33m╭━━━╮\033[0m  \033[1;32m╔╗ ╔╗\033[0m
+            |  \033[1;33m┃╭━╮┃\033[0m  \033[1;32m║╚╦╝║\033[0m  \033[1;36mNetHunter AI Operator v4.1\033[0m
+            |  \033[1;33m┃╰━╯┃\033[0m  \033[1;32m╚╗╚╗║\033[0m  \033[1;35mParrot OS Security\033[0m
+            |  \033[1;33m┃╭━━┫\033[0m  \033[1;32m╔╝╔╝║\033[0m
+            |  \033[1;33m┃┃\033[0m    \033[1;32m╔╝╔╝╔╝\033[0m
+            |  \033[1;33m╰╯\033[0m    \033[1;32m╚═╝ ╚═╝\033[0m
+        """.trimMargin() else """
+            |  \033[1;34m╦╔═╔═╗╦  ╦\033[0m
+            |  \033[1;34m╠╩╗╠═╣║  ║\033[0m  \033[1;36mNetHunter AI Operator v4.1\033[0m
+            |  \033[1;34m╩ ╩╩ ╩╩═╝╩═╝\033[0m  \033[1;35mKali NetHunter\033[0m
+        """.trimMargin()
+
+        val motd = """
+            |$banner
+            |
+            |  \033[1;37m╔══════════════════════════════════════════════╗\033[0m
+            |  \033[1;37m║\033[0m  \033[1;33mRychla napoveda / Quick Help\033[0m                \033[1;37m║\033[0m
+            |  \033[1;37m╠══════════════════════════════════════════════╣\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-battery-status\033[0m    stav baterie       \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-toast <msg>\033[0m       Android toast      \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-vibrate [ms]\033[0m    vibrace             \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-get\033[0m    schranka (cteni)    \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-set\033[0m    schranka (zapis)    \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-location\033[0m         GPS souradnice      \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-wifi-connectioninfo\033[0m WiFi info       \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mignore-vpn on/off\033[0m         VPN bypass session  \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mvpn-on / vpn-off\033[0m           VPN global switch   \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-desktop start\033[0m    GUI (VNC na :6080)  \033[1;37m║\033[0m
+            |  \033[1;37m╠══════════════════════════════════════════════╣\033[0m
+            |  \033[1;37m║\033[0m  \033[0;33mcat nethunter_docs.md\033[0m  plna dokumentace     \033[1;37m║\033[0m
+            |  \033[1;37m╚══════════════════════════════════════════════╝\033[0m
+            |
+            |  \033[0;90mfeedback: zombiegirlcz@gmail.com\033[0m
+            |  \033[0;90mgithub: github.com/zombiegirlcz/kali_core_emulator\033[0m
+            |
+        """.trimMargin()
+
+        try {
+            File(etcDir, "motd").writeText(motd)
+            Log.i(TAG, "Deployed /etc/motd for $distroId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write /etc/motd: ${e.message}")
         }
     }
 }
