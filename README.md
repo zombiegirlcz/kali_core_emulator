@@ -1,5 +1,5 @@
-# 🐉 NetHunter AI Operator
-
+# Linux Kali NetHunter🐉 and ParrotOS security🦜 proot-distro emulator
+#####################ROOT && UNROOT#####################
 A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency Termux terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
 
 ---
@@ -10,7 +10,7 @@ A state-of-the-art, highly optimized Android application designed to run full gu
 - **Automated Optimizations:** During the initial bootstrap process, the app automatically configures both `dpkg` and `apt` package managers with disk write optimizations (`force-unsafe-io`).
 - **Performance Boost:** File operations, package installations (`apt install`), and overall system upgrades run **up to 50x faster** than standard Android emulators, avoiding severe Android storage bottlenecking.
 
-### 🔌 Premium AdGuard JNI VPN & DNS Proxy Sniffer
+### 🔌 Premium SMART JNI VPN & DNS Proxy Sniffer
 - **Native C++ Engine:** Powered by a direct native integration of AdGuard’s C++ stack (`libadguard-core.so` & `libadguard-dns.so`). Handles high-throughput userspace packet translation and local DNS resolution.
 - **Interactive Telemetry Dashboard:** Includes a futuristic graphic visualizer under the "VPN Center" tab:
   - **Segmented Timeframes:** Instantly toggle between 24 Hours (Hourly), 7 Days, and 30 Days (Daily) traffic curves.
@@ -156,7 +156,7 @@ At startup, `ProotManager` deploys a rich set of command-line tools into `/usr/l
 ---
 
 
-## ⌨️ Premium Termius-style Hacker Keyboard
+## ⌨️ Premium Hacker Keyboard
 
 The application integrates an advanced, fully customizable, and responsive overlay keypad split into 5 tabs for maximum efficiency:
 1. **🎛️ Control**: Essential terminal controllers (`ESC`, `TAB`, `ENTER`, `DELETE`, `⌫`, `Shift+Tab`, and a system clipboard `PASTE` action).
@@ -223,7 +223,7 @@ This release stabilizes the native AdGuard JNI bridge layer, addressing security
 
 This release implements secure peer-to-peer overlay capabilities, geo-proxy loop enhancements, and visual dashboard upgrades:
 
-### 1. Peer-to-Peer Mesh VPN (Tailscale-style)
+### 1. Peer-to-Peer Mesh VPN
 - **Overlay Networking:** Added a virtual subnet (`10.9.0.0/24`) mapped to custom P2P interfaces.
 - **STUN Hole Punching:** Queries public STUN servers (`stun.l.google.com:19302`) dynamically to resolve WAN sockets and punches holes through CGNAT routers.
 - **ECDH Cryptography:** Secures communications between peers using AES-128-GCM, with keys derived on-the-fly via native Elliptic Curve Diffie-Hellman (ECDH) key agreements.
@@ -237,7 +237,7 @@ This release implements secure peer-to-peer overlay capabilities, geo-proxy loop
 ---
 
 ## 📈 Major Version 2.0 Changelog
-- **AdGuard JNI C++ VPN Engine Integration:** Built native AdGuard TCP/IP C++ stack (`libadguard-core.so` & `libadguard-dns.so`) with precise JNI structural mapping.
+- **AdGuard7 JNI C++ VPN Engine Integration:** Built native AdGuard TCP/IP C++ stack (`libadguard-core.so` & `libadguard-dns.so`) with precise JNI structural mapping.
 - **High-Fidelity Telemetry:** Upgraded the VPN traffic tracker to draw Download/Upload charts on Canvas.
 - **Session-Specific SOCKS5 Proxy Bypass:** Traversing `/proc` via BFS to map socket inodes to sessions and toggle VPN ignore modes.
 - **Nano Document Editor:** Spawns `nano` safely via view/edit intents from outer storage managers.
