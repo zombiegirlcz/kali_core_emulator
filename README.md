@@ -1,5 +1,5 @@
 # Linux Kali NetHunter🐉 and ParrotOS security🦜 proot-distro emulator
-#####################ROOT && UNROOT#####################
+                       _ROOT && UNROOT_
 A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency Termux terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
 
 ---
