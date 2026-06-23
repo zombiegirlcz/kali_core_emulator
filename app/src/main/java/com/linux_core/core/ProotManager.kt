@@ -1190,11 +1190,11 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
         val profileScript = """
 #!/bin/sh
 # NetHunter AI Operator — Welcome (shown once per session)
-SENTINEL="\$HOME/.nethunter_welcome_shown"
-if [ -f "\$SENTINEL" ]; then
+SENTINEL="${'$'}HOME/.nethunter_welcome_shown"
+if [ -f "${'$'}SENTINEL" ]; then
     return 0 2>/dev/null || exit 0
 fi
-touch "\$SENTINEL" 2>/dev/null
+touch "${'$'}SENTINEL" 2>/dev/null
 
 echo ""
 echo "  \033[1;36m╔══════════════════════════════════════════════════════╗\033[0m"

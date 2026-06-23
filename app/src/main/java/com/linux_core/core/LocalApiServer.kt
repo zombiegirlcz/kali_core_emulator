@@ -468,7 +468,10 @@ object LocalApiServer {
             try {
                 val signal = tm.signalStrength
                 if (signal != null) {
-                    val dbm = signal.dbm
+                    var dbm = Int.MIN_VALUE
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try { dbm = signal.getDbm(0) } catch (_: Exception) {}
+                    }
                     val level = signal.level
                     json.put("signal_dbm", if (dbm > -1000) dbm else JSONObject.NULL)
                     json.put("signal_level", level)
@@ -490,9 +493,12 @@ object LocalApiServer {
                         try {
                             val ci = cell.cellIdentity
                             if (ci != null) {
-                                cellObj.put("mcc", ci.mccString ?: ci.mcc)
-                                cellObj.put("mnc", ci.mncString ?: ci.mnc)
-                                cellObj.put("plmn", "${ci.mccString ?: ci.mcc}-${ci.mncString ?: ci.mnc}")
+                                val mcc = ci.mcc
+                                val mnc = ci.mnc
+                                val plmn = if (mcc != null && mnc != null) "${mcc}-${mnc}" else null
+                                cellObj.put("mcc", mcc ?: JSONObject.NULL)
+                                cellObj.put("mnc", mnc ?: JSONObject.NULL)
+                                if (plmn != null) cellObj.put("plmn", plmn)
                             }
                         } catch (_: Exception) {}
                         try {
