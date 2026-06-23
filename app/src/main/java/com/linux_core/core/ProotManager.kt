@@ -66,7 +66,7 @@ object ProotManager {
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
         deployVpnHelpDocument(homeDir)
-        deployMotd(rootfsDir, distroId)
+        deployWelcomeProfile(rootfsDir, distroId)
         val userHomeDir = File(rootfsDir, "home/$distroId")
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(userHomeDir)
@@ -1181,56 +1181,65 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
         }
     }
 
-    private fun deployMotd(rootfsDir: File, distroId: String) {
-        val etcDir = File(rootfsDir, "etc")
-        if (!etcDir.exists()) etcDir.mkdirs()
+    private fun deployWelcomeProfile(rootfsDir: File, distroId: String) {
+        val profileDir = File(rootfsDir, "etc/profile.d")
+        if (!profileDir.exists()) profileDir.mkdirs()
 
         val isParrot = distroId == "parrot"
 
-        val banner = if (isParrot) """
-            |  \033[1;33m╭━━━╮\033[0m  \033[1;32m╔╗ ╔╗\033[0m
-            |  \033[1;33m┃╭━╮┃\033[0m  \033[1;32m║╚╦╝║\033[0m  \033[1;36mNetHunter AI Operator v4.1\033[0m
-            |  \033[1;33m┃╰━╯┃\033[0m  \033[1;32m╚╗╚╗║\033[0m  \033[1;35mParrot OS Security\033[0m
-            |  \033[1;33m┃╭━━┫\033[0m  \033[1;32m╔╝╔╝║\033[0m
-            |  \033[1;33m┃┃\033[0m    \033[1;32m╔╝╔╝╔╝\033[0m
-            |  \033[1;33m╰╯\033[0m    \033[1;32m╚═╝ ╚═╝\033[0m
-        """.trimMargin() else """
-            |  \033[1;34m╦╔═╔═╗╦  ╦\033[0m
-            |  \033[1;34m╠╩╗╠═╣║  ║\033[0m  \033[1;36mNetHunter AI Operator v4.1\033[0m
-            |  \033[1;34m╩ ╩╩ ╩╩═╝╩═╝\033[0m  \033[1;35mKali NetHunter\033[0m
-        """.trimMargin()
+        val profileScript = """
+#!/bin/sh
+# NetHunter AI Operator — Welcome (shown once per session)
+SENTINEL="\$HOME/.nethunter_welcome_shown"
+if [ -f "\$SENTINEL" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+touch "\$SENTINEL" 2>/dev/null
 
-        val motd = """
-            |$banner
-            |
-            |  \033[1;37m╔══════════════════════════════════════════════╗\033[0m
-            |  \033[1;37m║\033[0m  \033[1;33mRychla napoveda / Quick Help\033[0m                \033[1;37m║\033[0m
-            |  \033[1;37m╠══════════════════════════════════════════════╣\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-battery-status\033[0m    stav baterie       \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-toast <msg>\033[0m       Android toast      \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-vibrate [ms]\033[0m    vibrace             \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-get\033[0m    schranka (cteni)    \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-set\033[0m    schranka (zapis)    \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-location\033[0m         GPS + Google Maps    \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-cellinfo\033[0m         mobilni sit (5G/4G)  \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-wifi-connectioninfo\033[0m WiFi info       \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mignore-vpn on/off\033[0m         VPN bypass session  \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mvpn-on / vpn-off\033[0m           VPN global switch   \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-desktop start\033[0m    GUI (VNC na :6080)  \033[1;37m║\033[0m
-            |  \033[1;37m╠══════════════════════════════════════════════╣\033[0m
-            |  \033[1;37m║\033[0m  \033[0;33mcat nethunter_docs.md\033[0m  plna dokumentace     \033[1;37m║\033[0m
-            |  \033[1;37m╚══════════════════════════════════════════════╝\033[0m
-            |
-            |  \033[0;90mfeedback: zombiegirlcz@gmail.com\033[0m
-            |  \033[0;90mgithub: github.com/zombiegirlcz/kali_core_emulator\033[0m
-            |
-        """.trimMargin()
+echo ""
+echo "  \033[1;36m╔══════════════════════════════════════════════════════╗\033[0m"
+echo "  \033[1;36m║\033[0m  \033[1;35m🐉 NetHunter AI Operator v4.1\033[0m                          \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;33m    Kali Linux • AdGuard VPN • AI Brain • P2P Mesh\033[0m  \033[1;36m║\033[0m"
+echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
+echo "  \033[1;36m║\033[0m  \033[1;32m📡 RYCHLÉ PŘÍKAZY:\033[0m                                    \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-location\033[0m         GPS + Google Maps           \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-cellinfo\033[0m          mobilní síť (5G/4G/3G)      \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-wifi-connectioninfo\033[0m WiFi info                  \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-battery-status\033[0m     stav baterie                \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-clipboard-get/set\033[0m  schránka (čtení/zápis)      \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-toast \"text\"\033[0m       Android toast               \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-vibrate [ms]\033[0m      vibrace                      \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-tts-speak \"text\"\033[0m   přečíst text nahlas          \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-notification\033[0m      systémová notifikace         \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-volume 0-15\033[0m        hlasitost                    \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-torch on/off\033[0m      svítilna                     \033[1;36m║\033[0m"
+echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
+echo "  \033[1;36m║\033[0m  \033[1;33m🛡️  VPN:\033[0m                                           \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-on / vpn-off\033[0m            VPN zapnout/vypnout          \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli logs\033[0m                formátované VPN logy         \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli status\033[0m              stav VPN                     \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli chat\033[0m                AI Expert konzole            \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-bypass <cmd>\033[0m            obejít VPN pro příkaz         \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  ignore-vpn on/off\033[0m          VPN bypass pro session        \033[1;36m║\033[0m"
+echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
+echo "  \033[1;36m║\033[0m  \033[1;33m🖥️  DESKTOP:\033[0m                                        \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-desktop start\033[0m     XFCE4 GUI (noVNC :6080)      \033[1;36m║\033[0m"
+echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;33m📖 cat nethunter_docs.md\033[0m  → plná dokumentace           \033[1;36m║\033[0m"
+echo "  \033[1;36m╚══════════════════════════════════════════════════════╝\033[0m"
+echo ""
+echo "  \033[0;90mgithub.com/zombiegirlcz/kali_core_emulator\033[0m"
+echo ""
+""".trimIndent()
 
+        val welcomeFile = File(profileDir, "nethunter-welcome.sh")
         try {
-            File(etcDir, "motd").writeText(motd)
-            Log.i(TAG, "Deployed /etc/motd for $distroId")
+            welcomeFile.writeText(profileScript)
+            welcomeFile.setExecutable(true, false)
+            welcomeFile.setReadable(true, false)
+            Log.i(TAG, "Deployed welcome profile: ${welcomeFile.absolutePath}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to write /etc/motd: ${e.message}")
+            Log.e(TAG, "Failed to write nethunter-welcome.sh: ${e.message}")
         }
     }
 }
