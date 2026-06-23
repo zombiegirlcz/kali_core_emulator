@@ -86,15 +86,15 @@ window_dump.xml
 *.tar
 *.lock
 *.xml
-*py
+*.py
 *.zip
 *.sh
 *.bat
 *.ps1
 *.json
-*mdmp
-*txt
-*png
+*.mdmp
+*.txt
+*.png
 
 # Exemptions
 !windows_app/

@@ -117,7 +117,7 @@ object ProotManager {
             append("export LANG=C.UTF-8").append(NL)
             append("unset LD_PRELOAD").append(NL)
             append("cd \"${context.filesDir.absolutePath}\"").append(NL)
-            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -w /root"
+            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b /tmp -w /root"
             val sdcardMount = if (mountStorage) " -b /sdcard" else ""
             append("log -t ProotLauncher \"[PROOT] Executing proot now...\"").append(NL)
             append("exec ${'$'}USE_PROOT ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"${'$'}@\"").append(NL)
