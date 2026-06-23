@@ -20,8 +20,15 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="com.miui.securitycenter.permission.modem_location" />
+
+    <permission
+        android:name="com.linux_core.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.linux_core.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
 
     <queries>
+        <package android:name="com.miui.securitycenter" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
@@ -36,7 +43,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Nethunteraioperator"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:extractNativeLibs="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

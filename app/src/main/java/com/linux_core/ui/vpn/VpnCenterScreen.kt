@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.DeviceHub
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -57,7 +58,8 @@ fun VpnCenterScreen(modifier: Modifier = Modifier) {
                 Triple("traffic", "Traffic", Icons.Default.ShowChart),
                 Triple("security", "Security", Icons.Default.Shield),
                 Triple("dns", "DNS", Icons.Default.Language),
-                Triple("mesh", "Mesh", Icons.Default.DeviceHub)
+                Triple("mesh", "Mesh", Icons.Default.DeviceHub),
+                Triple("settings", "Settings", Icons.Default.Settings)
             )
 
             tabs.forEach { (tabId, label, icon) ->
@@ -108,6 +110,7 @@ fun VpnCenterScreen(modifier: Modifier = Modifier) {
             "security" -> VpnSecurityTab()
             "dns" -> VpnDnsTab()
             "mesh" -> VpnMeshTab()
+            "settings" -> VpnSettingsTab()
         }
     }
 }
