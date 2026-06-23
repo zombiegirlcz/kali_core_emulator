@@ -468,12 +468,7 @@ object LocalApiServer {
             try {
                 val signal = tm.signalStrength
                 if (signal != null) {
-                    var dbm = Int.MIN_VALUE
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        try { dbm = signal.getDbm(0) } catch (_: Exception) {}
-                    }
                     val level = signal.level
-                    json.put("signal_dbm", if (dbm > -1000) dbm else JSONObject.NULL)
                     json.put("signal_level", level)
                     json.put("signal_max", 4)
                     json.put("signal_bar", "█".repeat(level.coerceIn(0, 4)) + "░".repeat((4 - level).coerceAtLeast(0)))
@@ -493,20 +488,14 @@ object LocalApiServer {
                         try {
                             val ci = cell.cellIdentity
                             if (ci != null) {
-                                val mcc = ci.mcc
-                                val mnc = ci.mnc
-                                val plmn = if (mcc != null && mnc != null) "${mcc}-${mnc}" else null
-                                cellObj.put("mcc", mcc ?: JSONObject.NULL)
-                                cellObj.put("mnc", mnc ?: JSONObject.NULL)
-                                if (plmn != null) cellObj.put("plmn", plmn)
+                                val ciStr = ci.toString()
+                                cellObj.put("cell_id", ciStr.substringAfter("CellIdentity").substringBefore(" ").let { if (it.isNotEmpty()) it else ciStr })
                             }
                         } catch (_: Exception) {}
                         try {
                             val ss = cell.cellSignalStrength
                             if (ss != null) {
-                                cellObj.put("signal_dbm", ss.dbm)
                                 cellObj.put("signal_level", ss.level)
-                                cellObj.put("asu", ss.asuLevel)
                             }
                         } catch (_: Exception) {}
                         cellsArray.put(cellObj)
