@@ -26,6 +26,8 @@ import android.app.admin.DevicePolicyManager
 import android.os.PowerManager
 import android.os.Process
 import android.provider.Settings
+import android.telephony.TelephonyManager
+import android.telephony.SignalStrength
 import android.net.Uri
 import android.content.ComponentName
 import android.os.Bundle
@@ -171,6 +173,7 @@ object LocalApiServer {
                 path == "/device/admin" && method == "POST" -> handleDeviceAdminRequest(context, out)
                 path == "/device/lock" && method == "POST" -> handleDeviceLock(context, out)
                 path == "/location" && method == "GET" -> handleLocation(context, out)
+                path == "/cellinfo" && method == "GET" -> handleCellInfo(context, out)
                 path == "/volume" && method == "GET" -> handleVolumeGet(context, out)
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
@@ -433,6 +436,8 @@ object LocalApiServer {
                     put("accuracy", location.accuracy.toDouble())
                     put("provider", location.provider)
                     put("time", location.time)
+                    put("maps_url", "https://www.google.com/maps?q=${location.latitude},${location.longitude}")
+                    put("geo_uri", "geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}")
                 } else {
                     put("error", "No last known location available. Check permissions and GPS.")
                 }
@@ -441,6 +446,101 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
+    }
+
+    private fun handleCellInfo(context: Context, out: OutputStream) {
+        try {
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            val json = JSONObject()
+
+            json.put("network_type", getNetworkTypeName(tm))
+            json.put("carrier", tm.networkOperatorName ?: "Unknown")
+            json.put("sim_carrier", tm.simOperatorName ?: "Unknown")
+            json.put("data_state", when (tm.dataState) {
+                TelephonyManager.DATA_CONNECTED -> "CONNECTED"
+                TelephonyManager.DATA_CONNECTING -> "CONNECTING"
+                TelephonyManager.DATA_DISCONNECTED -> "DISCONNECTED"
+                TelephonyManager.DATA_SUSPENDED -> "SUSPENDED"
+                else -> "UNKNOWN"
+            })
+            json.put("is_roaming", tm.isNetworkRoaming)
+
+            try {
+                val signal = tm.signalStrength
+                if (signal != null) {
+                    val dbm = signal.dbm
+                    val level = signal.level
+                    json.put("signal_dbm", if (dbm > -1000) dbm else JSONObject.NULL)
+                    json.put("signal_level", level)
+                    json.put("signal_max", 4)
+                    json.put("signal_bar", "█".repeat(level.coerceIn(0, 4)) + "░".repeat((4 - level).coerceAtLeast(0)))
+                }
+            } catch (_: Exception) {}
+
+            val cellsArray = org.json.JSONArray()
+            try {
+                val cellList = tm.allCellInfo
+                if (cellList != null) {
+                    for (cell in cellList) {
+                        if (!cell.isRegistered) continue
+                        val cellObj = JSONObject()
+                        cellObj.put("type", cell::class.java.simpleName.replace("CellInfo", ""))
+                        cellObj.put("registered", cell.isRegistered)
+                        cellObj.put("timestamp", cell.timestampMillis)
+                        try {
+                            val ci = cell.cellIdentity
+                            if (ci != null) {
+                                cellObj.put("mcc", ci.mccString ?: ci.mcc)
+                                cellObj.put("mnc", ci.mncString ?: ci.mnc)
+                                cellObj.put("plmn", "${ci.mccString ?: ci.mcc}-${ci.mncString ?: ci.mnc}")
+                            }
+                        } catch (_: Exception) {}
+                        try {
+                            val ss = cell.cellSignalStrength
+                            if (ss != null) {
+                                cellObj.put("signal_dbm", ss.dbm)
+                                cellObj.put("signal_level", ss.level)
+                                cellObj.put("asu", ss.asuLevel)
+                            }
+                        } catch (_: Exception) {}
+                        cellsArray.put(cellObj)
+                    }
+                }
+            } catch (_: SecurityException) {
+                cellsArray.put(JSONObject().apply { put("error", "Location permission required for cell info") })
+            } catch (_: Exception) {}
+            json.put("cells", cellsArray)
+
+            sendResponse(out, 200, "OK", json.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun getNetworkTypeName(tm: TelephonyManager): String {
+        return try {
+            when (tm.networkType) {
+                TelephonyManager.NETWORK_TYPE_NR -> "5G NR"
+                TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE"
+                TelephonyManager.NETWORK_TYPE_HSPAP -> "4G HSPA+"
+                TelephonyManager.NETWORK_TYPE_HSDPA -> "3.5G HSDPA"
+                TelephonyManager.NETWORK_TYPE_HSUPA -> "3.5G HSUPA"
+                TelephonyManager.NETWORK_TYPE_HSPA -> "3.5G HSPA"
+                TelephonyManager.NETWORK_TYPE_UMTS -> "3G UMTS"
+                TelephonyManager.NETWORK_TYPE_EVDO_B -> "3G EVDO-B"
+                TelephonyManager.NETWORK_TYPE_EVDO_A -> "3G EVDO-A"
+                TelephonyManager.NETWORK_TYPE_EVDO_0 -> "3G EVDO"
+                TelephonyManager.NETWORK_TYPE_1xRTT -> "2.5G CDMA"
+                TelephonyManager.NETWORK_TYPE_EDGE -> "2.5G EDGE"
+                TelephonyManager.NETWORK_TYPE_GPRS -> "2G GPRS"
+                TelephonyManager.NETWORK_TYPE_GSM -> "2G GSM"
+                TelephonyManager.NETWORK_TYPE_IDEN -> "iDEN"
+                TelephonyManager.NETWORK_TYPE_TD_SCDMA -> "3G TD-SCDMA"
+                TelephonyManager.NETWORK_TYPE_IWLAN -> "IWLAN"
+                TelephonyManager.NETWORK_TYPE_UNKNOWN -> "Unknown"
+                else -> "Unknown(${tm.networkType})"
+            }
+        } catch (_: Exception) { "N/A" }
     }
 
     private fun handleVolumeGet(context: Context, out: OutputStream) {

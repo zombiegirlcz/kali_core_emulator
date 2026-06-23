@@ -594,23 +594,46 @@ object ProotManager {
                 append("        if [ \"\$RUNNING\" == \"true\" ]; then echo \"🟢 VPN is RUNNING\"; else echo \"🔴 VPN is STOPPED\"; fi").append(NL)
                 append("        ;;").append(NL)
                 append("    logs)").append(NL)
+                append("        echo \"📡 VPN Traffic Logs (last 30):\"").append(NL)
+                append("        echo \"\"").append(NL)
                 append("        curl -s \"\$API_URL/vpn/logs\" | python3 -c '").append(NL)
                 append("import sys, json").append(NL)
                 append("try:").append(NL)
                 append("    logs = json.load(sys.stdin)").append(NL)
+                append("    if not logs:").append(NL)
+                append("        print(\"No traffic logs yet.\")").append(NL)
+                append("        sys.exit(0)").append(NL)
                 append("    for log in logs[:30]:").append(NL)
-                append("        p = log.get(\"protocol\")").append(NL)
-                append("        src = log.get(\"srcIp\")").append(NL)
-                append("        sp = log.get(\"srcPort\")").append(NL)
-                append("        dst = log.get(\"dstIp\")").append(NL)
-                append("        dp = log.get(\"dstPort\")").append(NL)
-                append("        sz = log.get(\"size\")").append(NL)
-                append("        cat = log.get(\"category\")").append(NL)
-                append("        det = log.get(\"detail\")").append(NL)
-                append("        app = log.get(\"appName\", \"\")").append(NL)
-                append("        sess = log.get(\"sessionName\")").append(NL)
-                append("        proc_sess = (\"[%s » %s] \" % (sess, app)) if sess else ((\"[%s] \" % app) if app else \"\")").append(NL)
-                append("        print(\"[%s] %s%s:%s -> %s:%s (%sB) - %s - %s\" % (p, proc_sess, src, sp, dst, dp, sz, cat, det))").append(NL)
+                append("        p = log.get(\"protocol\",\"?\")").append(NL)
+                append("        src = log.get(\"srcIp\",\"?\")").append(NL)
+                append("        sp = str(log.get(\"srcPort\",\"?\"))").append(NL)
+                append("        dst = log.get(\"dstIp\",\"?\")").append(NL)
+                append("        dp = str(log.get(\"dstPort\",\"?\"))").append(NL)
+                append("        sz = log.get(\"size\",0)").append(NL)
+                append("        cat = log.get(\"category\",\"?\")").append(NL)
+                append("        det = log.get(\"detail\",\"\")").append(NL)
+                append("        app = log.get(\"appName\",\"\") or \"\"").append(NL)
+                append("        sess = log.get(\"sessionName\",\"\") or \"\"").append(NL)
+                append("        ent = log.get(\"entropy\",0)").append(NL)
+                append("        elapsed = log.get(\"elapsedTimeMs\",0)").append(NL)
+                append("        sent = log.get(\"bytesSent\",0)").append(NL)
+                append("        recv = log.get(\"bytesReceived\",0)").append(NL)
+                append("        # Format source with session/app context").append(NL)
+                append("        ctx = \"\"").append(NL)
+                append("        if sess and app:").append(NL)
+                append("            ctx = f\"[{sess} » {app}]\"").append(NL)
+                append("        elif sess:").append(NL)
+                append("            ctx = f\"[{sess}]\"").append(NL)
+                append("        elif app:").append(NL)
+                append("            ctx = f\"[{app}]\"").append(NL)
+                append("        # Category color/emoji").append(NL)
+                append("        emoji = {\"ALLOWED\":\"🟢\",\"BLOCKED\":\"🚫\",\"SUSPICIOUS\":\"⚠️\",\"CRITICAL\":\"🔴\",\"VERBOSE\":\"💬\"}.get(cat,\"❓\"").append(NL)
+                append("        # Main line").append(NL)
+                append("        print(f\"{emoji} [{p:5s}] {src}:{sp} → {dst}:{dp} ({sz}B, ent={ent:.1f}) - {cat}\"").append(NL)
+                append("        if det:").append(NL)
+                append("            print(f\"   └─ {det}\"").append(NL)
+                append("        if ctx:").append(NL)
+                append("            print(f\"   └─ App: {ctx}  |  ↑{sent}B ↓{recv}B  |  {elapsed}ms\"").append(NL)
                 append("except Exception as e:").append(NL)
                 append("    print(\"Failed to parse logs:\", e)").append(NL)
                 append("'").append(NL)
@@ -808,9 +831,32 @@ object ProotManager {
                 append("curl -s http://127.0.0.1:1337/wifi").append(NL)
             }.toString(),
 
+            "nethunter-cellinfo" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("curl -s http://127.0.0.1:1337/cellinfo").append(NL)
+            }.toString(),
+
             "nethunter-location" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/location").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/location)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
+                append("    else:").append(NL)
+                append("        lat=d.get('latitude')").append(NL)
+                append("        lng=d.get('longitude')").append(NL)
+                append("        acc=d.get('accuracy')").append(NL)
+                append("        prov=d.get('provider')").append(NL)
+                append("        maps=d.get('maps_url','')").append(NL)
+                append("        geo=d.get('geo_uri','')").append(NL)
+                append("        print(f'📍  {lat}, {lng}  (±{acc:.0f}m)  [{prov}]')").append(NL)
+                append("        print(f'🗺️  Google Maps: {maps}')").append(NL)
+                append("        print(f'🔗 Geo URI:     {geo}')").append(NL)
+                append("except: print('Chyba parsovani')").append(NL)
+                append("\"").append(NL)
             }.toString(),
 
             "nethunter-volume" to StringBuilder().apply {
@@ -1079,7 +1125,8 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-clipboard-set <text>`| Zapíše text do hostitelské schránky. | `nethunter-clipboard-set "MojeTajneHeslo123"` |
 | `nethunter-notification -t <t> -c <c>`| Pošle standardní systémovou notifikaci. | `nethunter-notification -t "Upozornění" -c "Skenování hotovo"` |
 | `nethunter-wifi-connectioninfo`| Vrátí informace o Wi-Fi síti ve formátu JSON. | `nethunter-wifi-connectioninfo` |
-| `nethunter-location` | Vrátí aktuální GPS souřadnice ve formátu JSON. | `nethunter-location` |
+| `nethunter-cellinfo` | Zobrazí informace o mobilní síti — operátor, signál (dBm), typ sítě (5G/4G/3G), věže. | `nethunter-cellinfo` |
+| `nethunter-location` | Vrátí aktuální GPS souřadnice + odkaz na Google Maps pro otevření v mapách. | `nethunter-location` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
 | `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
@@ -1092,7 +1139,7 @@ Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovací
 | :--- | :--- | :--- |
 | `vpn-on` | Zapne globální VPN / NAT. | `vpn-on` |
 | `vpn-off` | Vypne globální VPN / NAT. | `vpn-off` |
-| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní pro čtení logů, stavů či AI monitor. | `vpn-cli status` |
+| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `logs` (formátovaný výpis provozu), `ai`, `chat`. | `vpn-cli logs` |
 | `vpn-bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `vpn-bypass curl ipinfo.io` |
 | `ignore-vpn [on|off|status]` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `ignore-vpn on` |
 
@@ -1164,7 +1211,8 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
             |  \033[1;37m║\033[0m  \033[0;32mnethunter-vibrate [ms]\033[0m    vibrace             \033[1;37m║\033[0m
             |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-get\033[0m    schranka (cteni)    \033[1;37m║\033[0m
             |  \033[1;37m║\033[0m  \033[0;32mnethunter-clipboard-set\033[0m    schranka (zapis)    \033[1;37m║\033[0m
-            |  \033[1;37m║\033[0m  \033[0;32mnethunter-location\033[0m         GPS souradnice      \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-location\033[0m         GPS + Google Maps    \033[1;37m║\033[0m
+            |  \033[1;37m║\033[0m  \033[0;32mnethunter-cellinfo\033[0m         mobilni sit (5G/4G)  \033[1;37m║\033[0m
             |  \033[1;37m║\033[0m  \033[0;32mnethunter-wifi-connectioninfo\033[0m WiFi info       \033[1;37m║\033[0m
             |  \033[1;37m║\033[0m  \033[0;32mignore-vpn on/off\033[0m         VPN bypass session  \033[1;37m║\033[0m
             |  \033[1;37m║\033[0m  \033[0;32mvpn-on / vpn-off\033[0m           VPN global switch   \033[1;37m║\033[0m
