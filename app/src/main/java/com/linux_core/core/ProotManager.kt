@@ -169,6 +169,20 @@ object ProotManager {
             }
         }
 
+        // Deploy terminalmap binary from assets/bin/
+        try {
+            val terminalMapFile = File(context.filesDir, "terminalmap")
+            if (terminalMapFile.exists()) terminalMapFile.delete()
+            context.assets.open("bin/terminalmap").use { input ->
+                terminalMapFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            terminalMapFile.setExecutable(true, false)
+            terminalMapFile.setReadable(true, false)
+            Log.i(TAG, "Deployed terminalmap binary (${terminalMapFile.length()} bytes)")
+        } catch (e: Exception) {
+            Log.w(TAG, "TerminalMap binary not available: ${e.message}")
+        }
+
         // Deploy static fallback binaries
         val staticSuffix = if (suffix == "aarch64") "static-aarch64" else "static-arm32"
         val staticBinaries = listOf(
@@ -859,6 +873,34 @@ object ProotManager {
                 append("\"").append(NL)
             }.toString(),
 
+            "nethunter-map" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("# Display current location and run terminalmap to browse OpenStreetMap").append(NL)
+                append("echo \"[*] Fetching current location...\"").append(NL)
+                append("MAP_DATA=\$(curl -s http://127.0.0.1:1337/map)").append(NL)
+                append("echo \"\$MAP_DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if d.get('success'):").append(NL)
+                append("        lat=d.get('latitude')").append(NL)
+                append("        lng=d.get('longitude')").append(NL)
+                append("        print(f'📍 Location: {lat}, {lng}')").append(NL)
+                append("        print('🗺️  Starting TerminalMap...')").append(NL)
+                append("    else:").append(NL)
+                append("        print(d.get('error','Unknown error'))").append(NL)
+                append("except: print('Error parsing location')").append(NL)
+                append("\"").append(NL)
+                append("echo \"[*] Controls: arrow keys/hjkl=pan, a/+/-=zoom, c=braille/ASCII, n=labels, g=tour, w=world, q=quit\"").append(NL)
+                append("terminalmap").append(NL)
+            }.toString(),
+
+            "nethunter-terminalmap" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("# Alias for nethunter-map (TerminalMap map viewer with current GPS location)").append(NL)
+                append("nethunter-map").append(NL)
+            }.toString(),
+
             "nethunter-volume" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
@@ -1127,6 +1169,8 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-wifi-connectioninfo`| Vrátí informace o Wi-Fi síti ve formátu JSON. | `nethunter-wifi-connectioninfo` |
 | `nethunter-cellinfo` | Zobrazí informace o mobilní síti — operátor, signál (dBm), typ sítě (5G/4G/3G), věže. | `nethunter-cellinfo` |
 | `nethunter-location` | Vrátí aktuální GPS souřadnice + odkaz na Google Maps pro otevření v mapách. | `nethunter-location` |
+| `nethunter-map` | Spustí TerminalMap interaktivní mapovač OpenStreetMap s aktuální lokací. | `nethunter-map` |
+| `nethunter-terminalmap` | Alias pro `nethunter-map` — synonym pro spuštění TerminalMap. | `nethunter-terminalmap` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
 | `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
@@ -1204,6 +1248,7 @@ echo "  \033[1;36m╠═══════════════════�
 echo "  \033[1;36m║\033[0m  \033[1;32m📡 RYCHLÉ PŘÍKAZY:\033[0m                                    \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-location\033[0m         GPS + Google Maps           \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-cellinfo\033[0m          mobilní síť (5G/4G/3G)      \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-map\033[0m              OSM mapa (OpenStreetMap)    \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-wifi-connectioninfo\033[0m WiFi info                  \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-battery-status\033[0m     stav baterie                \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-clipboard-get/set\033[0m  schránka (čtení/zápis)      \033[1;36m║\033[0m"

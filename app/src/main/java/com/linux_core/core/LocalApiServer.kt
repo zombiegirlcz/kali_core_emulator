@@ -195,6 +195,7 @@ object LocalApiServer {
                 path == "/battery/optimize" && method == "POST" -> handleBatteryOptimizePost(context, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
+                path == "/map" && method == "GET" -> handleMap(context, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -1219,6 +1220,37 @@ object LocalApiServer {
         // Restart the server on a separate thread to apply bind address changes
         executor.execute {
             restart(context)
+        }
+    }
+
+    private fun handleMap(context: Context, out: OutputStream) {
+        try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            var location: Location? = null
+            try {
+                location = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            } catch (_: SecurityException) {}
+
+            val json = JSONObject().apply {
+                if (location != null) {
+                    put("success", true)
+                    put("latitude", location.latitude)
+                    put("longitude", location.longitude)
+                    put("accuracy", location.accuracy.toDouble())
+                    put("provider", location.provider)
+                    put("time", location.time)
+                    put("message", "Open terminalmap with: terminalmap")
+                    put("hint", "To focus on this location, set initial_lat/lon and initial_zoom in the Rust code")
+                } else {
+                    put("success", false)
+                    put("error", "No last known location available. Check permissions and GPS.")
+                    put("hint", "Run: nethunter-location to get current GPS; then open terminalmap")
+                }
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
     }
 }
