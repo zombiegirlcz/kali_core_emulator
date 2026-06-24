@@ -29,10 +29,10 @@ android {
             keyPassword = "password123"
         }
         getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            storeFile = file("release.jks")
+            storePassword = "password123"
+            keyAlias = "releaseKey"
+            keyPassword = "password123"
         }
     }
 

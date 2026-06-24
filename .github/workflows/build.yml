@@ -25,12 +25,6 @@ jobs:
         with:
           packages: 'platforms;android-36 build-tools;36.0.0'
 
-      - name: Generate debug keystore
-        run: |
-          if [ ! -f app/debug.keystore ]; then
-            keytool -genkeypair -v -keystore app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
-          fi
-
       - name: Make gradlew executable
         run: chmod +x gradlew
 
