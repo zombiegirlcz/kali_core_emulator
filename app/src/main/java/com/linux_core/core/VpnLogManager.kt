@@ -10,6 +10,7 @@ import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
 object VpnLogManager {
@@ -20,7 +21,9 @@ object VpnLogManager {
     @Volatile
     private var initialized = false
     private var persistCounter = 0
-    private const val PERSIST_INTERVAL = 10
+    private const val PERSIST_INTERVAL = 50
+    private val persistBatch = ConcurrentLinkedQueue<LogEntry>()
+    private val processCache = ConcurrentHashMap<String, ProcessResolver.ProcessInfo>()
 
     enum class AuditCategory {
         ALLOWED,
@@ -82,22 +85,26 @@ object VpnLogManager {
 
     private val dnsEntries = ConcurrentLinkedQueue<DnsLogEntry>()
     private val customBlocklist = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val dnsBlockCache = ConcurrentHashMap<String, Boolean>()
 
     fun loadCustomBlocklist(context: Context) {
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val rules = sharedPrefs.getStringSet("dns_blocklist", emptySet()) ?: emptySet()
         customBlocklist.clear()
         customBlocklist.addAll(rules)
+        dnsBlockCache.clear()
     }
 
     fun addBlocklistRule(context: Context, rule: String) {
         customBlocklist.add(rule)
+        dnsBlockCache.clear()
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         sharedPrefs.edit().putStringSet("dns_blocklist", customBlocklist).apply()
     }
 
     fun removeBlocklistRule(context: Context, rule: String) {
         customBlocklist.remove(rule)
+        dnsBlockCache.clear()
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         sharedPrefs.edit().putStringSet("dns_blocklist", customBlocklist).apply()
     }
@@ -108,6 +115,13 @@ object VpnLogManager {
 
     fun isDomainBlocked(domain: String): Boolean {
         val cleanDomain = domain.trim().lowercase()
+        dnsBlockCache[cleanDomain]?.let { return it }
+        val blocked = isDomainBlockedUncached(cleanDomain)
+        dnsBlockCache[cleanDomain] = blocked
+        return blocked
+    }
+
+    private fun isDomainBlockedUncached(cleanDomain: String): Boolean {
         for (rule in customBlocklist) {
             val cleanRule = rule.trim().lowercase()
             if (cleanRule.startsWith("*.")) {
@@ -255,19 +269,12 @@ object VpnLogManager {
         data: ByteArray? = null
     ) {
         val entropyVal = data?.let { calculateEntropy(it) } ?: 0.0
-        val payloadHex = data?.let { bytes ->
-            val hex = StringBuilder()
-            val maxBytes = minOf(bytes.size, 64)
-            for (i in 0 until maxBytes) {
-                hex.append(String.format("%02X", bytes[i]))
-            }
-            hex.toString()
-        }
+        val payloadHex: String? = null // skip hex conversion for performance
 
-        val resolved = if (context != null) {
-            ProcessResolver.resolve(context, protocol, srcIp, srcPort, dstIp, dstPort)
-        } else {
-            ProcessResolver.ProcessInfo("System", null)
+        val cacheKey = "$protocol:$srcIp:$srcPort:$dstIp:$dstPort"
+        val resolved = processCache.getOrPut(cacheKey) {
+            if (context != null) ProcessResolver.resolve(context, protocol, srcIp, srcPort, dstIp, dstPort)
+            else ProcessResolver.ProcessInfo("System", null)
         }
 
         // Simulate realistic values matching AdGuard's detailed logs
@@ -331,9 +338,14 @@ object VpnLogManager {
 
         ensureInitialized(context)
         val store = historyStore ?: return
-        store.persistLogEntry(entry)
+        persistBatch.add(entry)
         persistCounter++
-        if (persistCounter % PERSIST_INTERVAL == 0) {
+        if (persistCounter >= PERSIST_INTERVAL) {
+            persistCounter = 0
+            while (true) {
+                val batchEntry = persistBatch.poll() ?: break
+                store.persistLogEntry(batchEntry)
+            }
             store.saveTrafficArray("hourly_dl", hourlyDownload)
             store.saveTrafficArray("hourly_ul", hourlyUpload)
             store.saveTrafficArray("daily_dl", dailyDownload)
@@ -349,6 +361,21 @@ object VpnLogManager {
 
     fun initialize(context: Context) {
         ensureInitialized(context.applicationContext)
+    }
+
+    fun flush() {
+        val store = historyStore ?: return
+        while (true) {
+            val entry = persistBatch.poll() ?: break
+            store.persistLogEntry(entry)
+        }
+        persistCounter = 0
+        store.saveTrafficArray("hourly_dl", hourlyDownload)
+        store.saveTrafficArray("hourly_ul", hourlyUpload)
+        store.saveTrafficArray("daily_dl", dailyDownload)
+        store.saveTrafficArray("daily_ul", dailyUpload)
+        store.saveTrafficArray("weekly_dl", weeklyDownload)
+        store.saveTrafficArray("weekly_ul", weeklyUpload)
     }
 
     fun getHourlyTraffic(): Pair<LongArray, LongArray> {

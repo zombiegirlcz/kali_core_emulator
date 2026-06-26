@@ -170,8 +170,10 @@ class VpnNatEngine(
             4 // Automaticky COUNTER pro neznámé chování
         } else strategyIndex
 
-        // Zápis do analytické historie (pro 24h report)
-        historyStore.logSession("App_Session", dstIpStr, dstPort, null, totalSize.toLong(), currentEntropy, finalDecision)
+        // Zápis do analytické historie (pro 24h report) — async, outside packet path
+        Thread {
+            historyStore.logSession("App_Session", dstIpStr, dstPort, null, totalSize.toLong(), currentEntropy, finalDecision)
+        }.start()
 
         if (finalDecision > 0) {
             val strategy = when(finalDecision) {
@@ -195,20 +197,21 @@ class VpnNatEngine(
     }
 
     private fun saveTrainingSample(features: FloatArray, label: Int) {
-        // Ukládá příznaky do CSV souboru v zařízení pro budoucí retraining brainu
-        try {
-            val logFile = java.io.File(vpnService.filesDir, "offensive_learning_data.csv")
-            val exists = logFile.exists()
-            val writer = java.io.FileWriter(logFile, true)
-            if (!exists) {
-                writer.write("size,proto,delta,src,dst,entropy,b0,b1,b2,b3,b4,b5,b6,b7,mss,nop,flood,p_len,label\n")
+        Thread {
+            try {
+                val logFile = java.io.File(vpnService.filesDir, "offensive_learning_data.csv")
+                val exists = logFile.exists()
+                val writer = java.io.FileWriter(logFile, true)
+                if (!exists) {
+                    writer.write("size,proto,delta,src,dst,entropy,b0,b1,b2,b3,b4,b5,b6,b7,mss,nop,flood,p_len,label\n")
+                }
+                val line = features.joinToString(",") + ",$label\n"
+                writer.write(line)
+                writer.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Training data collection failed: ${e.message}")
             }
-            val line = features.joinToString(",") + ",$label\n"
-            writer.write(line)
-            writer.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Training data collection failed: ${e.message}")
-        }
+        }.start()
     }
 
     fun handlePacketFromTun(packetBuffer: ByteBuffer, length: Int) {
@@ -359,8 +362,7 @@ class VpnNatEngine(
                 return
             }
         } else {
-            // Update logged transfer size
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.ALLOWED, "UDP data chunk")
+            session.lastActiveTime = System.currentTimeMillis()
         }
 
         session.lastActiveTime = System.currentTimeMillis()
@@ -368,12 +370,6 @@ class VpnNatEngine(
             packetBuffer.position(payloadOffset)
             packetBuffer.limit(payloadOffset + payloadLen)
             
-            val payloadCopy = ByteArray(payloadLen)
-            packetBuffer.get(payloadCopy)
-            packetBuffer.position(payloadOffset) // reset for write
-            
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "UDP payload out", payloadCopy)
-
             session.datagramChannel?.write(packetBuffer)
             session.bytesSent += payloadLen
         } catch (e: Exception) {
@@ -559,8 +555,6 @@ class VpnNatEngine(
                 val payloadCopy = ByteBuffer.allocate(payloadLen)
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
-                
-                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.VERBOSE, "TCP payload out", payloadCopy.array())
 
                 if (session.socketChannel?.isConnected == true) {
                     try {
@@ -670,10 +664,6 @@ class VpnNatEngine(
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
-                // Telemetry tracking for incoming WAN data
-                val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection(vpnService, "TCP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "TCP payload in", payload)
-
                 // Wrap in TCP packet and write to TUN
                 sendTcpDataToClient(session, payload)
             }
@@ -695,10 +685,6 @@ class VpnNatEngine(
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
-                // Telemetry tracking for incoming WAN data
-                val dstIpStr = intToIp(session.destinationAddress)
-                VpnLogManager.logConnection(vpnService, "UDP", dstIpStr, session.destinationPort, "10.0.0.2", session.clientPort, read, VpnLogManager.AuditCategory.VERBOSE, "UDP payload in", payload)
-
                 // Wrap in UDP packet and write to TUN
                 sendUdpDataToClient(session, payload)
             }

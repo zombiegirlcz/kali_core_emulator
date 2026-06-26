@@ -457,6 +457,9 @@ class VpnCaptureService : VpnService() {
         natEngine?.stop()
         natEngine = null
 
+        VpnLogManager.flush()
+        Log.i(TAG, "VPN persisted data flushed")
+
         try {
             vpnOutput?.close()
         } catch (e: IOException) {
