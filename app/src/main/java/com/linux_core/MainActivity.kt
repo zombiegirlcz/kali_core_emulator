@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.linux_core.core.ImmersiveMode.enterImmersive(this)
 
         com.linux_core.core.ShortcutHelper.registerShortcuts(this)
         com.linux_core.core.VpnLogManager.initialize(applicationContext)
