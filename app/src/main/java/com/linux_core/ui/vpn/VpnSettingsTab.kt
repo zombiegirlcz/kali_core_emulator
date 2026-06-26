@@ -8,7 +8,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -283,7 +282,8 @@ fun VpnSettingsTab() {
                     if (isProxyEnabled) {
                         Column(modifier = Modifier.padding(start = 16.dp)) {
                             Text("Rotation Mode", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                            val rotationModes = listOf("Round Robin", "Random", "Least Latency", "GeoIP")
+                            Spacer(Modifier.height(4.dp))
+                            val rotationModes = listOf("Static IP", "Random Per Session", "Time-based Loop")
                             Box {
                                 Box(
                                     modifier = Modifier
@@ -294,7 +294,7 @@ fun VpnSettingsTab() {
                                         .padding(12.dp)
                                 ) {
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(rotationModes.getOrElse(proxyRotationMode) { "Round Robin" },
+                                        Text(rotationModes.getOrElse(proxyRotationMode) { "Static IP" },
                                             color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                                         Text("▼", color = accentYellow, fontSize = 12.sp)
                                     }
@@ -302,11 +302,42 @@ fun VpnSettingsTab() {
 
                                 DropdownMenu(expanded = showProxyMenu, onDismissRequest = { showProxyMenu = false },
                                     modifier = Modifier.background(Color(0xFF1A1A3E)).border(1.dp, Color(0xFF222244))) {
-                                    VpnProxyManager.proxyPool.forEachIndexed { index, node ->
+                                    rotationModes.forEachIndexed { index, label ->
                                         DropdownMenuItem(
-                                            text = { Text("${node.flag} ${node.country} (${node.ip}:${node.port})",
-                                                color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
-                                            onClick = { selectedProxyIndex = index; showProxyMenu = false })
+                                            text = { Text(label, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
+                                            onClick = { proxyRotationMode = index; showProxyMenu = false })
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            Text("Proxy Node", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Spacer(Modifier.height(4.dp))
+                            val nodes = VpnProxyManager.proxyPool.map { "${it.flag} ${it.country} (${it.ip}:${it.port})" }
+                            var showNodeMenu by remember { mutableStateOf(false) }
+                            Box {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF1A1A3E), RoundedCornerShape(8.dp))
+                                        .border(1.dp, Color(0xFF222244), RoundedCornerShape(8.dp))
+                                        .clickable { showNodeMenu = true }
+                                        .padding(12.dp)
+                                ) {
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(nodes.getOrElse(selectedProxyIndex) { nodes.first() },
+                                            color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                        Text("▼", color = accentYellow, fontSize = 12.sp)
+                                    }
+                                }
+
+                                DropdownMenu(expanded = showNodeMenu, onDismissRequest = { showNodeMenu = false },
+                                    modifier = Modifier.background(Color(0xFF1A1A3E)).border(1.dp, Color(0xFF222244))) {
+                                    nodes.forEachIndexed { index, label ->
+                                        DropdownMenuItem(
+                                            text = { Text(label, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
+                                            onClick = { selectedProxyIndex = index; showNodeMenu = false })
                                     }
                                 }
                             }
@@ -317,7 +348,7 @@ fun VpnSettingsTab() {
                             Slider(
                                 value = rotationInterval.toFloat(),
                                 onValueChange = { rotationInterval = it.toInt() },
-                                valueRange = 10f..300f,
+                                valueRange = 5f..300f,
                                 colors = SliderDefaults.colors(thumbColor = accentYellow, activeTrackColor = accentYellow, inactiveTrackColor = Color(0xFF1A1A2E))
                             )
                         }

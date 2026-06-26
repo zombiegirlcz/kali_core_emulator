@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         com.linux_core.core.ShortcutHelper.registerShortcuts(this)
+        com.linux_core.core.VpnLogManager.initialize(applicationContext)
         setContent {
             NethunteraioperatorTheme {
                 Surface(

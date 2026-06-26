@@ -117,7 +117,7 @@ object ProotManager {
             append("export LANG=C.UTF-8").append(NL)
             append("unset LD_PRELOAD").append(NL)
             append("cd \"${context.filesDir.absolutePath}\"").append(NL)
-            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b /tmp -w /root"
+            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b ${tmpDir.absolutePath}:/tmp -w /root"
             val sdcardMount = if (mountStorage) " -b /sdcard" else ""
             append("log -t ProotLauncher \"[PROOT] Executing proot now...\"").append(NL)
             append("exec ${'$'}USE_PROOT ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"${'$'}@\"").append(NL)
@@ -387,9 +387,6 @@ object ProotManager {
             append("    local user_name=\"\$2\"").append(NL)
             append("    local zrc=\"\$target_home/.zshrc\"").append(NL)
             append("    [ ! -d \"\$target_home\" ] && return").append(NL)
-            append("    # Okamzita optimalizace startu (zruseni pomaleho MOTD)").append(NL)
-            append("    touch \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
-            append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$target_home/.hushlogin\" 2>/dev/null || true").append(NL)
             append("    # Zkopiruje se optimalizovany zshrc pouze pokud neexistuje").append(NL)
             append("    if [ ! -f \"\$zrc\" ]; then").append(NL)
             append("        if [ -f /etc/skel/.zshrc.nethunter ]; then").append(NL)
@@ -410,10 +407,10 @@ object ProotManager {
             append("[ -d /home/kali ] && setup_user_zsh /home/kali kali").append(NL)
 
             append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
+            append("[ -f /etc/motd ] && cat /etc/motd").append(NL)
             append("echo '[*] Starting session...'").append(NL)
             append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
             append("if [ \$# -gt 0 ]; then").append(NL)
-            append("    echo '[*] Running custom launcher command...'").append(NL)
             append("    exec \"\$ENTRY_SHELL\" -c \"\$*\"").append(NL)
             append("else").append(NL)
             append("    exec \"\$ENTRY_SHELL\" --login").append(NL)
@@ -784,7 +781,39 @@ object ProotManager {
 
             "nethunter-battery-status" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/battery").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/battery)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("def bat_color(pct,status):").append(NL)
+                append("    if status=='charging': return '\\033[92m'").append(NL)
+                append("    if pct>50: return '\\033[92m'").append(NL)
+                append("    if pct>20: return '\\033[93m'").append(NL)
+                append("    return '\\033[91m'").append(NL)
+                append("def bat_bar(pct):").append(NL)
+                append("    n=max(1,int(pct/10))").append(NL)
+                append("    return '█'*n + '░'*(10-n)").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
+                append("    else:").append(NL)
+                append("        pct=d.get('percentage',-1)").append(NL)
+                append("        temp=d.get('temperature',0)").append(NL)
+                append("        volt=d.get('voltage',0)").append(NL)
+                append("        st=d.get('status','?')").append(NL)
+                append("        hl=d.get('health','?')").append(NL)
+                append("        pl=d.get('plugged','none')").append(NL)
+                append("        c=bat_color(pct,st)").append(NL)
+                append("        icon='🔌' if st=='charging' else '🔋'").append(NL)
+                append("        b=bat_bar(pct)").append(NL)
+                append("        print(f'{c}{icon}  {pct}%  [{b}]{chr(27)}[0m')").append(NL)
+                append("        print(f'   Status:  {st}')").append(NL)
+                append("        print(f'   Zdraví:  {hl}')").append(NL)
+                append("        print(f'   Teplota: {temp}°C')").append(NL)
+                append("        print(f'   Napětí:  {volt} mV')").append(NL)
+                append("        if pl!='none': print(f'   Nabíjení: {pl}')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
+                append("\"").append(NL)
             }.toString(),
 
             "nethunter-speech-input" to StringBuilder().apply {
@@ -842,12 +871,105 @@ object ProotManager {
 
             "nethunter-wifi-connectioninfo" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/wifi").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/wifi)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("def wifi_qual(rssi):").append(NL)
+                append("    if rssi is None: return ('N/A',0,'\\033[0m')").append(NL)
+                append("    if rssi> -50: return ('Excelentní',10,'\\033[92m')").append(NL)
+                append("    if rssi> -60: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
+                append("    if rssi> -70: return ('Dobrý',6,'\\033[93m')").append(NL)
+                append("    if rssi> -80: return ('Střední',4,'\\033[93m')").append(NL)
+                append("    if rssi> -90: return ('Slabý',2,'\\033[91m')").append(NL)
+                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
+                append("def wifi_bar(n): return '█'*n + '░'*(10-n)").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
+                append("    else:").append(NL)
+                append("        ssid=d.get('ssid','N/A')").append(NL)
+                append("        bssid=d.get('bssid','N/A')").append(NL)
+                append("        rssi=d.get('rssi')").append(NL)
+                append("        link=d.get('link_speed_mbps','?')").append(NL)
+                append("        w,n,c = wifi_qual(rssi)").append(NL)
+                append("        b=wifi_bar(n)").append(NL)
+                append("        print(f'📡  SSID: {ssid}')").append(NL)
+                append("        print(f'🔗  BSSID: {bssid}')").append(NL)
+                append("        if rssi is not None:").append(NL)
+                append("            print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')").append(NL)
+                append("            print(f'   [{c}{b}{chr(27)}[0m]')").append(NL)
+                append("        print(f'📶  Rychlost: {link} Mbps')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
+                append("\"").append(NL)
             }.toString(),
 
             "nethunter-cellinfo" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/cellinfo").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/cellinfo)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("def qual_dbm(dbm):").append(NL)
+                append("    if dbm is None or dbm <= -200: return ('Mimo dosah',0,'\\033[0m')").append(NL)
+                append("    if dbm >  -75: return ('Excelentní',10,'\\033[92m')").append(NL)
+                append("    if dbm >  -85: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
+                append("    if dbm >  -95: return ('Dobrý',6,'\\033[93m')").append(NL)
+                append("    if dbm > -105: return ('Střední',4,'\\033[93m')").append(NL)
+                append("    if dbm > -115: return ('Slabý',2,'\\033[91m')").append(NL)
+                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
+                append("def bars(n): return '█'*n + '░'*(10-n)").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    net=d.get('network_type','?')").append(NL)
+                append("    carr=d.get('carrier','?')").append(NL)
+                append("    sim=d.get('sim_carrier','?')").append(NL)
+                append("    data_st=d.get('data_state','?')").append(NL)
+                append("    roam=d.get('is_roaming',False)").append(NL)
+                append("    sig_bar=d.get('signal_bar','')").append(NL)
+                append("    sig_dbm=d.get('signal_dbm')").append(NL)
+                append("    print(f'📶  {carr}  ({net})')").append(NL)
+                append("    print(f'📋  SIM: {sim}  |  Data: {data_st}  |  Roaming: {roam}')").append(NL)
+                append("    if sig_bar:").append(NL)
+                append("        dbm_txt = f\\\" ({sig_dbm} dBm)\\\" if sig_dbm else ''").append(NL)
+                append("        print(f'{sig_bar}{dbm_txt}')").append(NL)
+                append("    cells=d.get('cells',[])").append(NL)
+                append("    if not cells:").append(NL)
+                append("        print()").append(NL)
+                append("        print('Žádné věže v dosahu.')").append(NL)
+                append("    else:").append(NL)
+                append("        for idx,c in enumerate(cells):").append(NL)
+                append("            print()").append(NL)
+                // Header row
+                append("            reg=c.get('registered',False)").append(NL)
+                append("            stav='REGISTROVÁN' if reg else 'SOUSEDNÍ'").append(NL)
+                append("            print(f\\\"Vysílač #{idx+1} [{stav}]\\\")").append(NL)
+                // Type | MCC | MNC
+                append("            typ=c.get('type','N/A')").append(NL)
+                append("            mcc=c.get('mcc','?')").append(NL)
+                append("            mnc=c.get('mnc','?')").append(NL)
+                append("            print(f\\\"Typ: {typ} | MCC: {mcc} | MNC: {mnc}\\\")").append(NL)
+                // TAC/LAC | CID | PCI/PSC
+                append("            tac=c.get('tac_lac','N/A')").append(NL)
+                append("            cid=c.get('cid','N/A')").append(NL)
+                append("            pci=c.get('pci_psc')").append(NL)
+                append("            pci_txt = str(pci) if pci is not None else 'N/A'").append(NL)
+                append("            print(f\\\"TAC/LAC: {tac} | CID: {cid} | PCI/PSC: {pci_txt}\\\")").append(NL)
+                // Signal strength
+                append("            sdbm=c.get('signal_dbm')").append(NL)
+                append("            slev=c.get('signal_level',0)").append(NL)
+                append("            if sdbm is not None and sdbm > -200:").append(NL)
+                append("                w,n,c = qual_dbm(sdbm)").append(NL)
+                append("                print(f\\\"{c}Síla signálu: {sdbm} dBm ({w})\\033[0m\\\")").append(NL)
+                append("                b=bars(n)").append(NL)
+                append("                print(f\\\"Ukazatel: [{c}{b}\\033[0m] ({c}{w}\\033[0m)\\\")").append(NL)
+                append("            else:").append(NL)
+                append("                print(f\\\"Síla signálu: N/A\\\")").append(NL)
+                append("                print(f\\\"Ukazatel: [░░░░░░░░░░] (N/A)\\\")").append(NL)
+                // Separator
+                append("            if idx < len(cells)-1:").append(NL)
+                append("                print('─'*50)").append(NL)
+                append("except Exception as e: print(f'Chyba: {e}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
 
             "nethunter-location" to StringBuilder().apply {
@@ -904,9 +1026,26 @@ object ProotManager {
             "nethunter-volume" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
-                append("  curl -s http://127.0.0.1:1337/volume").append(NL)
+                append("  DATA=\$(curl -s http://127.0.0.1:1337/volume)").append(NL)
+                append("  echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("def vol_bar(cur,mx):").append(NL)
+                append("    n=max(1,int(cur/mx*10)) if mx>0 else 1").append(NL)
+                append("    return '█'*n + '░'*(10-n)").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
+                append("    else:").append(NL)
+                append("        cur=d.get('volume',0)").append(NL)
+                append("        mx=d.get('max_volume',15)").append(NL)
+                append("        b=vol_bar(cur,mx)").append(NL)
+                append("        print(f'\\033[92m🔊  Hlasitost: {cur}/{mx}  [{b}]\\033[0m')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
+                append("\"").append(NL)
                 append("else").append(NL)
-                append("  curl -s -X POST -d \"\$1\" http://127.0.0.1:1337/volume").append(NL)
+                append("  curl -s -X POST -d \"\$1\" http://127.0.0.1:1337/volume >/dev/null").append(NL)
+                append("  echo \"✅ Hlasitost nastavena na \$1\"").append(NL)
                 append("fi").append(NL)
             }.toString(),
 
@@ -1058,7 +1197,8 @@ object ProotManager {
         // Deploy nethunter_agent.py and nethunter-agent-cli from assets
         val assetsToDeploy = listOf(
             "nethunter_agent.py" to "nethunter_agent.py",
-            "nethunter-agent-cli" to "nethunter-agent-cli"
+            "nethunter-agent-cli" to "nethunter-agent-cli",
+            "bin/terminalmap" to "terminalmap"
         )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
@@ -1285,6 +1425,48 @@ echo ""
             Log.i(TAG, "Deployed welcome profile: ${welcomeFile.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write nethunter-welcome.sh: ${e.message}")
+        }
+
+        val motdDir = File(rootfsDir, "etc")
+        if (!motdDir.exists()) motdDir.mkdirs()
+
+        val motd = StringBuilder()
+        motd.append(NL)
+
+        if (isParrot) {
+            motd.append("  \u001b[1;33m╭━━━╮\u001b[0m  \u001b[1;32m╔╗ ╔╗\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╭━╮┃\u001b[0m  \u001b[1;32m║╚╦╝║\u001b[0m  \u001b[1;36mNetHunter AI Operator v4.1\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╰━╯┃\u001b[0m  \u001b[1;32m╚╗╚╗║\u001b[0m  \u001b[1;35mParrot OS Security\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╭━━┫\u001b[0m  \u001b[1;32m╔╝╔╝║\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃┃\u001b[0m    \u001b[1;32m╔╝╔╝╔╝\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m╰╯\u001b[0m    \u001b[1;32m╚═╝ ╚═╝\u001b[0m").append(NL)
+        } else {
+            motd.append("  \u001b[1;34m╦╔═╔═╗╦  ╦\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m╠╩╗╠═╣║  ║\u001b[0m  \u001b[1;36mNetHunter AI Operator v4.1\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m╩ ╩╩ ╩╩═╝╩═╝\u001b[0m  \u001b[1;35mKali NetHunter\u001b[0m").append(NL)
+        }
+
+        motd.append(NL)
+        motd.append("  \u001b[1;32mRYCHLÉ PŘÍKAZY / QUICK HELP\u001b[0m").append(NL)
+        motd.append("  \u001b[0;36mnethunter-location\u001b[0m         GPS + Google Maps").append(NL)
+        motd.append("  \u001b[0;36mnethunter-cellinfo\u001b[0m          mobilní síť (5G/4G/3G)").append(NL)
+        motd.append("  \u001b[0;36mnethunter-map\u001b[0m              OSM terminálová mapa").append(NL)
+        motd.append("  \u001b[0;36mnethunter-battery-status\u001b[0m     stav baterie").append(NL)
+        motd.append("  \u001b[0;36mnethunter-wifi-connectioninfo\u001b[0m WiFi info").append(NL)
+        motd.append("  \u001b[0;36mnethunter-clipboard-get/set\u001b[0m  schránka").append(NL)
+        motd.append("  \u001b[0;36mvpn-on / vpn-off\u001b[0m            VPN přepínač").append(NL)
+        motd.append("  \u001b[0;36mvpn-cli logs\u001b[0m                formátované VPN logy").append(NL)
+        motd.append("  \u001b[0;36mvpn-cli chat\u001b[0m                AI Expert konzole").append(NL)
+        motd.append("  \u001b[0;36mnethunter-desktop start\u001b[0m     GUI (noVNC :6080)").append(NL)
+        motd.append(NL)
+        motd.append("  \u001b[0;90mcat nethunter_docs.md  → plná dokumentace\u001b[0m").append(NL)
+        motd.append(NL)
+
+        try {
+            File(motdDir, "motd").writeText(motd.toString())
+            Log.i(TAG, "Deployed /etc/motd for $distroId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write /etc/motd: ${e.message}")
         }
     }
 }

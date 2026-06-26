@@ -16,6 +16,12 @@ object VpnLogManager {
     private const val TAG = "VpnLogManager"
     private const val MAX_LOGS = 5000
 
+    private var historyStore: TrafficHistoryStore? = null
+    @Volatile
+    private var initialized = false
+    private var persistCounter = 0
+    private const val PERSIST_INTERVAL = 10
+
     enum class AuditCategory {
         ALLOWED,
         BLOCKED,
@@ -138,6 +144,26 @@ object VpnLogManager {
 
     // Thread-safe memory buffer for UI
     private val entries = ConcurrentLinkedQueue<LogEntry>()
+
+    private fun ensureInitialized(context: Context?) {
+        if (initialized || context == null) return
+        synchronized(this) {
+            if (initialized) return
+            historyStore = TrafficHistoryStore(context.applicationContext)
+            // Restore persisted log entries
+            val persisted = historyStore!!.loadLogEntries()
+            entries.addAll(persisted)
+            // Restore traffic arrays
+            hourlyDownload.indices.forEach { i -> hourlyDownload[i] = historyStore!!.loadTrafficArray("hourly_dl", 24)[i] }
+            hourlyUpload.indices.forEach { i -> hourlyUpload[i] = historyStore!!.loadTrafficArray("hourly_ul", 24)[i] }
+            dailyDownload.indices.forEach { i -> dailyDownload[i] = historyStore!!.loadTrafficArray("daily_dl", 30)[i] }
+            dailyUpload.indices.forEach { i -> dailyUpload[i] = historyStore!!.loadTrafficArray("daily_ul", 30)[i] }
+            weeklyDownload.indices.forEach { i -> weeklyDownload[i] = historyStore!!.loadTrafficArray("weekly_dl", 12)[i] }
+            weeklyUpload.indices.forEach { i -> weeklyUpload[i] = historyStore!!.loadTrafficArray("weekly_ul", 12)[i] }
+            initialized = true
+            Log.i(TAG, "Restored ${persisted.size} persisted log entries")
+        }
+    }
 
     data class AiTelemetryPoint(
         val timestamp: Long,
@@ -302,10 +328,27 @@ object VpnLogManager {
             dailyDownload[dayIndex] += size.toLong()
             weeklyDownload[weekIndex] += size.toLong()
         }
+
+        ensureInitialized(context)
+        val store = historyStore ?: return
+        store.persistLogEntry(entry)
+        persistCounter++
+        if (persistCounter % PERSIST_INTERVAL == 0) {
+            store.saveTrafficArray("hourly_dl", hourlyDownload)
+            store.saveTrafficArray("hourly_ul", hourlyUpload)
+            store.saveTrafficArray("daily_dl", dailyDownload)
+            store.saveTrafficArray("daily_ul", dailyUpload)
+            store.saveTrafficArray("weekly_dl", weeklyDownload)
+            store.saveTrafficArray("weekly_ul", weeklyUpload)
+        }
     }
 
     fun getLogs(): List<LogEntry> {
         return entries.toList().reversed()
+    }
+
+    fun initialize(context: Context) {
+        ensureInitialized(context.applicationContext)
     }
 
     fun getHourlyTraffic(): Pair<LongArray, LongArray> {
@@ -322,6 +365,14 @@ object VpnLogManager {
 
     fun clearLogs() {
         entries.clear()
+        val db = historyStore?.writableDatabase
+        if (db != null) {
+            try {
+                db.execSQL("DELETE FROM traffic_entries")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to clear persisted logs: ${e.message}")
+            }
+        }
     }
 
     fun exportLogsToDownloads(context: Context): String? {

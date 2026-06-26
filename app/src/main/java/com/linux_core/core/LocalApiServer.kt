@@ -28,6 +28,16 @@ import android.os.Process
 import android.provider.Settings
 import android.telephony.TelephonyManager
 import android.telephony.SignalStrength
+import android.telephony.CellInfoGsm
+import android.telephony.CellInfoLte
+import android.telephony.CellInfoWcdma
+import android.telephony.CellInfoNr
+import android.telephony.CellInfoTdscdma
+import android.telephony.CellIdentityGsm
+import android.telephony.CellIdentityLte
+import android.telephony.CellIdentityWcdma
+import android.telephony.CellIdentityNr
+import android.telephony.CellIdentityTdscdma
 import android.net.Uri
 import android.content.ComponentName
 import android.os.Bundle
@@ -481,22 +491,53 @@ object LocalApiServer {
                 val cellList = tm.allCellInfo
                 if (cellList != null) {
                     for (cell in cellList) {
-                        if (!cell.isRegistered) continue
                         val cellObj = JSONObject()
                         cellObj.put("type", cell::class.java.simpleName.replace("CellInfo", ""))
                         cellObj.put("registered", cell.isRegistered)
                         cellObj.put("timestamp", cell.timestampMillis)
+
                         try {
                             val ci = cell.cellIdentity
                             if (ci != null) {
-                                val ciStr = ci.toString()
-                                cellObj.put("cell_id", ciStr.substringAfter("CellIdentity").substringBefore(" ").let { if (it.isNotEmpty()) it else ciStr })
+                                when (ci) {
+                                    is CellIdentityGsm -> {
+                                        cellObj.put("mcc", ci.mcc)
+                                        cellObj.put("mnc", ci.mnc)
+                                        cellObj.put("tac_lac", ci.lac)
+                                        cellObj.put("cid", ci.cid)
+                                        cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
+                                    }
+                                    is CellIdentityLte -> {
+                                        cellObj.put("mcc", ci.mcc)
+                                        cellObj.put("mnc", ci.mnc)
+                                        cellObj.put("tac_lac", ci.tac)
+                                        cellObj.put("cid", ci.ci)
+                                        cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
+                                    }
+                                    is CellIdentityWcdma -> {
+                                        cellObj.put("tac_lac", ci.lac)
+                                        cellObj.put("cid", ci.cid)
+                                        cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
+                                    }
+                                    is CellIdentityNr -> {
+                                        cellObj.put("tac_lac", ci.tac)
+                                        cellObj.put("cid", ci.nci)
+                                        cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
+                                    }
+                                    is CellIdentityTdscdma -> {
+                                        cellObj.put("tac_lac", ci.lac)
+                                        cellObj.put("cid", ci.cid)
+                                        cellObj.put("pci_psc", ci.cpid.takeIf { it != Int.MAX_VALUE })
+                                    }
+                                }
                             }
                         } catch (_: Exception) {}
                         try {
                             val ss = cell.cellSignalStrength
                             if (ss != null) {
+                                cellObj.put("signal_dbm", ss.dbm)
                                 cellObj.put("signal_level", ss.level)
+                                cellObj.put("asu", ss.asuLevel)
                             }
                         } catch (_: Exception) {}
                         cellsArray.put(cellObj)

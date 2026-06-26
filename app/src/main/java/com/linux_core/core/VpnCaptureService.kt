@@ -191,6 +191,7 @@ class VpnCaptureService : VpnService() {
         acquireLocks()
         createNotificationChannel()
         VpnLogManager.loadCustomBlocklist(this)
+        VpnLogManager.initialize(this)
         Log.i(TAG, "Service created")
 
         VpnProxyManager.onProxyChangedListener = {
