@@ -1,6 +1,7 @@
 package com.linux_core.core
 
 import android.net.VpnService
+import android.content.Context
 import android.util.Log
 import java.io.IOException
 import java.net.InetAddress
@@ -118,6 +119,9 @@ class VpnNatEngine(
     ): VpnLogManager.AuditCategory {
         val brain = aiBrain ?: return VpnLogManager.AuditCategory.ALLOWED
         
+        val prefs = vpnService.getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("ai_enabled", true)) return VpnLogManager.AuditCategory.ALLOWED
+        
         val sessionKey = "$protocol:$srcPort:$dstPort"
         val now = System.currentTimeMillis()
         val lastTime = lastPacketTimes[sessionKey] ?: now
@@ -184,7 +188,13 @@ class VpnNatEngine(
                 else -> OffensiveEngine.AttackStrategy.RETREAT
             }
             
-            if (finalDecision < 4 || packetCount > 5) {
+            // RETREAT always, COUNTER after 3+ pkts, others always
+            val shouldExecute = when {
+                finalDecision == 5 -> true
+                finalDecision == 4 -> packetCount > 3
+                else -> true
+            }
+            if (shouldExecute) {
                 OffensiveEngine.execute(strategy, dstIpStr, dstPort)
             }
             saveTrainingSample(features, finalDecision)
@@ -342,7 +352,9 @@ class VpnNatEngine(
                 }
                 
                 // CRITICAL: Protect channel socket from loopback routing
-                vpnService.protect(channel.socket())
+                if (!vpnService.protect(channel.socket())) {
+                    Log.e(TAG, "protect() FAILED for UDP DatagramChannel — outbound traffic may loop back into VPN!")
+                }
                 
                 val remoteAddr = intToInetAddress(dstIp)
                 channel.connect(InetSocketAddress(remoteAddr, dstPort))
@@ -401,19 +413,18 @@ class VpnNatEngine(
                 closeTcpSession(srcPort)
             }
             
-            // AI Inference for TCP SYN (usually no payload yet, but we check headers)
-            val aiCategory = runInference(6, srcPort, dstIpStr, dstPort, null, ipHeader.totalLength)
-            val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) {
-                "AI: Detected high-risk TCP request!"
-            } else "AI: Verified TCP connection"
+            // TCP SYN — defer AI till data payload arrives
+            val detail = "AI: New TCP connection (deferred)"
 
-            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, aiCategory, detail)
+            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.ALLOWED, detail)
 
             try {
                 val channel = SocketChannel.open()
                 
                 // CRITICAL: Protect channel socket from loopback routing
-                vpnService.protect(channel.socket())
+                if (!vpnService.protect(channel.socket())) {
+                    Log.e(TAG, "protect() FAILED for TCP SocketChannel — outbound traffic may loop back into VPN!")
+                }
                 
                 session = TcpSession(srcPort, dstIp, dstPort).apply {
                     socketChannel = channel
@@ -486,6 +497,14 @@ class VpnNatEngine(
                         channel.configureBlocking(false)
                         selector?.let { sel ->
                             channel.register(sel, SelectionKey.OP_READ, session)
+                        }
+
+                        // Flush any data buffered while WAN connection was being established
+                        while (session.sendQueue.isNotEmpty()) {
+                            val data = session.sendQueue.removeAt(0)
+                            val len = data.remaining()
+                            channel.write(data)
+                            session.bytesSent += len
                         }
                         
                         // Trigger random session-based proxy rotation for the next connection if enabled
