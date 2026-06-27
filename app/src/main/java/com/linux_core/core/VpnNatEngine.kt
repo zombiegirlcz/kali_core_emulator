@@ -27,9 +27,8 @@ class VpnNatEngine(
     private val isRunning = AtomicBoolean(false)
     private var selector: Selector? = null
     private var selectorThread: Thread? = null
-    private var aiBrain: AIBrain? = null
+    private var aiBrainWorker: AIBrainWorker? = null
     private val historyStore = TrafficHistoryStore(vpnService)
-    private val lastPacketTimes = ConcurrentHashMap<String, Long>()
 
     // Session maps keyed by client source port
     private val tcpSessions = ConcurrentHashMap<Int, TcpSession>()
@@ -80,36 +79,42 @@ class VpnNatEngine(
     init {
         try {
             selector = Selector.open()
-            aiBrain = AIBrain(vpnService)
+            aiBrainWorker = AIBrainWorker(vpnService)
             isRunning.set(true)
             startSelectorLoop()
-            Log.i(TAG, "NAT Engine successfully initialized with AI Brain")
+            startDnsCacheCleaner()
+            Log.i(TAG, "NAT Engine successfully initialized with Async AI Brain Worker")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize NAT Engine: ${e.message}", e)
         }
     }
 
-    private fun calculateEntropy(data: ByteArray): Float {
-        if (data.isEmpty()) return 0.0f
-        val counts = IntArray(256)
-        for (b in data) {
-            counts[b.toInt() and 0xFF]++
-        }
-        var entropy = 0.0
-        for (count in counts) {
-            if (count > 0) {
-                val p = count.toDouble() / data.size
-                entropy -= p * (Math.log(p) / Math.log(2.0))
+    private fun startDnsCacheCleaner() {
+        dnsCacheCleanerThread = Thread({
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(60_000)
+                    val now = System.currentTimeMillis()
+                    val it = dnsResponseCache.entries.iterator()
+                    while (it.hasNext()) {
+                        if (it.next().value.expiresAt < now) it.remove()
+                    }
+                } catch (e: InterruptedException) {
+                    break
+                } catch (_: Exception) {}
             }
-        }
-        return entropy.toFloat()
+        }, "DnsCacheCleaner").apply { isDaemon = true; start() }
     }
 
-    // Pomocné mapy pro stavovou analýzu
-    private val sessionByteCounts = mutableMapOf<String, Long>()
-    private val sessionPacketCounts = mutableMapOf<String, Int>()
-
-    private fun runInference(
+    /**
+     * Asynchronní AI inference — zařadí packet do fronty AIBrainWorker a
+     * vrátí se okamžitě. Pokud AI není povolena nebo worker není k dispozici,
+     * vrací ALLOWED.
+     *
+     * Rozhodnutí o blokování je založeno na cache výsledků; pro nové toky
+     * se vrací ALLOWED (packet projde) a inference běží na pozadí.
+     */
+    private fun runAsyncInference(
         protocol: Int,
         srcPort: Int,
         dstIpStr: String,
@@ -117,111 +122,33 @@ class VpnNatEngine(
         payload: ByteArray?,
         totalSize: Int
     ): VpnLogManager.AuditCategory {
-        val brain = aiBrain ?: return VpnLogManager.AuditCategory.ALLOWED
-        
         val prefs = vpnService.getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("ai_enabled", true)) return VpnLogManager.AuditCategory.ALLOWED
-        
+
+        val worker = aiBrainWorker ?: return VpnLogManager.AuditCategory.ALLOWED
         val sessionKey = "$protocol:$srcPort:$dstPort"
-        val now = System.currentTimeMillis()
-        val lastTime = lastPacketTimes[sessionKey] ?: now
-        val delta = (now - lastTime) / 1000.0f
-        lastPacketTimes[sessionKey] = now
 
-        // --- STAVOVÁ ANALÝZA ---
-        val cumulativeBytes = (sessionByteCounts[sessionKey] ?: 0L) + totalSize
-        val packetCount = (sessionPacketCounts[sessionKey] ?: 0) + 1
-        sessionByteCounts[sessionKey] = cumulativeBytes
-        sessionPacketCounts[sessionKey] = packetCount
-
-        val currentEntropy = payload?.let { calculateEntropy(it) } ?: 0.0f
-
-        val features = FloatArray(18)
-        features[0] = totalSize.toFloat()
-        features[1] = protocol.toFloat()
-        features[2] = delta
-        features[3] = srcPort.toFloat()
-        features[4] = dstPort.toFloat()
-        features[5] = currentEntropy
-        
-        // b0-b7
-        if (payload != null) {
-            val limit = minOf(payload.size, 8)
-            for (i in 0 until limit) {
-                features[6 + i] = (payload[i].toInt() and 0xFF).toFloat()
-            }
+        // Nejdříve zkusíme cache — pokud máme výsledek z předchozí inference
+        val cached = worker.getCachedResult(sessionKey)
+        if (cached != null) {
+            return cached.category
         }
 
-        features[14] = (cumulativeBytes / 1024.0).toFloat()
-        features[15] = packetCount.toFloat()
-        features[16] = if (totalSize < 100 && packetCount > 50) 1.0f else 0.0f
-        features[17] = (payload?.size ?: 0).toFloat()
+        // Zařaď do fronty pro asynchronní zpracování
+        worker.submitForInference(
+            AIBrainWorker.InferenceRequest(
+                protocol = protocol,
+                srcPort = srcPort,
+                dstIpStr = dstIpStr,
+                dstPort = dstPort,
+                payload = payload,
+                totalSize = totalSize,
+                sessionKey = sessionKey
+            )
+        )
 
-        // 1. GLOBÁLNÍ ZNALOST (ONNX Model)
-        val strategyIndex = brain.classify(features)
-        
-        // 2. OSOBNÍ PAMĚŤ (Behavioral Profile)
-        val anomalyScore = UserProfileStore.getAnomalyScore(protocol, dstPort, currentEntropy, totalSize)
-
-        // LOGIKA SAMOUČENÍ: Pokud globální model říká, že je to SAFE, učíme se to jako TVŮJ zvyk.
-        if (strategyIndex == 0 && anomalyScore < 0.3f) {
-            UserProfileStore.learnNormalPattern(protocol, dstPort, currentEntropy, totalSize)
-        }
-
-        // Pokud globální model váhá, ale OSOBNÍ PAMĚŤ vidí anomálii
-        val finalDecision = if (strategyIndex == 0 && anomalyScore > 0.8f && packetCount > 10) {
-            Log.w(TAG, "🧠 PERSONAL MEMORY ALERT: Unusual behavior for this user at port $dstPort")
-            4 // Automaticky COUNTER pro neznámé chování
-        } else strategyIndex
-
-        // Zápis do analytické historie (pro 24h report) — async, outside packet path
-        Thread {
-            historyStore.logSession("App_Session", dstIpStr, dstPort, null, totalSize.toLong(), currentEntropy, finalDecision)
-        }.start()
-
-        if (finalDecision > 0) {
-            val strategy = when(finalDecision) {
-                1 -> OffensiveEngine.AttackStrategy.RECON
-                2 -> OffensiveEngine.AttackStrategy.EXPLOIT
-                3 -> OffensiveEngine.AttackStrategy.SPOOF
-                4 -> OffensiveEngine.AttackStrategy.COUNTER
-                else -> OffensiveEngine.AttackStrategy.RETREAT
-            }
-            
-            // RETREAT always, COUNTER after 3+ pkts, others always
-            val shouldExecute = when {
-                finalDecision == 5 -> true
-                finalDecision == 4 -> packetCount > 3
-                else -> true
-            }
-            if (shouldExecute) {
-                OffensiveEngine.execute(strategy, dstIpStr, dstPort)
-            }
-            saveTrainingSample(features, finalDecision)
-        }
-
-        return when (finalDecision) {
-            1, 2, 3, 4 -> VpnLogManager.AuditCategory.CRITICAL
-            else -> VpnLogManager.AuditCategory.ALLOWED
-        }
-    }
-
-    private fun saveTrainingSample(features: FloatArray, label: Int) {
-        Thread {
-            try {
-                val logFile = java.io.File(vpnService.filesDir, "offensive_learning_data.csv")
-                val exists = logFile.exists()
-                val writer = java.io.FileWriter(logFile, true)
-                if (!exists) {
-                    writer.write("size,proto,delta,src,dst,entropy,b0,b1,b2,b3,b4,b5,b6,b7,mss,nop,flood,p_len,label\n")
-                }
-                val line = features.joinToString(",") + ",$label\n"
-                writer.write(line)
-                writer.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Training data collection failed: ${e.message}")
-            }
-        }.start()
+        // Vracíme ALLOWED — packet neblokujeme, dokud AI nerozhodne
+        return VpnLogManager.AuditCategory.ALLOWED
     }
 
     fun handlePacketFromTun(packetBuffer: ByteBuffer, length: Int) {
@@ -332,14 +259,14 @@ class VpnNatEngine(
 
         var session = udpSessions[srcPort]
         if (session == null) {
-            // Extraction of payload for AI brain
+            // Extraction of payload for AI brain (max 64 bytes)
             packetBuffer.position(payloadOffset)
             val payloadForAi = ByteArray(minOf(payloadLen, 64))
             packetBuffer.get(payloadForAi)
             packetBuffer.position(0) // Reset position for subsequent use
 
-            // AI Inference
-            val aiCategory = runInference(17, srcPort, dstIpStr, dstPort, payloadForAi, ipHeader.totalLength)
+            // AI Inference — asynchronně přes AIBrainWorker
+            val aiCategory = runAsyncInference(17, srcPort, dstIpStr, dstPort, payloadForAi, ipHeader.totalLength)
             val detail = if (aiCategory == VpnLogManager.AuditCategory.CRITICAL) {
                 "AI: Detected critical network anomaly!"
             } else "AI: Verified UDP stream"
@@ -364,8 +291,9 @@ class VpnNatEngine(
                 }
                 udpSessions[srcPort] = session
 
-                // Register with Selector
+                // Register with Selector (wakeup to avoid blocking on selector contention)
                 selector?.let { sel ->
+                    sel.wakeup()
                     channel.register(sel, SelectionKey.OP_READ, session)
                 }
                 Log.d(TAG, "Created UDP session for port $srcPort to $dstIpStr:$dstPort")
@@ -496,15 +424,15 @@ class VpnNatEngine(
                         
                         channel.configureBlocking(false)
                         selector?.let { sel ->
+                            sel.wakeup()
                             channel.register(sel, SelectionKey.OP_READ, session)
                         }
 
                         // Flush any data buffered while WAN connection was being established
                         while (session.sendQueue.isNotEmpty()) {
                             val data = session.sendQueue.removeAt(0)
-                            val len = data.remaining()
-                            channel.write(data)
-                            session.bytesSent += len
+                            session.bytesSent += data.remaining()
+                            writeFully(channel, data)
                         }
                         
                         // Trigger random session-based proxy rotation for the next connection if enabled
@@ -577,8 +505,8 @@ class VpnNatEngine(
 
                 if (session.socketChannel?.isConnected == true) {
                     try {
-                        session.socketChannel?.write(payloadCopy)
                         session.bytesSent += payloadLen
+                        writeFully(session.socketChannel!!, payloadCopy)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to write TCP data to WAN: ${e.message}")
                         closeTcpSession(srcPort, sendRst = true)
@@ -648,9 +576,8 @@ class VpnNatEngine(
                 // Flush any buffered outgoing payloads
                 while (session.sendQueue.isNotEmpty()) {
                     val data = session.sendQueue.removeAt(0)
-                    val len = data.remaining()
-                    channel.write(data)
-                    session.bytesSent += len
+                    session.bytesSent += data.remaining()
+                    writeFully(channel, data)
                 }
                 Log.d(TAG, "WAN connection established for port ${session.clientPort}")
             }
@@ -967,6 +894,11 @@ class VpnNatEngine(
         for (port in udpSessions.keys) {
             closeUdpSession(port)
         }
+        aiBrainWorker?.close()
+        aiBrainWorker = null
+        dnsCacheCleanerThread?.interrupt()
+        dnsCacheCleanerThread = null
+        dnsResponseCache.clear()
         Log.i(TAG, "NAT Engine successfully stopped")
     }
 
@@ -1179,6 +1111,77 @@ class VpnNatEngine(
         return list
     }
 
+    // ---- DNS Block Cache ----
+
+    /**
+     * Cache pro předgenerované IP+UDP hlavičky NXDOMAIN odpovědí.
+     * Klíč je (dstIp, srcIp, dstPort, srcPort) — tedy IP adresy a porty
+     * prohozené oproti původnímu dotazu.
+     */
+    private data class DnsHeaderCacheKey(
+        val dstIp: Int,  // původní destination (teď source v odpovědi)
+        val srcIp: Int,  // původní source (teď destination v odpovědi)
+        val dstPort: Int,
+        val srcPort: Int
+    )
+
+    private data class CachedDnsResponse(
+        val headerBytes: ByteArray,  // předgenerovaná IP+UDP hlavička (20+8=28 bajtů)
+        val expiresAt: Long
+    )
+
+    private val dnsResponseCache = ConcurrentHashMap<DnsHeaderCacheKey, CachedDnsResponse>()
+    private var dnsCacheCleanerThread: Thread? = null
+
+    /**
+     * Předgeneruje IP+UDP hlavičku pro NXDOMAIN odpověď.
+     * Hlavička je konstantní pro danou čtveřici (sourceIp, destIp, sourcePort, destPort).
+     */
+    private fun buildDnsResponseHeader(
+        dstIp: Int,     // původní destination (bude source v odpovědi)
+        srcIp: Int,     // původní source (bude destination v odpovědi)
+        dstPort: Int,
+        srcPort: Int,
+        udpPayloadLen: Int
+    ): ByteArray {
+        val udpLen = 8 + udpPayloadLen
+        val ipLen = 20 + udpLen
+        val header = ByteArray(28) // IP(20) + UDP(8)
+        val buf = ByteBuffer.wrap(header)
+
+        // IP hlavička
+        buf.put(0x45.toByte())                      // Version + IHL
+        buf.put(0x00.toByte())                      // TOS
+        buf.putShort(ipLen.toShort())                // Total Length
+        buf.putShort(0.toShort())                    // ID
+        buf.putShort(0x4000.toShort())               // Flags + Fragment Offset
+        buf.put(64.toByte())                         // TTL
+        buf.put(17.toByte())                         // Protocol = UDP
+        buf.putShort(0.toShort())                    // Checksum (placeholder)
+        buf.putInt(srcIp)                            // Source Address
+        buf.putInt(dstIp)                            // Destination Address
+
+        // UDP hlavička
+        buf.putShort(dstPort.toShort())              // Source Port (byl destination)
+        buf.putShort(srcPort.toShort())              // Destination Port (byl source)
+        buf.putShort(udpLen.toShort())               // UDP Length
+        buf.putShort(0.toShort())                    // UDP Checksum (0 = no checksum for DNS)
+
+        // Compute IP checksum (over the first 20 bytes)
+        var sum = 0
+        buf.position(0)
+        for (i in 0 until 10) {
+            sum += buf.getShort().toInt() and 0xFFFF
+        }
+        while (sum shr 16 > 0) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        val ipChecksum = (sum.inv() and 0xFFFF).toShort()
+        buf.putShort(10, ipChecksum)
+
+        return header
+    }
+
     private fun parseDnsQuery(payload: ByteArray): Pair<String, String>? {
         if (payload.size < 12) return null
         var pos = 12
@@ -1222,54 +1225,64 @@ class VpnNatEngine(
         udpHeader: UdpHeader,
         payloadLen: Int
     ) {
+        if (payloadLen < 12) return
+
+        // Původní pozice v bufferu pro obnovení
         val originalPos = packetBuffer.position()
-        val dnsPayload = ByteArray(payloadLen)
+
+        // Vytvoříme DNS odpověď přímo z DNS payloadu — modifikace in-place,
+        // pouze nastavíme NXDOMAIN flagy
+        val dnsResponse = ByteArray(payloadLen)
         packetBuffer.position(ipHeader.ihl + 8)
-        packetBuffer.get(dnsPayload)
+        packetBuffer.get(dnsResponse)
         packetBuffer.position(originalPos)
-        
-        if (dnsPayload.size < 12) return
-        
-        val dnsResponse = ByteArray(dnsPayload.size)
-        System.arraycopy(dnsPayload, 0, dnsResponse, 0, dnsPayload.size)
-        
-        dnsResponse[2] = 0x81.toByte()
-        dnsResponse[3] = 0x83.toByte()
-        
-        val ipLen = ipHeader.ihl + 8 + dnsResponse.size
-        val responseBytes = ByteArray(ipLen)
-        val respBuffer = ByteBuffer.wrap(responseBytes)
-        
-        respBuffer.put(0x45.toByte())
-        respBuffer.put(0x00.toByte())
-        respBuffer.putShort(ipLen.toShort())
-        respBuffer.putShort(0.toShort())
-        respBuffer.putShort(0x4000.toShort())
-        respBuffer.put(64.toByte())
-        respBuffer.put(17.toByte())
-        respBuffer.putShort(0.toShort())
-        
-        respBuffer.putInt(ipHeader.destinationAddress)
-        respBuffer.putInt(ipHeader.sourceAddress)
-        
-        respBuffer.putShort(udpHeader.destinationPort.toShort())
-        respBuffer.putShort(udpHeader.sourcePort.toShort())
-        respBuffer.putShort((8 + dnsResponse.size).toShort())
-        respBuffer.putShort(0.toShort())
-        
-        respBuffer.put(dnsResponse)
-        
-        var sum = 0
-        respBuffer.position(0)
-        for (i in 0 until 10) {
-            sum += respBuffer.getShort().toInt() and 0xFFFF
+
+        // Nastav NXDOMAIN response flags (QR=1, Opcode=0, AA=0, TC=0, RD=1, RA=1, RCODE=3)
+        dnsResponse[2] = 0x81.toByte()  // QR | RD
+        dnsResponse[3] = 0x83.toByte()  // RA | NXDOMAIN
+
+        // Klíč cache: prohozené IP adresy a porty
+        val cacheKey = DnsHeaderCacheKey(
+            dstIp = ipHeader.destinationAddress,
+            srcIp = ipHeader.sourceAddress,
+            dstPort = udpHeader.destinationPort,
+            srcPort = udpHeader.sourcePort
+        )
+
+        val cached = dnsResponseCache[cacheKey]
+        if (cached != null && System.currentTimeMillis() < cached.expiresAt) {
+            // Cache hit — použijeme předgenerovanou hlavičku
+            val responseBytes = ByteArray(cached.headerBytes.size + dnsResponse.size)
+            System.arraycopy(cached.headerBytes, 0, responseBytes, 0, cached.headerBytes.size)
+            System.arraycopy(dnsResponse, 0, responseBytes, cached.headerBytes.size, dnsResponse.size)
+            writeToTun(responseBytes, responseBytes.size)
+        } else {
+            // Cache miss — postavíme hlavičku a uložíme do cache
+            val header = buildDnsResponseHeader(
+                dstIp = ipHeader.destinationAddress,
+                srcIp = ipHeader.sourceAddress,
+                dstPort = udpHeader.destinationPort,
+                srcPort = udpHeader.sourcePort,
+                udpPayloadLen = dnsResponse.size
+            )
+
+            val responseBytes = ByteArray(header.size + dnsResponse.size)
+            System.arraycopy(header, 0, responseBytes, 0, header.size)
+            System.arraycopy(dnsResponse, 0, responseBytes, header.size, dnsResponse.size)
+
+            // Ulož header do cache s TTL 30s
+            dnsResponseCache[cacheKey] = CachedDnsResponse(
+                headerBytes = header,
+                expiresAt = System.currentTimeMillis() + 30_000
+            )
+
+            writeToTun(responseBytes, responseBytes.size)
         }
-        while (sum shr 16 > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
+    }
+
+    private fun writeFully(channel: java.nio.channels.WritableByteChannel, buffer: ByteBuffer) {
+        while (buffer.hasRemaining()) {
+            channel.write(buffer)
         }
-        val ipChecksum = (sum.inv() and 0xFFFF).toShort()
-        respBuffer.putShort(10, ipChecksum)
-        
-        writeToTun(responseBytes, responseBytes.size)
     }
 }

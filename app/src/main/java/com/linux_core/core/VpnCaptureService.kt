@@ -31,6 +31,8 @@ class VpnCaptureService : VpnService() {
         const val ACTION_STOP = "com.linux_core.ACTION_STOP"
 
         private const val MTU = 1500
+        private const val TUN_BUFFER_SIZE = 65536
+        private const val BATCH_READ_COUNT = 8
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val VPN_DNS = "8.8.8.8"
 
@@ -402,7 +404,8 @@ class VpnCaptureService : VpnService() {
 
             // Start packet forwarding loop on background thread
             vpnThread = Thread({
-                val buffer = ByteArray(customMtu)
+                // Použijeme větší buffer (65536) pro efektivní čtení z TUN rozhraní
+                val buffer = ByteArray(TUN_BUFFER_SIZE)
                 try {
                     val pfd = vpnInterface
                     if (pfd != null) {
@@ -410,9 +413,24 @@ class VpnCaptureService : VpnService() {
                             while (isServiceRunning.get()) {
                                 val length = input.read(buffer)
                                 if (length > 0) {
+                                    // Zpracování prvního paketu
                                     packetCount.incrementAndGet()
                                     byteCount.addAndGet(length.toLong())
                                     natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
+
+                                    // Batch processing — zkusíme přečíst další pakety bez blokování
+                                    // (dostupné v bufferu díky větší alokaci)
+                                    var available = input.available()
+                                    var batchCount = 0
+                                    while (available > 0 && batchCount < BATCH_READ_COUNT && isServiceRunning.get()) {
+                                        val nextLen = input.read(buffer)
+                                        if (nextLen <= 0) break
+                                        packetCount.incrementAndGet()
+                                        byteCount.addAndGet(nextLen.toLong())
+                                        natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, nextLen), nextLen)
+                                        batchCount++
+                                        available = input.available()
+                                    }
                                 }
                             }
                         }
