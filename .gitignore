@@ -114,3 +114,4 @@ window_dump.xml
 
 # Old build artifacts
 app/build_old/
+*.onnx
