@@ -121,6 +121,26 @@ object LocalApiServer {
         }
     }
 
+    // Secure token for API authentication — auto-generated on first startup
+    private var authToken: String? = null
+
+    private fun getAuthToken(context: Context): String {
+        if (authToken == null) {
+            val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
+            authToken = prefs.getString("auth_token", null)
+            if (authToken == null) {
+                authToken = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 32)
+                prefs.edit().putString("auth_token", authToken).apply()
+            }
+        }
+        return authToken!!
+    }
+
+    private fun isAuthenticated(headers: Map<String, String>): Boolean {
+        val token = headers["Authorization"] ?: headers["authorization"] ?: return false
+        return token == "Bearer $authToken" || token == "Token $authToken"
+    }
+
     private fun handleConnection(context: Context, socket: Socket) {
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
@@ -136,10 +156,17 @@ object LocalApiServer {
             val method = parts[0]
             val path = parts[1]
 
-            // Parse headers to find Content-Length
+            // Parse headers
             var contentLength = 0
+            val headers = HashMap<String, String>()
             var line: String? = reader.readLine()
             while (line != null && line.isNotEmpty()) {
+                val colonIdx = line.indexOf(':')
+                if (colonIdx != -1) {
+                    val key = line.substring(0, colonIdx).trim().lowercase()
+                    val value = line.substring(colonIdx + 1).trim()
+                    headers[key] = value
+                }
                 if (line.startsWith("Content-Length:", ignoreCase = true)) {
                     contentLength = line.substring(15).trim().toIntOrNull() ?: 0
                 }
@@ -157,6 +184,27 @@ object LocalApiServer {
                     totalRead += read
                 }
                 body = String(bodyChars, 0, totalRead)
+            }
+
+            // Authentication check (exclude internal/loopback-only or non-sensitive endpoints)
+            val sensitiveEndpoints = listOf("/shell", "/clipboard", "/location", "/cellinfo",
+                "/notifications/active", "/accessibility/hierarchy", "/voice_input",
+                "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
+                "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
+                "/battery/optimize")
+            val isLocalConnection = try {
+                val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
+                val remoteAddr = socket.inetAddress?.hostAddress ?: ""
+                remoteAddr == "127.0.0.1" || remoteAddr == "::1" || remoteAddr == localAddr
+            } catch (e: Exception) { false }
+
+            if (!isLocalConnection && sensitiveEndpoints.any { path.startsWith(it) }) {
+                if (!isAuthenticated(headers)) {
+                    val token = getAuthToken(context)
+                    sendResponse(out, 401, "Unauthorized",
+                        "{\"error\":\"Authentication required. Use Authorization: Bearer <token>\",\"hint\":\"Token is in app SharedPreferences (api_security.xml)\"}")
+                    return
+                }
             }
 
             routeRequest(context, method, path, body, out)
@@ -633,6 +681,13 @@ object LocalApiServer {
         }
     }
 
+    // Blocklist of dangerous shell commands
+    private val SHELL_BLOCKLIST = listOf(
+        "rm -rf /", "mkfs", "dd if=/dev/zero", "dd if=/dev/random",
+        ">:", "format", "mkswap", "reboot", "shutdown", "poweroff",
+        "halt", "init 0", "init 6"
+    )
+
     private fun handleShell(body: String, out: OutputStream) {
         try {
             val command = body.trim()
@@ -640,6 +695,22 @@ object LocalApiServer {
                 sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
                 return
             }
+
+            // Check against shell command blocklist
+            val commandLower = command.lowercase()
+            for (blocked in SHELL_BLOCKLIST) {
+                if (commandLower.contains(blocked.lowercase())) {
+                    sendResponse(out, 403, "Forbidden", "{\"error\":\"Command blocked for security reasons\"}")
+                    return
+                }
+            }
+
+            // Enforce maximum command length
+            if (command.length > 1024) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long (max 1024 chars)\"}")
+                return
+            }
+
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
             val output = process.inputStream.bufferedReader().readText()
             val error = process.errorStream.bufferedReader().readText()
@@ -662,10 +733,10 @@ object LocalApiServer {
         val logs = VpnLogManager.getLogs()
         if (format == "csv" || path.contains("/csv")) {
             val csv = StringBuilder()
-            csv.append("timestamp,protocol,srcIp,srcPort,dstIp,dstPort,size,category,detail,entropy,payloadHex\n")
+            csv.append("timestamp,protocol,srcIp,srcPort,dstIp,dstPort,size,category,detail,entropy\n")
             for (log in logs) {
                 val escapedDetail = log.detail.replace("\"", "\"\"")
-                csv.append("${log.timestamp},${log.protocol},${log.srcIp},${log.srcPort},${log.dstIp},${log.dstPort},${log.size},${log.category.name},\"$escapedDetail\",${log.entropy},${log.payloadHex ?: ""}\n")
+                csv.append("${log.timestamp},${log.protocol},${log.srcIp},${log.srcPort},${log.dstIp},${log.dstPort},${log.size},${log.category.name},\"$escapedDetail\",${log.entropy}\n")
             }
             sendCsvResponse(out, 200, "OK", csv.toString())
         } else {
@@ -782,6 +853,42 @@ object LocalApiServer {
     @JvmField
     var currentAgentStatus: String = ""
 
+    private fun callAgentDaemon(prompt: String, context: Context): String? {
+        try {
+            val agentToken = getOrCreateAgentToken(context)
+            val url = java.net.URL("http://127.0.0.1:13338/query")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 2000
+            conn.readTimeout = 0
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Authorization", "Bearer $agentToken")
+
+            val payload = JSONObject().put("prompt", prompt).toString()
+            conn.outputStream.use { os ->
+                os.write(payload.toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                return conn.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                val errText = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP ${conn.responseCode}"
+                Log.w(TAG, "Agent daemon returned $conn.responseCode: $errText")
+                return null
+            }
+        } catch (e: java.net.ConnectException) {
+            Log.w(TAG, "Agent daemon not reachable on port 13338")
+            return null
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "Agent daemon connect timeout")
+            return null
+        } catch (e: Exception) {
+            Log.e(TAG, "Agent daemon call failed: ${e.message}")
+            return null
+        }
+    }
+
     private fun handleAgentQuery(body: String, out: OutputStream) {
         val prompt = try {
             if (body.trim().startsWith("{")) {
@@ -799,45 +906,18 @@ object LocalApiServer {
         }
 
         currentAgentStatus = "Connecting to agent..."
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        val launcherScript = java.io.File(ctx.filesDir, "launcher.sh")
 
-        val launcherScript = java.io.File(appContext?.filesDir, "launcher.sh")
-
-        // Try daemon first (fast path)
-        var daemonSuccess = false
-        try {
-            val url = java.net.URL("http://127.0.0.1:13338/query")
-            val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.connectTimeout = 2000
-            conn.readTimeout = 0
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-
-            val payload = JSONObject().put("prompt", prompt).toString()
-            conn.outputStream.use { os ->
-                os.write(payload.toByteArray(Charsets.UTF_8))
-            }
-
-            currentAgentStatus = "Agent is processing..."
-
-            if (conn.responseCode == 200) {
-                val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                currentAgentStatus = ""
-                sendResponse(out, 200, "OK", responseText)
-                return
-            } else {
-                val errText = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP ${conn.responseCode}"
-                currentAgentStatus = ""
-                sendResponse(out, 500, "Internal Error", "{\"error\":\"Agent error: $errText\"}")
-                return
-            }
-        } catch (e: java.net.ConnectException) {
-            Log.w(TAG, "Agent daemon not reachable on port 13338, attempting to start it...")
-        } catch (e: java.net.SocketTimeoutException) {
-            Log.w(TAG, "Agent daemon connect timeout, attempting to start it...")
-        } catch (e: Exception) {
+        // Try daemon first (fast path) with auth token
+        currentAgentStatus = "Connecting to agent..."
+        val daemonResponse = callAgentDaemon(prompt, ctx)
+        if (daemonResponse != null) {
             currentAgentStatus = ""
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"Agent daemon error: ${e.message}\"}")
+            sendResponse(out, 200, "OK", daemonResponse)
             return
         }
 
@@ -846,32 +926,16 @@ object LocalApiServer {
             try {
                 currentAgentStatus = "Starting agent daemon..."
                 val pbStart = ProcessBuilder("sh", launcherScript.absolutePath, "nethunter-agent-cli", "start")
-                pbStart.directory(appContext?.filesDir)
+                pbStart.directory(ctx.filesDir)
                 val procStart = pbStart.start()
                 procStart.waitFor()
                 Thread.sleep(1500) // Give the daemon 1.5s to bind to the port
 
-                // Retry connecting to daemon
                 currentAgentStatus = "Connecting to agent..."
-                val url = java.net.URL("http://127.0.0.1:13338/query")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.connectTimeout = 3000
-                conn.readTimeout = 0
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-
-                val payload = JSONObject().put("prompt", prompt).toString()
-                conn.outputStream.use { os ->
-                    os.write(payload.toByteArray(Charsets.UTF_8))
-                }
-
-                currentAgentStatus = "Agent is processing..."
-
-                if (conn.responseCode == 200) {
-                    val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                val retryResponse = callAgentDaemon(prompt, ctx)
+                if (retryResponse != null) {
                     currentAgentStatus = ""
-                    sendResponse(out, 200, "OK", responseText)
+                    sendResponse(out, 200, "OK", retryResponse)
                     return
                 }
             } catch (e: Exception) {
@@ -919,6 +983,25 @@ object LocalApiServer {
 
     /** Application context reference, set during start(). */
     private var appContext: Context? = null
+
+    private fun getOrCreateAgentToken(context: Context): String {
+        val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
+        var token = prefs.getString("agent_auth_token", null)
+        if (token == null) {
+            token = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 32)
+            prefs.edit().putString("agent_auth_token", token).apply()
+        }
+        // Write token to guest-accessible path so agent daemon can read it
+        try {
+            val tokenFile = java.io.File(context.filesDir, "tmp/nethunter_agent_token")
+            tokenFile.parentFile?.mkdirs()
+            tokenFile.writeText(token)
+            tokenFile.setReadable(true, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write agent token file: ${e.message}")
+        }
+        return token
+    }
 
     private fun handleVoiceInput(context: Context, out: java.io.OutputStream) {
         val latch = java.util.concurrent.CountDownLatch(1)

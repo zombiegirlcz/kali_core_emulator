@@ -28,7 +28,7 @@ class VpnNatEngine(
     private var selector: Selector? = null
     private var selectorThread: Thread? = null
     private var aiBrainWorker: AIBrainWorker? = null
-    private val historyStore = TrafficHistoryStore(vpnService)
+    private val connectionThreadPool = java.util.concurrent.Executors.newCachedThreadPool()
 
     // Session maps keyed by client source port
     private val tcpSessions = ConcurrentHashMap<Int, TcpSession>()
@@ -47,7 +47,7 @@ class VpnNatEngine(
         var clientSeqNum: Long = 0
         var serverSeqNum: Long = 1000 // Server starting sequence number
         var state = TcpState.CLOSED
-        val sendQueue = ArrayList<ByteBuffer>()
+        val sendQueue = java.util.concurrent.ConcurrentLinkedQueue<ByteBuffer>()
         var lastActiveTime = System.currentTimeMillis()
         
         var bytesSent: Long = 0
@@ -271,7 +271,7 @@ class VpnNatEngine(
                 "AI: Detected critical network anomaly!"
             } else "AI: Verified UDP stream"
 
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail)
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail, payloadForAi)
 
             try {
                 val channel = DatagramChannel.open().apply {
@@ -361,91 +361,127 @@ class VpnNatEngine(
                 }
                 tcpSessions[srcPort] = session
 
-                // Asynchronous handshaker thread to connect and do proxy negotiation without blocking Selector loop
-                Thread {
-                    try {
-                        val bypassedSession = if (TerminalService.ignoredSessionIds.containsValue(true)) {
-                            getSessionForLocalPort(srcPort, isTcp = true)
-                        } else null
-                        val isBypassed = bypassedSession != null && TerminalService.isSessionVpnIgnored(bypassedSession)
-                        
-                        val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()
-                        if (activeProxy != null) {
-                            Log.i(TAG, "Routing session $srcPort through proxy: ${activeProxy.country} (${activeProxy.ip}:${activeProxy.port})")
-                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
-                            
-                            channel.connect(InetSocketAddress(activeProxy.ip, activeProxy.port))
-                            channel.configureBlocking(true)
-                            
-                            // 1. Send SOCKS5 greeting
-                            val out = channel.socket().getOutputStream()
-                            val input = channel.socket().getInputStream()
-                            out.write(byteArrayOf(0x05, 0x01, 0x00)) // Version 5, 1 auth method: No Auth
-                            out.flush()
-                            
-                            val response = ByteArray(2)
-                            val read = input.read(response)
-                            if (read < 2 || response[0].toInt() != 0x05 || response[1].toInt() != 0x00) {
-                                throw IOException("SOCKS5 Proxy rejected authentication method")
-                            }
-                            
-                            // 2. Request connection to target
-                            val req = ByteArray(10)
-                            req[0] = 0x05 // Version
-                            req[1] = 0x01 // Command: CONNECT
-                            req[2] = 0x00 // Reserved
-                            req[3] = 0x01 // Address Type: IPv4
-                            
-                            // Destination IP bytes
-                            req[4] = ((dstIp shr 24) and 0xFF).toByte()
-                            req[5] = ((dstIp shr 16) and 0xFF).toByte()
-                            req[6] = ((dstIp shr 8) and 0xFF).toByte()
-                            req[7] = (dstIp and 0xFF).toByte()
-                            
-                            // Destination Port
-                            req[8] = ((dstPort shr 8) and 0xFF).toByte()
-                            req[9] = (dstPort and 0xFF).toByte()
-                            
-                            out.write(req)
-                            out.flush()
-                            
-                            val rep = ByteArray(10)
-                            val r = input.read(rep)
-                            if (r < 10 || rep[0].toInt() != 0x05 || rep[1].toInt() != 0x00) {
-                                throw IOException("SOCKS5 Tunnel setup failed with error code: ${rep[1].toInt()}")
-                            }
-                        } else {
-                            if (isBypassed) {
-                                Log.i(TAG, "Routing session $srcPort directly (VPN bypass active)")
-                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
-                            }
-                            channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
-                        }
-                        
-                        channel.configureBlocking(false)
-                        selector?.let { sel ->
-                            sel.wakeup()
-                            channel.register(sel, SelectionKey.OP_READ, session)
-                        }
+                val bypassedSession = if (TerminalService.ignoredSessionIds.containsValue(true)) {
+                    getSessionForLocalPort(srcPort, isTcp = true)
+                } else null
+                val isBypassed = bypassedSession != null && TerminalService.isSessionVpnIgnored(bypassedSession)
 
-                        // Flush any data buffered while WAN connection was being established
-                        while (session.sendQueue.isNotEmpty()) {
-                            val data = session.sendQueue.removeAt(0)
-                            session.bytesSent += data.remaining()
-                            writeFully(channel, data)
-                        }
-                        
-                        // Trigger random session-based proxy rotation for the next connection if enabled
-                        if (VpnProxyManager.isEnabled() && VpnProxyManager.getRotationMode() == 1) {
-                            VpnProxyManager.triggerRandomRotation()
-                        }
-                        
-                        Log.d(TAG, "Connection completed for session $srcPort")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Handshake thread failed for session $srcPort: ${e.message}")
-                        closeTcpSession(srcPort, sendRst = true)
+                val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()
+
+                if (activeProxy == null) {
+                    // DIRECT CONNECTION: Non-blocking direct connect in selector loop
+                    channel.configureBlocking(false)
+                    if (isBypassed) {
+                        Log.i(TAG, "Routing session $srcPort directly non-blocking (VPN bypass active)")
+                        VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
+                    } else {
+                        Log.i(TAG, "Routing session $srcPort directly non-blocking")
                     }
-                }.start()
+                    
+                    channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
+                    selector?.let { sel ->
+                        sel.wakeup()
+                        channel.register(sel, SelectionKey.OP_CONNECT or SelectionKey.OP_READ, session)
+                    }
+                } else {
+                    // PROXY CONNECTION: Run on the shared thread pool
+                    connectionThreadPool.submit {
+                        try {
+                            var connectedViaProxy = false
+                            try {
+                                Log.i(TAG, "Routing session $srcPort through proxy: ${activeProxy.country} (${activeProxy.ip}:${activeProxy.port})")
+                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
+
+                                channel.socket().connect(InetSocketAddress(activeProxy.ip, activeProxy.port), 5000)
+                                channel.configureBlocking(true)
+                                channel.socket().soTimeout = 5000 // 5 seconds read timeout
+
+                                // 1. Send SOCKS5 greeting
+                                val out = channel.socket().getOutputStream()
+                                val input = channel.socket().getInputStream()
+                                out.write(byteArrayOf(0x05, 0x01, 0x00)) // Version 5, 1 auth method: No Auth
+                                out.flush()
+
+                                val response = ByteArray(2)
+                                val read = input.read(response)
+                                if (read < 2 || response[0].toInt() != 0x05 || response[1].toInt() != 0x00) {
+                                    throw IOException("SOCKS5 Proxy rejected authentication method")
+                                }
+
+                                // 2. Request connection to target
+                                val req = ByteArray(10)
+                                req[0] = 0x05 // Version
+                                req[1] = 0x01 // Command: CONNECT
+                                req[2] = 0x00 // Reserved
+                                req[3] = 0x01 // Address Type: IPv4
+
+                                // Destination IP bytes
+                                req[4] = ((dstIp shr 24) and 0xFF).toByte()
+                                req[5] = ((dstIp shr 16) and 0xFF).toByte()
+                                req[6] = ((dstIp shr 8) and 0xFF).toByte()
+                                req[7] = (dstIp and 0xFF).toByte()
+
+                                // Destination Port
+                                req[8] = ((dstPort shr 8) and 0xFF).toByte()
+                                req[9] = (dstPort and 0xFF).toByte()
+
+                                out.write(req)
+                                out.flush()
+
+                                val rep = ByteArray(10)
+                                val r = input.read(rep)
+                                if (r < 10 || rep[0].toInt() != 0x05 || rep[1].toInt() != 0x00) {
+                                    throw IOException("SOCKS5 Tunnel setup failed with error code: ${rep[1].toInt()}")
+                                }
+
+                                connectedViaProxy = true
+                                Log.d(TAG, "Proxy connection established for session $srcPort")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Proxy failed for session $srcPort (${e.message}), falling back to direct")
+                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, falling back to direct")
+
+                                channel.close()
+                                val directChannel = SocketChannel.open()
+                                // CRITICAL FIXED: Protect the fallback channel!
+                                if (!vpnService.protect(directChannel.socket())) {
+                                    Log.e(TAG, "protect() FAILED for direct fallback socket!")
+                                }
+                                session.socketChannel = directChannel
+                            }
+
+                            if (!connectedViaProxy) {
+                                val activeChannel = session.socketChannel ?: channel
+                                Log.i(TAG, "Routing session $srcPort directly (proxy fallback)")
+                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (Proxy Fallback)")
+                                activeChannel.socket().connect(InetSocketAddress(intToInetAddress(dstIp), dstPort), 10000)
+                            }
+
+                            val activeChannel = session.socketChannel ?: channel
+                            try { activeChannel.socket().soTimeout = 0 } catch (_: Exception) {}
+                            activeChannel.configureBlocking(false)
+                            selector?.let { sel ->
+                                sel.wakeup()
+                                activeChannel.register(sel, SelectionKey.OP_READ, session)
+                            }
+
+                            // Flush any data buffered while WAN connection was being established
+                            while (true) {
+                                val data = session.sendQueue.poll() ?: break
+                                writeOrQueue(session, activeChannel, data)
+                            }
+
+                            // Trigger random session-based proxy rotation for the next connection if enabled
+                            if (VpnProxyManager.isEnabled() && VpnProxyManager.getRotationMode() == 1) {
+                                VpnProxyManager.triggerRandomRotation()
+                            }
+
+                            Log.d(TAG, "Connection completed for session $srcPort")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Handshake thread failed for session $srcPort: ${e.message ?: e.javaClass.simpleName}")
+                            closeTcpSession(srcPort, sendRst = true)
+                        }
+                    }
+                }
 
                 // Send SYN-ACK back to local client immediately to complete Tun handshake
                 sendTcpSynAck(session, tcpHeader)
@@ -504,17 +540,12 @@ class VpnNatEngine(
                 payloadCopy.flip()
 
                 if (session.socketChannel?.isConnected == true) {
-                    try {
-                        session.bytesSent += payloadLen
-                        writeFully(session.socketChannel!!, payloadCopy)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to write TCP data to WAN: ${e.message}")
-                        closeTcpSession(srcPort, sendRst = true)
+                    if (!writeOrQueue(session, session.socketChannel!!, payloadCopy)) {
                         return
                     }
                 } else {
                     // Buffer data if remote channel is still connecting
-                    session.sendQueue.add(payloadCopy)
+                    session.sendQueue.offer(payloadCopy)
                 }
                 
                 // Acknowledge payload immediately back to TUN client
@@ -543,10 +574,13 @@ class VpnNatEngine(
                         if (!key.isValid) continue
 
                         try {
-                            if (key.isConnectable) {
+                            if (key.isValid && key.isConnectable) {
                                 handleConnectableKey(key)
                             }
-                            if (key.isReadable) {
+                            if (key.isValid && key.isWritable) {
+                                handleWritableKey(key)
+                            }
+                            if (key.isValid && key.isReadable) {
                                 handleReadableKey(key, buffer)
                             }
                         } catch (e: Exception) {
@@ -571,19 +605,87 @@ class VpnNatEngine(
         
         try {
             if (channel.finishConnect()) {
+                // Done connecting, default to reading
                 key.interestOps(SelectionKey.OP_READ)
                 
-                // Flush any buffered outgoing payloads
-                while (session.sendQueue.isNotEmpty()) {
-                    val data = session.sendQueue.removeAt(0)
-                    session.bytesSent += data.remaining()
-                    writeFully(channel, data)
+                // Try flushing any buffered outgoing payloads
+                while (true) {
+                    val data = session.sendQueue.peek() ?: break
+                    val written = channel.write(data)
+                    session.bytesSent += written
+                    if (data.hasRemaining()) {
+                        break
+                    }
+                    session.sendQueue.poll()
                 }
+
+                if (session.sendQueue.isNotEmpty()) {
+                    key.interestOps(SelectionKey.OP_READ or SelectionKey.OP_WRITE)
+                }
+                
                 Log.d(TAG, "WAN connection established for port ${session.clientPort}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to complete WAN connection for port ${session.clientPort}: ${e.message}")
             closeTcpSession(session.clientPort, sendRst = true)
+        }
+    }
+
+    private fun handleWritableKey(key: SelectionKey) {
+        val channel = key.channel() as? SocketChannel ?: return
+        val session = key.attachment() as? TcpSession ?: return
+        
+        try {
+            while (true) {
+                val data = session.sendQueue.peek() ?: break
+                val written = channel.write(data)
+                session.bytesSent += written
+                if (data.hasRemaining()) {
+                    break
+                }
+                session.sendQueue.poll()
+            }
+            if (session.sendQueue.isEmpty()) {
+                key.interestOps(SelectionKey.OP_READ)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Socket write error on port ${session.clientPort}: ${e.message}")
+            closeTcpSession(session.clientPort, sendRst = true)
+        }
+    }
+
+    private fun writeOrQueue(session: TcpSession, channel: SocketChannel, data: ByteBuffer): Boolean {
+        return try {
+            if (session.sendQueue.isNotEmpty()) {
+                session.sendQueue.offer(data)
+                registerWriteInterest(channel)
+                return true
+            }
+            
+            val written = channel.write(data)
+            session.bytesSent += written
+            
+            if (data.hasRemaining()) {
+                session.sendQueue.offer(data)
+                registerWriteInterest(channel)
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Socket write error on port ${session.clientPort}: ${e.message}")
+            closeTcpSession(session.clientPort, sendRst = true)
+            false
+        }
+    }
+
+    private fun registerWriteInterest(channel: SocketChannel) {
+        try {
+            val key = channel.keyFor(selector)
+            if (key != null && key.isValid) {
+                selector?.wakeup()
+                key.interestOps(SelectionKey.OP_READ or SelectionKey.OP_WRITE)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register write interest: ${e.message}")
         }
     }
 
@@ -896,6 +998,7 @@ class VpnNatEngine(
         }
         aiBrainWorker?.close()
         aiBrainWorker = null
+        try { connectionThreadPool.shutdownNow() } catch (_: Exception) {}
         dnsCacheCleanerThread?.interrupt()
         dnsCacheCleanerThread = null
         dnsResponseCache.clear()
@@ -1122,7 +1225,8 @@ class VpnNatEngine(
         val dstIp: Int,  // původní destination (teď source v odpovědi)
         val srcIp: Int,  // původní source (teď destination v odpovědi)
         val dstPort: Int,
-        val srcPort: Int
+        val srcPort: Int,
+        val payloadLen: Int  // délka DNS payloadu — ovlivňuje IP Total Length a UDP Length
     )
 
     private data class CachedDnsResponse(
@@ -1138,48 +1242,42 @@ class VpnNatEngine(
      * Hlavička je konstantní pro danou čtveřici (sourceIp, destIp, sourcePort, destPort).
      */
     private fun buildDnsResponseHeader(
-        dstIp: Int,     // původní destination (bude source v odpovědi)
-        srcIp: Int,     // původní source (bude destination v odpovědi)
+        dstIp: Int,
+        srcIp: Int,
         dstPort: Int,
         srcPort: Int,
         udpPayloadLen: Int
     ): ByteArray {
         val udpLen = 8 + udpPayloadLen
         val ipLen = 20 + udpLen
-        val header = ByteArray(28) // IP(20) + UDP(8)
-        val buf = ByteBuffer.wrap(header)
+        val buf = ByteBuffer.allocate(28)
 
-        // IP hlavička
-        buf.put(0x45.toByte())                      // Version + IHL
-        buf.put(0x00.toByte())                      // TOS
-        buf.putShort(ipLen.toShort())                // Total Length
-        buf.putShort(0.toShort())                    // ID
-        buf.putShort(0x4000.toShort())               // Flags + Fragment Offset
-        buf.put(64.toByte())                         // TTL
-        buf.put(17.toByte())                         // Protocol = UDP
-        buf.putShort(0.toShort())                    // Checksum (placeholder)
-        buf.putInt(srcIp)                            // Source Address
-        buf.putInt(dstIp)                            // Destination Address
+        buf.put(0x45.toByte())
+        buf.put(0x00.toByte())
+        buf.putShort(ipLen.toShort())
+        buf.putShort(0.toShort())
+        buf.putShort(0x4000.toShort())
+        buf.put(64.toByte())
+        buf.put(17.toByte())
+        buf.putShort(0.toShort())
+        buf.putInt(0)
+        buf.putInt(0)
+        buf.putShort(0.toShort())
+        buf.putShort(0.toShort())
+        buf.putShort(0.toShort())
+        buf.putShort(0.toShort())
 
-        // UDP hlavička
-        buf.putShort(dstPort.toShort())              // Source Port (byl destination)
-        buf.putShort(srcPort.toShort())              // Destination Port (byl source)
-        buf.putShort(udpLen.toShort())               // UDP Length
-        buf.putShort(0.toShort())                    // UDP Checksum (0 = no checksum for DNS)
+        val ip = IpHeader(buf, 0)
+        ip.sourceAddress = dstIp
+        ip.destinationAddress = srcIp
+        ip.computeChecksum()
 
-        // Compute IP checksum (over the first 20 bytes)
-        var sum = 0
-        buf.position(0)
-        for (i in 0 until 10) {
-            sum += buf.getShort().toInt() and 0xFFFF
-        }
-        while (sum shr 16 > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val ipChecksum = (sum.inv() and 0xFFFF).toShort()
-        buf.putShort(10, ipChecksum)
+        val udp = UdpHeader(buf, 20)
+        udp.sourcePort = dstPort
+        udp.destinationPort = srcPort
+        udp.length = udpLen
 
-        return header
+        return buf.array()
     }
 
     private fun parseDnsQuery(payload: ByteArray): Pair<String, String>? {
@@ -1246,7 +1344,8 @@ class VpnNatEngine(
             dstIp = ipHeader.destinationAddress,
             srcIp = ipHeader.sourceAddress,
             dstPort = udpHeader.destinationPort,
-            srcPort = udpHeader.sourcePort
+            srcPort = udpHeader.sourcePort,
+            payloadLen = dnsResponse.size
         )
 
         val cached = dnsResponseCache[cacheKey]
@@ -1280,9 +1379,4 @@ class VpnNatEngine(
         }
     }
 
-    private fun writeFully(channel: java.nio.channels.WritableByteChannel, buffer: ByteBuffer) {
-        while (buffer.hasRemaining()) {
-            channel.write(buffer)
-        }
-    }
 }

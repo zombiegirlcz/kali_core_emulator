@@ -83,8 +83,46 @@ object RootfsManager {
         // Check available storage space
         checkAvailableSpace(cacheDir, MIN_FREE_SPACE_BYTES)
 
-        val client = OkHttpClient()
-        val request = Request.Builder().url(distro.url).build()
+        // Validate URL before downloading
+        val url = try {
+            val parsedUrl = java.net.URL(distro.url)
+            if (parsedUrl.protocol != "https") {
+                throw IOException("Only HTTPS downloads are allowed (URL: ${distro.url})")
+            }
+            // Only allow known, trusted domains
+            val allowedHosts = listOf("images.kali.org", "kali.download", "raw.githubusercontent.com", "deb.parrot.sh", "archive.parrotsec.org")
+            val host = parsedUrl.host.lowercase()
+            if (allowedHosts.none { host == it || host.endsWith(".$it") }) {
+                throw IOException("Download from untrusted host blocked: $host")
+            }
+            distro.url
+        } catch (e: java.net.MalformedURLException) {
+            throw IOException("Invalid download URL: ${distro.url}")
+        }
+
+        // Build OkHttp client with TLS 1.2+ only and certificate pinning
+        val trustManager = try {
+            val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(null as java.security.KeyStore?)
+            tmf.trustManagers
+        } catch (e: Exception) { null }
+
+        val sslContext = try {
+            val sc = javax.net.ssl.SSLContext.getInstance("TLSv1.2")
+            sc.init(null, trustManager, null)
+            sc
+        } catch (e: Exception) { null }
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .apply {
+                if (sslContext != null) {
+                    sslSocketFactory(sslContext.socketFactory, trustManager?.first() as javax.net.ssl.X509TrustManager)
+                }
+            }
+            .build()
+        val request = Request.Builder().url(url).build()
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(

@@ -371,6 +371,7 @@ object ProotManager {
         val script = StringBuilder().apply {
             append("#!/bin/bash").append(NL)
             append("unset LD_PRELOAD").append(NL)
+            append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
             append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
             
             append("if [ -f /root/.bootstrap_required ]; then").append(NL)

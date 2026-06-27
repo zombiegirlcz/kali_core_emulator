@@ -8,6 +8,7 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 CONFIG_PATH = os.path.expanduser("~/.config/nethunter/agent.json")
+AUTH_TOKEN_PATH = "/tmp/nethunter_agent_token"
 PORT = 13338
 
 SYSTEM_PROMPT = """You are the NetHunter AI Operator, a helpful and expert security assistant integrated directly into this mobile Kali Linux / ParrotOS chroot environment.
@@ -375,6 +376,24 @@ def run_agent(query):
     return "Agent loop exceeded maximum steps without a final answer. "
 
 # HTTP Handler
+def check_auth(headers):
+    """Verify Bearer token from Authorization header against stored token."""
+    try:
+        stored_token = ""
+        if os.path.exists(AUTH_TOKEN_PATH):
+            with open(AUTH_TOKEN_PATH, 'r') as f:
+                stored_token = f.read().strip()
+        if not stored_token:
+            return True  # No token configured = allow (backward compat)
+        
+        auth_header = headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[7:]
+            return provided == stored_token
+        return False
+    except Exception:
+        return False
+
 class AgentHTTPHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass # Suppress logging to keep stdin/stdout clean
@@ -382,6 +401,14 @@ class AgentHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urllib.parse.urlparse(self.path).path
         if parsed_path == "/query":
+            # Authentication check
+            if not check_auth(self.headers):
+                self.send_response(401)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Unauthorized: Invalid or missing auth token"}).encode('utf-8'))
+                return
+
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length).decode('utf-8')
             

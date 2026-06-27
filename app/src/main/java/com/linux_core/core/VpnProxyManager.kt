@@ -130,6 +130,13 @@ object VpnProxyManager {
         }
     }
 
+    fun stop() {
+        isProxyEnabled.set(false)
+        rotationThread?.interrupt()
+        rotationThread = null
+        Log.i(TAG, "Proxy rotation stopped")
+    }
+
     private fun startRotationLoop() {
         rotationThread = Thread {
             try {

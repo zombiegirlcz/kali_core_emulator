@@ -30,9 +30,7 @@ class VpnCaptureService : VpnService() {
         const val ACTION_START = "com.linux_core.ACTION_START"
         const val ACTION_STOP = "com.linux_core.ACTION_STOP"
 
-        private const val MTU = 1500
-        private const val TUN_BUFFER_SIZE = 65536
-        private const val BATCH_READ_COUNT = 8
+        private const val MTU = 1400
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val VPN_DNS = "8.8.8.8"
 
@@ -84,23 +82,28 @@ class VpnCaptureService : VpnService() {
         fun getConnectionOwnerUid(protocolStr: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): Int {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1
             val inst = instance ?: return -1
-            return try {
-                val protocol = if (protocolStr.equals("TCP", ignoreCase = true)) 6 else 17
-                val srcAddr = java.net.InetAddress.getByName(srcIp)
-                val dstAddr = java.net.InetAddress.getByName(dstIp)
-                val method = VpnService::class.java.getMethod(
-                    "checkConnectionOwner",
-                    Int::class.javaPrimitiveType,
-                    java.net.InetAddress::class.java,
-                    Int::class.javaPrimitiveType,
-                    java.net.InetAddress::class.java,
-                    Int::class.javaPrimitiveType
-                )
-                method.invoke(inst, protocol, srcAddr, srcPort, dstAddr, dstPort) as Int
-            } catch (e: Exception) {
-                Log.e(TAG, "getConnectionOwnerUid reflection failed: ${e.message}")
-                -1
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                // checkConnectionOwner was never a public API; try it via reflection on older versions
+                return try {
+                    val protocol = if (protocolStr.equals("TCP", ignoreCase = true)) 6 else 17
+                    val srcAddr = java.net.InetAddress.getByName(srcIp)
+                    val dstAddr = java.net.InetAddress.getByName(dstIp)
+                    val method = VpnService::class.java.getMethod(
+                        "checkConnectionOwner",
+                        Int::class.javaPrimitiveType,
+                        java.net.InetAddress::class.java,
+                        Int::class.javaPrimitiveType,
+                        java.net.InetAddress::class.java,
+                        Int::class.javaPrimitiveType
+                    )
+                    method.invoke(inst, protocol, srcAddr, srcPort, dstAddr, dstPort) as Int
+                } catch (e: Exception) {
+                    Log.w(TAG, "getConnectionOwnerUid not available: ${e.message}")
+                    -1
+                }
             }
+            // On API 33+ this method does not exist/requires system API access
+            return -1
         }
 
         @JvmStatic
@@ -198,13 +201,7 @@ class VpnCaptureService : VpnService() {
 
         VpnProxyManager.onProxyChangedListener = {
             if (isServiceRunning.get()) {
-                Log.i(TAG, "Proxy changed, restarting VPN engine...")
-                handler.post {
-                    synchronized(vpnSync) {
-                        stopVpn()
-                        startVpn()
-                    }
-                }
+                Log.i(TAG, "Proxy changed — new connections will use the new proxy")
             }
         }
     }
@@ -259,8 +256,6 @@ class VpnCaptureService : VpnService() {
                 .setSession("NetHunter VPN")
                 .setMtu(customMtu)
                 .addAddress(VPN_ADDRESS, 32)
-                .addAddress("2001:db8:1::2", 128)
-                .addRoute("::", 0)
             
             if (VpnPeerManager.isEnabled()) {
                 builder.addAddress("10.9.0.${VpnPeerManager.getLocalPeerId()}", 24)
@@ -404,8 +399,8 @@ class VpnCaptureService : VpnService() {
 
             // Start packet forwarding loop on background thread
             vpnThread = Thread({
-                // Použijeme větší buffer (65536) pro efektivní čtení z TUN rozhraní
-                val buffer = ByteArray(TUN_BUFFER_SIZE)
+                // Větší buffer (65536) pro efektivní čtení z TUN rozhraní
+                val buffer = ByteArray(65536)
                 try {
                     val pfd = vpnInterface
                     if (pfd != null) {
@@ -413,24 +408,9 @@ class VpnCaptureService : VpnService() {
                             while (isServiceRunning.get()) {
                                 val length = input.read(buffer)
                                 if (length > 0) {
-                                    // Zpracování prvního paketu
                                     packetCount.incrementAndGet()
                                     byteCount.addAndGet(length.toLong())
                                     natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
-
-                                    // Batch processing — zkusíme přečíst další pakety bez blokování
-                                    // (dostupné v bufferu díky větší alokaci)
-                                    var available = input.available()
-                                    var batchCount = 0
-                                    while (available > 0 && batchCount < BATCH_READ_COUNT && isServiceRunning.get()) {
-                                        val nextLen = input.read(buffer)
-                                        if (nextLen <= 0) break
-                                        packetCount.incrementAndGet()
-                                        byteCount.addAndGet(nextLen.toLong())
-                                        natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, nextLen), nextLen)
-                                        batchCount++
-                                        available = input.available()
-                                    }
                                 }
                             }
                         }

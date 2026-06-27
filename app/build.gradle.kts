@@ -1,6 +1,11 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+// Helper: returns null if property is not set (avoids MissingPropertyException)
+fun propertyOrNull(name: String): String? {
+    return if (hasProperty(name)) property(name) as? String else null
+}
+
 plugins {
     alias(libs.plugins.android.application)
     // alias(libs.plugins.kotlin.android) // Dočasně zakomentováno pro test duplicity
@@ -24,15 +29,16 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("release.jks")
-            storePassword = "password123"
-            keyAlias = "releaseKey"
-            keyPassword = "password123"
+            // WARNING: Passwords should come from environment variables or a secure CI pipeline
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: ""
+            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: ""
+            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: ""
         }
         getByName("debug") {
             storeFile = file("release.jks")
-            storePassword = "password123"
-            keyAlias = "releaseKey"
-            keyPassword = "password123"
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: "password123"
+            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "releaseKey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
         }
     }
 
@@ -46,7 +52,6 @@ android {
             )
         }
         getByName("debug") {
-            isJniDebuggable = true
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")
         }

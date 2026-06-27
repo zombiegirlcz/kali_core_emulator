@@ -18,13 +18,16 @@ class AIBrain(private val context: Context) {
     }
 
     init {
-        try {
-            val modelBytes = context.assets.open("vpn_brain_v2.onnx").readBytes()
-            ortSession = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
-            Log.i(TAG, "VPN Brain NN v7 loaded — 18->256->128->64->6 (47K params)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load VPN Brain: ${e.message}")
-        }
+        // Load ONNX session asynchronously to prevent blocking the main thread
+        java.lang.Thread {
+            try {
+                val modelBytes = context.assets.open("vpn_brain_v7.onnx").readBytes()
+                ortSession = ortEnv.createSession(modelBytes, OrtSession.SessionOptions())
+                Log.i(TAG, "VPN Brain NN v7 loaded asynchronously — 18->256->128->64->6 (47K params)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load VPN Brain: ${e.message}")
+            }
+        }.start()
     }
 
     /**

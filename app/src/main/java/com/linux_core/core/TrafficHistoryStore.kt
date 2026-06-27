@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
 import org.json.JSONArray
 
-class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic_intelligence.db", null, 2) {
+class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic_intelligence.db", null, 3) {
 
     companion object {
         private const val TAG = "TrafficHistoryStore"
@@ -60,6 +60,10 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 3) {
+            db.execSQL("DELETE FROM traffic_entries")
+            db.execSQL("DELETE FROM traffic_arrays")
+        }
         if (oldVersion < 2) {
             db.execSQL("""
                 CREATE TABLE IF NOT EXISTS traffic_entries (
@@ -125,7 +129,6 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                 put("elapsed_ms", entry.elapsedTimeMs)
                 put("bytes_sent", entry.bytesSent)
                 put("bytes_received", entry.bytesReceived)
-                put("payload_hex", entry.payloadHex)
             }
             db.insert("traffic_entries", null, cv)
         } catch (e: Exception) {
@@ -161,7 +164,6 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                             size = c.getInt(c.getColumnIndexOrThrow("size")),
                             category = category,
                             detail = c.getString(c.getColumnIndexOrThrow("detail")) ?: "",
-                            payloadHex = c.getString(c.getColumnIndexOrThrow("payload_hex")),
                             entropy = c.getDouble(c.getColumnIndexOrThrow("entropy")),
                             appName = c.getString(c.getColumnIndexOrThrow("app_name")) ?: "",
                             sessionName = c.getString(c.getColumnIndexOrThrow("session_name")),

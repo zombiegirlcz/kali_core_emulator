@@ -167,7 +167,7 @@ class AIBrainWorker(private val context: Context) {
                 else -> true
             }
             if (shouldExecute) {
-                OffensiveEngine.execute(strategy, request.dstIpStr, request.dstPort)
+                OffensiveEngine.execute(context, strategy, request.dstIpStr, request.dstPort)
             }
             saveTrainingSample(features, finalDecision)
         }

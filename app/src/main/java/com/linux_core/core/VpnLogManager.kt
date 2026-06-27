@@ -35,7 +35,7 @@ object VpnLogManager {
 
     data class LogEntry(
         val timestamp: Long,
-        val protocol: String, // "TCP" or "UDP"
+        val protocol: String,
         val srcIp: String,
         val srcPort: Int,
         val dstIp: String,
@@ -43,7 +43,6 @@ object VpnLogManager {
         val size: Int,
         val category: AuditCategory,
         val detail: String = "",
-        val payloadHex: String? = null,
         val entropy: Double = 0.0,
         val appName: String = "",
         val sessionName: String? = null,
@@ -67,7 +66,6 @@ object VpnLogManager {
                 put("appName", appName)
                 sessionName?.let { put("sessionName", it) }
                 packageName?.let { put("packageName", it) }
-                payloadHex?.let { put("payloadHex", it) }
                 put("elapsedTimeMs", elapsedTimeMs)
                 put("bytesSent", bytesSent)
                 put("bytesReceived", bytesReceived)
@@ -269,7 +267,6 @@ object VpnLogManager {
         data: ByteArray? = null
     ) {
         val entropyVal = data?.let { calculateEntropy(it) } ?: 0.0
-        val payloadHex: String? = null // skip hex conversion for performance
 
         val cacheKey = "$protocol:$srcIp:$srcPort:$dstIp:$dstPort"
         val resolved = processCache.getOrPut(cacheKey) {
@@ -277,11 +274,10 @@ object VpnLogManager {
             else ProcessResolver.ProcessInfo("System", null)
         }
 
-        // Simulate realistic values matching AdGuard's detailed logs
         val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
         val isUpload = (srcIp == "10.0.0.2")
-        val bSent = if (isUpload) size.toLong() else (size * 0.15).toLong()
-        val bRecv = if (!isUpload) size.toLong() else (size * 0.65).toLong()
+        val bSent = if (isUpload) size.toLong() else 0L
+        val bRecv = if (!isUpload) size.toLong() else 0L
 
         val entry = LogEntry(
             timestamp = System.currentTimeMillis(),
@@ -293,7 +289,6 @@ object VpnLogManager {
             size = size,
             category = category,
             detail = detail,
-            payloadHex = payloadHex,
             entropy = entropyVal,
             appName = resolved.appName,
             sessionName = resolved.sessionName,
