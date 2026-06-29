@@ -106,10 +106,29 @@ class VpnCaptureService : VpnService() {
             return -1
         }
 
-        @JvmStatic
-        fun getActiveSockets(context: Context): List<ActiveSocket> {
-            return instance?.natEngine?.getActiveSockets(context) ?: emptyList()
+    @JvmStatic
+    fun getActiveSockets(context: Context): List<ActiveSocket> {
+        return instance?.natEngine?.getActiveSockets(context) ?: emptyList()
+    }
+
+    /**
+     * Re-sign a captured server certificate with the bundled MITM CA so a downstream
+     * TLS inspector can decrypt the tunneled session. Returns null when MITM is disabled
+     * or the CA / private key are not available in this build.
+     */
+    @JvmStatic
+    fun resignForTlsInspection(serverCert: java.security.cert.X509Certificate, serial: Long): java.security.cert.X509Certificate? {
+        val mitm = try {
+            com.linux_core.security.CertificateManager.rootCa()
+        } catch (_: Exception) { null } ?: return null
+        if (!mitm.isAvailable()) return null
+        return try { mitm.signLeafForServer(serverCert, serial) }
+        catch (e: Exception) {
+            android.util.Log.e(TAG, "resignForTlsInspection failed: ${e.message}")
+            null
         }
+    }
+
     }
 
     private val isServiceRunning = AtomicBoolean(false)

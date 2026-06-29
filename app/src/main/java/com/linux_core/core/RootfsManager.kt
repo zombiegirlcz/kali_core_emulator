@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import com.linux_core.security.CertificateManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.ArchiveEntry
@@ -100,25 +101,36 @@ object RootfsManager {
             throw IOException("Invalid download URL: ${distro.url}")
         }
 
-        // Build OkHttp client with TLS 1.2+ only and certificate pinning
-        val trustManager = try {
-            val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
-            tmf.init(null as java.security.KeyStore?)
-            tmf.trustManagers
-        } catch (e: Exception) { null }
+        // Build OkHttp client with TLS 1.2+ only and certificate pinning.
+        // When ENABLE_MITM/ENABLE_ATTESTATION is true, prefer the SslContextFactory which
+        // loads the bundled PKCS#12 and trusts the MITM CA in addition to system anchors.
+        val certMgr = try { CertificateManager.ssl() } catch (_: Exception) { null }
+        val trustManager: javax.net.ssl.X509TrustManager? = if (certMgr != null) {
+            try { certMgr.trustManager() } catch (_: Exception) { null }
+        } else {
+            try {
+                val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+                tmf.init(null as java.security.KeyStore?)
+                tmf.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().firstOrNull()
+            } catch (e: Exception) { null }
+        }
 
-        val sslContext = try {
-            val sc = javax.net.ssl.SSLContext.getInstance("TLSv1.2")
-            sc.init(null, trustManager, null)
-            sc
-        } catch (e: Exception) { null }
+        val sslContext: javax.net.ssl.SSLContext? = if (certMgr != null) {
+            try { certMgr.sslContext() } catch (_: Exception) { null }
+        } else {
+            try {
+                val sc = javax.net.ssl.SSLContext.getInstance("TLSv1.2")
+                sc.init(null, trustManager?.let { arrayOf<javax.net.ssl.TrustManager>(it) }, null)
+                sc
+            } catch (e: Exception) { null }
+        }
 
         val client = OkHttpClient.Builder()
             .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .apply {
-                if (sslContext != null) {
-                    sslSocketFactory(sslContext.socketFactory, trustManager?.first() as javax.net.ssl.X509TrustManager)
+                if (sslContext != null && trustManager != null) {
+                    sslSocketFactory(sslContext.socketFactory, trustManager)
                 }
             }
             .build()

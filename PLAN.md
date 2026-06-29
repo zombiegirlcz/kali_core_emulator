@@ -140,3 +140,39 @@ Byl vygenerován komplexní a specifický plán zaměřený čistě na tvou USB 
 4. **Experimentální Launcher:** Kompletní návod na registraci aplikace jako `android.intent.category.HOME`. Obsahuje kód pro načtení nainstalovaných aplikací ze systému do sidebaru a hlavně trik s reflexí (`setLaunchWindowingMode`), který na HyperOS/MIUI vynutí spuštění Android aplikací ve Freeform plovoucích oknech přímo nad tvým běžícím Linux GUI desktopem.
 
 ```
+# SYSTEM SECURITY SPECIFICATION: CERTIFICATE & ATTESTATION IMPLEMENTATION
+
+## 1. Kontext a cíle
+Tento modul slouží k zajištění (a) analýzy síťového provozu a (b) integrity aplikace pomocí hardwarového zabezpečení. Implementace musí striktně oddělovat koncepty Root CA (síťový dohled) a Platformní/Hardwarové atestace (integrita).
+
+## 2. Implementace Root CA (MITM/TLS Security)
+Účelem je umožnit aplikaci důvěřovat vlastním certifikátům pro analýzu provozu.
+
+- **Mechanismus:** Použij `res/xml/network_security_config.xml`.
+- **Požadavek:** Definuj `<base-config>` a `<debug-overrides>` pro povolení vlastních uživatelských certifikátů v rámci vývojového buildu.
+- **Kritické upozornění:** V produkčním buildu musí být tento config striktně omezen (`cleartextTrafficPermitted=false`), aby nedošlo k úniku dat.
+- **Implementace:** Vytvoř třídu pro správu `KeyStore`, která načte certifikát z interního úložiště a inicializuje `TrustManagerFactory` pro vytvoření `SSLContext`.
+
+## 3. Implementace Hardwarové Atestace (Hardware Attestation)
+Účelem je prokázat, že aplikace běží na neupraveném, bezpečném hardwaru a klíče jsou chráněny v TEE (Trusted Execution Environment) nebo StrongBox.
+
+- **Generování klíčů:** Použij `KeyGenParameterSpec.Builder`.
+    - `setKeySize(256)`
+    - `setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))`
+    - `setIsStrongBoxBacked(true)` (při selhání fallback na TEE).
+    - `setAttestationChallenge(nonce)` (proti replay útokům).
+- **Verifikace:**
+    1. Aplikace vygeneruje klíč s atestací.
+    2. Aplikace odešle certifikát z `KeyStore.getCertificateChain()` na backend.
+    3. Backend verifikuje certifikát oproti Root certifikátu výrobce zařízení (Google/OEM) a kontroluje, zda příznaky v certifikátu (`attestationSecurityLevel`) potvrzují TEE/StrongBox.
+- **Biometrická vazba:** Pro zvýšení bezpečnosti přidej `.setUserAuthenticationRequired(true)` a nastav timeout, aby klíč nebyl přístupný bez fyzického ověření uživatele.
+
+## 4. Architektonické zásady
+- **Separace:** Nikdy nemíchej logiku pro MITM (Root CA) a logiku pro zabezpečení integrity (Attestation).
+- **Fail-safe:** Pokud atestace selže (např. detekce rootu/emulátoru), aplikace musí zamezit přístupu k citlivým funkcím.
+- **Robustnost:** Ošetři výjimky `KeyPermanentlyInvalidatedException` (nastane při změně otisků prstů).
+
+## 5. Security Checklist při implementaci
+- [ ] Jsou certifikáty uloženy v `KeyStore` a ne v prostém souborovém systému?
+- [ ] Jsou citlivé API požadavky podepisovány hardwarově chráněným klíčem?
+- [ ] Je v `network_security_config.xml` produkční prostředí bezpečné- [ ] Probíhá ověření atestačního řetězce na serveru, ne lokálně v aplikaci?

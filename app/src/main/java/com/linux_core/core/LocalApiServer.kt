@@ -44,6 +44,8 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import com.linux_core.security.CertificateManager
+import com.linux_core.security.KeystoreManager
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -68,6 +70,7 @@ object LocalApiServer {
         if (isRunning) return
         isRunning = true
         appContext = context.applicationContext
+        CertificateManager.init(appContext!!)
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
@@ -121,24 +124,97 @@ object LocalApiServer {
         }
     }
 
-    // Secure token for API authentication — auto-generated on first startup
+    // Secure token for API authentication — auto-generated on first startup.
+    // When the CertificateManager is active the token is stored encrypted in SharedPreferences
+    // (KeystoreManager -> AES-GCM-256 with TEE key) and the plaintext lives only in memory.
     private var authToken: String? = null
 
     private fun getAuthToken(context: Context): String {
         if (authToken == null) {
             val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
-            authToken = prefs.getString("auth_token", null)
-            if (authToken == null) {
-                authToken = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 32)
-                prefs.edit().putString("auth_token", authToken).apply()
+            val ks = CertificateManager.keystore()
+            val stored = prefs.getString("auth_token", null)
+            if (ks != null && stored != null && stored.startsWith("enc:")) {
+                authToken = ks.decryptString(stored.removePrefix("enc:"))
+                    .getOrElse { fallbackToken(context) }
+            } else if (stored != null && !stored.startsWith("enc:")) {
+                // Legacy plain token – migrate to encrypted form, then keep it in memory.
+                authToken = stored
+                if (ks != null) migrateTokenToEncrypted(context, prefs, stored, ks)
+            } else {
+                authToken = fallbackToken(context)
             }
         }
         return authToken!!
     }
 
+    private fun fallbackToken(context: Context): String {
+        val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
+        val ks = CertificateManager.keystore()
+        val plain = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 32)
+        if (ks != null) {
+            val b64 = ks.encryptString(plain).getOrNull()
+            if (b64 != null) {
+                prefs.edit().putString("auth_token", "enc:$b64").apply()
+                return plain
+            }
+        }
+        prefs.edit().putString("auth_token", plain).apply()
+        return plain
+    }
+
+    private fun migrateTokenToEncrypted(
+        context: Context,
+        prefs: android.content.SharedPreferences,
+        plain: String,
+        ks: KeystoreManager
+    ) {
+        try {
+            val b64 = ks.encryptString(plain).getOrNull() ?: return
+            prefs.edit().putString("auth_token", "enc:$b64").apply()
+        } catch (_: Exception) {
+            // Best-effort: if encryption fails the plain token is still in memory.
+        }
+    }
+
     private fun isAuthenticated(headers: Map<String, String>): Boolean {
         val token = headers["Authorization"] ?: headers["authorization"] ?: return false
         return token == "Bearer $authToken" || token == "Token $authToken"
+    }
+
+    /**
+     * Verifies the optional X-Attest-* headers sent by callers (e.g. nethunter_agent.py in
+     * the PRoot) when [com.linux_core.BuildConfig.ENABLE_ATTESTATION] is true.
+     *
+     * If attestation is disabled the function returns `true` immediately so the rest of
+     * the API surface is unchanged. If attestation is enabled but no headers are present
+     * we still return `true` for backward-compatibility, but the recommended client is
+     * expected to send all three headers.
+     *
+     * The headers are:
+     *   X-Attest-Nonce : base64 of 32 random bytes
+     *   X-Attest-Sig   : base64 of ECDSA(SHA-256, nonce || body)
+     *   X-Attest-Cert  : base64 of a DER X.509 leaf cert produced by the device's
+     *                    AndroidKeyStore
+     */
+    private fun verifyAttestationHeaders(headers: Map<String, String>, body: String): Boolean {
+        if (!com.linux_core.BuildConfig.ENABLE_ATTESTATION) return true
+        val nonceB64 = headers["x-attest-nonce"] ?: return true
+        val sigB64 = headers["x-attest-sig"] ?: return true
+        val certB64 = headers["x-attest-cert"] ?: return true
+        return try {
+            val nonce = android.util.Base64.decode(nonceB64, android.util.Base64.NO_WRAP)
+            val sig = android.util.Base64.decode(sigB64, android.util.Base64.NO_WRAP)
+            val certBytes = android.util.Base64.decode(certB64, android.util.Base64.NO_WRAP)
+            val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+            val cert = cf.generateCertificate(java.io.ByteArrayInputStream(certBytes)) as java.security.cert.X509Certificate
+            com.linux_core.security.AttestationVerifier.verify(
+                arrayOf(cert), nonce, body.toByteArray(Charsets.UTF_8), sig
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "verifyAttestationHeaders failed: ${t.message}")
+            false
+        }
     }
 
     private fun handleConnection(context: Context, socket: Socket) {
@@ -203,6 +279,13 @@ object LocalApiServer {
                     val token = getAuthToken(context)
                     sendResponse(out, 401, "Unauthorized",
                         "{\"error\":\"Authentication required. Use Authorization: Bearer <token>\",\"hint\":\"Token is in app SharedPreferences (api_security.xml)\"}")
+                    return
+                }
+                // Optional: when attestation is enabled, also require a fresh signed nonce.
+                val attOk = verifyAttestationHeaders(headers, body)
+                if (!attOk) {
+                    sendResponse(out, 401, "Unauthorized",
+                        "{\"error\":\"Attestation required. Send X-Attest-Nonce (b64), X-Attest-Sig (b64) and X-Attest-Cert (b64 DER) signed with the device key.\"}")
                     return
                 }
             }

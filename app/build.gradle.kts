@@ -24,6 +24,9 @@ android {
         versionName = "4.1-AI-FIX"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("boolean", "ENABLE_MITM", "true")
+        buildConfigField("boolean", "ENABLE_ATTESTATION", "true")
     }
 
     signingConfigs {
@@ -64,6 +67,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -122,6 +126,10 @@ dependencies {
     }
     implementation(libs.guava)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
+    implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.bouncycastle.bcprov)
+    implementation(libs.androidx.biometric)
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

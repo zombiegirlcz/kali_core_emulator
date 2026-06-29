@@ -2,23 +2,38 @@ package com.linux_core.core
 
 import android.content.Context
 import android.util.Log
+import com.linux_core.security.CertificateManager
 import org.json.JSONObject
 import java.io.File
 
 /**
  * Ukládá "otisky" běžného chování uživatele.
+ *
+ * Když je k dispozici [com.linux_core.security.KeystoreManager], soubor na disku
+ * je uložen v zašifrované podobě (AES-GCM-256 s klíčem v TEE); plaintext žije
+ * pouze v paměti. Pokud KeyStoreManager není inicializovaný (např. v testech),
+ * fallback na prostý JSON jako dříve.
  */
 object UserProfileStore {
     private const val TAG = "UserProfileStore"
     private const val PROFILE_FILE = "user_behavior_profile.json"
+    private const val ENC_MARKER = "enc:"
 
     // Mapa: Klíč (Protokol:Port) -> Průměrné hodnoty (Entropy, Size, Delta)
     private var profileData = JSONObject()
 
     fun load(context: Context) {
         val file = File(context.filesDir, PROFILE_FILE)
-        if (file.exists()) {
-            profileData = JSONObject(file.readText())
+        if (!file.exists()) return
+        val raw = file.readText()
+        val ks = CertificateManager.keystore()
+        profileData = if (ks != null && raw.startsWith(ENC_MARKER)) {
+            val plain = ks.decryptString(raw.removePrefix(ENC_MARKER)).getOrNull()
+            if (plain != null) JSONObject(plain) else JSONObject()
+        } else if (raw.isNotEmpty()) {
+            JSONObject(raw)
+        } else {
+            JSONObject()
         }
     }
 
@@ -62,6 +77,15 @@ object UserProfileStore {
 
     fun save(context: Context) {
         val file = File(context.filesDir, PROFILE_FILE)
-        file.writeText(profileData.toString())
+        val plain = profileData.toString()
+        val ks = CertificateManager.keystore()
+        if (ks != null) {
+            val enc = ks.encryptString(plain).getOrNull()
+            if (enc != null) {
+                file.writeText(ENC_MARKER + enc)
+                return
+            }
+        }
+        file.writeText(plain)
     }
 }
