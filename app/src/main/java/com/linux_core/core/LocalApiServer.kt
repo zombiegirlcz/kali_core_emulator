@@ -150,6 +150,10 @@ object LocalApiServer {
         return authToken!!
     }
 
+    fun getToken(context: Context): String {
+        return getAuthToken(context)
+    }
+
     private fun fallbackToken(context: Context): String {
         val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
         val ks = CertificateManager.keystore()
@@ -285,7 +289,7 @@ object LocalApiServer {
                 "/notifications/active", "/accessibility/hierarchy", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize")
+                "/battery/optimize", "/app/logs")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -356,7 +360,9 @@ object LocalApiServer {
                 path == "/map" && method == "GET" -> handleMap(context, out)
                 path == "/vpn/mitm" && method == "POST" -> handleVpnMitmPost(context, body, out)
                 path == "/vpn/mitm" && method == "GET" -> handleVpnMitmGet(context, out)
-                path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(out)
+                path == "/vpn/mitm/ca" && method == "GET" -> handleVpnMitmCa(context, out)
+                path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(path, out)
+                path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(path, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -1529,9 +1535,9 @@ object LocalApiServer {
         }
     }
 
-    private fun handleVpnMitmLogs(out: OutputStream) {
+    private fun handleVpnMitmLogs(path: String, out: OutputStream) {
         try {
-            val params = parseQueryParams("/vpn/mitm/logs")
+            val params = parseQueryParams(path)
             val fmt = params["format"] ?: "text"
             val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
 
@@ -1567,6 +1573,52 @@ object LocalApiServer {
             out.write(headers.toByteArray(Charsets.UTF_8))
             out.write(raw)
             out.flush()
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAppLogs(path: String, out: OutputStream) {
+        try {
+            val params = parseQueryParams(path)
+            val limit = params["limit"]?.toIntOrNull() ?: 100
+            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "-t", limit.toString()))
+            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            val sb = java.lang.StringBuilder()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                sb.append(line).append("\n")
+            }
+            reader.close()
+            process.destroy()
+
+            val raw = sb.toString().toByteArray(Charsets.UTF_8)
+            val headers = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: text/plain; charset=utf-8\r\n" +
+                    "Content-Length: ${raw.size}\r\n" +
+                    "Connection: close\r\n\r\n"
+            out.write(headers.toByteArray(Charsets.UTF_8))
+            out.write(raw)
+            out.flush()
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmCa(context: Context, out: OutputStream) {
+        try {
+            val caBytes = com.linux_core.security.RootCaInstaller(context).caBytes()
+            if (caBytes != null) {
+                val headers = "HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: application/x-x509-ca-cert\r\n" +
+                        "Content-Length: ${caBytes.size}\r\n" +
+                        "Connection: close\r\n\r\n"
+                out.write(headers.toByteArray(Charsets.UTF_8))
+                out.write(caBytes)
+                out.flush()
+            } else {
+                sendResponse(out, 404, "Not Found", "{\"error\":\"Root CA certificate not found in assets\"}")
+            }
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

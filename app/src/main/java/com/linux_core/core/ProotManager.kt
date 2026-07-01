@@ -596,25 +596,7 @@ object ProotManager {
                 append("exit \$?").append(NL)
             }.toString(),
 
-            "vpn-cli" to StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
-                append("API_URL=http://127.0.0.1:1337").append(NL)
-                append("case \"\$1\" in").append(NL)
-                append("    start) curl -s -X POST \"\$API_URL/vpn/start\" | grep -q starting && echo \"VPN starting\" || echo \"Failed to start VPN\" ;;").append(NL)
-                append("    stop) curl -s -X POST \"\$API_URL/vpn/stop\" | grep -q stopping && echo \"VPN stopping\" || echo \"Failed to stop VPN\" ;;").append(NL)
-                append("    status) curl -s \"\$API_URL/vpn\" ;;").append(NL)
-                append("    logs) shift").append(NL)
-                append("        FORMAT=text").append(NL)
-                append("        [ \"\$1\" = \"json\" ] && FORMAT=json").append(NL)
-                append("        curl -s \"\$API_URL/vpn/mitm/logs?format=\$FORMAT\" ;;").append(NL)
-                append("    mitm) shift").append(NL)
-                append("        if [ \$# -eq 0 ]; then echo \"Usage: vpn-cli mitm on|off\"; exit 1; fi").append(NL)
-                append("        ACTION=\$1").append(NL)
-                append("        if [ \"\$ACTION\" != \"on\" ] && [ \"\$ACTION\" != \"off\" ]; then echo \"Use on or off\"; exit 1; fi").append(NL)
-                append("        curl -s -X POST \"\$API_URL/vpn/mitm\" -d \"\$ACTION\" ;;").append(NL)
-                append("    *) echo \"Usage: vpn-cli [start|stop|status|logs|mitm]\"; exit 1 ;;").append(NL)
-                append("esac").append(NL)
-            }.toString(),
+            "vpn-cli" to context.assets.open("vpn-cli").bufferedReader().readText(),
 
             "ai-agent.py" to StringBuilder().apply {
                 append("#!/usr/bin/python3").append(NL)
@@ -1049,6 +1031,69 @@ object ProotManager {
                 append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch").append(NL)
             }.toString(),
 
+            "nethunter-log" to StringBuilder().apply {
+                append("#!/usr/bin/env python3").append(NL)
+                append("import sys, urllib.request, re").append(NL)
+                append("RST, DIM, BOLD = '\\033[0m', '\\033[2m', '\\033[1m'").append(NL)
+                append("RED, GREEN, YELLOW = '\\033[1;31m', '\\033[1;32m', '\\033[1;33m'").append(NL)
+                append("BLUE, MAGENTA, CYAN = '\\033[1;34m', '\\033[1;35m', '\\033[1;36m'").append(NL)
+                append("LEVEL_COLORS = {'V': DIM, 'D': BLUE, 'I': GREEN, 'W': YELLOW, 'E': RED, 'F': BOLD + RED}").append(NL)
+                append("LOG_RE = re.compile(r'^(\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+([VDIWEF])/([^(:\\s]+)\\s*(?:\\(\\s*(\\d+)\\))?\\s*:\\s*(.*)$')").append(NL)
+                append("def usage():").append(NL)
+                append("    print(f\"{MAGENTA}{BOLD}╔══════════════════════════════════════════╗{RST}\")").append(NL)
+                append("    print(f\"{MAGENTA}{BOLD}║         📋 NetHunter Log Viewer          ║{RST}\")").append(NL)
+                append("    print(f\"{MAGENTA}{BOLD}╚══════════════════════════════════════════╝{RST}\")").append(NL)
+                append("    print(\"Usage: nethunter-log [options] [lines]\")").append(NL)
+                append("    print(\"\\nOptions:\")").append(NL)
+                append("    print(f\"  {CYAN}-n, --lines <number>{RST}   Show last N log lines (default: 100)\")").append(NL)
+                append("    print(f\"  {CYAN}-g, --grep <pattern>{RST}   Filter logs matching pattern\")").append(NL)
+                append("    print(f\"  {CYAN}-h, --help{RST}           Show help menu\")").append(NL)
+                append("    sys.exit(0)").append(NL)
+                append("def main():").append(NL)
+                append("    limit, grep_pattern = 100, None").append(NL)
+                append("    args = sys.argv[1:]").append(NL)
+                append("    i = 0").append(NL)
+                append("    while i < len(args):").append(NL)
+                append("        arg = args[i]").append(NL)
+                append("        if arg in ('-h', '--help'): usage()").append(NL)
+                append("        elif arg in ('-n', '--lines'):").append(NL)
+                append("            if i+1 < len(args):").append(NL)
+                append("                try: limit = int(args[i+1])").append(NL)
+                append("                except: pass").append(NL)
+                append("                i += 2").append(NL)
+                append("            else: usage()").append(NL)
+                append("        elif arg in ('-g', '--grep'):").append(NL)
+                append("            if i+1 < len(args):").append(NL)
+                append("                grep_pattern = args[i+1].lower()").append(NL)
+                append("                i += 2").append(NL)
+                append("            else: usage()").append(NL)
+                append("        else:").append(NL)
+                append("            try: limit = int(arg)").append(NL)
+                append("            except: pass").append(NL)
+                append("            i += 1").append(NL)
+                append("    url = f\"http://127.0.0.1:1337/app/logs?limit={limit}\"").append(NL)
+                append("    try:").append(NL)
+                append("        with urllib.request.urlopen(url) as r:").append(NL)
+                append("            logs = r.read().decode('utf-8')").append(NL)
+                append("    except Exception as e:").append(NL)
+                append("        print(f\"{RED}{BOLD}Error:{RST} Cannot connect to LocalApiServer ({e})\")").append(NL)
+                append("        sys.exit(1)").append(NL)
+                append("    for line in logs.splitlines():").append(NL)
+                append("        if grep_pattern and grep_pattern not in line.lower(): continue").append(NL)
+                append("        m = LOG_RE.match(line)").append(NL)
+                append("        if m:").append(NL)
+                append("            ts, lvl, tag, pid, msg = m.groups()").append(NL)
+                append("            lvl_color = LEVEL_COLORS.get(lvl, RST)").append(NL)
+                append("            pid_str = f\"({pid.strip()})\" if pid else \"\"").append(NL)
+                append("            m_lower = msg.lower()").append(NL)
+                append("            if lvl in ('E', 'F') or 'denied' in m_lower or 'fail' in m_lower or 'error' in m_lower: msg = RED + msg + RST").append(NL)
+                append("            elif 'warn' in m_lower or 'contention' in m_lower: msg = YELLOW + msg + RST").append(NL)
+                append("            elif 'success' in m_lower or 'established' in m_lower: msg = GREEN + msg + RST").append(NL)
+                append("            print(f\"{DIM}{ts}{RST} {lvl_color}{lvl}{RST} {MAGENTA}{tag}{CYAN}{pid_str}{RST}: {msg}\")").append(NL)
+                append("        else: print(line)").append(NL)
+                append("if __name__ == '__main__': main()").append(NL)
+            }.toString(),
+
             "nethunter-fix-postinst" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
@@ -1345,7 +1390,38 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-terminalmap` | Alias pro `nethunter-map` — synonym pro spuštění TerminalMap. | `nethunter-terminalmap` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
+| `nethunter-log [options] [lines]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nethunter-log -n 50 -g "LocalApiServer"` |
 | `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
+
+## 🔧 Diagnostické nástroje
+
+### nethunter-log
+
+Python skript pro barevné formátované zobrazení logcat záznamů aplikace bez nutnosti ADB.
+
+```bash
+# Výchozí: posledních 100 řádků
+nethunter-log
+
+# Posledních 50 řádků
+nethunter-log 50
+nethunter-log -n 50
+
+# Filtrování podle vzoru (case-insensitive)
+nethunter-log -g "TlsMitm"
+nethunter-log -n 200 -g "LocalApiServer"
+```
+
+Barevné schéma podle log úrovně:
+- **V** (Verbose): šedá / tlumená
+- **D** (Debug): modrá
+- **I** (Info): zelená
+- **W** (Warn): žlutá
+- **E/F** (Error/Fatal): červená tučná
+
+Automatické zvýraznění klíčových slov: `error`/`denied`/`fail` = červeně, `success`/`established` = zeleně.
+
+HTTP API endpoint: `GET /app/logs?limit=N`
 
 ## 🛡️ Správa AdGuard VPN Firewallu
 
@@ -1355,7 +1431,7 @@ Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovací
 | :--- | :--- | :--- |
 | `vpn-on` | Zapne globální VPN / NAT. | `vpn-on` |
 | `vpn-off` | Vypne globální VPN / NAT. | `vpn-off` |
-| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `start`, `stop`, `logs` (formátovaný výpis MITM provozu), `mitm on|off|status`. | `vpn-cli logs` |
+| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `start`, `stop`, `logs` (formátovaný výpis MITM provozu), `mitm on|off|status|ca`. | `vpn-cli logs` |
 | `vpn-bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `vpn-bypass curl ipinfo.io` |
 | `ignore-vpn [on|off|status]` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `ignore-vpn on` |
 
@@ -1369,6 +1445,39 @@ TLS MITM (Man-in-the-Middle) umožňuje plně dešifrovat HTTPS a další TLS pr
 - MITM CA privátní klíč: `assets/certs/mitm-ca.p12`
 - Alias v PKCS12: `nethunter_mitm_ca`
 
+### 🔐 Instalace Root CA certifikátu
+
+Pro správné fungování MITM dešifrování musí být Root CA certifikát nainstalován.
+
+#### Získání certifikátu
+
+```bash
+# Zobrazit certifikát v terminálu
+vpn-cli mitm ca
+
+# Uložit do souboru
+vpn-cli mitm ca > /tmp/nethunter-ca.crt
+
+# Nebo přímo přes HTTP API
+curl -s http://127.0.0.1:1337/vpn/mitm/ca > /tmp/nethunter-ca.crt
+```
+
+#### Instalace do Kali/PRoot trust store
+
+```bash
+vpn-cli mitm ca > /usr/local/share/ca-certificates/nethunter-mitm.crt
+update-ca-certificates
+```
+
+#### Instalace do Androidu
+
+1. Uložit certifikát: `vpn-cli mitm ca > /sdcard/nethunter-ca.crt`
+2. Na telefonu: **Nastavení → Zabezpečení → Šifrování a přihlašovací údaje → Instalovat certifikát → Certifikát CA**
+3. Vybrat soubor `nethunter-ca.crt` ze storage
+4. Potvrdit instalaci (systém vyžádá PIN/otisk prstu)
+
+> **Omezení:** Od Androidu 7.0+ aplikace standardně nedůvěřují uživatelským certifikátům. Pro dešifrování provozu ostatních appek je nutný root a přesun CA do systémového trust store (`/system/etc/security/cacerts/`). Aplikace s certificate pinning (banky, Google, Signal, WhatsApp) odmítnou MITM spojení i s nainstalovaným CA.
+
 ### CLI příkazy
 
 ```bash
@@ -1380,6 +1489,12 @@ vpn-cli mitm off
 
 # Stav MITM rozhraní + aktivní session
 vpn-cli mitm status
+
+# Stáhnout/zobrazit Root CA certifikát
+vpn-cli mitm ca
+
+# Uložit Root CA certifikát do souboru pro instalaci
+vpn-cli mitm ca > /tmp/nethunter-ca.crt
 
 # Formátovaný dešifrovaný provoz
 vpn-cli logs
@@ -1397,13 +1512,16 @@ Body: on|off
 GET /vpn/mitm
 {"mitm":"on","active_sessions":2,"sessions":[{"port":54321,"snippet":"[CLIENT->SERVER] GET / ..."}]}
 
+GET /vpn/mitm/ca
+(vrátí PEM certifikát s Content-Type: application/x-x509-ca-cert)
+
 GET /vpn/mitm/logs
 GET /vpn/mitm/logs?format=json
 ```
 
 ### Zobrazení v terminálové relaci
 
-Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do `nethunter_docs.md` a do CIA (decrypted_snippets) bufferu. Využijte `vpn-cli logs` pro čitelné zobrazení.
+Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do snippet bufferu. Využijte `vpn-cli logs` pro čitelné zobrazení.
 
 ### Klíčové třídy
 
@@ -1417,7 +1535,7 @@ Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do `nethunter_doc
 | `VpnNatEngine.kt` | Hlavní NAT engine, detekuje TLS Client Hello v `handleTcpPacket` a předává payload do `TlsMitmEngine` |
 | `VpnSecurityTab.kt` | UI záložka pro zobrazení MITM provozu (žlutý indikátor `TLS MITM INTERCEPT` + karta `LIVE DECRYPTED TLS TRAFFIC`) |
 | `VpnSettingsTab.kt` | Přepínač `TLS MITM Inspection` v Nastavení |
-| `LocalApiServer.kt` | Endpointy `/vpn/mitm` a `/vpn/mitm/logs` pro vzdálené ovládání |
+| `LocalApiServer.kt` | Endpointy `/vpn/mitm`, `/vpn/mitm/ca` a `/vpn/mitm/logs` pro vzdálené ovládání |
 
 ## 🧠 AI Mozek VPN (Inference Engine)
 
@@ -1444,6 +1562,8 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 * **Kontrola VPN stavu:** `curl -s http://127.0.0.1:1337/vpn`
 * **Zapnutí VPN:** `curl -s -X POST http://127.0.0.1:1337/vpn/start`
 * **Vypnutí VPN:** `curl -s -X POST http://127.0.0.1:1337/vpn/stop`
+* **Stažení Root CA:** `curl -s http://127.0.0.1:1337/vpn/mitm/ca > ca.crt`
+* **Logcat záznamy:** `curl -s http://127.0.0.1:1337/app/logs?limit=100`
 
 ---
 *Dokument byl automaticky vygenerován NetHunter AI Operatorem.*

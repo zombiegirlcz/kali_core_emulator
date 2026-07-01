@@ -251,7 +251,7 @@ class TlsMitmSession(
             val clientStatus = clientEngine?.handshakeStatus ?: break
             val serverStatus = serverEngine?.handshakeStatus ?: break
 
-            if (clientStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
+            val workDone = if (clientStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
                 serverStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
                 handleAppData(clientAppDataIn, clientNetDataOut, serverAppDataOut, serverNetDataOut, serverNetDataIn)
             } else {
@@ -261,12 +261,17 @@ class TlsMitmSession(
                 if (serverStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
                     driveServerHandshake(serverAppDataOut, serverNetDataOut, serverNetDataIn)
                 }
+                true
             }
 
             synchronized(clientQueueLock) {
                 if (!running) break
             }
-            Thread.sleep(1)
+            if (workDone) {
+                Thread.sleep(1)
+            } else {
+                Thread.sleep(15) // Back off when idle to save CPU and battery
+            }
         }
     }
 
@@ -276,12 +281,14 @@ class TlsMitmSession(
         serverAppOut: ByteBuffer,
         serverNetOut: ByteBuffer,
         serverNetIn: ByteBuffer
-    ) {
+    ): Boolean {
+        var worked = false
         synchronized(clientQueueLock) {
             var item: ByteArray?
             while (clientQueue.poll().also { item = it } != null) {
                 if (item!!.isNotEmpty()) {
                     clientAppIn.put(item!!)
+                    worked = true
                 }
             }
         }
@@ -296,10 +303,15 @@ class TlsMitmSession(
                         val plain = ByteArray(clientNetOut.remaining())
                         clientNetOut.get(plain)
                         clientNetOut.clear()
+                        
                         recordSnippet("CLIENT->SERVER", plain)
-                        val outBuf = java.nio.ByteBuffer.allocate(plain.size).put(plain)
-                        while (outBuf.hasRemaining()) {
-                            writeToServer(outBuf)
+                        
+                        // Encrypt plaintext for the secure WAN server
+                        serverNetOut.clear()
+                        val wrapResult = serverEngine!!.wrap(ByteBuffer.wrap(plain), serverNetOut)
+                        if (wrapResult.bytesProduced() > 0) {
+                            writeToServer(serverNetOut)
+                            worked = true
                         }
                     }
                 } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
@@ -315,15 +327,20 @@ class TlsMitmSession(
         }
 
         val sc = serverChannel
+        var readBytes = 0
         if (sc != null && sc.isConnected) {
             serverNetIn.clear()
-            var read = try { sc.read(serverNetIn) } catch (e: Exception) { -1 }
+            val read = try { sc.read(serverNetIn) } catch (e: Exception) { -1 }
             if (read == -1) {
                 running = false
-                return
+                return false
+            }
+            if (read > 0) {
+                readBytes = read
+                worked = true
             }
         }
-        if (serverNetIn.position() > 0) {
+        if (readBytes > 0) {
             serverNetIn.flip()
             while (serverNetIn.hasRemaining()) {
                 serverAppOut.clear()
@@ -334,13 +351,17 @@ class TlsMitmSession(
                         val plain = ByteArray(serverAppOut.remaining())
                         serverAppOut.get(plain)
                         serverAppOut.clear()
+                        
                         recordSnippet("SERVER->CLIENT", plain)
+                        
+                        // Encrypt server response for the client
                         clientNetOut.clear()
                         val wrapResult = clientEngine!!.wrap(ByteBuffer.wrap(plain), clientNetOut)
                         if (wrapResult.bytesProduced() > 0) {
                             clientNetOut.flip()
                             writeToTunClient(clientNetOut)
                             clientNetOut.clear()
+                            worked = true
                         }
                     }
                 } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
@@ -353,39 +374,7 @@ class TlsMitmSession(
             }
             serverNetIn.compact()
         }
-
-        if (!running) return
-
-        synchronized(clientQueueLock) {
-            var item: ByteArray?
-            while (clientQueue.poll().also { item = it } != null) {
-                if (item!!.isNotEmpty()) {
-                    clientAppIn.put(item!!)
-                }
-            }
-        }
-        if (clientAppIn.position() > 0) {
-            clientAppIn.flip()
-            while (clientAppIn.hasRemaining()) {
-                clientNetOut.clear()
-                val result = clientEngine!!.unwrap(clientAppIn, clientNetOut)
-                if (result.status == SSLEngineResult.Status.OK) {
-                    if (result.bytesProduced() > 0) {
-                        clientNetOut.flip()
-                        writeToServer(clientNetOut)
-                        clientNetOut.clear()
-                    }
-                } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                    clientAppIn.position(clientAppIn.limit())
-                    break
-                } else {
-                    Log.w(TAG, "Client unwrap (app2) status: ${result.status}")
-                    clientNetOut.clear()
-                    break
-                }
-            }
-            clientAppIn.compact()
-        }
+        return worked
     }
 
     private fun driveClientHandshake(appOut: ByteBuffer, netOut: ByteBuffer) {

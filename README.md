@@ -64,6 +64,7 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nethunter-location` | Retrieve current GPS coordinates in JSON | `nethunter-location` |
 | `nethunter-volume [level]` | Retrieve or set the media stream volume | `nethunter-volume 10` |
 | `nethunter-torch [on\|off]` | Turn the device flashlight on or off | `nethunter-torch on` |
+| `nethunter-log [options] [lines]` | Colorized app logcat viewer (Python) with level-based coloring and keyword highlighting, no adb required | `nethunter-log -n 50 -g "LocalApiServer"` |
 | `nethunter-apps-usage` | Retrieve detailed app usage statistics (last 24h) | `nethunter-apps-usage` |
 | `nethunter-notifications-active`| Retrieve a list of current active notifications | `nethunter-notifications-active` |
 | `nethunter-accessibility-hierarchy`| Extract and output the active UI text hierarchy in JSON | `nethunter-accessibility-hierarchy` |
@@ -71,7 +72,7 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nethunter-api share [on\|off\|status]`| Control whether the loopback HTTP API is shared externally (0.0.0.0 vs 127.0.0.1) | `nethunter-api share on` |
 | `vpn-on` | Enable global VPN AdGuard Sniffer / NAT Engine | `vpn-on` |
 | `vpn-off` | Disable global VPN AdGuard Sniffer / NAT Engine | `vpn-off` |
-| `vpn-cli <action>` | Advanced VPN CLI: control service (start/stop/status), fetch logs (logs), manage bypass (ignore), or start AI monitor (ai/chat) | `vpn-cli logs` |
+| `vpn-cli <action>` | Advanced VPN CLI: control service (start/stop/status), fetch logs (logs), manage MITM (mitm on/off/status/ca), or start AI monitor (ai/chat) | `vpn-cli logs` |
 | `vpn-bypass <cmd>` | Forces a command to bypass VPN and connect directly | `vpn-bypass curl ipinfo.io` |
 | `ignore-vpn [on\|off\|status]` | Toggle VPN bypass for the current shell session dynamically | `ignore-vpn on` |
 
@@ -150,6 +151,7 @@ At startup, `ProotManager` deploys a rich set of command-line tools into `/usr/l
   - `nethunter-location`: GPS coordinates.
   - `nethunter-volume [level]`: Audio volume settings.
   - `nethunter-torch [on|off]`: Camera flashlight switch.
+  - `nethunter-log [options] [lines]`: Colorized app logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red) and keyword highlighting.
 - **Desktop Environment:**
   - `nethunter-desktop [start|stop|status]`: Automates setup and execution of an XFCE4 session running over TigerVNC and websockify (`noVNC` on port `6080`).
 
@@ -199,6 +201,26 @@ This release introduces the fully integrated **AI Brain Telemetry & Neural Class
 - **Process Traversal:** Socket-to-process tracker using BFS `/proc` traversal to attribute network flows to specific chroot binaries.
 - **Real-time Flow Visualizer:** Interactive scatter diagrams for entropy metrics and real-time active socket connection cards with immediate block actions.
 - **Threat Intelligence:** Resolved GeoIP lookups and integrated country flag emojis directly into the traffic logs.
+
+---
+
+## 📈 Version 4.2 Changelog
+
+This release fixes critical TLS MITM proxy issues, adds Root CA management, and introduces diagnostic CLI tools:
+
+### 1. TLS MITM Engine Fixes
+- **Fixed Client→Server Encryption:** Client plaintext is now correctly encrypted via `serverEngine.wrap()` before forwarding to the remote server. Previously, raw decrypted data was sent directly, breaking all MITM-proxied connections.
+- **Removed Redundant Unwrap Block:** Eliminated a duplicate `clientEngine.unwrap` + `writeToServer` block that contained a double-flip ByteBuffer bug, causing zero bytes to be written.
+- **Adaptive CPU Backoff:** `proxyLoop` now sleeps 1ms during active data transfer and 15ms when idle, reducing CPU usage dramatically (previously a constant 1ms busy-loop).
+
+### 2. Root CA Certificate Management
+- **New API Endpoint:** `GET /vpn/mitm/ca` returns the bundled MITM Root CA certificate in PEM format.
+- **New CLI Command:** `vpn-cli mitm ca` fetches and displays the Root CA for easy export and installation.
+- **Installation Guide:** Documentation for installing the CA into Kali/PRoot trust store and Android system trust store.
+
+### 3. Diagnostic CLI Tools
+- **`nethunter-log`:** New Python-based colorized logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red bold), automatic keyword highlighting, and grep filtering.
+- **`/app/logs` API Endpoint:** New LocalApiServer endpoint serving raw logcat output for `nethunter-log`.
 
 ---
 

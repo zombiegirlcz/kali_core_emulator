@@ -31,6 +31,7 @@ class VpnNatEngine(
     private var selectorThread: Thread? = null
     private var aiBrainWorker: AIBrainWorker? = null
     private val connectionThreadPool = java.util.concurrent.Executors.newCachedThreadPool()
+    private val pendingRegistrations = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
 
     // Session maps keyed by client source port
     private val tcpSessions = ConcurrentHashMap<Int, TcpSession>()
@@ -302,8 +303,14 @@ class VpnNatEngine(
 
                 // Register with Selector (wakeup to avoid blocking on selector contention)
                 selector?.let { sel ->
+                    pendingRegistrations.offer(Runnable {
+                        try {
+                            channel.register(sel, SelectionKey.OP_READ, session)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to register UDP channel: ${e.message}")
+                        }
+                    })
                     sel.wakeup()
-                    channel.register(sel, SelectionKey.OP_READ, session)
                 }
                 Log.d(TAG, "Created UDP session for port $srcPort to $dstIpStr:$dstPort")
             } catch (e: Exception) {
@@ -389,8 +396,14 @@ class VpnNatEngine(
                     
                     channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
                     selector?.let { sel ->
+                        pendingRegistrations.offer(Runnable {
+                            try {
+                                channel.register(sel, SelectionKey.OP_CONNECT or SelectionKey.OP_READ, session)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to register TCP channel: ${e.message}")
+                            }
+                        })
                         sel.wakeup()
-                        channel.register(sel, SelectionKey.OP_CONNECT or SelectionKey.OP_READ, session)
                     }
                 } else {
                     // PROXY CONNECTION: Run on the shared thread pool
@@ -581,6 +594,16 @@ class VpnNatEngine(
             val buffer = ByteBuffer.allocate(16384)
             while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                 try {
+                    // Process any pending channel registrations first
+                    while (true) {
+                        val task = pendingRegistrations.poll() ?: break
+                        try {
+                            task.run()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error executing pending registration: ${e.message}")
+                        }
+                    }
+
                     val count = selector?.select(2000) ?: 0
                     if (count == 0) {
                         cleanIdleSessions()

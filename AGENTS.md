@@ -2,15 +2,18 @@
 
 ## Sestavení a ověření
 
+**ZÁKAZ LOKÁLNÍHO BUILDU!**
+Nikdy nespouštěj `./gradlew assembleDebug` nebo jiné buildovací příkazy lokálně. Lokální prostředí pro to není uzpůsobené a build spadne nebo se zablokuje. Pro sestavení APK VŽDY používej Modal:
+
 ```bash
 modal run modal_build.py::upload_src && modal run modal_build.py::build # sestaveni se provadi na modalu
-./gradlew test                        # unit testy (app/src/test/)
+./gradlew test                        # unit testy (app/src/test/) - tyto lze poustet lokalne
 ./gradlew test --tests "*ProotManager*"  # jeden test class
 ./gradlew lint                        # Android lint (checkReleaseBuilds=false, abortOnError=false)
 ./gradlew clean                       # smazat výstupy sestavení
 ```
 
-CI: `.github/workflows/build.yml` — spouští `./gradlew assembleDebug` při pushi do `master`.
+CI: `.github/workflows/build.yml` — spouští `./gradlew assembleDebug` při pushi do `master` (běží na GitHub Actions, ne lokálně).
 
 ## Balíček a SDK (copilot-instructions.md je zastaralé)
 
@@ -168,7 +171,7 @@ Kompletní TLS MITM proxy pro dešifrování HTTPS provozu v VPN tunelu.
 | `VpnNatEngine.kt` | Detekuje TLS Client Hello v `handleTcpPacket` a předává do `TlsMitmEngine` |
 | `VpnSecurityTab.kt` | UI: žlutý indikátor `TLS MITM INTERCEPT`, karta `LIVE DECRYPTED TLS TRAFFIC` |
 | `VpnSettingsTab.kt` | Přepínač `TLS MITM Inspection` v Nastavení |
-| `LocalApiServer.kt` | Endpointy `/vpn/mitm` a `/vpn/mitm/logs` pro vzdálené ovládání |
+| `LocalApiServer.kt` | Endpointy `/vpn/mitm`, `/vpn/mitm/ca` a `/vpn/mitm/logs` pro vzdálené ovládání |
 
 ### Tok MITM relace
 
@@ -198,6 +201,12 @@ vpn-cli mitm off
 # Stav MITM
 vpn-cli mitm status
 
+# Zobrazit/exportovat Root CA certifikát
+vpn-cli mitm ca
+
+# Uložit Root CA certifikát do souboru
+vpn-cli mitm ca > /tmp/nethunter-ca.crt
+
 # Formátovaný dešifrovaný provoz
 vpn-cli logs
 
@@ -215,6 +224,9 @@ Body: on|off
 
 GET /vpn/mitm
 {"mitm":"on","active_sessions":2,"sessions":[{"port":54321,"snippet":"..."}]}
+
+GET /vpn/mitm/ca
+(vrátí PEM certifikát s Content-Type: application/x-x509-ca-cert)
 
 GET /vpn/mitm/logs
 GET /vpn/mitm/logs?format=json
@@ -235,6 +247,7 @@ vpn-cli logs json     # MITM provoz (JSON)
 vpn-cli mitm on       # Zapnout TLS MITM
 vpn-cli mitm off      # Vypnout TLS MITM
 vpn-cli mitm status   # Stav MITM
+vpn-cli mitm ca       # Zobrazit/exportovat Root CA certifikát
 ```
 
 CLI komunikuje s `LocalApiServer` na `127.0.0.1:1337`.
@@ -243,4 +256,27 @@ CLI komunikuje s `LocalApiServer` na `127.0.0.1:1337`.
 
 Detailní dokumentace MITM feature je v `nethunter_docs.md`.
 
+## Diagnostické CLI nástroje
+
+### nethunter-log
+
+Python skript pro barevné formátované zobrazení logcat záznamů aplikace bez nutnosti ADB. Nasazuje se z `ProotManager.kt` do guest `/usr/local/bin/`.
+
+```bash
+nethunter-log              # posledních 100 řádků
+nethunter-log 50           # posledních 50 řádků
+nethunter-log -n 200       # posledních 200 řádků
+nethunter-log -g "Vpn"     # filtrovat podle vzoru
+nethunter-log -n 100 -g "TlsMitm"  # kombinace
+```
+
+Barevné schéma: V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená tučná. Automatické zvýraznění klíčových slov (`error`/`fail`=červeně, `success`/`established`=zeleně).
+
+HTTP API endpoint: `GET /app/logs?limit=N`
+
+### TlsMitmEngine opravy (v4.2)
+
+- **Oprava šifrování klient→server:** Klientská data se nyní správně zašifrují pomocí `serverEngine.wrap()` před odesláním na vzdálený server (dříve se posílal raw plaintext)
+- **Odstranění duplicitního unwrap bloku:** Redundantní druhý `clientEngine.unwrap` + `writeToServer` blok s double-flip chybou byl odstraněn
+- **Adaptivní CPU backoff:** `proxyLoop` nyní spí 1ms při aktivním provozu a 15ms při nečinnosti (dříve konstantně 1ms = burn CPU)
 
