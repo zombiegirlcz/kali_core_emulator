@@ -119,6 +119,9 @@ usage() {
     printf "  ${MAGENTA}mitm off${RST}           Disable TLS MITM inspection\n"
     printf "  ${MAGENTA}mitm status${RST}        Show MITM status & active sessions\n"
     printf "  ${MAGENTA}mitm ca${RST}            Show/export Root CA certificate\n"
+    printf "  ${MAGENTA}sni-fallback get${RST}   Show current MITM SNI fallback hostname\n"
+    printf "  ${MAGENTA}sni-fallback set${RST}   Set MITM SNI fallback hostname (for IP-based connections)\n"
+    printf "  ${MAGENTA}sni-fallback clear${RST} Clear MITM SNI fallback (use default no-SNI behavior)\n"
     printf "\n"
     exit 1
 }
@@ -271,6 +274,59 @@ case "$1" in
             printf "${RED}${BOLD}✗ Failed to stop VPN${RST} (HTTP ${HTTP_CODE})\n"
             exit 1
         fi
+        ;;
+    sni-fallback)
+        shift
+        ACTION="$1"
+        case "$ACTION" in
+            get)
+                RESP=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm/sni-fallback" 2>/dev/null)
+                HTTP_CODE=$(echo "$RESP" | tail -n1)
+                BODY=$(echo "$RESP" | sed '$d')
+                if [ "$HTTP_CODE" = "200" ]; then
+                    FALLBACK=$(echo "$BODY" | sed 's/.*"fallback":"\([^"]*\)".*/\1/')
+                    if [ "$FALLBACK" = "null" ] || [ -z "$FALLBACK" ]; then
+                        printf "  ${BOLD}MITM SNI fallback:${RST} ${YELLOW}unset${RST} (no SNI sent on IP connections)\n"
+                    else
+                        printf "  ${BOLD}MITM SNI fallback:${RST} ${CYAN}${FALLBACK}${RST}\n"
+                    fi
+                else
+                    printf "${RED}${BOLD}✗ Error:${RST} API returned HTTP ${HTTP_CODE}\n"
+                    exit 1
+                fi
+                ;;
+            set)
+                if [ -z "$2" ]; then
+                    printf "${RED}${BOLD}Error:${RST} specify a hostname, e.g. ${CYAN}vpn-cli sni-fallback set www.example.com${RST}\n"
+                    exit 1
+                fi
+                FQDN="$2"
+                RESP=$(curl -s -w "\n%{http_code}" -X POST -d "$FQDN" -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm/sni-fallback" 2>/dev/null)
+                HTTP_CODE=$(echo "$RESP" | tail -n1)
+                BODY=$(echo "$RESP" | sed '$d')
+                if [ "$HTTP_CODE" = "200" ]; then
+                    printf "  ${GREEN}${BOLD}✓${RST} MITM SNI fallback set to ${CYAN}${FQDN}${RST}\n"
+                else
+                    printf "${RED}${BOLD}✗ Error:${RST} API returned HTTP ${HTTP_CODE}\n"
+                    exit 1
+                fi
+                ;;
+            clear)
+                RESP=$(curl -s -w "\n%{http_code}" -X POST -d "" -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm/sni-fallback" 2>/dev/null)
+                HTTP_CODE=$(echo "$RESP" | tail -n1)
+                BODY=$(echo "$RESP" | sed '$d')
+                if [ "$HTTP_CODE" = "200" ]; then
+                    printf "  ${YELLOW}${BOLD}✓${RST} MITM SNI fallback cleared\n"
+                else
+                    printf "${RED}${BOLD}✗ Error:${RST} API returned HTTP ${HTTP_CODE}\n"
+                    exit 1
+                fi
+                ;;
+            *)
+                printf "${RED}${BOLD}Error:${RST} use ${CYAN}get${RST}, ${CYAN}set <hostname>${RST} or ${CYAN}clear${RST}\n"
+                usage
+                ;;
+        esac
         ;;
     *)
         usage

@@ -362,6 +362,8 @@ object LocalApiServer {
                 path == "/vpn/mitm" && method == "GET" -> handleVpnMitmGet(context, out)
                 path == "/vpn/mitm/ca" && method == "GET" -> handleVpnMitmCa(context, out)
                 path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(path, out)
+                path == "/vpn/mitm/sni-fallback" && method == "POST" -> handleVpnMitmSniFallbackPost(context, body, out)
+                path == "/vpn/mitm/sni-fallback" && method == "GET" -> handleVpnMitmSniFallbackGet(context, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(path, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
@@ -1600,6 +1602,40 @@ object LocalApiServer {
             out.write(headers.toByteArray(Charsets.UTF_8))
             out.write(raw)
             out.flush()
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmSniFallbackGet(context: Context, out: OutputStream) {
+        try {
+            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val fallback = prefs.getString("mitm_sni_fallback", null)
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("fallback", fallback ?: JSONObject.NULL)
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmSniFallbackPost(context: Context, body: String, out: OutputStream) {
+        try {
+            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val trimmed = body.trim().removeSurrounding("\"").removeSurrounding("'")
+            if (trimmed.isEmpty()) {
+                prefs.edit().remove("mitm_sni_fallback").apply()
+                sendResponse(out, 200, "OK", JSONObject().apply {
+                    put("fallback", JSONObject.NULL)
+                    put("status", "cleared")
+                }.toString())
+            } else {
+                prefs.edit().putString("mitm_sni_fallback", trimmed).apply()
+                sendResponse(out, 200, "OK", JSONObject().apply {
+                    put("fallback", trimmed)
+                    put("status", "set")
+                }.toString())
+            }
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

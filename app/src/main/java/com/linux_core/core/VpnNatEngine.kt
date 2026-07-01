@@ -24,6 +24,7 @@ class VpnNatEngine(
     companion object {
         const val TAG = "VpnNatEngine"
         const val LOCAL_IP_INT = 0x0A000002 // 10.0.0.2
+        private val TLS_PORTS = setOf(443, 8443, 993, 995, 587, 465, 25)
     }
 
     private val isRunning = AtomicBoolean(false)
@@ -570,7 +571,7 @@ class VpnNatEngine(
                 payloadCopy.get(rawPeek)
                 payloadCopy.flip()
                 
-                if (isMitmEnabled() && TlsClientHelloParser.isTlsClientHello(rawPeek)) {
+                if (isMitmEnabled() && session.destinationPort in TLS_PORTS && TlsClientHelloParser.isTlsClientHello(rawPeek)) {
                     session.isTlsMitm = true
                     TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
                     return
@@ -979,7 +980,7 @@ class VpnNatEngine(
         writeToTun(response.array(), totalLength)
     }
 
-    private fun closeTcpSession(port: Int, sendRst: Boolean = false) {
+    internal fun closeTcpSession(port: Int, sendRst: Boolean = false) {
         val session = tcpSessions.remove(port) ?: return
         session.tlsMitmHandler?.close()
         session.tlsMitmHandler = null

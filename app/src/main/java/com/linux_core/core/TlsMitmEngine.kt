@@ -4,6 +4,8 @@ import android.net.VpnService
 import android.util.Log
 import com.linux_core.security.RootCaInstaller
 import com.linux_core.security.TlsClientHelloParser
+import com.linux_core.security.VpnSettings
+import java.lang.reflect.Constructor
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Selector
@@ -15,6 +17,7 @@ import java.util.concurrent.ExecutorService
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
 import javax.net.ssl.SSLContext
+import javax.net.ssl.StandardConstants
 
 object TlsMitmEngine {
 
@@ -92,6 +95,7 @@ class TlsMitmSession(
 
     @Volatile private var clientSeqNum: Long = session.clientSeqNum
     @Volatile private var serverSeqNum: Long = session.serverSeqNum
+    @Volatile private var closed = false
 
     init {
         session.clientSeqNum = clientSeqNum
@@ -158,12 +162,21 @@ class TlsMitmSession(
                 intToIp(session.destinationAddress), session.destinationPort
             )
             serverEngine!!.setUseClientMode(true)
+
+            val effectiveSni = sni ?: VpnSettings.getMitmSniFallback(vpnService)
+            if (effectiveSni != null) {
+                val serverParams = serverEngine!!.sslParameters
+                serverParams.serverNames = buildSniList(effectiveSni)
+                serverEngine!!.sslParameters = serverParams
+                Log.i(TAG, "serverEngine configured with SNI=$effectiveSni, originalSNI=$sni")
+            } else {
+                Log.d(TAG, "serverEngine SNI not configured (no original SNI, no fallback)")
+            }
+
             serverEngine!!.beginHandshake()
 
             val serverNetIn = ByteBuffer.allocate(32768)
             val serverNetOut = ByteBuffer.allocate(32768)
-            serverNetIn.put(initialClientHello)
-            serverNetIn.flip()
 
             val serverOk = runEngineHandshake(
                 engine = serverEngine!!,
@@ -175,24 +188,33 @@ class TlsMitmSession(
             )
 
             if (!serverOk) {
-                Log.e(TAG, "Server-side handshake failed")
-                close()
+                Log.w(TAG, "Server handshake failed: status=${serverEngine?.handshakeStatus}, " +
+                    "cipher=${serverEngine?.session?.cipherSuite}, peerHost=${intToIp(session.destinationAddress)}, " +
+                    "sni=$sni")
+                fallingBackToPassthrough()
                 return
             }
 
             serverCert = serverEngine!!.session.peerCertificates.firstOrNull() as? X509Certificate
             if (serverCert == null) {
-                Log.e(TAG, "No server certificate received")
-                close()
+                Log.w(TAG, "Handshake did not yield certificate: status=${serverEngine?.handshakeStatus}, " +
+                    "state=${serverEngine?.session?.cipherSuite}, peerHost=${intToIp(session.destinationAddress)}, " +
+                    "sni=$sni")
+                fallingBackToPassthrough()
                 return
             }
             Log.i(TAG, "Server cert subject: ${serverCert!!.subjectX500Principal.name}")
 
+            val certSubject = effectiveSni ?: intToIp(session.destinationAddress)
             val serial = System.currentTimeMillis()
-            val clientSslContext = mitm.createServerSslContext(serverCert!!, serial)
+            val clientSslContext = mitm.createServerSslContext(
+                serverCert!!, serial,
+                sanDns = listOf(certSubject),
+                sanIp = listOf(intToIp(session.destinationAddress))
+            )
             if (clientSslContext == null) {
-                Log.e(TAG, "Failed to create client SSL context with forged cert")
-                close()
+                Log.w(TAG, "Failed to create client SSL context with forged cert, falling back to passthrough")
+                fallingBackToPassthrough()
                 return
             }
             clientEngine = clientSslContext.createSSLEngine()
@@ -235,6 +257,7 @@ class TlsMitmSession(
 
         } catch (e: Exception) {
             Log.e(TAG, "TLS MITM error: ${e.message}", e)
+        } finally {
             close()
         }
     }
@@ -588,9 +611,10 @@ class TlsMitmSession(
             }
         }
         if (iterations >= 800) {
-            Log.w(TAG, "Handshake iteration limit reached")
+            Log.w(TAG, "Handshake iteration limit reached status=${engine.handshakeStatus}")
         }
-        return !needMore || engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING
+        return engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
+               engine.session.cipherSuite != "SSL_NULL_WITH_NULL_NULL"
     }
 
     private fun runDelegatedTasks(engine: SSLEngine) {
@@ -717,16 +741,176 @@ class TlsMitmSession(
     }
 
     fun close() {
+        if (closed) return
         running = false
+        TlsMitmEngine.removeSession(clientPort)
         try { serverChannel?.close() } catch (_: Exception) {}
         clientEngine = null
         serverEngine = null
         serverChannel = null
-        TlsMitmEngine.removeSession(clientPort)
         try { session.socketChannel?.close() } catch (_: Exception) {}
         session.isTlsMitm = false
         session.tlsMitmHandler = null
-        Log.i(TAG, "TLS MITM closed for port $clientPort")
+        sendRstToClient()
+        try {
+            VpnNatEngine.closeTcpSession(clientPort, sendRst = false)
+        } catch (_: Exception) {}
+        closed = true
+        Log.i(TAG, "TLS MITM closed for port $clientPort, sending RST to client")
+    }
+
+    private fun fallingBackToPassthrough() {
+        Log.w(TAG, "Falling back to passthrough for port $clientPort")
+        running = true
+        clientEngine = null
+        serverEngine = null
+        recordSnippet("PASSTHROUGH", "MITM falling back to passthrough for port $clientPort SNI=$sni".toByteArray())
+        try {
+            passthroughLoop()
+        } finally {
+            running = false
+            closed = true
+            try { serverChannel?.close() } catch (_: Exception) {}
+            serverChannel = null
+            try { session.socketChannel?.close() } catch (_: Exception) {}
+            session.isTlsMitm = false
+            session.tlsMitmHandler = null
+            sendRstToClient()
+            try {
+                VpnNatEngine.closeTcpSession(clientPort, sendRst = false)
+            } catch (_: Exception) {}
+            Log.i(TAG, "TLS MITM passthrough ended for port $clientPort, sending RST to client")
+        }
+    }
+
+    private fun passthroughLoop() {
+        Log.i(TAG, "TLS MITM passthrough established for port $clientPort (SNI=$sni)")
+        VpnLogManager.logConnection(
+            vpnService,
+            "TCP",
+            "10.0.0.2",
+            session.clientPort,
+            intToIp(session.destinationAddress),
+            session.destinationPort,
+            0,
+            VpnLogManager.AuditCategory.VERBOSE,
+            "TLS MITM passthrough active • SNI=$sni"
+        )
+        var totalForwarded = 0L
+        var lastLog = System.currentTimeMillis()
+
+        while (running) {
+            var worked = false
+
+            val sc = serverChannel
+            if (sc != null && sc.isConnected) {
+                val buf = ByteBuffer.allocate(32768)
+                val read = try { sc.read(buf) } catch (e: Exception) { -1 }
+                if (read == -1) {
+                    break
+                }
+                if (read > 0) {
+                    buf.flip()
+                    val data = ByteArray(read)
+                    buf.get(data)
+                    totalForwarded += data.size
+                    writeToTunClientData(data)
+                    worked = true
+                }
+            }
+
+            synchronized(clientQueueLock) {
+                var item: ByteArray?
+                while (clientQueue.poll().also { item = it } != null) {
+                    if (item!!.isNotEmpty()) {
+                        val wbuf = ByteBuffer.wrap(item!!)
+                        try {
+                            sc?.write(wbuf)
+                            serverSeqNum += item!!.size
+                            session.serverSeqNum = serverSeqNum
+                            totalForwarded += item!!.size
+                            worked = true
+                        } catch (e: Exception) {
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (!worked) {
+                val now = System.currentTimeMillis()
+                if (now - lastLog > 300) {
+                    Log.d(TAG, "passthrough idle port=$clientPort totalForwarded=$totalForwarded")
+                    lastLog = now
+                }
+            } else {
+                val now = System.currentTimeMillis()
+                if (now - lastLog > 300) {
+                    Log.d(TAG, "passthrough active port=$clientPort totalForwarded=$totalForwarded")
+                    lastLog = now
+                }
+            }
+
+            if (worked) {
+                Thread.sleep(1)
+            } else {
+                Thread.sleep(15)
+            }
+        }
+        Log.i(TAG, "passthroughLoop exiting port=$clientPort totalForwarded=$totalForwarded")
+    }
+
+    private fun sendRstToClient() {
+        try {
+            val totalLength = 40
+            val response = ByteBuffer.allocate(totalLength)
+            val ip = IpHeader(response, 0)
+            response.put(0, 0x45.toByte())
+            ip.totalLength = totalLength
+            response.put(8, 64.toByte())
+            response.put(9, 6.toByte())
+            ip.sourceAddress = session.destinationAddress
+            ip.destinationAddress = VpnNatEngine.LOCAL_IP_INT
+            ip.computeChecksum()
+            val tcp = TcpHeader(response, 20)
+            tcp.sourcePort = session.destinationPort
+            tcp.destinationPort = session.clientPort
+            tcp.seqNum = session.serverSeqNum
+            tcp.ackNum = session.clientSeqNum
+            response.put(20 + 12, 0x50.toByte())
+            tcp.flags = 0x14 // RST | ACK
+            response.putShort(20 + 14, 0.toShort())
+            tcp.computeChecksum(ip)
+            writeToTun(response.array(), totalLength)
+        } catch (e: Exception) {
+            Log.w(TAG, "sendRstToClient failed: ${e.message}")
+        }
+    }
+
+    private fun writeToTunClientData(data: ByteArray) {
+        val totalLength = 40 + data.size
+        val response = ByteBuffer.allocate(totalLength)
+        val ip = IpHeader(response, 0)
+        response.put(0, 0x45.toByte())
+        ip.totalLength = totalLength
+        response.put(8, 64.toByte())
+        response.put(9, 6.toByte())
+        ip.sourceAddress = session.destinationAddress
+        ip.destinationAddress = VpnNatEngine.LOCAL_IP_INT
+        ip.computeChecksum()
+        val tcp = TcpHeader(response, 20)
+        tcp.sourcePort = session.destinationPort
+        tcp.destinationPort = session.clientPort
+        tcp.seqNum = session.serverSeqNum
+        tcp.ackNum = session.clientSeqNum
+        response.put(20 + 12, 0x50.toByte())
+        tcp.flags = 0x18
+        response.putShort(20 + 14, 0xFFFF.toShort())
+        response.position(40)
+        response.put(data)
+        tcp.computeChecksum(ip)
+        writeToTun(response.array(), totalLength)
+        session.serverSeqNum += data.size
     }
 
     private fun intToIp(ip: Int): String = String.format(
@@ -740,5 +924,32 @@ class TlsMitmSession(
     private fun intToInetAddress(ip: Int): java.net.InetAddress {
         val buf = ByteBuffer.allocate(4).putInt(ip)
         return java.net.InetAddress.getByAddress(buf.array())
+    }
+
+    private fun buildSniList(hostname: String): List<javax.net.ssl.SNIServerName> {
+        val candidates = listOf(
+            "sun.net.util.SNIHostName",
+            "com.android.org.conscrypt.SNIHostName"
+        )
+        for (className in candidates) {
+            try {
+                val clazz = Class.forName(className)
+                val ctor: Constructor<out Any> = clazz.getConstructor(
+                    Int::class.javaPrimitiveType,
+                    ByteArray::class.java
+                )
+                @Suppress("UNCHECKED_CAST")
+                val instance = ctor.newInstance(
+                    StandardConstants.SNI_HOST_NAME,
+                    hostname.toByteArray(Charsets.UTF_8)
+                ) as javax.net.ssl.SNIServerName
+                return listOf(instance)
+            } catch (_: ClassNotFoundException) {
+            } catch (_: NoSuchMethodException) {
+            } catch (_: Exception) {
+            }
+        }
+        Log.w(TAG, "No concrete SNIServerName implementation found; SNI not set for hostname=$hostname")
+        return emptyList()
     }
 }

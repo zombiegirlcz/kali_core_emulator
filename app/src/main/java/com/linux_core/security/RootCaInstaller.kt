@@ -79,18 +79,18 @@ class RootCaInstaller(private val context: Context) {
      * [com.linux_core.core.VpnCaptureService] to re-sign per-server certs captured from
      * the tunnel.
      */
-    fun signLeafForServer(serverCert: X509Certificate, serial: Long): X509Certificate {
+    fun signLeafForServer(serverCert: X509Certificate, serial: Long, sanDns: List<String> = emptyList(), sanIp: List<String> = emptyList()): X509Certificate {
         val ca = loadCa() ?: throw IllegalStateException("MITM CA not loaded")
         val caKey = loadCaPrivateKey() ?: throw IllegalStateException("MITM CA private key missing")
-        return MitmCertSigner.sign(ca, caKey, serverCert, serial)
+        return MitmCertSigner.sign(ca, caKey, serverCert, serial, sanDns, sanIp)
     }
 
-    fun createServerSslContext(serverCert: X509Certificate, serial: Long): SSLContext? {
+    fun createServerSslContext(serverCert: X509Certificate, serial: Long, sanDns: List<String> = emptyList(), sanIp: List<String> = emptyList()): SSLContext? {
         val ca = loadCa() ?: return null
         val caKey = loadCaPrivateKey() ?: return null
         val pwd = resolvePassword() ?: return null
         return try {
-            val forged = MitmCertSigner.sign(ca, caKey, serverCert, serial)
+            val forged = MitmCertSigner.sign(ca, caKey, serverCert, serial, sanDns, sanIp)
             val ks = KeyStore.getInstance("PKCS12")
             ks.load(null, null)
             ks.setKeyEntry(ALIAS, caKey, pwd.toCharArray(), arrayOf(forged, ca))

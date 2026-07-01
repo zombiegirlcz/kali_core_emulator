@@ -5,15 +5,17 @@
 **ZÁKAZ LOKÁLNÍHO BUILDU!**
 Nikdy nespouštěj `./gradlew assembleDebug` nebo jiné buildovací příkazy lokálně. Lokální prostředí pro to není uzpůsobené a build spadne nebo se zablokuje. Pro sestavení APK VŽDY používej Modal:
 
+_jsi spusten uvnitr samotne aplilace takze pro zobrazeni logcat napis_
+
 ```bash
-modal run modal_build.py::upload_src && modal run modal_build.py::build # sestaveni se provadi na modalu
-./gradlew test                        # unit testy (app/src/test/) - tyto lze poustet lokalne
-./gradlew test --tests "*ProotManager*"  # jeden test class
-./gradlew lint                        # Android lint (checkReleaseBuilds=false, abortOnError=false)
-./gradlew clean                       # smazat výstupy sestavení
+nethunter-log [-n line] [-g grep]
 ```
 
-CI: `.github/workflows/build.yml` — spouští `./gradlew assembleDebug` při pushi do `master` (běží na GitHub Actions, ne lokálně).
+
+```zsh
+cd kali_core_emulator && zsh mbuild #zpousti build na modalu 
+```
+
 
 ## Balíček a SDK (copilot-instructions.md je zastaralé)
 

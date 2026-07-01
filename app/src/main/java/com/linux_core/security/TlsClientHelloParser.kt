@@ -9,7 +9,7 @@ object TlsClientHelloParser {
     private const val EXT_SERVER_NAME = 0x0000
 
     fun isTlsClientHello(data: ByteArray, offset: Int = 0, len: Int = data.size): Boolean {
-        if (len < 6) return false
+        if (len < 45) return false
         val contentType = data[offset].toInt() and 0xFF
         val versionMajor = data[offset + 1].toInt() and 0xFF
         val versionMinor = data[offset + 2].toInt() and 0xFF
@@ -18,6 +18,8 @@ object TlsClientHelloParser {
         if (versionMajor != 0x03) return false
         if (versionMinor !in TLS_VERSION_MINORS) return false
         if (handshakeType != 0x01) return false
+        val sessionIdLen = data[offset + 43].toInt() and 0xFF
+        if (offset + 44 + sessionIdLen + 2 > len) return false
         return true
     }
 
@@ -78,4 +80,7 @@ object TlsClientHelloParser {
         }
         return null
     }
+
+    fun resolveFallbackHost(sni: String?, dstIp: String): String =
+        sni ?: dstIp
 }
