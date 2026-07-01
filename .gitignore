@@ -112,6 +112,20 @@ window_dump.xml
 *.keystore
 *.jks
 
+# Dev certificates - for development/testing only. Production builds must use real MITM certs.
+# Note: The certs/ directory itself should exist, but specific dev certs may be gitignored
+# in production environments. See generate-dev-certs.sh for generating them.
+app/src/main/assets/certs/mitm-ca.p12
+app/src/main/assets/certs/mitm-ca.key
+app/src/main/assets/certs/mitm-ca.srl
+app/src/main/assets/certs/internal.key
+app/src/main/assets/certs/internal.csr
+app/src/main/assets/certs/google_attestation_root.key
+
+# Dev certificates - NEVER commit production MITM certificates to repo
+# These are safe to commit as they are for DEVELOPMENT only
+!app/src/main/assets/certs/
+
 # Old build artifacts
 app/build_old/
 

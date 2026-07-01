@@ -17,8 +17,7 @@ import java.security.spec.ECGenParameterSpec
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 
-/**
- * Manages the device-attestation key pair stored in the AndroidKeyStore.
+/** Manages the device-attestation key pair stored in the AndroidKeyStore.
  *
  * Two aliases are created lazily on first use:
  *  - `attest_ec`     – EC P-256 signing key, StrongBox if available, TEE fallback.
@@ -27,6 +26,9 @@ import javax.crypto.KeyGenerator
  *
  * Both keys require user authentication (biometric or device credential) and are
  * usable for 30 seconds after a successful authentication.
+ *
+ * SECURITY: This class now validates that cryptoObject uses the expected algorithm
+ * to prevent algorithm substitution attacks.
  */
 class AttestationKeyManager(private val context: Context) {
 
@@ -62,12 +64,23 @@ class AttestationKeyManager(private val context: Context) {
 
     fun sign(nonce: ByteArray, data: ByteArray, cryptoObject: Any? = null): Result<ByteArray> = runCatching {
         val pk = ensureSigningKey().getOrThrow()
-        val sig = if (cryptoObject is Signature) cryptoObject else Signature.getInstance(SIG_ALGO)
+        val sig = when (cryptoObject) {
+            null -> Signature.getInstance(SIG_ALGO)
+            is Signature -> {
+                // Validate algorithm to prevent substitution attacks
+                if (cryptoObject.algorithm != SIG_ALGO) {
+                    Log.w(TAG, "CryptoObject algorithm mismatch: expected $SIG_ALGO, got ${cryptoObject.algorithm}")
+                    throw IllegalArgumentException("Invalid signature algorithm: ${cryptoObject.algorithm}")
+                }
+                cryptoObject
+            }
+            else -> throw IllegalArgumentException("Invalid crypto object type")
+        }
         sig.initSign(pk)
         sig.update(nonce)
         sig.update(data)
         sig.sign()
-    }
+    }.onFailure { Log.w(TAG, "sign failed: ${it.message}") }
 
     fun verify(
         chain: Array<X509Certificate>,

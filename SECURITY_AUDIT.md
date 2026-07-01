@@ -23,6 +23,8 @@
 
 ### C1 — Hardcoded Signing Credentials (build.gradle.kts)
 
+**Status:** ✅ PATCHED — Passwords now loaded from `KEYSTORE_PASSWORD` env var with gradle.properties fallback for debug builds only.
+
 **Soubor:** `app/build.gradle.kts:27-36`
 **CVSS:** 9.3 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N)
 
@@ -334,8 +336,48 @@ isJniDebuggable = true
 
 Podívejte se na vygenerované patche v následujících souborech.
 
+### Nově odhalené zranitelnosti (RootCA & Biometrická logika):
+
+### C10 — Hardcoded MITM CA Password (RootCaInstaller.kt)
+
+**Status:** ✅ PATCHED — Password now loaded from `KEYSTORE_PASSWORD` env var or gradle.properties. Null returned for release builds without proper configuration.
+
+**Soubor:** `app/src/main/java/com/linux_core/security/RootCaInstaller.kt`
+
+### C11 — Hardcoded PKCS#12 Internal Keystore Password (SslContextFactory.kt)
+
+**Status:** ✅ PATCHED — Password now required via environment variable for release builds.
+
+### C12 — Weak Attestation Security Level Verification (AttestationVerifier.kt)
+
+**Status:** ✅ PATCHED — Now properly parses the attestation extension to verify TEE/StrongBox security level (rejects SOFTWARE=0).
+
+### C13 — Missing MITM Certificate Assets
+
+**Status:** ✅ PARTIALLY PATCHED — Build-time validation added; dev certificate generation script provided. Production must provide real certificates.
+
+### C14 — Information Disclosure in Auth Error Response (LocalApiServer.kt)
+
+**Status:** ✅ PATCHED — Removed hints about token storage location from error responses.
+
+### C15 — World-Readable Agent Token File (LocalApiServer.kt)
+
+**Status:** ✅ PATCHED — Token file now restricted to owner-only (mode 0600).
+
+### C16 — Attestation Bypass When Headers Missing (LocalApiServer.kt)
+
+**Status:** ✅ PATCHED — Now fails closed (returns false) when attestation is enabled but headers are missing.
+
+### C17 — Attestation Optional Bypass + Revocation Disabled (AttestationVerifier.kt)
+
+**Status:** ✅ PATCHED — Certificate revocation checking now enabled; missing Google root cert causes verification failure.
+
+### C18 — Signature Algorithm Substitution Risk (AttestationKeyManager.kt)
+
+**Status:** ✅ PATCHED — Added algorithm validation to reject weak signature algorithms.
+
 ### Top priority (CRITICAL):
-1. **C1** → Odstranit hesla z build.gradle.kts, použít `KeyStore` nebo env proměnné
+1. **C1** → ✅ Done — Hesla načítána z env proměnných nebo gradle.properties
 2. **C2+C3** → Přidat autentizaci (Bearer token) do LocalApiServer, omezit `/shell` endpoint
 3. **C4** → Vyžadovat uživatelské potvrzení pro Device Admin
 4. **C5** → Rate limiting a autentizace pro `/clipboard`

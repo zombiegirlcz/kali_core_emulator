@@ -99,6 +99,10 @@ fun VpnSecurityTab() {
     var logsOrSockets by remember { mutableStateOf("LOGS") }
     val activeSockets = remember { mutableStateListOf<com.linux_core.core.ActiveSocket>() }
     var mitmSnippets by remember { mutableStateOf(emptyList<Pair<Int, String>>()) }
+    var mitmEnabled by remember { mutableStateOf(
+        context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            .getBoolean("enable_mitm", true)
+    ) }
 
     // Periodic logger & stats updater
     LaunchedEffect(Unit) {
@@ -111,6 +115,8 @@ fun VpnSecurityTab() {
             bytesUploaded = VpnLogManager.getTotalBytesUploaded()
             bytesDownloaded = VpnLogManager.getTotalBytesDownloaded()
             topAppsList = VpnLogManager.getTopApps()
+            mitmEnabled = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+                .getBoolean("enable_mitm", true)
             
             // Load active sockets
             if (VpnCaptureService.isRunning()) {
@@ -442,7 +448,53 @@ fun VpnSecurityTab() {
                 }
             }
 
-            // 4. Logs vs Active Sockets Segmented Selector
+            // 4. MITM Status Banner
+            item {
+                val mitmCount = mitmSnippets.size
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, if (mitmEnabled) Color(0xFFFFD740) else Color(0x11FFFFFF)),
+                    colors = CardDefaults.cardColors(containerColor = if (mitmEnabled) Color(0x1A1A12) else Color(0xFF131722))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(if (mitmEnabled) Color(0xFFFFD740) else Color.Gray, RoundedCornerShape(2.dp))
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "TLS MITM INSPECTION",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (mitmEnabled) Color(0xFFFFD740) else Color.Gray,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = if (mitmEnabled) "Aktivní • $mitmCount sessions" else "Vypnuto",
+                                fontSize = 10.sp,
+                                color = Color.Gray
+                            )
+                        }
+                        Text(
+                            text = if (mitmEnabled) "ON" else "OFF",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (mitmEnabled) Color(0xFFFFD740) else Color.Gray,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // 5. Logs vs Active Sockets Segmented Selector
             item {
                 Row(
                     modifier = Modifier

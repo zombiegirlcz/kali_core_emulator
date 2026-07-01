@@ -17,6 +17,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import java.security.MessageDigest
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import android.app.NotificationManager
@@ -180,29 +181,45 @@ object LocalApiServer {
 
     private fun isAuthenticated(headers: Map<String, String>): Boolean {
         val token = headers["Authorization"] ?: headers["authorization"] ?: return false
-        return token == "Bearer $authToken" || token == "Token $authToken"
+        if (!token.startsWith("Bearer ") && !token.startsWith("Token ")) return false
+        val providedToken = token.substringAfter(" ")
+        // Use constant-time comparison to prevent timing attacks
+        return MessageDigest.isEqual(
+            providedToken.toByteArray(Charsets.UTF_8),
+            (authToken ?: "").toByteArray(Charsets.UTF_8)
+        )
     }
 
-    /**
-     * Verifies the optional X-Attest-* headers sent by callers (e.g. nethunter_agent.py in
-     * the PRoot) when [com.linux_core.BuildConfig.ENABLE_ATTESTATION] is true.
-     *
-     * If attestation is disabled the function returns `true` immediately so the rest of
-     * the API surface is unchanged. If attestation is enabled but no headers are present
-     * we still return `true` for backward-compatibility, but the recommended client is
-     * expected to send all three headers.
-     *
-     * The headers are:
-     *   X-Attest-Nonce : base64 of 32 random bytes
-     *   X-Attest-Sig   : base64 of ECDSA(SHA-256, nonce || body)
-     *   X-Attest-Cert  : base64 of a DER X.509 leaf cert produced by the device's
-     *                    AndroidKeyStore
-     */
+/**
+      * Verifies the mandatory X-Attest-* headers sent by callers (e.g. nethunter_agent.py in
+      * the PRoot) when [com.linux_core.BuildConfig.ENABLE_ATTESTATION] is true.
+      *
+      * If attestation is disabled the function returns `true` immediately. If attestation is 
+      * enabled but attestation headers are missing, this returns `false` to fail closed - 
+      * attestation is REQUIRED for sensitive endpoints when ENABLE_ATTESTATION=true.
+      *
+      * The headers are:
+      *   X-Attest-Nonce : base64 of 32 random bytes
+      *   X-Attest-Sig   : base64 of ECDSA(SHA-256, nonce || body)
+      *   X-Attest-Cert  : base64 of a DER X.509 leaf cert produced by the device's
+      *                    AndroidKeyStore
+      */
     private fun verifyAttestationHeaders(headers: Map<String, String>, body: String): Boolean {
         if (!com.linux_core.BuildConfig.ENABLE_ATTESTATION) return true
-        val nonceB64 = headers["x-attest-nonce"] ?: return true
-        val sigB64 = headers["x-attest-sig"] ?: return true
-        val certB64 = headers["x-attest-cert"] ?: return true
+        
+        val nonceB64 = headers["x-attest-nonce"] ?: run {
+            Log.w(TAG, "Attestation required but x-attest-nonce header missing")
+            return false
+        }
+        val sigB64 = headers["x-attest-sig"] ?: run {
+            Log.w(TAG, "Attestation required but x-attest-sig header missing")
+            return false
+        }
+        val certB64 = headers["x-attest-cert"] ?: run {
+            Log.w(TAG, "Attestation required but x-attest-cert header missing")
+            return false
+        }
+        
         return try {
             val nonce = android.util.Base64.decode(nonceB64, android.util.Base64.NO_WRAP)
             val sig = android.util.Base64.decode(sigB64, android.util.Base64.NO_WRAP)
@@ -277,12 +294,11 @@ object LocalApiServer {
 
             if (!isLocalConnection && sensitiveEndpoints.any { path.startsWith(it) }) {
                 if (!isAuthenticated(headers)) {
-                    val token = getAuthToken(context)
                     sendResponse(out, 401, "Unauthorized",
-                        "{\"error\":\"Authentication required. Use Authorization: Bearer <token>\",\"hint\":\"Token is in app SharedPreferences (api_security.xml)\"}")
+                        "{\"error\":\"Authentication required\"}")
                     return
                 }
-                // Optional: when attestation is enabled, also require a fresh signed nonce.
+                // When attestation is enabled, also require a fresh signed nonce.
                 val attOk = verifyAttestationHeaders(headers, body)
                 if (!attOk) {
                     sendResponse(out, 401, "Unauthorized",
@@ -1079,11 +1095,14 @@ object LocalApiServer {
             prefs.edit().putString("agent_auth_token", token).apply()
         }
         // Write token to guest-accessible path so agent daemon can read it
+        // Use mode 0600 (owner only) for security
         try {
             val tokenFile = java.io.File(context.filesDir, "tmp/nethunter_agent_token")
             tokenFile.parentFile?.mkdirs()
             tokenFile.writeText(token)
-            tokenFile.setReadable(true, false)
+            // Restrict to owner only (mode 0600) - not world-readable
+            tokenFile.setReadable(true, true)   // owner read only
+            tokenFile.setWritable(true, true)   // owner write only
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write agent token file: ${e.message}")
         }

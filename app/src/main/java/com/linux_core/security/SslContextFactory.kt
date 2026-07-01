@@ -79,7 +79,26 @@ class SslContextFactory(private val context: Context) {
 
     private fun passphrase(): CharArray {
         val env = System.getenv("KEYSTORE_PASSWORD")
-        val pass = env ?: "nethunter-dev"
+        val pass = env ?: run {
+            // Debug builds can read from gradle.properties as fallback
+            if (com.linux_core.BuildConfig.DEBUG) {
+                val propsFile = java.io.File(System.getProperty("user.home"), ".gradle/gradle.properties")
+                if (propsFile.exists()) {
+                    propsFile.useLines { lines ->
+                        lines.find { it.startsWith("keystore.password=") }
+                            ?.substringAfter("=")?.takeIf { it.isNotEmpty() }
+                            ?.also { Log.w(TAG, "Using gradle.properties password fallback - not recommended for prod") }
+                    }
+                } else null
+            } else {
+                // Release builds MUST have KEYSTORE_PASSWORD set
+                Log.e(TAG, "KEYSTORE_PASSWORD env var required for release builds")
+                null
+            }
+        }
+        if (pass == null) {
+            throw IllegalStateException("KEYSTORE_PASSWORD not configured - set environment variable for PKCS12 keystore access")
+        }
         return pass.toCharArray()
     }
 

@@ -86,6 +86,40 @@ android {
         checkReleaseBuilds = false
         abortOnError = false
     }
+
+    // Validate certificate assets exist when MITM or Attestation is enabled
+    // Simple approach: always check if files exist (fails fast)
+    tasks.register("validateCertAssets") {
+        doLast {
+            val assetsDir = file("src/main/assets/certs")
+            // Always require certs when ENABLE_MITM/ENABLE_ATTESTATION are true in defaultConfig
+            val mitmEnabled = true // Set via buildConfigField in defaultConfig
+            val attestEnabled = true // Set via buildConfigField in defaultConfig
+            
+            // Check if certs directory exists at all
+            if (!assetsDir.exists()) {
+                throw GradleException("Certificate assets directory missing: $assetsDir. Run generate-dev-certs.sh")
+            }
+            
+            // Check required certificate files
+            if (!file("${assetsDir}/mitm-ca.crt").exists()) {
+                throw GradleException("MITM CA certificate missing: certs/mitm-ca.crt. Run generate-dev-certs.sh or provide production certs.")
+            }
+            if (!file("${assetsDir}/mitm-ca.p12").exists()) {
+                throw GradleException("MITM CA key missing: certs/mitm-ca.p12. Run generate-dev-certs.sh or provide production certs.")
+            }
+            if (!file("${assetsDir}/google_attestation_root.der").exists()) {
+                throw GradleException("Google attestation root missing: certs/google_attestation_root.der. Download from https://pki.goog/hardware-attestation-root.pem")
+            }
+            if (!file("${assetsDir}/internal.p12").exists()) {
+                throw GradleException("Internal keystore missing: certs/internal.p12. Run generate-dev-certs.sh or provide production certs.")
+            }
+        }
+    }
+    
+    tasks.named("preBuild") {
+        dependsOn("validateCertAssets")
+    }
 }
 
 tasks.withType<KotlinCompile>().configureEach {

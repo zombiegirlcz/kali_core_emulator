@@ -88,13 +88,14 @@ class RootCaInstaller(private val context: Context) {
     fun createServerSslContext(serverCert: X509Certificate, serial: Long): SSLContext? {
         val ca = loadCa() ?: return null
         val caKey = loadCaPrivateKey() ?: return null
+        val pwd = resolvePassword() ?: return null
         return try {
             val forged = MitmCertSigner.sign(ca, caKey, serverCert, serial)
             val ks = KeyStore.getInstance("PKCS12")
             ks.load(null, null)
-            ks.setKeyEntry(ALIAS, caKey, P12_PASSWORD, arrayOf(forged, ca))
+            ks.setKeyEntry(ALIAS, caKey, pwd.toCharArray(), arrayOf(forged, ca))
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-            kmf.init(ks, P12_PASSWORD)
+            kmf.init(ks, pwd.toCharArray())
             val ctx = SSLContext.getInstance("TLS")
             ctx.init(kmf.keyManagers, null, null)
             ctx
@@ -122,15 +123,46 @@ class RootCaInstaller(private val context: Context) {
         // The CA private key is bundled in `assets/certs/mitm-ca.p12` for development.
         // In production we never sign server certs from the device.
         val bytes = readAssetBytes(ASSET_CA_KEY_FILE) ?: return null
-        val pwd = "nethunter-dev".toCharArray()
+        val pwd = resolvePassword()
+        if (pwd == null) {
+            Log.e(TAG, "MITM CA private key password not configured - set KEYSTORE_PASSWORD env var")
+            return null
+        }
         return try {
             val ks = KeyStore.getInstance("PKCS12")
-            ks.load(ByteArrayInputStream(bytes), pwd)
-            ks.getKey(ALIAS, pwd) as? java.security.PrivateKey
+            ks.load(ByteArrayInputStream(bytes), pwd.toCharArray())
+            ks.getKey(ALIAS, pwd.toCharArray()) as? java.security.PrivateKey
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load MITM CA private key: ${e.message}")
             null
         }
+    }
+
+    private fun resolvePassword(): String? {
+        // Priority: env var > gradle properties > null (fail in release)
+        val env = System.getenv("KEYSTORE_PASSWORD")
+        if (env != null) return env
+        // Try gradle properties as fallback (not recommended for production)
+        val propsFile = java.io.File(System.getProperty("user.home"), ".gradle/gradle.properties")
+        if (propsFile.exists()) {
+            try {
+                propsFile.useLines { lines ->
+                    lines.find { it.startsWith("keystore.password=") }
+                        ?.substringAfter("=")?.takeIf { it.isNotEmpty() }
+                        ?.let { return it }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not read gradle.properties: ${e.message}")
+            }
+        }
+        // No password available - fail for release builds
+        if (!com.linux_core.BuildConfig.DEBUG) {
+            Log.e(TAG, "No password source available for release build")
+            return null
+        }
+        // Debug-only: allow local dev build but log warning
+        Log.w(TAG, "Using insecure dev mode - MITM CA key password must be set via KEYSTORE_PASSWORD")
+        return null // Changed from "nethunter-dev" to require explicit configuration
     }
 
     private fun readAssetBytes(name: String): ByteArray? = try {
@@ -144,6 +176,6 @@ class RootCaInstaller(private val context: Context) {
         const val ASSET_CA_FILE = "certs/mitm-ca.crt"
         const val ASSET_CA_KEY_FILE = "certs/mitm-ca.p12"
         const val ALIAS = "nethunter_mitm_ca"
-        private val P12_PASSWORD = "nethunter-dev".toCharArray()
+        // P12_PASSWORD removed - now resolved dynamically via resolvePassword()
     }
 }

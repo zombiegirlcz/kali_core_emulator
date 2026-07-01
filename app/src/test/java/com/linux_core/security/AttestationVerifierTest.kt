@@ -17,11 +17,13 @@ import java.util.Date
 /**
  * Unit tests for [AttestationVerifier].
  *
- * These tests avoid AndroidKeyStore by constructing an in-memory self-signed EC
- * certificate and verifying that [AttestationVerifier.verify] rejects:
- *  - self-signed chains (because real attestation chains are issued by Google),
- *  - tampered nonces, and
- *  - tampered signatures.
+ * These tests verify that:
+ *  - self-signed chains are rejected (no attestation record available)
+ *  - empty chains are rejected
+ *  - signature verification works correctly
+ *
+ * Note: Real hardware attestation tests require an AndroidKeyStore-backed key
+ * produced on a device; these tests focus on the non-attestation rejection path.
  */
 class AttestationVerifierTest {
 
