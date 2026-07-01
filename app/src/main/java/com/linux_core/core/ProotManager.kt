@@ -1331,9 +1331,69 @@ Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovací
 | :--- | :--- | :--- |
 | `vpn-on` | Zapne globální VPN / NAT. | `vpn-on` |
 | `vpn-off` | Vypne globální VPN / NAT. | `vpn-off` |
-| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `logs` (formátovaný výpis provozu), `ai`, `chat`. | `vpn-cli logs` |
+| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `start`, `stop`, `logs` (formátovaný výpis MITM provozu), `mitm on|off|status`. | `vpn-cli logs` |
 | `vpn-bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `vpn-bypass curl ipinfo.io` |
 | `ignore-vpn [on|off|status]` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `ignore-vpn on` |
+
+## 🔍 TLS MITM Inspection
+
+TLS MITM (Man-in-the-Middle) umožňuje plně dešifrovat HTTPS a další TLS provoz přímo ve VPN tunelu. Proxy provádí TLS handshake jak s klientem, tak se vzdáleným serverem a transparentně přeposílá plaintext.
+
+### Konfigurace MITM v runtime
+
+- MITM CA cert: `assets/certs/mitm-ca.crt`
+- MITM CA privátní klíč: `assets/certs/mitm-ca.p12`
+- Alias v PKCS12: `nethunter_mitm_ca`
+
+### CLI příkazy
+
+```bash
+# Zapnutí MITM rozhraní
+vpn-cli mitm on
+
+# Vypnutí MITM rozhraní
+vpn-cli mitm off
+
+# Stav MITM rozhraní + aktivní session
+vpn-cli mitm status
+
+# Formátovaný dešifrovaný provoz
+vpn-cli logs
+
+# JSON výstup dešifrovaného provozu
+vpn-cli logs json
+```
+
+### HTTP API (port 1337)
+
+```http
+POST /vpn/mitm
+Body: on|off
+
+GET /vpn/mitm
+{"mitm":"on","active_sessions":2,"sessions":[{"port":54321,"snippet":"[CLIENT->SERVER] GET / ..."}]}
+
+GET /vpn/mitm/logs
+GET /vpn/mitm/logs?format=json
+```
+
+### Zobrazení v terminálové relaci
+
+Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do `nethunter_docs.md` a do CIA (decrypted_snippets) bufferu. Využijte `vpn-cli logs` pro čitelné zobrazení.
+
+### Klíčové třídy
+
+| Třída | Role |
+| :--- | :--- |
+| `TlsClientHelloParser` | Parser TLS Client Hello zprávy, detekce TLS a extrakce SNI |
+| `TlsMitmEngine` | Singleton, spravuje aktivní MITM session (`TlsMitmSession`) |
+| `TlsMitmSession` | Jedna MITM relace — naváže spojení ke vzdálenému serveru, provede TLS handshake, podepíše certifikát a proxy plaintext |
+| `RootCaInstaller` | Načte MITM CA, podepíše server certifikát, vytvoří `SSLContext` s forged certem |
+| `MitmCertSigner` | BouncyCastle podepisování listových certifikátů |
+| `VpnNatEngine.kt` | Hlavní NAT engine, detekuje TLS Client Hello v `handleTcpPacket` a předává payload do `TlsMitmEngine` |
+| `VpnSecurityTab.kt` | UI záložka pro zobrazení MITM provozu (žlutý indikátor `TLS MITM INTERCEPT` + karta `LIVE DECRYPTED TLS TRAFFIC`) |
+| `VpnSettingsTab.kt` | Přepínač `TLS MITM Inspection` v Nastavení |
+| `LocalApiServer.kt` | Endpointy `/vpn/mitm` a `/vpn/mitm/logs` pro vzdálené ovládání |
 
 ## 🧠 AI Mozek VPN (Inference Engine)
 
@@ -1409,11 +1469,13 @@ echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-torch on/off\033[0m      sv�
 echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
 echo "  \033[1;36m║\033[0m  \033[1;33m🛡️  VPN:\033[0m                                           \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-on / vpn-off\033[0m            VPN zapnout/vypnout          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli logs\033[0m                formátované VPN logy         \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli status\033[0m              stav VPN                     \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli chat\033[0m                AI Expert konzole            \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-bypass <cmd>\033[0m            obejít VPN pro příkaz         \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  ignore-vpn on/off\033[0m          VPN bypass pro session        \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli mitm on|off\033[0m        TLS MITM zapnout/vypnout       \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli mitm status\033[0m        MITM stav + session            \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli logs\033[0m                MITM formátované logy          \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli status\033[0m              stav VPN                      \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli chat\033[0m                AI Expert konzole             \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-bypass <cmd>\033[0m            obejít VPN pro příkaz          \033[1;36m║\033[0m"
+echo "  \033[1;36m║\033[0m  \033[0;32m  ignore-vpn on/off\033[0m          VPN bypass pro session         \033[1;36m║\033[0m"
 echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
 echo "  \033[1;36m║\033[0m  \033[1;33m🖥️  DESKTOP:\033[0m                                        \033[1;36m║\033[0m"
 echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-desktop start\033[0m     XFCE4 GUI (noVNC :6080)      \033[1;36m║\033[0m"
@@ -1463,7 +1525,8 @@ echo ""
         motd.append("  \u001b[0;36mnethunter-wifi-connectioninfo\u001b[0m WiFi info").append(NL)
         motd.append("  \u001b[0;36mnethunter-clipboard-get/set\u001b[0m  schránka").append(NL)
         motd.append("  \u001b[0;36mvpn-on / vpn-off\u001b[0m            VPN přepínač").append(NL)
-        motd.append("  \u001b[0;36mvpn-cli logs\u001b[0m                formátované VPN logy").append(NL)
+        motd.append("  \u001b[0;36mvpn-cli mitm on|off\u001b[0m        TLS MITM dešifrování").append(NL)
+        motd.append("  \u001b[0;36mvpn-cli logs\u001b[0m                MITM dešifrovaný provoz").append(NL)
         motd.append("  \u001b[0;36mvpn-cli chat\u001b[0m                AI Expert konzole").append(NL)
         motd.append("  \u001b[0;36mnethunter-desktop start\u001b[0m     GUI (noVNC :6080)").append(NL)
         motd.append(NL)

@@ -146,9 +146,101 @@ Plán implementace viz `.kilo/plans/1782753944642-certificate-attestation-plan.m
 - `AttestationVerifier` — lokální PKIX chain + nonce + signature.
 - `BiometricGate` — wrapper nad `androidx.biometric`.
 - `KeystoreManager` — encrypt/decrypt Base64 blobů (používá `LocalApiServer` pro `api_security` token a `UserProfileStore` pro profil).
-- `MitmCertSigner` — BouncyCastle re-sign listu zachycených TLS serverů (hook v `VpnCaptureService.resignForTlsInspection`).
+- `MitmCertSigner` — BouncyCastle re-sign listu zachycených TLS serverů.
 
 BuildConfig příznaky: `ENABLE_MITM`, `ENABLE_ATTESTATION` (oba default `true` v `app/build.gradle.kts`).
 Debug `network_security_config_mitm.xml` je samostatný soubor (pouze dokumentace + zakomentovaný blok), produkční `network_security_config.xml` zůstává beze změn.
 Unit testy: `app/src/test/java/com/linux_core/security/`.
+
+## TLS MITM Inspection
+
+Kompletní TLS MITM proxy pro dešifrování HTTPS provozu v VPN tunelu.
+
+### Architektura MITM
+
+| Soubor | Účel |
+|--------|-------|
+| `TlsClientHelloParser.kt` | Parser TLS Client Hello, detekce TLS a extrakce SNI |
+| `TlsMitmEngine.kt` | Singleton spravující MITM session (`TlsMitmSession`) |
+| `TlsMitmSession` | Jedna relace: provádí server-side handshake, podepisuje cert, client-side handshake, proxy plaintext |
+| `RootCaInstaller.kt` | Načte MITM CA, podepíše server cert, vytvoří `SSLContext` s forged certem |
+| `MitmCertSigner.kt` | BouncyCastle podepisování listových certifikátů |
+| `VpnNatEngine.kt` | Detekuje TLS Client Hello v `handleTcpPacket` a předává do `TlsMitmEngine` |
+| `VpnSecurityTab.kt` | UI: žlutý indikátor `TLS MITM INTERCEPT`, karta `LIVE DECRYPTED TLS TRAFFIC` |
+| `VpnSettingsTab.kt` | Přepínač `TLS MITM Inspection` v Nastavení |
+| `LocalApiServer.kt` | Endpointy `/vpn/mitm` a `/vpn/mitm/logs` pro vzdálené ovládání |
+
+### Tok MITM relace
+
+1. `VpnNatEngine.handleTcpPacket` detekuje TLS Client Hello
+2. `TlsMitmEngine.onClientData` vytvoří `TlsMitmSession`
+3. Session parsuje SNI, naváže spojení k cíli, provede server-side TLS handshake
+4. Extrahuje server certifikát, podepíše ho `RootCaInstaller.signLeafForServer()`
+5. Vytvoří client-side `SSLEngine` s forged certem, proběhne handshake s klientem
+6. Proxy čte zašifrovaná data, dešifruje je, přepošle plaintext mezi klientem a serverem
+7. Části plaintextu se ukládají do `decryptedSnippets` bufferu (max 200 řádků)
+
+### Nastavení a XY
+
+Hodnota `enable_mitm` se ukládá do `SharedPreferences` (`vpn_settings`). Výchozí: `BuildConfig.ENABLE_MITM` (`true`).
+
+#### CLI příkazy (`vpn-cli`)
+
+Skript: `app/src/main/assets/vpn-cli`
+
+```bash
+# Zapnutí MITM
+vpn-cli mitm on
+
+# Vypnutí MITM
+vpn-cli mitm off
+
+# Stav MITM
+vpn-cli mitm status
+
+# Formátovaný dešifrovaný provoz
+vpn-cli logs
+
+# JSON výstup
+vpn-cli logs json
+```
+
+Token se čte z `/data/data/com.linux_core/shared_prefs/api_security.xml`.
+
+#### HTTP API (port 1337)
+
+```http
+POST /vpn/mitm
+Body: on|off
+
+GET /vpn/mitm
+{"mitm":"on","active_sessions":2,"sessions":[{"port":54321,"snippet":"..."}]}
+
+GET /vpn/mitm/logs
+GET /vpn/mitm/logs?format=json
+```
+
+Ověření: `Authorization: Bearer <token>`.
+
+## CLI a ovládání VPN
+
+Vedlejší nástroj `vpn-cli` (asset `vpn-cli`) poskytuje terminálové rozhraní pro ovládání VPN a MITM z hostujícího OS.
+
+```bash
+vpn-cli status        # VPN stav
+vpn-cli start         # Spustit VPN
+vpn-cli stop          # Zastavit VPN
+vpn-cli logs          # MITM dešifrovaný provoz (text)
+vpn-cli logs json     # MITM provoz (JSON)
+vpn-cli mitm on       # Zapnout TLS MITM
+vpn-cli mitm off      # Vypnout TLS MITM
+vpn-cli mitm status   # Stav MITM
+```
+
+CLI komunikuje s `LocalApiServer` na `127.0.0.1:1337`.
+
+## Dokumentace
+
+Detailní dokumentace MITM feature je v `nethunter_docs.md`.
+
 
