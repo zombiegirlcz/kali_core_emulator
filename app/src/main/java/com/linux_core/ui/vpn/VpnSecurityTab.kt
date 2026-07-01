@@ -98,6 +98,7 @@ fun VpnSecurityTab() {
 
     var logsOrSockets by remember { mutableStateOf("LOGS") }
     val activeSockets = remember { mutableStateListOf<com.linux_core.core.ActiveSocket>() }
+    var mitmSnippets by remember { mutableStateOf(emptyList<Pair<Int, String>>()) }
 
     // Periodic logger & stats updater
     LaunchedEffect(Unit) {
@@ -119,6 +120,7 @@ fun VpnSecurityTab() {
             } else {
                 activeSockets.clear()
             }
+            mitmSnippets = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
             delay(1000)
         }
     }
@@ -535,6 +537,51 @@ fun VpnSecurityTab() {
                                     }
                                 }
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (mitmSnippets.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFFFD740)),
+                colors = CardDefaults.cardColors(containerColor = Color(0x1A1A12))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(modifier = Modifier.size(8.dp).background(Color(0xFFFFD740), RoundedCornerShape(2.dp)))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("LIVE DECRYPTED TLS TRAFFIC", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFD740), fontFamily = FontFamily.Monospace)
+                        }
+                        Text("MITM • ${mitmSnippets.size} active sessions", fontSize = 9.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    mitmSnippets.forEach { (port, snippet) ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Text("Port $port", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
+                            Text(
+                                text = snippet,
+                                fontSize = 10.sp,
+                                color = Color(0xFFE0E0E0),
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(start = 8.dp, top = 2.dp)
+                            )
+                            Divider(modifier = Modifier.padding(top = 6.dp), color = Color(0x22FFFFFF))
                         }
                     }
                 }

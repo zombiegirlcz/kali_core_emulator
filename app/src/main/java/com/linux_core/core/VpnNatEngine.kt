@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import com.termux.terminal.TerminalSession
 import com.linux_core.security.TlsClientHelloParser
+import com.linux_core.BuildConfig
 
 class VpnNatEngine(
     private val vpnService: VpnService,
@@ -156,11 +157,14 @@ class VpnNatEngine(
         return VpnLogManager.AuditCategory.ALLOWED
     }
 
+    private fun isMitmEnabled(): Boolean {
+        val prefs = vpnService.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        return prefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)
+    }
+
     fun handlePacketFromTun(packetBuffer: ByteBuffer, length: Int) {
         if (!isRunning.get() || length < 20) return
-
         val ipHeader = IpHeader(packetBuffer, 0)
-        
         val rawData = ByteArray(length)
         val pos = packetBuffer.position()
         packetBuffer.position(0)
@@ -553,7 +557,7 @@ class VpnNatEngine(
                 payloadCopy.get(rawPeek)
                 payloadCopy.flip()
                 
-                if (TlsClientHelloParser.isTlsClientHello(rawPeek)) {
+                if (isMitmEnabled() && TlsClientHelloParser.isTlsClientHello(rawPeek)) {
                     session.isTlsMitm = true
                     TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
                     return

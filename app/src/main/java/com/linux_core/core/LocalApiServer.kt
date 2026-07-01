@@ -46,6 +46,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import com.linux_core.security.CertificateManager
 import com.linux_core.security.KeystoreManager
+import com.linux_core.BuildConfig
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -337,6 +338,9 @@ object LocalApiServer {
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
+                path == "/vpn/mitm" && method == "POST" -> handleVpnMitmPost(context, body, out)
+                path == "/vpn/mitm" && method == "GET" -> handleVpnMitmGet(context, out)
+                path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -1456,6 +1460,94 @@ object LocalApiServer {
                 }
             }.toString()
             sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmPost(context: Context, body: String, out: OutputStream) {
+        try {
+            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val value = body.trim().lowercase()
+            val enabled = when (value) {
+                "on", "true", "1" -> true
+                "off", "false", "0" -> false
+                else -> {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"Use 'on' or 'off'\"}")
+                    return
+                }
+            }
+            prefs.edit().putBoolean("enable_mitm", enabled).apply()
+
+            val action = if (enabled) "on" else "off"
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("mitm", action)
+                put("status", "mitm_$action")
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmGet(context: Context, out: OutputStream) {
+        try {
+            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val enabled = prefs.getBoolean("enable_mitm", com.linux_core.BuildConfig.ENABLE_MITM)
+            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val json = JSONObject().apply {
+                put("mitm", if (enabled) "on" else "off")
+                put("active_sessions", sessions.size)
+                put("sessions", org.json.JSONArray(sessions.map { (port, snippet) ->
+                    JSONObject().apply {
+                        put("port", port)
+                        put("snippet", snippet)
+                    }
+                }))
+            }.toString()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmLogs(out: OutputStream) {
+        try {
+            val params = parseQueryParams("/vpn/mitm/logs")
+            val fmt = params["format"] ?: "text"
+            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+
+            if (fmt == "json") {
+                val arr = org.json.JSONArray()
+                for ((port, snippet) in sessions) {
+                    val obj = JSONObject().apply {
+                        put("port", port)
+                        for (line in snippet.lines()) {
+                            val parts = line.split(" ", limit = 2)
+                            if (parts.size == 2) {
+                                put(parts[0].removeSurrounding("[", "]"), parts[1])
+                            }
+                        }
+                    }
+                    arr.put(obj)
+                }
+                sendResponse(out, 200, "OK", arr.toString())
+                return
+            }
+
+            val sb = StringBuilder()
+            for ((port, snippet) in sessions) {
+                sb.append("=== Port $port ===\n")
+                sb.append(snippet)
+                sb.append("\n")
+            }
+            val raw = sb.toString().toByteArray(Charsets.UTF_8)
+            val headers = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: text/plain; charset=utf-8\r\n" +
+                    "Content-Length: ${raw.size}\r\n" +
+                    "Connection: close\r\n\r\n"
+            out.write(headers.toByteArray(Charsets.UTF_8))
+            out.write(raw)
+            out.flush()
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

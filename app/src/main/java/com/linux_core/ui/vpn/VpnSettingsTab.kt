@@ -49,6 +49,7 @@ fun VpnSettingsTab() {
     var enableCrossMount by remember { mutableStateOf(sharedPrefs.getBoolean("enable_cross_mount", false)) }
     var shareLocalApi by remember { mutableStateOf(sharedPrefs.getBoolean("share_local_api", false)) }
     var shareP2pMesh by remember { mutableStateOf(sharedPrefs.getBoolean("share_p2p_mesh", false)) }
+    var enableMitm by remember { mutableStateOf(sharedPrefs.getBoolean("enable_mitm", true)) }
     var logVerbosity by remember { mutableStateOf(sharedPrefs.getInt("log_verbosity", 1)) }
     var showActionMenu by remember { mutableStateOf(false) }
     var showProxyMenu by remember { mutableStateOf(false) }
@@ -83,6 +84,7 @@ fun VpnSettingsTab() {
             putBoolean("enable_cross_mount", enableCrossMount)
             putBoolean("share_local_api", shareLocalApi)
             putBoolean("share_p2p_mesh", shareP2pMesh)
+            putBoolean("enable_mitm", enableMitm)
             putInt("log_verbosity", logVerbosity)
             putStringSet("disallowed_packages", disallowedPackages)
             apply()
@@ -158,21 +160,37 @@ fun VpnSettingsTab() {
                         colors = darkTextFieldColors()
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Wi-Fi ADB Protection", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                            Text("Bypass local subnet routes for debugger connections on APIs < 33",
-                                color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                        }
-                        Switch(checked = forceAdbSafety, onCheckedChange = { forceAdbSafety = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = accentGreen, checkedTrackColor = accentGreen.copy(alpha = 0.3f)))
-                    }
-                }
-            }
+                     Row(
+                         modifier = Modifier.fillMaxWidth(),
+                         horizontalArrangement = Arrangement.SpaceBetween,
+                         verticalAlignment = Alignment.CenterVertically
+                     ) {
+                         Column(modifier = Modifier.weight(1f)) {
+                             Text("Wi-Fi ADB Protection", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                             Text("Bypass local subnet routes for debugger connections on APIs < 33",
+                                 color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                         }
+                         Switch(checked = forceAdbSafety, onCheckedChange = { forceAdbSafety = it },
+                             colors = SwitchDefaults.colors(checkedThumbColor = accentGreen, checkedTrackColor = accentGreen.copy(alpha = 0.3f)))
+                     }
+
+                     Spacer(modifier = Modifier.height(10.dp))
+
+                     Row(
+                         modifier = Modifier.fillMaxWidth(),
+                         horizontalArrangement = Arrangement.SpaceBetween,
+                         verticalAlignment = Alignment.CenterVertically
+                     ) {
+                         Column(modifier = Modifier.weight(1f)) {
+                             Text("TLS MITM Inspection", color = Color(0xFFFFD740), fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                             Text("Re-sign certificates and decrypt TLS flows for inspection",
+                                 color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                         }
+                         Switch(checked = enableMitm, onCheckedChange = { enableMitm = it },
+                             colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFFFFD740), checkedTrackColor = Color(0xFFFFD740).copy(alpha = 0.3f)))
+                     }
+                 }
+             }
         }
 
         // 2. AI ANOMALY & THREAT DETECTION

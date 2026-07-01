@@ -1,0 +1,92 @@
+#!/bin/sh
+# VPN CLI for NetHunter AI Operator
+# Talks to LocalApiServer on port 1337
+
+API_HOST="${API_HOST:-127.0.0.1}"
+API_PORT="${API_PORT:-1337}"
+API_URL="http://${API_HOST}:${API_PORT}"
+
+get_token() {
+    TOKEN=$(cat /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | grep 'name="auth_token"' | sed 's/.*value="\([^"]*\)".*/\1/' | head -n 1)
+    if [ -z "$TOKEN" ]; then
+        TOKEN=$(cat /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | grep 'name="auth_token"' | sed "s/.*value='\([^']*\)'.*/\1/" | head -n 1)
+    fi
+    echo "$TOKEN"
+}
+
+auth_header() {
+    TOKEN=$(get_token)
+    if [ -n "$TOKEN" ]; then
+        echo "-H \"Authorization: Bearer $TOKEN\""
+    else
+        echo ""
+    fi
+}
+
+usage() {
+    echo "Usage: vpn-cli [mitm|logs|status]"
+    echo ""
+    echo "Commands:"
+    echo "  mitm on              Enable TLS MITM inspection"
+    echo "  mitm off             Disable TLS MITM inspection"
+    echo "  mitm status          Show MITM status and active sessions"
+    echo "  logs                 Show formatted MITM decrypted traffic logs"
+    echo "  logs json            Show MITM logs as JSON"
+    echo "  status               Show VPN status"
+    echo "  start                Start VPN"
+    echo "  stop                 Stop VPN"
+    exit 1
+}
+
+case "$1" in
+    mitm)
+        shift
+        if [ $# -eq 0 ]; then
+            echo "Error: specify 'on' or 'off'"
+            usage
+        fi
+        ACTION="$1"
+        if [ "$ACTION" != "on" ] && [ "$ACTION" != "off" ]; then
+            echo "Error: use 'on' or 'off'"
+            usage
+        fi
+        AUTH=$(auth_header)
+        RESP=$(curl -s -X POST $AUTH -d "$ACTION" "${API_URL}/vpn/mitm" 2>/dev/null)
+        if [ -n "$RESP" ]; then
+            echo "$RESP"
+        else
+            echo "Error: cannot reach API at ${API_URL}"
+            exit 1
+        fi
+        ;;
+    logs)
+        shift
+        FORMAT="text"
+        if [ $# -gt 0 ] && [ "$1" = "json" ]; then
+            FORMAT="json"
+        fi
+        RESP=$(curl -s $(auth_header) "${API_URL}/vpn/mitm/logs?format=${FORMAT}" 2>/dev/null)
+        if [ -n "$RESP" ]; then
+            if [ "$FORMAT" = "json" ]; then
+                echo "$RESP" | python3 -m json.tool 2>/dev/null || echo "$RESP"
+            else
+                echo "$RESP"
+            fi
+        else
+            echo "Error: cannot reach API at ${API_URL}"
+            exit 1
+        fi
+        ;;
+    status)
+        curl -s $(auth_header) "${API_URL}/vpn" 2>/dev/null | python3 -m json.tool 2>/dev/null || curl -s $(auth_header) "${API_URL}/vpn" 2>/dev/null
+        ;;
+    start)
+        curl -s -X POST $(auth_header) "${API_URL}/vpn/start" 2>/dev/null | python3 -m json.tool 2>/dev/null || curl -s -X POST $(auth_header) "${API_URL}/vpn/start" 2>/dev/null
+        ;;
+    stop)
+        curl -s -X POST $(auth_header) "${API_URL}/vpn/stop" 2>/dev/null | python3 -m json.tool 2>/dev/null || curl -s -X POST $(auth_header) "${API_URL}/vpn/stop" 2>/dev/null
+        ;;
+    *)
+        usage
+        ;;
+esac

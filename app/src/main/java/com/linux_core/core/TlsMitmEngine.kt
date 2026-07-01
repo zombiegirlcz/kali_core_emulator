@@ -56,6 +56,17 @@ object TlsMitmEngine {
     fun removeSession(clientPort: Int) {
         sessions.remove(clientPort)
     }
+
+    fun getSessionSnapshots(): List<Pair<Int, String>> {
+        val out = ArrayList<Pair<Int, String>>()
+        for ((port, sess) in sessions) {
+            val lines = sess.getDecryptedSnippets().takeLast(20)
+            if (lines.isNotEmpty()) {
+                out.add(port to lines.joinToString("\n"))
+            }
+        }
+        return out
+    }
 }
 
 class TlsMitmSession(
@@ -85,6 +96,32 @@ class TlsMitmSession(
     init {
         session.clientSeqNum = clientSeqNum
         session.serverSeqNum = serverSeqNum
+    }
+
+    private val decryptedSnippets = ArrayDeque<String>()
+    private val decryptedLock = Any()
+
+    fun getDecryptedSnippets(): List<String> {
+        synchronized(decryptedLock) {
+            return decryptedSnippets.toList()
+        }
+    }
+
+    private fun recordSnippet(direction: String, data: ByteArray) {
+        if (data.isEmpty()) return
+        val text = try {
+            String(data, Charsets.UTF_8).trim()
+        } catch (e: Exception) {
+            return
+        }
+        if (text.isEmpty() || text.length > 512) return
+        val line = "[$direction] $text"
+        synchronized(decryptedLock) {
+            decryptedSnippets.addLast(line)
+            while (decryptedSnippets.size > 200) {
+                decryptedSnippets.removeFirst()
+            }
+        }
     }
 
     fun handleClientData(data: ByteArray) {
@@ -256,8 +293,14 @@ class TlsMitmSession(
                 if (result.status == SSLEngineResult.Status.OK) {
                     if (result.bytesProduced() > 0) {
                         clientNetOut.flip()
-                        writeToServer(clientNetOut)
+                        val plain = ByteArray(clientNetOut.remaining())
+                        clientNetOut.get(plain)
                         clientNetOut.clear()
+                        recordSnippet("CLIENT->SERVER", plain)
+                        val outBuf = java.nio.ByteBuffer.allocate(plain.size).put(plain)
+                        while (outBuf.hasRemaining()) {
+                            writeToServer(outBuf)
+                        }
                     }
                 } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
                     clientAppIn.position(clientAppIn.limit())
@@ -291,6 +334,7 @@ class TlsMitmSession(
                         val plain = ByteArray(serverAppOut.remaining())
                         serverAppOut.get(plain)
                         serverAppOut.clear()
+                        recordSnippet("SERVER->CLIENT", plain)
                         clientNetOut.clear()
                         val wrapResult = clientEngine!!.wrap(ByteBuffer.wrap(plain), clientNetOut)
                         if (wrapResult.bytesProduced() > 0) {
