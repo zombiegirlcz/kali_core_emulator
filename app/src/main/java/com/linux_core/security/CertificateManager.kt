@@ -59,8 +59,9 @@ object CertificateManager {
             Log.i(TAG, "ENABLE_ATTESTATION=false – hardware attestation disabled.")
         }
 
-        Log.i(TAG, "CertificateManager initialised (mitm=${BuildConfig.ENABLE_MITM}, " +
-                "attestation=${BuildConfig.ENABLE_ATTESTATION}).")
+        val msg = "CertificateManager initialised (mitm=${BuildConfig.ENABLE_MITM}, " +
+                "attestation=${BuildConfig.ENABLE_ATTESTATION})."
+        Log.i(TAG, msg)
     }
 
     fun rootCa(): RootCaInstaller? = _rootCaInstaller

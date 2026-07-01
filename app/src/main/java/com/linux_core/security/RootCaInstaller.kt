@@ -8,6 +8,8 @@ import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
 
 /**
  * Manages the MITM Root CA bundled with the app.
@@ -83,6 +85,25 @@ class RootCaInstaller(private val context: Context) {
         return MitmCertSigner.sign(ca, caKey, serverCert, serial)
     }
 
+    fun createServerSslContext(serverCert: X509Certificate, serial: Long): SSLContext? {
+        val ca = loadCa() ?: return null
+        val caKey = loadCaPrivateKey() ?: return null
+        return try {
+            val forged = MitmCertSigner.sign(ca, caKey, serverCert, serial)
+            val ks = KeyStore.getInstance("PKCS12")
+            ks.load(null, null)
+            ks.setKeyEntry(ALIAS, caKey, P12_PASSWORD, arrayOf(forged, ca))
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, P12_PASSWORD)
+            val ctx = SSLContext.getInstance("TLS")
+            ctx.init(kmf.keyManagers, null, null)
+            ctx
+        } catch (e: Exception) {
+            Log.e(TAG, "createServerSslContext failed: ${e.message}")
+            null
+        }
+    }
+
     private fun loadCa(): X509Certificate? {
         caCert.get()?.let { return it }
         val bytes = readAssetBytes(ASSET_CA_FILE) ?: return null
@@ -123,5 +144,6 @@ class RootCaInstaller(private val context: Context) {
         const val ASSET_CA_FILE = "certs/mitm-ca.crt"
         const val ASSET_CA_KEY_FILE = "certs/mitm-ca.p12"
         const val ALIAS = "nethunter_mitm_ca"
+        private val P12_PASSWORD = "nethunter-dev".toCharArray()
     }
 }

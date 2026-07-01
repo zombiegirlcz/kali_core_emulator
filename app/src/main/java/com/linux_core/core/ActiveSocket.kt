@@ -13,5 +13,7 @@ data class ActiveSocket(
     val speedDownload: Long,
     val appName: String,
     val packageName: String?,
-    val flagEmoji: String
+    val flagEmoji: String,
+    val isTlsMitm: Boolean = false,
+    val sni: String? = null
 )

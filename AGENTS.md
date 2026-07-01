@@ -3,7 +3,7 @@
 ## Sestavení a ověření
 
 ```bash
-./gradlew assembleDebug               # sestavit debug APK
+modal run modal_build.py::upload_src && modal run modal_build.py::build # sestaveni se provadi na modalu
 ./gradlew test                        # unit testy (app/src/test/)
 ./gradlew test --tests "*ProotManager*"  # jeden test class
 ./gradlew lint                        # Android lint (checkReleaseBuilds=false, abortOnError=false)

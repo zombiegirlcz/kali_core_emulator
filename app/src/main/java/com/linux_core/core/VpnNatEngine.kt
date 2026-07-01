@@ -14,14 +14,15 @@ import java.nio.channels.SocketChannel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import com.termux.terminal.TerminalSession
+import com.linux_core.security.TlsClientHelloParser
 
 class VpnNatEngine(
     private val vpnService: VpnService,
     private val writeToTun: (ByteArray, Int) -> Unit
 ) {
     companion object {
-        private const val TAG = "VpnNatEngine"
-        private const val LOCAL_IP_INT = 0x0A000002 // 10.0.0.2
+        const val TAG = "VpnNatEngine"
+        const val LOCAL_IP_INT = 0x0A000002 // 10.0.0.2
     }
 
     private val isRunning = AtomicBoolean(false)
@@ -57,6 +58,9 @@ class VpnNatEngine(
         var lastBytesReceived: Long = 0
         var speedUpload: Long = 0L
         var speedDownload: Long = 0L
+
+        var isTlsMitm = false
+        var tlsMitmHandler: TlsMitmSession? = null
     }
 
     class UdpSession(
@@ -80,6 +84,7 @@ class VpnNatEngine(
         try {
             selector = Selector.open()
             aiBrainWorker = AIBrainWorker(vpnService)
+            TlsMitmEngine.init(connectionThreadPool, selector!!)
             isRunning.set(true)
             startSelectorLoop()
             startDnsCacheCleaner()
@@ -521,11 +526,9 @@ class VpnNatEngine(
                 Log.d(TAG, "TCP session established with client on port $srcPort")
             }
 
-            // Sync sequence and ACK numbers immediately before payload processing
             session.serverSeqNum = Math.max(session.serverSeqNum, tcpHeader.ackNum)
             session.clientSeqNum = Math.max(session.clientSeqNum, tcpHeader.seqNum)
 
-            // Extract and forward payload data
             val headerLen = ipHeader.ihl + tcpHeader.dataOffset
             val payloadLen = ipHeader.totalLength - headerLen
             
@@ -539,16 +542,31 @@ class VpnNatEngine(
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
 
+                if (session.isTlsMitm) {
+                    val raw = ByteArray(payloadCopy.remaining())
+                    payloadCopy.get(raw)
+                    TlsMitmEngine.onClientData(vpnService, session, raw, writeToTun)
+                    return
+                }
+                
+                val rawPeek = ByteArray(payloadCopy.remaining())
+                payloadCopy.get(rawPeek)
+                payloadCopy.flip()
+                
+                if (TlsClientHelloParser.isTlsClientHello(rawPeek)) {
+                    session.isTlsMitm = true
+                    TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
+                    return
+                }
+
                 if (session.socketChannel?.isConnected == true) {
                     if (!writeOrQueue(session, session.socketChannel!!, payloadCopy)) {
                         return
                     }
                 } else {
-                    // Buffer data if remote channel is still connecting
                     session.sendQueue.offer(payloadCopy)
                 }
                 
-                // Acknowledge payload immediately back to TUN client
                 sendTcpAck(session)
             }
         }
@@ -796,7 +814,7 @@ class VpnNatEngine(
         writeToTun(response.array(), totalLength)
     }
 
-    private fun sendTcpDataToClient(session: TcpSession, data: ByteArray) {
+    fun sendTcpDataToClient(session: TcpSession, data: ByteArray) {
         val totalLength = 40 + data.size
         val response = ByteBuffer.allocate(totalLength)
         
@@ -936,6 +954,9 @@ class VpnNatEngine(
 
     private fun closeTcpSession(port: Int, sendRst: Boolean = false) {
         val session = tcpSessions.remove(port) ?: return
+        session.tlsMitmHandler?.close()
+        session.tlsMitmHandler = null
+        session.isTlsMitm = false
         if (sendRst && session.state != TcpState.CLOSED) {
             try {
                 sendTcpRstForSession(session)
@@ -1172,7 +1193,9 @@ class VpnNatEngine(
                     speedDownload = session.speedDownload,
                     appName = resolved.appName,
                     packageName = resolved.packageName,
-                    flagEmoji = flag
+                    flagEmoji = flag,
+                    isTlsMitm = session.isTlsMitm,
+                    sni = session.tlsMitmHandler?.sni
                 )
             )
         }

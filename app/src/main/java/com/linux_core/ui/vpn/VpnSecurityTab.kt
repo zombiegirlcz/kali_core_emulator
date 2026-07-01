@@ -1023,6 +1023,24 @@ fun ActiveSocketRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (socket.isTlsMitm) {
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .background(Color(0xFFFFD740), RoundedCornerShape(2.dp))
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "TLS MITM INTERCEPT" + (socket.sni?.let { " • $it" } ?: ""),
+                            color = Color(0xFFFFD740),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 // Speeds and totals
                 Text(
