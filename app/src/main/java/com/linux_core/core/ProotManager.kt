@@ -975,6 +975,48 @@ object ProotManager {
                 append("nethunter-map").append(NL)
             }.toString(),
 
+            "nethunter-apps-usage" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("curl -s http://127.0.0.1:1337/apps/usage").append(NL)
+            }.toString(),
+
+            "nethunter-notifications-active" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("curl -s http://127.0.0.1:1337/notifications/active").append(NL)
+            }.toString(),
+
+            "nethunter-accessibility-hierarchy" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("curl -s http://127.0.0.1:1337/accessibility/hierarchy").append(NL)
+            }.toString(),
+
+            "nethunter-battery-optimize" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("action=\"\${1:-status}\"").append(NL)
+                append("case \"\$action\" in").append(NL)
+                append("  status) curl -s http://127.0.0.1:1337/battery/optimize ;;").append(NL)
+                append("  request) curl -s -X POST http://127.0.0.1:1337/battery/optimize ;;").append(NL)
+                append("  *) echo \"Usage: nethunter-battery-optimize [status|request]\"; exit 1 ;;").append(NL)
+                append("esac").append(NL)
+            }.toString(),
+
+            "nethunter-wifi-control" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("state=\"\${1:-status}\"").append(NL)
+                append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/wifi").append(NL)
+            }.toString(),
+
+            "nethunter-device-admin" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("action=\"\${1:-status}\"").append(NL)
+                append("case \"\$action\" in").append(NL)
+                append("  status) curl -s http://127.0.0.1:1337/device/admin ;;").append(NL)
+                append("  request) curl -s -X POST http://127.0.0.1:1337/device/admin ;;").append(NL)
+                append("  lock) curl -s -X POST http://127.0.0.1:1337/device/lock ;;").append(NL)
+                append("  *) echo \"Usage: nethunter-device-admin [status|request|lock]\"; exit 1 ;;").append(NL)
+                append("esac").append(NL)
+            }.toString(),
+
             "nethunter-volume" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
