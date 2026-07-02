@@ -80,6 +80,7 @@ class TlsMitmSession(
 ) {
     companion object {
         private const val TAG = "TlsMitmSession"
+        @Volatile private var sniServerNameFactory: ((String) -> javax.net.ssl.SNIServerName)? = null
     }
 
     private val clientPort = session.clientPort
@@ -744,19 +745,45 @@ class TlsMitmSession(
         if (closed) return
         running = false
         TlsMitmEngine.removeSession(clientPort)
-        try { serverChannel?.close() } catch (_: Exception) {}
+
+        // Explicitní uzavření serverového socketu
+        try {
+            serverChannel?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing server channel for port $clientPort: ${e.message}")
+        } finally {
+            serverChannel = null
+        }
+
+        // Uvolnění TLS enginů
+        try {
+            clientEngine?.session?.invalidate()
+        } catch (_: Exception) {}
         clientEngine = null
         serverEngine = null
-        serverChannel = null
-        try { session.socketChannel?.close() } catch (_: Exception) {}
+
+        // Vyčištění bufferů
+        synchronized(clientQueueLock) {
+            clientQueue.clear()
+        }
+        synchronized(decryptedLock) {
+            decryptedSnippets.clear()
+        }
+
+        // Uzavření socketu relace
+        try {
+            session.socketChannel?.close()
+        } catch (_: Exception) {}
+
+        // Nastavení příznaků na relaci; uzavření WAN relace neřešeno přímo zde
         session.isTlsMitm = false
         session.tlsMitmHandler = null
+
+        // Odeslání RST klientovi pro okamžité ukončení
         sendRstToClient()
-        try {
-            VpnNatEngine.closeTcpSession(clientPort, sendRst = false)
-        } catch (_: Exception) {}
+
         closed = true
-        Log.i(TAG, "TLS MITM closed for port $clientPort, sending RST to client")
+        Log.i(TAG, "TLS MITM closed for port $clientPort, all resources released")
     }
 
     private fun fallingBackToPassthrough() {
@@ -770,16 +797,22 @@ class TlsMitmSession(
         } finally {
             running = false
             closed = true
-            try { serverChannel?.close() } catch (_: Exception) {}
+            // Robustní uzavření všech zdrojů
+            try {
+                serverChannel?.close()
+            } catch (_: Exception) {}
             serverChannel = null
-            try { session.socketChannel?.close() } catch (_: Exception) {}
+            try {
+                session.socketChannel?.close()
+            } catch (_: Exception) {}
+            // Vyčištění bufferů
+            synchronized(clientQueueLock) {
+                clientQueue.clear()
+            }
             session.isTlsMitm = false
             session.tlsMitmHandler = null
             sendRstToClient()
-            try {
-                VpnNatEngine.closeTcpSession(clientPort, sendRst = false)
-            } catch (_: Exception) {}
-            Log.i(TAG, "TLS MITM passthrough ended for port $clientPort, sending RST to client")
+            Log.i(TAG, "TLS MITM passthrough ended for port $clientPort, all resources released")
         }
     }
 
@@ -927,6 +960,13 @@ class TlsMitmSession(
     }
 
     private fun buildSniList(hostname: String): List<javax.net.ssl.SNIServerName> {
+        val factory = sniServerNameFactory ?: synchronized(this) {
+            sniServerNameFactory ?: resolveSniServerNameFactory().also { sniServerNameFactory = it }
+        }
+        return listOf(factory(hostname))
+    }
+
+    private fun resolveSniServerNameFactory(): (String) -> javax.net.ssl.SNIServerName {
         val candidates = listOf(
             "sun.net.util.SNIHostName",
             "com.android.org.conscrypt.SNIHostName"
@@ -934,22 +974,26 @@ class TlsMitmSession(
         for (className in candidates) {
             try {
                 val clazz = Class.forName(className)
-                val ctor: Constructor<out Any> = clazz.getConstructor(
+                val ctor = clazz.getConstructor(
                     Int::class.javaPrimitiveType,
                     ByteArray::class.java
                 )
                 @Suppress("UNCHECKED_CAST")
-                val instance = ctor.newInstance(
-                    StandardConstants.SNI_HOST_NAME,
-                    hostname.toByteArray(Charsets.UTF_8)
-                ) as javax.net.ssl.SNIServerName
-                return listOf(instance)
+                val factory: (String) -> javax.net.ssl.SNIServerName = { hostname ->
+                    ctor.newInstance(
+                        StandardConstants.SNI_HOST_NAME,
+                        hostname.toByteArray(Charsets.UTF_8)
+                    ) as javax.net.ssl.SNIServerName
+                }
+                Log.i(TAG, "SNIServerName factory resolved: $className")
+                return factory
             } catch (_: ClassNotFoundException) {
             } catch (_: NoSuchMethodException) {
             } catch (_: Exception) {
             }
         }
-        Log.w(TAG, "No concrete SNIServerName implementation found; SNI not set for hostname=$hostname")
-        return emptyList()
+        Log.w(TAG, "No concrete SNIServerName implementation found; using empty list")
+        @Suppress("UNCHECKED_CAST")
+        return { _ -> throw UnsupportedOperationException("No SNIServerName implementation available") }
     }
 }

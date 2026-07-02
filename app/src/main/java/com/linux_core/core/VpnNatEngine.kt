@@ -526,7 +526,7 @@ class VpnNatEngine(
         
         if (tcpHeader.isRST) {
             Log.d(TAG, "Received RST from client on port $srcPort")
-            closeTcpSession(srcPort)
+            closeTcpSession(srcPort, sendRst = false) // Již jsme obdrželi RST, nemusíme posílat další
             return
         }
 
@@ -534,7 +534,9 @@ class VpnNatEngine(
             Log.d(TAG, "Received FIN from client on port $srcPort")
             session.clientSeqNum = tcpHeader.seqNum + 1
             sendTcpAck(session)
-            closeTcpSession(srcPort)
+            // Přechod do stavu FIN_WAIT a čekání na potvrzení od serveru
+            session.state = TcpState.FIN_WAIT
+            closeTcpSession(srcPort, sendRst = false)
             return
         }
 
@@ -570,11 +572,15 @@ class VpnNatEngine(
                 val rawPeek = ByteArray(payloadCopy.remaining())
                 payloadCopy.get(rawPeek)
                 payloadCopy.flip()
-                
-                if (isMitmEnabled() && session.destinationPort in TLS_PORTS && TlsClientHelloParser.isTlsClientHello(rawPeek)) {
-                    session.isTlsMitm = true
-                    TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
-                    return
+
+                val looksLikeTls = isMitmEnabled() && TlsClientHelloParser.isTlsClientHello(rawPeek)
+                if (looksLikeTls) {
+                    if (session.destinationPort in TLS_PORTS) {
+                        session.isTlsMitm = true
+                        TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
+                        return
+                    }
+                    Log.w(TAG, "TLS ClientHello detected on non-whitelisted port ${session.destinationPort} for client ${session.clientPort}")
                 }
 
                 if (session.socketChannel?.isConnected == true) {
@@ -593,6 +599,9 @@ class VpnNatEngine(
     private fun startSelectorLoop() {
         selectorThread = Thread({
             val buffer = ByteBuffer.allocate(16384)
+            // Sledování času pro pravidelné čištění
+            var lastCleanup = System.currentTimeMillis()
+            val cleanupInterval = 30_000L // 30 sekund
             while (isRunning.get() && !Thread.currentThread().isInterrupted) {
                 try {
                     // Process any pending channel registrations first
@@ -607,7 +616,15 @@ class VpnNatEngine(
 
                     val count = selector?.select(2000) ?: 0
                     if (count == 0) {
-                        cleanIdleSessions()
+                        // Pravidelné čištění neaktivních spojení každých 30 sekund
+                        val now = System.currentTimeMillis()
+                        if (now - lastCleanup > cleanupInterval) {
+                            cleanIdleSessions()
+                            lastCleanup = now
+                        } else {
+                            // Lehké čištění - pouze zastaralé spojení
+                            cleanIdleSessions()
+                        }
                         continue
                     }
 
@@ -982,21 +999,38 @@ class VpnNatEngine(
 
     internal fun closeTcpSession(port: Int, sendRst: Boolean = false) {
         val session = tcpSessions.remove(port) ?: return
-        session.tlsMitmHandler?.close()
-        session.tlsMitmHandler = null
-        session.isTlsMitm = false
-        if (sendRst && session.state != TcpState.CLOSED) {
+        val prevState = session.state
+        
+        // Uzavření TLS MITM relace, pokud existuje
+        try {
+            session.tlsMitmHandler?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing TLS MITM session on port $port: ${e.message}")
+        } finally {
+            session.tlsMitmHandler = null
+            session.isTlsMitm = false
+        }
+        
+        // Odeslání RST packetu, pokud je požadováno a spojení není již uzavřeno
+        if (sendRst && prevState != TcpState.CLOSED) {
             try {
                 sendTcpRstForSession(session)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to send TCP RST: ${e.message}")
+                Log.e(TAG, "Failed to send TCP RST for port $port: ${e.message}")
             }
             session.state = TcpState.CLOSED
         }
+        
+        // Explicitní uzavření socketu s kontrolou
         try {
             session.socketChannel?.close()
-        } catch (_: IOException) {}
-        Log.d(TAG, "Closed TCP session on port $port")
+        } catch (e: IOException) {
+            Log.w(TAG, "Error closing socket channel for port $port: ${e.message}")
+        } finally {
+            session.socketChannel = null
+        }
+        
+        Log.d(TAG, "Closed TCP session on port $port (state: $prevState -> CLOSED)")
     }
 
     private fun closeUdpSession(port: Int) {
@@ -1010,28 +1044,39 @@ class VpnNatEngine(
     private fun cleanIdleSessions() {
         val now = System.currentTimeMillis()
         
-        // Idle TCP clean (e.g. 5 minutes)
+        // Idle TCP clean (reduced from 5 minutes to 2 minutes)
         val tcpIterator = tcpSessions.keys().iterator()
+        var tcpClosed = 0
         while (tcpIterator.hasNext()) {
             val port = tcpIterator.next()
             val session = tcpSessions[port] ?: continue
-            if (now - session.lastActiveTime > 300000) {
-                closeTcpSession(port, sendRst = true)
+            // Zkrácení timeoutu z 300000ms (5 min) na 120000ms (2 min)
+            if (now - session.lastActiveTime > 120000) {
+                closeTcpSessionWithRetry(port)
+                tcpClosed++
             }
         }
         
-        // Idle UDP clean (e.g. 1 minute)
+        // Idle UDP clean (reduced from 1 minute to 30 seconds)
         val udpIterator = udpSessions.keys().iterator()
+        var udpClosed = 0
         while (udpIterator.hasNext()) {
             val port = udpIterator.next()
             val session = udpSessions[port] ?: continue
-            if (now - session.lastActiveTime > 60000) {
+            // Zkrácení timeoutu z 60000ms (1 min) na 30000ms (30 sekund)
+            if (now - session.lastActiveTime > 30000) {
                 closeUdpSession(port)
+                udpClosed++
             }
+        }
+        
+        if (tcpClosed > 0 || udpClosed > 0) {
+            Log.d(TAG, "Cleaned idle sessions: TCP=$tcpClosed, UDP=$udpClosed")
         }
     }
 
     fun stop() {
+        Log.i(TAG, "Stopping NAT Engine - closing all connections...")
         isRunning.set(false)
         selectorThread?.interrupt()
         
@@ -1039,19 +1084,56 @@ class VpnNatEngine(
             selector?.close()
         } catch (_: Exception) {}
         
-        for (port in tcpSessions.keys) {
-            closeTcpSession(port)
+        // Robustní uzavření všech TCP spojení s opakovanými pokusy
+        val tcpPorts = tcpSessions.keys.toList()
+        Log.i(TAG, "Closing ${tcpPorts.size} TCP sessions...")
+        for (port in tcpPorts) {
+            closeTcpSessionWithRetry(port)
         }
-        for (port in udpSessions.keys) {
+        
+        // Robustní uzavření všech UDP spojení
+        val udpPorts = udpSessions.keys.toList()
+        Log.i(TAG, "Closing ${udpPorts.size} UDP sessions...")
+        for (port in udpPorts) {
             closeUdpSession(port)
         }
+        
+        // Čekání na uzavření všech spojení
+        var attempt = 0
+        while ((tcpSessions.isNotEmpty() || udpSessions.isNotEmpty()) && attempt < 10) {
+            Thread.sleep(100)
+            attempt++
+            Log.d(TAG, "Waiting for sessions to close... TCP: ${tcpSessions.size}, UDP: ${udpSessions.size}")
+        }
+        
         aiBrainWorker?.close()
         aiBrainWorker = null
         try { connectionThreadPool.shutdownNow() } catch (_: Exception) {}
         dnsCacheCleanerThread?.interrupt()
         dnsCacheCleanerThread = null
         dnsResponseCache.clear()
-        Log.i(TAG, "NAT Engine successfully stopped")
+        Log.i(TAG, "NAT Engine successfully stopped. Remaining sessions - TCP: ${tcpSessions.size}, UDP: ${udpSessions.size}")
+    }
+    
+    private fun closeTcpSessionWithRetry(port: Int, maxRetries: Int = 3) {
+        var retries = 0
+        while (retries < maxRetries) {
+            try {
+                closeTcpSession(port, sendRst = true)
+                // Kontrola, zda bylo spojení skutečně uzavřeno
+                if (!tcpSessions.containsKey(port)) {
+                    return
+                }
+                retries++
+                Thread.sleep(50)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing TCP session on port $port (attempt ${retries + 1}): ${e.message}")
+                retries++
+            }
+        }
+        // Vynucené odstranění ze seznamu, pokud se nepodařilo uzavřít normálně
+        tcpSessions.remove(port)
+        Log.w(TAG, "Force removed TCP session on port $port after $maxRetries attempts")
     }
 
     private fun getParentPid(pid: Int): Int {

@@ -47,6 +47,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import com.linux_core.security.CertificateManager
 import com.linux_core.security.KeystoreManager
+import com.linux_core.security.VpnSettings
 import com.linux_core.BuildConfig
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -57,6 +58,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.regex.Pattern
 
 object LocalApiServer {
     private const val TAG = "LocalApiServer"
@@ -1609,8 +1611,7 @@ object LocalApiServer {
 
     private fun handleVpnMitmSniFallbackGet(context: Context, out: OutputStream) {
         try {
-            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
-            val fallback = prefs.getString("mitm_sni_fallback", null)
+            val fallback = VpnSettings.getMitmSniFallback(context)
             sendResponse(out, 200, "OK", JSONObject().apply {
                 put("fallback", fallback ?: JSONObject.NULL)
             }.toString())
@@ -1621,21 +1622,25 @@ object LocalApiServer {
 
     private fun handleVpnMitmSniFallbackPost(context: Context, body: String, out: OutputStream) {
         try {
-            val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val trimmed = body.trim().removeSurrounding("\"").removeSurrounding("'")
-            if (trimmed.isEmpty()) {
-                prefs.edit().remove("mitm_sni_fallback").apply()
-                sendResponse(out, 200, "OK", JSONObject().apply {
-                    put("fallback", JSONObject.NULL)
-                    put("status", "cleared")
-                }.toString())
-            } else {
-                prefs.edit().putString("mitm_sni_fallback", trimmed).apply()
-                sendResponse(out, 200, "OK", JSONObject().apply {
-                    put("fallback", trimmed)
-                    put("status", "set")
-                }.toString())
+            if (trimmed.length > 253) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Hostname exceeds 253 characters\"}")
+                return
             }
+            if (trimmed.isNotEmpty()) {
+                val hostnamePattern = Pattern.compile("^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*$")
+                if (!hostnamePattern.matcher(trimmed).matches()) {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid hostname format\"}")
+                    return
+                }
+            }
+            VpnSettings.setMitmSniFallback(context, trimmed.ifEmpty { null })
+            val effective = VpnSettings.getMitmSniFallback(context)
+            val status = if (trimmed.isEmpty()) "cleared" else "set"
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("fallback", effective ?: JSONObject.NULL)
+                put("status", status)
+            }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

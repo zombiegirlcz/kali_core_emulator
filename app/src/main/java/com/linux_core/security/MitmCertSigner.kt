@@ -2,9 +2,11 @@ package com.linux_core.security
 
 import org.bouncycastle.asn1.x500.X500Name
 import java.math.BigInteger
+import java.net.InetAddress
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.Date
+import java.util.regex.Pattern
 
 /**
  * Helper to re-sign captured server certificates with the MITM CA so the Android
@@ -16,6 +18,30 @@ import java.util.Date
 internal object MitmCertSigner {
 
     private const val SIGNER_ALGO = "SHA256WithRSA"
+    private const val MAX_HOSTNAME_LENGTH = 253
+    private val HOSTNAME_PATTERN = Pattern.compile(
+        "^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*$"
+    )
+
+    private fun validateDnsName(name: String) {
+        require(name.length <= MAX_HOSTNAME_LENGTH) {
+            "DNS name exceeds max length ($MAX_HOSTNAME_LENGTH): $name"
+        }
+        require(HOSTNAME_PATTERN.matcher(name).matches()) {
+            "Invalid DNS name: $name"
+        }
+    }
+
+    private fun validateIpAddress(ip: String) {
+        try {
+            val addr = InetAddress.getByName(ip)
+            require(addr is java.net.Inet4Address || addr is java.net.Inet6Address) {
+                "Invalid IP address: $ip"
+            }
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Invalid IP address: $ip", e)
+        }
+    }
 
     fun sign(
         caCert: X509Certificate,
@@ -44,6 +70,9 @@ internal object MitmCertSigner {
             subject,
             template.publicKey
         )
+
+        sanDns.forEach { validateDnsName(it) }
+        sanIp.forEach { validateIpAddress(it) }
 
         if (sanDns.isNotEmpty() || sanIp.isNotEmpty()) {
             val gnBuilder = org.bouncycastle.asn1.x509.GeneralNamesBuilder()

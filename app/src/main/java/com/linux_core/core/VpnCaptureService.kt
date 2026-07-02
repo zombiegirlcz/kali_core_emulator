@@ -452,7 +452,7 @@ class VpnCaptureService : VpnService() {
     }
 
     private fun stopVpn() {
-        Log.i(TAG, "Stopping VPN")
+        Log.i(TAG, "Stopping VPN - cleaning up all resources...")
         if (!isServiceRunning.getAndSet(false)) {
             Log.w(TAG, "VPN already stopped, skipping stop")
             return
@@ -463,36 +463,59 @@ class VpnCaptureService : VpnService() {
         // Disable P2P and release sockets
         VpnPeerManager.setEnabled(false)
 
+        // Zastavení čtecího vlákna VPN
         vpnThread?.interrupt()
         try {
-            vpnThread?.join(1500)
+            vpnThread?.join(2000)
+            if (vpnThread?.isAlive == true) {
+                Log.w(TAG, "VPN read thread did not stop gracefully after 2s, forcing interrupt")
+                vpnThread?.interrupt()
+            }
         } catch (e: InterruptedException) {
             Log.e(TAG, "Interrupted while waiting for VPN thread to stop: ${e.message}")
+            Thread.currentThread().interrupt()
         }
         vpnThread = null
 
-        natEngine?.stop()
+        // Zastavení NAT enginu (uzavře všechna spojení)
+        natEngine?.let { engine ->
+            try {
+                engine.stop()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping NAT engine: ${e.message}")
+            }
+        }
         natEngine = null
 
-        VpnLogManager.flush()
-        Log.i(TAG, "VPN persisted data flushed")
+        // Flush a uložení logů
+        try {
+            VpnLogManager.flush()
+            Log.i(TAG, "VPN persisted data flushed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error flushing logs: ${e.message}")
+        }
 
+        // Uzavření output streamu
         try {
             vpnOutput?.close()
         } catch (e: IOException) {
             Log.e(TAG, "Error closing output stream: ${e.message}")
+        } finally {
+            vpnOutput = null
         }
-        vpnOutput = null
 
+        // Uzavření VPN interface
         try {
             vpnInterface?.close()
         } catch (e: IOException) {
             Log.e(TAG, "Error closing VPN descriptor: ${e.message}")
+        } finally {
+            vpnInterface = null
         }
-        vpnInterface = null
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        Log.i(TAG, "VPN stopped successfully, all resources released")
     }
 
     private fun scheduleHealthCheck() {
@@ -601,12 +624,18 @@ class VpnCaptureService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
 
     override fun onDestroy() {
+        Log.i(TAG, "Service destroying - releasing all resources...")
         releaseLocks()
         isServiceRunning.set(false)
-        stopVpn()
+        // Zajistíme, že je VPN zastaveno, i když nebylo explicitně zastaveno
+        try {
+            stopVpn()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during stopVpn in onDestroy: ${e.message}")
+        }
         instance = null
         VpnProxyManager.onProxyChangedListener = null
-        Log.i(TAG, "Service destroyed")
+        Log.i(TAG, "Service destroyed, all resources released")
         super.onDestroy()
     }
 
