@@ -150,8 +150,11 @@ object ProotManager {
         )
         for ((name, asset) in binaries) {
             val file = File(context.filesDir, name)
-            // Always delete old binary to ensure fresh deployment
-            if (file.exists()) file.delete()
+            // Optimization: Only deploy if missing to speed up startup
+            if (file.exists() && file.length() > 0L) {
+                file.setExecutable(true, false)
+                continue
+            }
             try {
                 context.assets.open(asset).use { input ->
                     file.outputStream().use { output -> input.copyTo(output) }
@@ -164,21 +167,20 @@ object ProotManager {
                 file.setExecutable(true, false)
                 file.setReadable(true, false)
                 Log.d(TAG, "Permissions enforced: $name (${file.length()} bytes, canExecute=${file.canExecute()})")
-            } else {
-                Log.e(TAG, "Binary missing or empty after deploy: $name at ${file.absolutePath}")
             }
         }
 
         // Deploy terminalmap binary from assets/bin/
         try {
             val terminalMapFile = File(context.filesDir, "terminalmap")
-            if (terminalMapFile.exists()) terminalMapFile.delete()
-            context.assets.open("bin/terminalmap").use { input ->
-                terminalMapFile.outputStream().use { output -> input.copyTo(output) }
+            if (!terminalMapFile.exists() || terminalMapFile.length() == 0L) {
+                context.assets.open("bin/terminalmap").use { input ->
+                    terminalMapFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                terminalMapFile.setExecutable(true, false)
+                terminalMapFile.setReadable(true, false)
+                Log.i(TAG, "Deployed terminalmap binary (${terminalMapFile.length()} bytes)")
             }
-            terminalMapFile.setExecutable(true, false)
-            terminalMapFile.setReadable(true, false)
-            Log.i(TAG, "Deployed terminalmap binary (${terminalMapFile.length()} bytes)")
         } catch (e: Exception) {
             Log.w(TAG, "TerminalMap binary not available: ${e.message}")
         }
@@ -191,7 +193,7 @@ object ProotManager {
         )
         for ((name, asset) in staticBinaries) {
             val file = File(context.filesDir, name)
-            if (file.exists()) file.delete()
+            if (file.exists() && file.length() > 0L) continue
             try {
                 context.assets.open(asset).use { input ->
                     file.outputStream().use { output -> input.copyTo(output) }
@@ -482,7 +484,107 @@ object ProotManager {
 
         val NL = "\n"
 
+        val formatHelper = """
+#!/usr/bin/env python3
+import sys, os
+
+# ANSI Colors
+RST = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+ITALIC = "\033[3m"
+UNDERLINE = "\033[4m"
+
+RED = "\033[38;5;196m"
+GREEN = "\033[38;5;46m"
+YELLOW = "\033[38;5;226m"
+BLUE = "\033[38;5;39m"
+MAGENTA = "\033[38;5;201m"
+CYAN = "\033[38;5;51m"
+ORANGE = "\033[38;5;208m"
+WHITE = "\033[38;5;255m"
+GRAY = "\033[38;5;244m"
+
+def box(title, content, color=CYAN):
+    lines = content.splitlines()
+    width = max(len(title) + 4, max((len(line) for line in lines), default=0) + 4)
+
+    out = []
+    out.append(f"{color}{BOLD}╔═ {WHITE}{title} {color}{'═' * (width - len(title) - 3)}╗{RST}")
+    for line in lines:
+        out.append(f"{color}║ {WHITE}{line}{' ' * (width - len(line) - 2)} {color}║{RST}")
+    out.append(f"{color}╚{'═' * width}╝{RST}")
+    return "\n".join(out)
+
+def table(headers, rows, color=BLUE):
+    if not rows:
+        return f"{GRAY}No data available.{RST}"
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(str(val)))
+
+    header_line = "  ".join(f"{WHITE}{BOLD}{h.upper():<{widths[i]}}{RST}" for i, h in enumerate(headers))
+    separator = f"{color}{'═' * (sum(widths) + len(headers)*2 - 2)}{RST}"
+
+    out = [header_line, separator]
+    for row in rows:
+        out.append("  ".join(f"{WHITE}{str(val):<{widths[i]}}{RST}" for i, val in enumerate(row)))
+
+    return "\n".join(out)
+
+def status(label, value, is_good=True):
+    color = GREEN if is_good else RED
+    if is_good is None: color = YELLOW
+    icon = "✔" if is_good else "✘"
+    if is_good is None: icon = "●"
+    return f"{WHITE}{BOLD}{label:<18} {CYAN}│ {color}{icon} {WHITE}{value}{RST}"
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        cmd = sys.argv[1]
+        if cmd == "box":
+            print(box(sys.argv[2], sys.argv[3]))
+        elif cmd == "status":
+            print(status(sys.argv[2], sys.argv[3], sys.argv[4].lower() == "true"))
+""".trimIndent()
+
         val scripts = mapOf(
+            "nethunter_format.py" to formatHelper,
+            "nethunter_format" to formatHelper,
+            "nethunter-list" to StringBuilder().apply {
+                append("#!/bin/sh").append(NL)
+                append("python3 -c \"").append(NL)
+                append("import sys, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import table, box").append(NL)
+                append("tools = [").append(NL)
+                append("    ('nethunter-battery-status', 'Zobrazí stav baterie'),").append(NL)
+                append("    ('nethunter-wifi-connectioninfo', 'Informace o Wi-Fi síti'),").append(NL)
+                append("    ('nethunter-location', 'GPS souřadnice + Mapy'),").append(NL)
+                append("    ('nethunter-map', 'Interaktivní OSM mapa'),").append(NL)
+                append("    ('nethunter-cellinfo', 'Informace o mobilní síti'),").append(NL)
+                append("    ('nethunter-volume', 'Změna hlasitosti médií'),").append(NL)
+                append("    ('nethunter-torch', 'Ovládání svítilny'),").append(NL)
+                append("    ('nethunter-toast', 'Zobrazení Android Toastu'),").append(NL)
+                append("    ('nethunter-vibrate', 'Vibrace zařízení'),").append(NL)
+                append("    ('nethunter-tts-speak', 'Text-to-Speech (syntéza)'),").append(NL)
+                append("    ('nethunter-clipboard-get', 'Přečíst host schránku'),").append(NL)
+                append("    ('nethunter-clipboard-set', 'Zapsat do host schránky'),").append(NL)
+                append("    ('nethunter-apps-usage', 'Statistiky využití aplikací'),").append(NL)
+                append("    ('nethunter-notifications-active', 'Aktivní notifikace'),").append(NL)
+                append("    ('nethunter-log', 'Barevný Logcat prohlížeč'),").append(NL)
+                append("    ('vpn-on / vpn-off', 'Globální VPN vypínač'),").append(NL)
+                append("    ('vpn-cli', 'Pokročilé VPN & MITM CLI'),").append(NL)
+                append("    ('vpn-bypass', 'Bypass VPN pro příkaz'),").append(NL)
+                append("    ('ignore-vpn', 'Bypass VPN pro session'),").append(NL)
+                append("]").append(NL)
+                append("headers = ['PŘÍKAZ', 'POPIS FUNKCE']").append(NL)
+                append("print(box('Dostupné NetHunter Nástroje 🐉', table(headers, tools)))").append(NL)
+                append("\"").append(NL)
+            }.toString(),
+
             "apt" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("# NetHunter AI Operator APT Wrapper").append(NL)
@@ -556,15 +658,13 @@ object ProotManager {
             "vpn-off" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"[*] Stopping global VPN service...\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
-                append("  echo \"[-] Global VPN sniffer disabled.\"").append(NL)
+                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('NetHunter VPN', 'DISABLED', False))\"").append(NL)
                 append("  exit 0").append(NL)
                 append("fi").append(NL)
                 append("was_running=false").append(NL)
                 append("if curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
                 append("  was_running=true").append(NL)
-                append("  echo \"[*] Temporarily disabling VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
                 append("  sleep 1").append(NL)
                 append("fi").append(NL)
@@ -572,7 +672,6 @@ object ProotManager {
                 append("\"\$@\"").append(NL)
                 append("exit_code=\$?").append(NL)
                 append("if [ \"\$was_running\" = \"true\" ]; then").append(NL)
-                append("  echo \"[*] Restoring VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
                 append("fi").append(NL)
                 append("exit \$exit_code").append(NL)
@@ -581,13 +680,11 @@ object ProotManager {
             "vpn-on" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"[*] Starting global VPN service...\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
-                append("  echo \"[+] Global VPN sniffer enabled.\"").append(NL)
+                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('NetHunter VPN', 'ENABLED', True))\"").append(NL)
                 append("  exit 0").append(NL)
                 append("fi").append(NL)
                 append("if ! curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
-                append("  echo \"[*] Starting VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
                 append("  sleep 1").append(NL)
                 append("fi").append(NL)
@@ -690,13 +787,13 @@ object ProotManager {
                 append("mode=\${1:-on}").append(NL)
                 append("if [ \"\$mode\" = \"on\" ]; then").append(NL)
                 append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=true\" >/dev/null").append(NL)
-                append("  echo \"[*] VPN sniffer bypassed for this session.\"").append(NL)
+                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Session VPN Bypass', 'ACTIVE', True))\"").append(NL)
                 append("elif [ \"\$mode\" = \"off\" ]; then").append(NL)
                 append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=false\" >/dev/null").append(NL)
-                append("  echo \"[*] VPN sniffer routing restored for this session.\"").append(NL)
+                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Session VPN Bypass', 'DISABLED', False))\"").append(NL)
                 append("elif [ \"\$mode\" = \"status\" ]; then").append(NL)
                 append("  res=\$(curl -s \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID\")").append(NL)
-                append("  echo \"[*] VPN ignore status: \$res\"").append(NL)
+                append("  python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Session Bypass', 'ON' if d.get('ignored') else 'OFF', d.get('ignored')))\" \"\$res\"").append(NL)
                 append("else").append(NL)
                 append("  echo \"Usage: ignore-vpn [on|off|status]\"").append(NL)
                 append("  exit 1").append(NL)
@@ -710,55 +807,43 @@ object ProotManager {
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/toast").append(NL)
+                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/toast > /dev/null").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Android Toast', 'Sent to host'))\"").append(NL)
             }.toString(),
 
             "nethunter-battery-status" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/battery)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def bat_color(pct,status):").append(NL)
-                append("    if status=='charging': return '\\033[92m'").append(NL)
-                append("    if pct>50: return '\\033[92m'").append(NL)
-                append("    if pct>20: return '\\033[93m'").append(NL)
-                append("    return '\\033[91m'").append(NL)
-                append("def bat_bar(pct):").append(NL)
-                append("    n=max(1,int(pct/10))").append(NL)
-                append("    return '█'*n + '░'*(10-n)").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        pct=d.get('percentage',-1)").append(NL)
-                append("        temp=d.get('temperature',0)").append(NL)
-                append("        volt=d.get('voltage',0)").append(NL)
-                append("        st=d.get('status','?')").append(NL)
-                append("        hl=d.get('health','?')").append(NL)
-                append("        pl=d.get('plugged','none')").append(NL)
-                append("        c=bat_color(pct,st)").append(NL)
-                append("        icon='🔌' if st=='charging' else '🔋'").append(NL)
-                append("        b=bat_bar(pct)").append(NL)
-                append("        print(f'{c}{icon}  {pct}%  [{b}]{chr(27)}[0m')").append(NL)
-                append("        print(f'   Status:  {st}')").append(NL)
-                append("        print(f'   Zdraví:  {hl}')").append(NL)
-                append("        print(f'   Teplota: {temp}°C')").append(NL)
-                append("        print(f'   Napětí:  {volt} mV')").append(NL)
-                append("        if pl!='none': print(f'   Nabíjení: {pl}')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
+                append("        res = []").append(NL)
+                append("        res.append(status('Percentage', f\\\"{d.get('percentage')}%\\\", d.get('percentage', 0) > 20))").append(NL)
+                append("        res.append(status('Status', d.get('status', 'unknown'), d.get('status') == 'charging'))").append(NL)
+                append("        res.append(status('Health', d.get('health', 'unknown'), d.get('health') == 'good'))").append(NL)
+                append("        res.append(status('Temperature', f\\\"{d.get('temperature')}°C\\\", d.get('temperature', 0) < 45))").append(NL)
+                append("        res.append(status('Voltage', f\\\"{d.get('voltage')} mV\\\"))").append(NL)
+                append("        print(box('Battery Status 🔋', '\\n'.join(res)))").append(NL)
+                append("except Exception as e: print(f'Error: {e}')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
             "nethunter-speech-input" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/voice_input").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/voice_input)").append(NL)
+                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import box; d = json.loads(sys.argv[1]); print(box('Voice Input 🎙️', d.get('text', ''))) if 'text' in d else print(d.get('error', 'Unknown error'))\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-vibrate" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("duration=\${1:-500}").append(NL)
-                append("curl -s -X POST -d \"\$duration\" http://127.0.0.1:1337/vibrate").append(NL)
+                append("DATA=\$(curl -s -X POST -d \"\$duration\" http://127.0.0.1:1337/vibrate)").append(NL)
+                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Vibration', f\\\"{d.get('duration')} ms\\\", True))\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-tts-speak" to StringBuilder().apply {
@@ -768,12 +853,18 @@ object ProotManager {
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/tts").append(NL)
+                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/tts > /dev/null").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('TTS Speak', 'Sent to host engine'))\"").append(NL)
             }.toString(),
 
             "nethunter-clipboard-get" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/clipboard").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/clipboard)").append(NL)
+                append("if [ \"\$1\" = \"--raw\" ]; then").append(NL)
+                append("  echo \"\$DATA\" | python3 -c \"import sys, json; print(json.load(sys.stdin).get('text', ''))\"").append(NL)
+                append("else").append(NL)
+                append("  echo \"\$DATA\" | python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import box; d = json.load(sys.stdin); print(box('Android Clipboard 📋', d.get('text', '')))\"").append(NL)
+                append("fi").append(NL)
             }.toString(),
 
             "nethunter-clipboard-set" to StringBuilder().apply {
@@ -783,7 +874,8 @@ object ProotManager {
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/clipboard").append(NL)
+                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/clipboard > /dev/null").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Android Clipboard', 'Text copied to host'))\"").append(NL)
             }.toString(),
 
             "nethunter-notification" to StringBuilder().apply {
@@ -800,41 +892,28 @@ object ProotManager {
                 append("  shift \$((\$OPTIND-1))").append(NL)
                 append("  content=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST -H \"Content-Type: application/json\" -d \"{\\\"title\\\":\\\"\$title\\\",\\\"content\\\":\\\"\$content\\\"}\" http://127.0.0.1:1337/notification").append(NL)
+                append("curl -s -X POST -H \"Content-Type: application/json\" -d \"{\\\"title\\\":\\\"\$title\\\",\\\"content\\\":\\\"\$content\\\"}\" http://127.0.0.1:1337/notification > /dev/null").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Notification', 'Posted to host'))\"").append(NL)
             }.toString(),
 
             "nethunter-wifi-connectioninfo" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/wifi)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def wifi_qual(rssi):").append(NL)
-                append("    if rssi is None: return ('N/A',0,'\\033[0m')").append(NL)
-                append("    if rssi> -50: return ('Excelentní',10,'\\033[92m')").append(NL)
-                append("    if rssi> -60: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
-                append("    if rssi> -70: return ('Dobrý',6,'\\033[93m')").append(NL)
-                append("    if rssi> -80: return ('Střední',4,'\\033[93m')").append(NL)
-                append("    if rssi> -90: return ('Slabý',2,'\\033[91m')").append(NL)
-                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
-                append("def wifi_bar(n): return '█'*n + '░'*(10-n)").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        ssid=d.get('ssid','N/A')").append(NL)
-                append("        bssid=d.get('bssid','N/A')").append(NL)
-                append("        rssi=d.get('rssi')").append(NL)
-                append("        link=d.get('link_speed_mbps','?')").append(NL)
-                append("        w,n,c = wifi_qual(rssi)").append(NL)
-                append("        b=wifi_bar(n)").append(NL)
-                append("        print(f'📡  SSID: {ssid}')").append(NL)
-                append("        print(f'🔗  BSSID: {bssid}')").append(NL)
-                append("        if rssi is not None:").append(NL)
-                append("            print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')").append(NL)
-                append("            print(f'   [{c}{b}{chr(27)}[0m]')").append(NL)
-                append("        print(f'📶  Rychlost: {link} Mbps')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
+                append("        res = []").append(NL)
+                append("        res.append(status('SSID', d.get('ssid', 'N/A')))\n")
+                append("        res.append(status('BSSID', d.get('bssid', 'N/A')))\n")
+                append("        res.append(status('Signal', f\\\"{d.get('rssi')} dBm\\\", d.get('rssi', -100) > -70))\n")
+                append("        res.append(status('Speed', f\\\"{d.get('link_speed_mbps', '?')} Mbps\\\"))\n")
+                append("        print(box('Wi-Fi Connection 📡', '\\n'.join(res)))").append(NL)
+                append("except Exception as e: print(f'Error: {e}')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
@@ -842,67 +921,26 @@ object ProotManager {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/cellinfo)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def qual_dbm(dbm):").append(NL)
-                append("    if dbm is None or dbm <= -200: return ('Mimo dosah',0,'\\033[0m')").append(NL)
-                append("    if dbm >  -75: return ('Excelentní',10,'\\033[92m')").append(NL)
-                append("    if dbm >  -85: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
-                append("    if dbm >  -95: return ('Dobrý',6,'\\033[93m')").append(NL)
-                append("    if dbm > -105: return ('Střední',4,'\\033[93m')").append(NL)
-                append("    if dbm > -115: return ('Slabý',2,'\\033[91m')").append(NL)
-                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
-                append("def bars(n): return '█'*n + '░'*(10-n)").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status, table").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    net=d.get('network_type','?')").append(NL)
-                append("    carr=d.get('carrier','?')").append(NL)
-                append("    sim=d.get('sim_carrier','?')").append(NL)
-                append("    data_st=d.get('data_state','?')").append(NL)
-                append("    roam=d.get('is_roaming',False)").append(NL)
-                append("    sig_bar=d.get('signal_bar','')").append(NL)
-                append("    sig_dbm=d.get('signal_dbm')").append(NL)
-                append("    print(f'📶  {carr}  ({net})')").append(NL)
-                append("    print(f'📋  SIM: {sim}  |  Data: {data_st}  |  Roaming: {roam}')").append(NL)
-                append("    if sig_bar:").append(NL)
-                append("        dbm_txt = f\\\" ({sig_dbm} dBm)\\\" if sig_dbm else ''").append(NL)
-                append("        print(f'{sig_bar}{dbm_txt}')").append(NL)
-                append("    cells=d.get('cells',[])").append(NL)
-                append("    if not cells:").append(NL)
-                append("        print()").append(NL)
-                append("        print('Žádné věže v dosahu.')").append(NL)
-                append("    else:").append(NL)
-                append("        for idx,c in enumerate(cells):").append(NL)
-                append("            print()").append(NL)
-                // Header row
-                append("            reg=c.get('registered',False)").append(NL)
-                append("            stav='REGISTROVÁN' if reg else 'SOUSEDNÍ'").append(NL)
-                append("            print(f\\\"Vysílač #{idx+1} [{stav}]\\\")").append(NL)
-                // Type | MCC | MNC
-                append("            typ=c.get('type','N/A')").append(NL)
-                append("            mcc=c.get('mcc','?')").append(NL)
-                append("            mnc=c.get('mnc','?')").append(NL)
-                append("            print(f\\\"Typ: {typ} | MCC: {mcc} | MNC: {mnc}\\\")").append(NL)
-                // TAC/LAC | CID | PCI/PSC
-                append("            tac=c.get('tac_lac','N/A')").append(NL)
-                append("            cid=c.get('cid','N/A')").append(NL)
-                append("            pci=c.get('pci_psc')").append(NL)
-                append("            pci_txt = str(pci) if pci is not None else 'N/A'").append(NL)
-                append("            print(f\\\"TAC/LAC: {tac} | CID: {cid} | PCI/PSC: {pci_txt}\\\")").append(NL)
-                // Signal strength
-                append("            sdbm=c.get('signal_dbm')").append(NL)
-                append("            slev=c.get('signal_level',0)").append(NL)
-                append("            if sdbm is not None and sdbm > -200:").append(NL)
-                append("                w,n,c = qual_dbm(sdbm)").append(NL)
-                append("                print(f\\\"{c}Síla signálu: {sdbm} dBm ({w})\\033[0m\\\")").append(NL)
-                append("                b=bars(n)").append(NL)
-                append("                print(f\\\"Ukazatel: [{c}{b}\\033[0m] ({c}{w}\\033[0m)\\\")").append(NL)
-                append("            else:").append(NL)
-                append("                print(f\\\"Síla signálu: N/A\\\")").append(NL)
-                append("                print(f\\\"Ukazatel: [░░░░░░░░░░] (N/A)\\\")").append(NL)
-                // Separator
-                append("            if idx < len(cells)-1:").append(NL)
-                append("                print('─'*50)").append(NL)
-                append("except Exception as e: print(f'Chyba: {e}')").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
+                append("    res = []").append(NL)
+                append("    res.append(status('Carrier', d.get('carrier', 'Unknown')))\n")
+                append("    res.append(status('Network', d.get('network_type', 'Unknown')))\n")
+                append("    res.append(status('Data State', d.get('data_state', 'Unknown'), d.get('data_state') == 'CONNECTED'))\n")
+                append("    res.append(status('Roaming', str(d.get('is_roaming', False)), not d.get('is_roaming')))\n")
+                append("    print(box('Cellular Info 📶', '\\n'.join(res)))").append(NL)
+                append("    cells = d.get('cells', [])").append(NL)
+                append("    if cells:").append(NL)
+                append("        headers = ['#', 'TYPE', 'ID', 'SIGNAL', 'STATUS']").append(NL)
+                append("        rows = []").append(NL)
+                append("        for i, c in enumerate(cells):").append(NL)
+                append("            cid = c.get('cid', 'N/A')").append(NL)
+                append("            rows.append([i+1, c.get('type'), cid, f\\\"{c.get('signal_dbm', '?')} dBm\\\", 'REG' if c.get('registered') else 'NB'])\n")
+                append("        print('\\n' + box('Nearby Cells', table(headers, rows)))").append(NL)
+                append("except Exception as e: print(f'Error: {e}')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
@@ -910,44 +948,43 @@ object ProotManager {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/location)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        lat=d.get('latitude')").append(NL)
-                append("        lng=d.get('longitude')").append(NL)
-                append("        acc=d.get('accuracy')").append(NL)
-                append("        prov=d.get('provider')").append(NL)
-                append("        maps=d.get('maps_url','')").append(NL)
-                append("        geo=d.get('geo_uri','')").append(NL)
-                append("        print(f'📍  {lat}, {lng}  (±{acc:.0f}m)  [{prov}]')").append(NL)
-                append("        print(f'🗺️  Google Maps: {maps}')").append(NL)
-                append("        print(f'🔗 Geo URI:     {geo}')").append(NL)
-                append("except: print('Chyba parsovani')").append(NL)
+                append("        res = []").append(NL)
+                append("        res.append(status('Latitude', d.get('latitude')))\n")
+                append("        res.append(status('Longitude', d.get('longitude')))\n")
+                append("        res.append(status('Accuracy', f\\\"±{d.get('accuracy', 0):.1f}m\\\"))\n")
+                append("        res.append(status('Provider', d.get('provider')))\n")
+                append("        res.append(f\\\"\\\\n🗺️  {d.get('maps_url')}\\\")\n")
+                append("        print(box('GPS Location 📍', '\\n'.join(res)))").append(NL)
+                append("except Exception as e: print(f'Error: {e}')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
             "nethunter-map" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("# Display current location and run terminalmap to browse OpenStreetMap").append(NL)
-                append("echo \"[*] Fetching current location...\"").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('TerminalMap', 'Fetching GPS location...'))\"").append(NL)
                 append("MAP_DATA=\$(curl -s http://127.0.0.1:1337/map)").append(NL)
                 append("echo \"\$MAP_DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
                 append("    if d.get('success'):").append(NL)
-                append("        lat=d.get('latitude')").append(NL)
-                append("        lng=d.get('longitude')").append(NL)
-                append("        print(f'📍 Location: {lat}, {lng}')").append(NL)
-                append("        print('🗺️  Starting TerminalMap...')").append(NL)
-                append("    else:").append(NL)
-                append("        print(d.get('error','Unknown error'))").append(NL)
+                append("        res = []").append(NL)
+                append("        res.append(status('Latitude', d.get('latitude')))").append(NL)
+                append("        res.append(status('Longitude', d.get('longitude')))").append(NL)
+                append("        print(box('Location Found 📍', '\\n'.join(res)))").append(NL)
+                append("        print(box('TerminalMap Controls', 'Arrows/HJKL: Pan  |  A/+/-: Zoom  |  Q: Quit', '\\033[38;5;226m'))").append(NL)
+                append("    else: print(d.get('error', 'GPS error'))").append(NL)
                 append("except: print('Error parsing location')").append(NL)
                 append("\"").append(NL)
-                append("echo \"[*] Controls: arrow keys/hjkl=pan, a/+/-=zoom, c=braille/ASCII, n=labels, g=tour, w=world, q=quit\"").append(NL)
                 append("terminalmap").append(NL)
             }.toString(),
 
@@ -959,12 +996,38 @@ object ProotManager {
 
             "nethunter-apps-usage" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/apps/usage").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/apps/usage)").append(NL)
+                append("python3 -c \"").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, table").append(NL)
+                append("d = json.loads(sys.argv[1])").append(NL)
+                append("if 'apps' in d:").append(NL)
+                append("    headers = ['PACKAGE', 'TIME (MIN)', 'LAST USED']").append(NL)
+                append("    rows = []").append(NL)
+                append("    for a in d['apps']:").append(NL)
+                append("        rows.append([a['packageName'], f\\\"{a['totalTimeInForeground']//60000}\\\", 'Recent'])").append(NL)
+                append("    print(box('App Usage Statistics 📊', table(headers, rows)))").append(NL)
+                append("else: print(d.get('error', 'Unknown error'))").append(NL)
+                append("\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-notifications-active" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/notifications/active").append(NL)
+                append("DATA=\$(curl -s http://127.0.0.1:1337/notifications/active)").append(NL)
+                append("python3 -c \"").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, table").append(NL)
+                append("d = json.loads(sys.argv[1])").append(NL)
+                append("if 'notifications' in d:").append(NL)
+                append("    headers = ['PACKAGE', 'TITLE', 'TEXT']").append(NL)
+                append("    rows = []").append(NL)
+                append("    for n in d['notifications']:").append(NL)
+                append("        rows.append([n['package'], n['title'], n['text'][:30]])").append(NL)
+                append("    print(box('Active Notifications 🔔', table(headers, rows)))").append(NL)
+                append("else: print(d.get('error', 'Unknown error'))").append(NL)
+                append("\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-accessibility-hierarchy" to StringBuilder().apply {
@@ -976,7 +1039,10 @@ object ProotManager {
                 append("#!/bin/sh").append(NL)
                 append("action=\"\${1:-status}\"").append(NL)
                 append("case \"\$action\" in").append(NL)
-                append("  status) curl -s http://127.0.0.1:1337/battery/optimize ;;").append(NL)
+                append("  status)").append(NL)
+                append("    DATA=\$(curl -s http://127.0.0.1:1337/battery/optimize)").append(NL)
+                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Battery Optimize', 'IGNORED (OK)' if d.get('ignored') else 'RESTRICTED', d.get('ignored')))\" \"\$DATA\"").append(NL)
+                append("    ;;").append(NL)
                 append("  request) curl -s -X POST http://127.0.0.1:1337/battery/optimize ;;").append(NL)
                 append("  *) echo \"Usage: nethunter-battery-optimize [status|request]\"; exit 1 ;;").append(NL)
                 append("esac").append(NL)
@@ -985,14 +1051,18 @@ object ProotManager {
             "nethunter-wifi-control" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("state=\"\${1:-status}\"").append(NL)
-                append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/wifi").append(NL)
+                append("DATA=\$(curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/wifi)").append(NL)
+                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Wi-Fi Control', 'ENABLED' if d.get('enabled') else 'DISABLED', d.get('success')))\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-device-admin" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("action=\"\${1:-status}\"").append(NL)
                 append("case \"\$action\" in").append(NL)
-                append("  status) curl -s http://127.0.0.1:1337/device/admin ;;").append(NL)
+                append("  status)").append(NL)
+                append("    DATA=\$(curl -s http://127.0.0.1:1337/device/admin)").append(NL)
+                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Device Admin', 'ACTIVE' if d.get('active') else 'INACTIVE', d.get('active')))\" \"\$DATA\"").append(NL)
+                append("    ;;").append(NL)
                 append("  request) curl -s -X POST http://127.0.0.1:1337/device/admin ;;").append(NL)
                 append("  lock) curl -s -X POST http://127.0.0.1:1337/device/lock ;;").append(NL)
                 append("  *) echo \"Usage: nethunter-device-admin [status|request|lock]\"; exit 1 ;;").append(NL)
@@ -1004,20 +1074,19 @@ object ProotManager {
                 append("if [ -z \"\$1\" ]; then").append(NL)
                 append("  DATA=\$(curl -s http://127.0.0.1:1337/volume)").append(NL)
                 append("  echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def vol_bar(cur,mx):").append(NL)
-                append("    n=max(1,int(cur/mx*10)) if mx>0 else 1").append(NL)
-                append("    return '█'*n + '░'*(10-n)").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import box, status").append(NL)
                 append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
+                append("    d = json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        cur=d.get('volume',0)").append(NL)
-                append("        mx=d.get('max_volume',15)").append(NL)
-                append("        b=vol_bar(cur,mx)").append(NL)
-                append("        print(f'\\033[92m🔊  Hlasitost: {cur}/{mx}  [{b}]\\033[0m')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
+                append("        cur = d.get('volume', 0)").append(NL)
+                append("        mx = d.get('max_volume', 15)").append(NL)
+                append("        pct = int(cur/mx*100) if mx > 0 else 0").append(NL)
+                append("        res = [status('Level', f\\\"{cur}/{mx} ({pct}%)\\\", pct > 0)]").append(NL)
+                append("        print(box('Media Volume 🔊', '\\n'.join(res)))").append(NL)
+                append("except Exception as e: print(f'Error: {e}')").append(NL)
                 append("\"").append(NL)
                 append("else").append(NL)
                 append("  curl -s -X POST -d \"\$1\" http://127.0.0.1:1337/volume >/dev/null").append(NL)
@@ -1028,7 +1097,14 @@ object ProotManager {
             "nethunter-torch" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("state=\${1:-on}").append(NL)
-                append("curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch").append(NL)
+                append("DATA=\$(curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch)").append(NL)
+                append("python3 -c \"").append(NL)
+                append("import sys, json, os").append(NL)
+                append("sys.path.append('/usr/local/bin')").append(NL)
+                append("from nethunter_format import status").append(NL)
+                append("d = json.loads(sys.argv[1])").append(NL)
+                append("print(status('Flashlight', d.get('state', 'unknown'), d.get('state') == 'on'))").append(NL)
+                append("\" \"\$DATA\"").append(NL)
             }.toString(),
 
             "nethunter-log" to StringBuilder().apply {
@@ -1101,11 +1177,9 @@ object ProotManager {
                 append("  exit 1").append(NL)
                 append("fi").append(NL)
                 append("pkg=\"\$1\"").append(NL)
-                append("echo \"[*] Mocking postinst for \$pkg...\"").append(NL)
                 append("ln -sf /bin/true /var/lib/dpkg/info/\$pkg.postinst 2>/dev/null || true").append(NL)
-                append("echo \"[*] Reconfiguring dpkg...\"").append(NL)
-                append("dpkg --configure -a").append(NL)
-                append("echo \"[+] Successfully fixed postinst for \$pkg!\"").append(NL)
+                append("dpkg --configure -a > /dev/null 2>&1").append(NL)
+                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Post-Inst Fix', f'Fixed {sys.argv[1]}', True))\" \"\$pkg\"").append(NL)
             }.toString(),
 
             "nethunter-desktop" to StringBuilder().apply {
@@ -1198,18 +1272,13 @@ object ProotManager {
                 append("  mode=\"\${2:-status}\"").append(NL)
                 append("  if [ \"\$mode\" = \"on\" ]; then").append(NL)
                 append("    res=\$(curl -s -X POST --data-binary \"on\" \"\$API_URL/api/share\")").append(NL)
-                append("    echo \"[+] API sharing enabled. Bind address updated to 0.0.0.0.\"").append(NL)
+                append("    python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('API Sharing', 'ENABLED (0.0.0.0)', True))\"").append(NL)
                 append("  elif [ \"\$mode\" = \"off\" ]; then").append(NL)
                 append("    res=\$(curl -s -X POST --data-binary \"off\" \"\$API_URL/api/share\")").append(NL)
-                append("    echo \"[-] API sharing disabled. Bind address restored to 127.0.0.1.\"").append(NL)
+                append("    python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('API Sharing', 'DISABLED (127.0.0.1)', False))\"").append(NL)
                 append("  elif [ \"\$mode\" = \"status\" ]; then").append(NL)
                 append("    res=\$(curl -s \"\$API_URL/api/share\")").append(NL)
-                append("    shared=\$(echo \"\$res\" | grep -o '\"shared\":[^,]*' | cut -d: -f2)").append(NL)
-                append("    if [ \"\$shared\" = \"true\" ]; then").append(NL)
-                append("      echo \"[+] API sharing is currently ENABLED (0.0.0.0)\"").append(NL)
-                append("    else").append(NL)
-                append("      echo \"[-] API sharing is currently DISABLED (127.0.0.1)\"").append(NL)
-                append("    fi").append(NL)
+                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('API Sharing', 'ENABLED (0.0.0.0)' if d.get('shared') else 'DISABLED (127.0.0.1)', d.get('shared')))\" \"\$res\"").append(NL)
                 append("  else").append(NL)
                 append("    usage").append(NL)
                 append("  fi").append(NL)
@@ -1262,6 +1331,10 @@ object ProotManager {
         for ((name, content) in scripts) {
             val scriptFile = File(binDir, name)
             try {
+                // Optimization: Only write if content changed or missing
+                if (scriptFile.exists() && scriptFile.length() == content.length.toLong()) {
+                    continue
+                }
                 scriptFile.writeText(content)
                 scriptFile.setExecutable(true, false)
                 scriptFile.setReadable(true, false)
@@ -1390,6 +1463,7 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-terminalmap` | Alias pro `nethunter-map` — synonym pro spuštění TerminalMap. | `nethunter-terminalmap` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
+| `nethunter-list` | Zobrazí seznam všech dostupných NetHunter nástrojů. | `nethunter-list` |
 | `nethunter-log [options] [lines]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nethunter-log -n 50 -g "LocalApiServer"` |
 | `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
 
