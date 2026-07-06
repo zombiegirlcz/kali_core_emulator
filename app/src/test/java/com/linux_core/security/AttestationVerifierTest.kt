@@ -5,9 +5,12 @@ import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.BeforeClass
 import org.junit.Test
+import java.security.Security
 import java.math.BigInteger
 import java.security.KeyPairGenerator
 import java.security.Signature
@@ -26,6 +29,14 @@ import java.util.Date
  * produced on a device; these tests focus on the non-attestation rejection path.
  */
 class AttestationVerifierTest {
+
+    companion object {
+        @BeforeClass
+        @JvmStatic
+        fun setupProvider() {
+            Security.addProvider(BouncyCastleProvider())
+        }
+    }
 
     private fun generateSelfSignedEc(): X509Certificate {
         val gen = KeyPairGenerator.getInstance("EC")
@@ -76,9 +87,9 @@ class AttestationVerifierTest {
         // The verifier checks self-signed first, so a self-signed cert with a
         // perfect ECDSA signature must STILL be rejected. This guards against
         // accidentally skipping the self-signed check.
-        val sig = Signature.getInstance("SHA256withECDSA").apply {
-            initSign(cert.publicKey) // sign with public -> deterministic failure
-        }
+        // We want to test that verify() handles invalid signatures correctly.
+        // We don't actually need to create a valid signature here since verify()
+        // will fail if the signature doesn't match the cert or is otherwise invalid.
         val ok = AttestationVerifier.verify(
             arrayOf(cert),
             ByteArray(32),

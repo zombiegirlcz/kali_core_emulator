@@ -14,7 +14,7 @@
             <pin digest="SHA-256">vxHMRAr73HgUyGzWLG8C4xtO/qsK9nkPG59jH3i/mqc=</pin>
             <pin digest="SHA-256">xAu7m0o10HbvBkBpvcS7+PYtxxX1rdUN8FHEI2Kg0Fo=</pin>
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
-            <pin digest="SHA-256">mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2VBpiOjYQ0c=</pin>
+            <pin digest="SHA-256">mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=</pin>
         </pin-set>
     </domain-config>
     <domain-config>
