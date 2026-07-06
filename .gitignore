@@ -98,6 +98,7 @@ window_dump.xml
 *.png
 *.log
 # Exemptions
+!app/src/main/res/xml/*.xml
 !windows_app/
 !windows_app/*.py
 

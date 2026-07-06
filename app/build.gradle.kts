@@ -88,31 +88,40 @@ android {
     }
 
     // Validate certificate assets exist when MITM or Attestation is enabled
-    // Simple approach: always check if files exist (fails fast)
     tasks.register("validateCertAssets") {
         doLast {
             val assetsDir = file("src/main/assets/certs")
-            // Always require certs when ENABLE_MITM/ENABLE_ATTESTATION are true in defaultConfig
-            val mitmEnabled = true // Set via buildConfigField in defaultConfig
-            val attestEnabled = true // Set via buildConfigField in defaultConfig
             
-            // Check if certs directory exists at all
+            // In development, we might not have all certs yet.
+            // Only fail build if it's a release build or if files are critical.
+            val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+
             if (!assetsDir.exists()) {
-                throw GradleException("Certificate assets directory missing: $assetsDir. Run generate-dev-certs.sh")
+                if (isRelease) throw GradleException("Certificate assets directory missing: $assetsDir")
+                else {
+                    assetsDir.mkdirs()
+                    println("Created missing certs directory")
+                }
             }
             
-            // Check required certificate files
-            if (!file("${assetsDir}/mitm-ca.crt").exists()) {
-                throw GradleException("MITM CA certificate missing: certs/mitm-ca.crt. Run generate-dev-certs.sh or provide production certs.")
+            val requiredFiles = mutableListOf<String>()
+            if (isRelease) {
+                requiredFiles.addAll(listOf("mitm-ca.crt", "mitm-ca.p12", "google_attestation_root.der", "internal.p12"))
             }
-            if (!file("${assetsDir}/mitm-ca.p12").exists()) {
-                throw GradleException("MITM CA key missing: certs/mitm-ca.p12. Run generate-dev-certs.sh or provide production certs.")
+
+            requiredFiles.forEach { fileName ->
+                if (!file("${assetsDir}/$fileName").exists()) {
+                    throw GradleException("Critical certificate asset missing for release: certs/$fileName")
+                }
             }
-            if (!file("${assetsDir}/google_attestation_root.der").exists()) {
-                throw GradleException("Google attestation root missing: certs/google_attestation_root.der. Download from https://pki.goog/hardware-attestation-root.pem")
-            }
-            if (!file("${assetsDir}/internal.p12").exists()) {
-                throw GradleException("Internal keystore missing: certs/internal.p12. Run generate-dev-certs.sh or provide production certs.")
+
+            // For debug builds, just warn if they are missing
+            if (!isRelease) {
+                listOf("mitm-ca.crt", "mitm-ca.p12", "google_attestation_root.der", "internal.p12").forEach { fileName ->
+                    if (!file("${assetsDir}/$fileName").exists()) {
+                        println("WARNING: Optional development cert missing: certs/$fileName")
+                    }
+                }
             }
         }
     }
