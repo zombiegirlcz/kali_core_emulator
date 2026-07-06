@@ -363,7 +363,7 @@ object LocalApiServer {
                 path == "/vpn/mitm" && method == "POST" -> handleVpnMitmPost(context, body, out)
                 path == "/vpn/mitm" && method == "GET" -> handleVpnMitmGet(context, out)
                 path == "/vpn/mitm/ca" && method == "GET" -> handleVpnMitmCa(context, out)
-                path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(path, out)
+                path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(context, path, out)
                 path == "/vpn/mitm/sni-fallback" && method == "POST" -> handleVpnMitmSniFallbackPost(context, body, out)
                 path == "/vpn/mitm/sni-fallback" && method == "GET" -> handleVpnMitmSniFallbackGet(context, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(path, out)
@@ -1540,41 +1540,57 @@ object LocalApiServer {
         }
     }
 
-    private fun handleVpnMitmLogs(path: String, out: OutputStream) {
+    private fun handleVpnMitmLogs(context: Context, path: String, out: OutputStream) {
         try {
             val params = parseQueryParams(path)
-            val fmt = params["format"] ?: "text"
-            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val fmt = params["format"] ?: "pretty"
+            val limit = params["limit"]?.toIntOrNull()?.coerceIn(1, 500) ?: 50
+            val since = params["since"]?.toLongOrNull() ?: 0L
+            val host = params["host"]?.takeIf { it.isNotBlank() }
+            val grep = params["grep"]?.takeIf { it.isNotBlank() }
+            val store = MitmTrafficStore.get(context)
+            val records = store.query(limit = limit, since = since, host = host, grep = grep)
 
             if (fmt == "json") {
-                val arr = org.json.JSONArray()
-                for ((port, snippet) in sessions) {
-                    val obj = JSONObject().apply {
-                        put("port", port)
-                        for (line in snippet.lines()) {
-                            val parts = line.split(" ", limit = 2)
-                            if (parts.size == 2) {
-                                put(parts[0].removeSurrounding("[", "]"), parts[1])
-                            }
-                        }
+                val payload = JSONObject().apply {
+                    put("records", store.toJsonArray(records))
+                    put("count", records.size)
+                    if (records.isNotEmpty()) {
+                        put("latest_ts", records.maxOf { it.timestamp })
+                        put("latest_id", records.maxOf { it.id })
                     }
-                    arr.put(obj)
                 }
-                sendResponse(out, 200, "OK", arr.toString())
+                sendResponse(out, 200, "OK", payload.toString())
                 return
             }
 
-            val sb = StringBuilder()
-            for ((port, snippet) in sessions) {
-                sb.append("=== Port $port ===\n")
-                sb.append(snippet)
-                sb.append("\n")
-            }
-            val raw = sb.toString().toByteArray(Charsets.UTF_8)
-            val headers = "HTTP/1.1 200 OK\r\n" +
+            if (fmt == "legacy") {
+                val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+                val sb = StringBuilder()
+                for ((port, snippet) in sessions) {
+                    sb.append("=== Port $port ===\n")
+                    sb.append(snippet)
+                    sb.append("\n")
+                }
+                val raw = sb.toString().toByteArray(Charsets.UTF_8)
+                val headers = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: text/plain; charset=utf-8\r\n" +
                     "Content-Length: ${raw.size}\r\n" +
                     "Connection: close\r\n\r\n"
+                out.write(headers.toByteArray(Charsets.UTF_8))
+                out.write(raw)
+                out.flush()
+                return
+            }
+
+            val pretty = store.toPrettyText(records)
+            val raw = pretty.toByteArray(Charsets.UTF_8)
+            val headers = "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: text/plain; charset=utf-8\r\n" +
+                "X-Mitm-Count: ${records.size}\r\n" +
+                if (records.isNotEmpty()) "X-Mitm-Latest-Ts: ${records.maxOf { it.timestamp }}\r\n" else "" +
+                "Content-Length: ${raw.size}\r\n" +
+                "Connection: close\r\n\r\n"
             out.write(headers.toByteArray(Charsets.UTF_8))
             out.write(raw)
             out.flush()

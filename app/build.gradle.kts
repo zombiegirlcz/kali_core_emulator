@@ -20,7 +20,7 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 6
+        versionCode = 7
         versionName = "4.1-AI-FIX"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -88,7 +88,7 @@ class VpnNatEngine(
         try {
             selector = Selector.open()
             aiBrainWorker = AIBrainWorker(vpnService)
-            TlsMitmEngine.init(connectionThreadPool, selector!!)
+            TlsMitmEngine.init(connectionThreadPool, selector!!, vpnService.applicationContext)
             isRunning.set(true)
             startSelectorLoop()
             startDnsCacheCleaner()
