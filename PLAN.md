@@ -1,11 +1,6 @@
-```
-- [ ] **Konfigurace Intent Filtru pro Activity:**
-Zajistit, aby se aplikace probudila nebo nabídla otevření hned po zasunutí kabelu:
-```xml
-<intent-filter>
-    <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-</intent-filter>
-<meta-data 
+``` - [ ] **Konfigurace Intent Filtru pro Activity:** Zajistit, aby se aplikace probudila nebo nabídla otevření hned po 
+zasunutí kabelu: ```xml <intent-filter>
+    <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" /> </intent-filter> <meta-data
     android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
     android:resource="@xml/usb_device_filter" />
 
@@ -488,3 +483,57 @@ Máš už zavedený kód barev — Editor do něj jen zapadá, nevymýšlí nov�
 
 ---
 
+
+
+				**MOTD REFACTOR AND NEW LOGO FOR PARROT OS AND KALI LINUX**
+
+
+
+- udelej refactoring welcome motd a pridej do kazdeho distra specificke logo viz *↓↓↓*
+
+
+kali_banner() {
+    clear
+    printf "${blue}##################################################\n"
+    printf "${blue}##                                              ##\n"
+    printf "${blue}##  88      a8P         db        88        88  ##\n"
+    printf "${blue}##  88    .88'         d88b       88        88  ##\n"
+    printf "${blue}##  88   88'          d8''8b      88        88  ##\n"
+    printf "${blue}##  88 d88           d8'  '8b     88        88  ##\n"
+    printf "${blue}##  8888'88.        d8YaaaaY8b    88        88  ##\n"
+    printf "${blue}##  88P   Y8b      d8''''''''8b   88        88  ##\n"
+    printf "${blue}##  88     '88.   d8'        '8b  88        88  ##\n"
+    printf "${blue}##  88       Y8b d8'          '8b 888888888 88  ##\n"
+    printf "${blue}##                                              ##\n"
+    printf "${blue}####  ############# NetHunter ####################${reset}\n\n"
+}
+
+red='\033[1;31m'
+green='\033[1;32m'
+yellow='\033[1;33m'
+blue='\033[1;34m'
+light_cyan='\033[1;96m'
+reset='\033[0m'
+
+
+
+
+R="$(printf '\033[1;31m')"
+G="$(printf '\033[1;32m')"
+Y="$(printf '\033[1;33m')"
+B="$(printf '\033[1;34m')"
+C="$(printf '\033[1;36m')"
+W="$(printf '\033[1;37m')"
+
+parrot_banner() {
+    clear
+    printf "\033[33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\033[0m\n"
+    printf "\033[33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\033[0m\n"
+    printf "\033[33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\033[0m\n"
+    printf "\033[33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\033[0m\n"
+    printf "\033[33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\033[0m\n"
+    printf "\033[33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\033[0m\n"
+    printf "\033[32m   A modded gui of parrot\033[0m\n"
+    printf "\033[32m      Code by @sabamdarif \033[0m\n"
+
+}

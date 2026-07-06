@@ -484,106 +484,10 @@ object ProotManager {
 
         val NL = "\n"
 
-        val formatHelper = """
-#!/usr/bin/env python3
-import sys, os
 
-# ANSI Colors
-RST = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-ITALIC = "\033[3m"
-UNDERLINE = "\033[4m"
-
-RED = "\033[38;5;196m"
-GREEN = "\033[38;5;46m"
-YELLOW = "\033[38;5;226m"
-BLUE = "\033[38;5;39m"
-MAGENTA = "\033[38;5;201m"
-CYAN = "\033[38;5;51m"
-ORANGE = "\033[38;5;208m"
-WHITE = "\033[38;5;255m"
-GRAY = "\033[38;5;244m"
-
-def box(title, content, color=CYAN):
-    lines = content.splitlines()
-    width = max(len(title) + 4, max((len(line) for line in lines), default=0) + 4)
-
-    out = []
-    out.append(f"{color}{BOLD}╔═ {WHITE}{title} {color}{'═' * (width - len(title) - 3)}╗{RST}")
-    for line in lines:
-        out.append(f"{color}║ {WHITE}{line}{' ' * (width - len(line) - 2)} {color}║{RST}")
-    out.append(f"{color}╚{'═' * width}╝{RST}")
-    return "\n".join(out)
-
-def table(headers, rows, color=BLUE):
-    if not rows:
-        return f"{GRAY}No data available.{RST}"
-
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, val in enumerate(row):
-            widths[i] = max(widths[i], len(str(val)))
-
-    header_line = "  ".join(f"{WHITE}{BOLD}{h.upper():<{widths[i]}}{RST}" for i, h in enumerate(headers))
-    separator = f"{color}{'═' * (sum(widths) + len(headers)*2 - 2)}{RST}"
-
-    out = [header_line, separator]
-    for row in rows:
-        out.append("  ".join(f"{WHITE}{str(val):<{widths[i]}}{RST}" for i, val in enumerate(row)))
-
-    return "\n".join(out)
-
-def status(label, value, is_good=True):
-    color = GREEN if is_good else RED
-    if is_good is None: color = YELLOW
-    icon = "✔" if is_good else "✘"
-    if is_good is None: icon = "●"
-    return f"{WHITE}{BOLD}{label:<18} {CYAN}│ {color}{icon} {WHITE}{value}{RST}"
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        cmd = sys.argv[1]
-        if cmd == "box":
-            print(box(sys.argv[2], sys.argv[3]))
-        elif cmd == "status":
-            print(status(sys.argv[2], sys.argv[3], sys.argv[4].lower() == "true"))
-""".trimIndent()
 
         val scripts = mapOf(
-            "nethunter_format.py" to formatHelper,
-            "nethunter_format" to formatHelper,
-            "nethunter-list" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("python3 -c \"").append(NL)
-                append("import sys, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import table, box").append(NL)
-                append("tools = [").append(NL)
-                append("    ('nethunter-battery-status', 'Zobrazí stav baterie'),").append(NL)
-                append("    ('nethunter-wifi-connectioninfo', 'Informace o Wi-Fi síti'),").append(NL)
-                append("    ('nethunter-location', 'GPS souřadnice + Mapy'),").append(NL)
-                append("    ('nethunter-map', 'Interaktivní OSM mapa'),").append(NL)
-                append("    ('nethunter-cellinfo', 'Informace o mobilní síti'),").append(NL)
-                append("    ('nethunter-volume', 'Změna hlasitosti médií'),").append(NL)
-                append("    ('nethunter-torch', 'Ovládání svítilny'),").append(NL)
-                append("    ('nethunter-toast', 'Zobrazení Android Toastu'),").append(NL)
-                append("    ('nethunter-vibrate', 'Vibrace zařízení'),").append(NL)
-                append("    ('nethunter-tts-speak', 'Text-to-Speech (syntéza)'),").append(NL)
-                append("    ('nethunter-clipboard-get', 'Přečíst host schránku'),").append(NL)
-                append("    ('nethunter-clipboard-set', 'Zapsat do host schránky'),").append(NL)
-                append("    ('nethunter-apps-usage', 'Statistiky využití aplikací'),").append(NL)
-                append("    ('nethunter-notifications-active', 'Aktivní notifikace'),").append(NL)
-                append("    ('nethunter-log', 'Barevný Logcat prohlížeč'),").append(NL)
-                append("    ('vpn-on / vpn-off', 'Globální VPN vypínač'),").append(NL)
-                append("    ('vpn-cli', 'Pokročilé VPN & MITM CLI'),").append(NL)
-                append("    ('vpn-bypass', 'Bypass VPN pro příkaz'),").append(NL)
-                append("    ('ignore-vpn', 'Bypass VPN pro session'),").append(NL)
-                append("]").append(NL)
-                append("headers = ['PŘÍKAZ', 'POPIS FUNKCE']").append(NL)
-                append("print(box('Dostupné NetHunter Nástroje 🐉', table(headers, tools)))").append(NL)
-                append("\"").append(NL)
-            }.toString(),
+
 
             "apt" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -658,13 +562,15 @@ if __name__ == "__main__":
             "vpn-off" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
+                append("  echo \"[*] Stopping global VPN service...\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
-                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('NetHunter VPN', 'DISABLED', False))\"").append(NL)
+                append("  echo \"[-] Global VPN sniffer disabled.\"").append(NL)
                 append("  exit 0").append(NL)
                 append("fi").append(NL)
                 append("was_running=false").append(NL)
                 append("if curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
                 append("  was_running=true").append(NL)
+                append("  echo \"[*] Temporarily disabling VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
                 append("  sleep 1").append(NL)
                 append("fi").append(NL)
@@ -672,6 +578,7 @@ if __name__ == "__main__":
                 append("\"\$@\"").append(NL)
                 append("exit_code=\$?").append(NL)
                 append("if [ \"\$was_running\" = \"true\" ]; then").append(NL)
+                append("  echo \"[*] Restoring VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
                 append("fi").append(NL)
                 append("exit \$exit_code").append(NL)
@@ -680,11 +587,13 @@ if __name__ == "__main__":
             "vpn-on" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
+                append("  echo \"[*] Starting global VPN service...\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
-                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('NetHunter VPN', 'ENABLED', True))\"").append(NL)
+                append("  echo \"[+] Global VPN sniffer enabled.\"").append(NL)
                 append("  exit 0").append(NL)
                 append("fi").append(NL)
                 append("if ! curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
+                append("  echo \"[*] Starting VPN\"").append(NL)
                 append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
                 append("  sleep 1").append(NL)
                 append("fi").append(NL)
@@ -787,13 +696,13 @@ if __name__ == "__main__":
                 append("mode=\${1:-on}").append(NL)
                 append("if [ \"\$mode\" = \"on\" ]; then").append(NL)
                 append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=true\" >/dev/null").append(NL)
-                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Session VPN Bypass', 'ACTIVE', True))\"").append(NL)
+                append("  echo \"[*] VPN sniffer bypassed for this session.\"").append(NL)
                 append("elif [ \"\$mode\" = \"off\" ]; then").append(NL)
                 append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=false\" >/dev/null").append(NL)
-                append("  python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Session VPN Bypass', 'DISABLED', False))\"").append(NL)
+                append("  echo \"[*] VPN sniffer routing restored for this session.\"").append(NL)
                 append("elif [ \"\$mode\" = \"status\" ]; then").append(NL)
                 append("  res=\$(curl -s \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID\")").append(NL)
-                append("  python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Session Bypass', 'ON' if d.get('ignored') else 'OFF', d.get('ignored')))\" \"\$res\"").append(NL)
+                append("  echo \"[*] VPN ignore status: \$res\"").append(NL)
                 append("else").append(NL)
                 append("  echo \"Usage: ignore-vpn [on|off|status]\"").append(NL)
                 append("  exit 1").append(NL)
@@ -807,44 +716,85 @@ if __name__ == "__main__":
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/toast > /dev/null").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Android Toast', 'Sent to host'))\"").append(NL)
+                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/toast)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Toast failed: {d[\"error\"]}{N}')").append(NL)
+                append("    else: print(f'{G}\\u2714  Toast sent to host engine{N}')").append(NL)
+                append("except: print(f'{G}\\u2714  Toast sent to host engine{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-battery-status" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/battery)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status").append(NL)
+                append("import sys,json").append(NL)
+                append("def bat_color(pct,status):").append(NL)
+                append("    if status=='charging': return '\\033[92m'").append(NL)
+                append("    if pct>50: return '\\033[92m'").append(NL)
+                append("    if pct>20: return '\\033[93m'").append(NL)
+                append("    return '\\033[91m'").append(NL)
+                append("def bat_bar(pct):").append(NL)
+                append("    n=max(1,int(pct/10))").append(NL)
+                append("    return '█'*n + '░'*(10-n)").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(d['error'])").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        res = []").append(NL)
-                append("        res.append(status('Percentage', f\\\"{d.get('percentage')}%\\\", d.get('percentage', 0) > 20))").append(NL)
-                append("        res.append(status('Status', d.get('status', 'unknown'), d.get('status') == 'charging'))").append(NL)
-                append("        res.append(status('Health', d.get('health', 'unknown'), d.get('health') == 'good'))").append(NL)
-                append("        res.append(status('Temperature', f\\\"{d.get('temperature')}°C\\\", d.get('temperature', 0) < 45))").append(NL)
-                append("        res.append(status('Voltage', f\\\"{d.get('voltage')} mV\\\"))").append(NL)
-                append("        print(box('Battery Status 🔋', '\\n'.join(res)))").append(NL)
-                append("except Exception as e: print(f'Error: {e}')").append(NL)
+                append("        pct=d.get('percentage',-1)").append(NL)
+                append("        temp=d.get('temperature',0)").append(NL)
+                append("        volt=d.get('voltage',0)").append(NL)
+                append("        st=d.get('status','?')").append(NL)
+                append("        hl=d.get('health','?')").append(NL)
+                append("        pl=d.get('plugged','none')").append(NL)
+                append("        c=bat_color(pct,st)").append(NL)
+                append("        icon='🔌' if st=='charging' else '🔋'").append(NL)
+                append("        b=bat_bar(pct)").append(NL)
+                append("        print(f'{c}{icon}  {pct}%  [{b}]{chr(27)}[0m')").append(NL)
+                append("        print(f'   Status:  {st}')").append(NL)
+                append("        print(f'   Zdraví:  {hl}')").append(NL)
+                append("        print(f'   Teplota: {temp}°C')").append(NL)
+                append("        print(f'   Napětí:  {volt} mV')").append(NL)
+                append("        if pl!='none': print(f'   Nabíjení: {pl}')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
             "nethunter-speech-input" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/voice_input)").append(NL)
-                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import box; d = json.loads(sys.argv[1]); print(box('Voice Input 🎙️', d.get('text', ''))) if 'text' in d else print(d.get('error', 'Unknown error'))\" \"\$DATA\"").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'text' in d: print(f'{G}\\U0001f399\\ufe0f  Voice: {d[\"text\"]}{N}')").append(NL)
+                append("    else: print(f'{R}\\u2718  {d.get(\"error\", \"No response\")}{N}')").append(NL)
+                append("except: print(f'{R}\\u2718  Error parsing voice input{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-vibrate" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("duration=\${1:-500}").append(NL)
-                append("DATA=\$(curl -s -X POST -d \"\$duration\" http://127.0.0.1:1337/vibrate)").append(NL)
-                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Vibration', f\\\"{d.get('duration')} ms\\\", True))\" \"\$DATA\"").append(NL)
+                append("DATA=\$(curl -s -X POST -d \"\${1:-500}\" http://127.0.0.1:1337/vibrate)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Vibration failed: {d[\"error\"]}{N}')").append(NL)
+                append("    else: print(f'{G}\\U0001f4f3  Vibration: {d.get(\"duration\", \"500\")} ms{N}')").append(NL)
+                append("except: print(f'{G}\\U0001f4f3  Vibration sent{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-tts-speak" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -853,19 +803,38 @@ if __name__ == "__main__":
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/tts > /dev/null").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('TTS Speak', 'Sent to host engine'))\"").append(NL)
+                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/tts)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  TTS failed: {d[\"error\"]}{N}')").append(NL)
+                append("    else: print(f'{G}\\U0001f50a  TTS: Sent to host engine{N}')").append(NL)
+                append("except: print(f'{G}\\U0001f50a  TTS: Sent to host engine{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-clipboard-get" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/clipboard)").append(NL)
                 append("if [ \"\$1\" = \"--raw\" ]; then").append(NL)
-                append("  echo \"\$DATA\" | python3 -c \"import sys, json; print(json.load(sys.stdin).get('text', ''))\"").append(NL)
+                append("  echo \"\$DATA\" | python3 -c \"import sys,json; print(json.load(sys.stdin).get('text',''))\"").append(NL)
                 append("else").append(NL)
-                append("  echo \"\$DATA\" | python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import box; d = json.load(sys.stdin); print(box('Android Clipboard 📋', d.get('text', '')))\"").append(NL)
+                append("  echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'text' in d:").append(NL)
+                append("        txt = d['text'][:200]").append(NL)
+                append("        print(f'{G}\\U0001f4cb  Clipboard: {txt}{N}')").append(NL)
+                append("    else: print(f'{Y}\\U0001f4cb  Clipboard: (empty){N}')").append(NL)
+                append("except: print(f'{R}\\u2718  Error reading clipboard{N}')").append(NL)
+                append("\"").append(NL)
                 append("fi").append(NL)
             }.toString(),
+
 
             "nethunter-clipboard-set" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -874,9 +843,17 @@ if __name__ == "__main__":
                 append("else").append(NL)
                 append("  text=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/clipboard > /dev/null").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Android Clipboard', 'Text copied to host'))\"").append(NL)
+                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/clipboard)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Clipboard error: {d[\"error\"]}{N}')").append(NL)
+                append("    else: print(f'{G}\\U0001f4cb  Clipboard: Text copied to host{N}')").append(NL)
+                append("except: print(f'{G}\\U0001f4cb  Clipboard: Text copied to host{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-notification" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -889,31 +866,54 @@ if __name__ == "__main__":
                 append("  esac").append(NL)
                 append("done").append(NL)
                 append("if [ -z \"\$content\" ]; then").append(NL)
-                append("  shift \$((\$OPTIND-1))").append(NL)
+                append("  shift \$((OPTIND-1))").append(NL)
                 append("  content=\"\$*\"").append(NL)
                 append("fi").append(NL)
-                append("curl -s -X POST -H \"Content-Type: application/json\" -d \"{\\\"title\\\":\\\"\$title\\\",\\\"content\\\":\\\"\$content\\\"}\" http://127.0.0.1:1337/notification > /dev/null").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Notification', 'Posted to host'))\"").append(NL)
+                append("DATA=\$(curl -s -X POST -H \"Content-Type: application/json\" -d \"{\\\"title\\\":\\\"\$title\\\",\\\"content\\\":\\\"\$content\\\"}\" http://127.0.0.1:1337/notification)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Notification failed: {d[\"error\"]}{N}')").append(NL)
+                append("    else: print(f'{G}\\U0001f514  Notification posted: {d.get(\"title\", \"\")}{N}')").append(NL)
+                append("except: print(f'{G}\\U0001f514  Notification posted to host{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-wifi-connectioninfo" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/wifi)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status").append(NL)
+                append("import sys,json").append(NL)
+                append("def wifi_qual(rssi):").append(NL)
+                append("    if rssi is None: return ('N/A',0,'\\033[0m')").append(NL)
+                append("    if rssi> -50: return ('Excelentní',10,'\\033[92m')").append(NL)
+                append("    if rssi> -60: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
+                append("    if rssi> -70: return ('Dobrý',6,'\\033[93m')").append(NL)
+                append("    if rssi> -80: return ('Střední',4,'\\033[93m')").append(NL)
+                append("    if rssi> -90: return ('Slabý',2,'\\033[91m')").append(NL)
+                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
+                append("def wifi_bar(n): return '█'*n + '░'*(10-n)").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(d['error'])").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        res = []").append(NL)
-                append("        res.append(status('SSID', d.get('ssid', 'N/A')))\n")
-                append("        res.append(status('BSSID', d.get('bssid', 'N/A')))\n")
-                append("        res.append(status('Signal', f\\\"{d.get('rssi')} dBm\\\", d.get('rssi', -100) > -70))\n")
-                append("        res.append(status('Speed', f\\\"{d.get('link_speed_mbps', '?')} Mbps\\\"))\n")
-                append("        print(box('Wi-Fi Connection 📡', '\\n'.join(res)))").append(NL)
-                append("except Exception as e: print(f'Error: {e}')").append(NL)
+                append("        ssid=d.get('ssid','N/A')").append(NL)
+                append("        bssid=d.get('bssid','N/A')").append(NL)
+                append("        rssi=d.get('rssi')").append(NL)
+                append("        link=d.get('link_speed_mbps','?')").append(NL)
+                append("        w,n,c = wifi_qual(rssi)").append(NL)
+                append("        b=wifi_bar(n)").append(NL)
+                append("        print(f'📡  SSID: {ssid}')").append(NL)
+                append("        print(f'🔗  BSSID: {bssid}')").append(NL)
+                append("        if rssi is not None:").append(NL)
+                append("            print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')").append(NL)
+                append("            print(f'   [{c}{b}{chr(27)}[0m]')").append(NL)
+                append("        print(f'📶  Rychlost: {link} Mbps')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
@@ -921,26 +921,67 @@ if __name__ == "__main__":
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/cellinfo)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status, table").append(NL)
+                append("import sys,json").append(NL)
+                append("def qual_dbm(dbm):").append(NL)
+                append("    if dbm is None or dbm <= -200: return ('Mimo dosah',0,'\\033[0m')").append(NL)
+                append("    if dbm >  -75: return ('Excelentní',10,'\\033[92m')").append(NL)
+                append("    if dbm >  -85: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
+                append("    if dbm >  -95: return ('Dobrý',6,'\\033[93m')").append(NL)
+                append("    if dbm > -105: return ('Střední',4,'\\033[93m')").append(NL)
+                append("    if dbm > -115: return ('Slabý',2,'\\033[91m')").append(NL)
+                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
+                append("def bars(n): return '█'*n + '░'*(10-n)").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
-                append("    res = []").append(NL)
-                append("    res.append(status('Carrier', d.get('carrier', 'Unknown')))\n")
-                append("    res.append(status('Network', d.get('network_type', 'Unknown')))\n")
-                append("    res.append(status('Data State', d.get('data_state', 'Unknown'), d.get('data_state') == 'CONNECTED'))\n")
-                append("    res.append(status('Roaming', str(d.get('is_roaming', False)), not d.get('is_roaming')))\n")
-                append("    print(box('Cellular Info 📶', '\\n'.join(res)))").append(NL)
-                append("    cells = d.get('cells', [])").append(NL)
-                append("    if cells:").append(NL)
-                append("        headers = ['#', 'TYPE', 'ID', 'SIGNAL', 'STATUS']").append(NL)
-                append("        rows = []").append(NL)
-                append("        for i, c in enumerate(cells):").append(NL)
-                append("            cid = c.get('cid', 'N/A')").append(NL)
-                append("            rows.append([i+1, c.get('type'), cid, f\\\"{c.get('signal_dbm', '?')} dBm\\\", 'REG' if c.get('registered') else 'NB'])\n")
-                append("        print('\\n' + box('Nearby Cells', table(headers, rows)))").append(NL)
-                append("except Exception as e: print(f'Error: {e}')").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    net=d.get('network_type','?')").append(NL)
+                append("    carr=d.get('carrier','?')").append(NL)
+                append("    sim=d.get('sim_carrier','?')").append(NL)
+                append("    data_st=d.get('data_state','?')").append(NL)
+                append("    roam=d.get('is_roaming',False)").append(NL)
+                append("    sig_bar=d.get('signal_bar','')").append(NL)
+                append("    sig_dbm=d.get('signal_dbm')").append(NL)
+                append("    print(f'📶  {carr}  ({net})')").append(NL)
+                append("    print(f'📋  SIM: {sim}  |  Data: {data_st}  |  Roaming: {roam}')").append(NL)
+                append("    if sig_bar:").append(NL)
+                append("        dbm_txt = f\\\" ({sig_dbm} dBm)\\\" if sig_dbm else ''").append(NL)
+                append("        print(f'{sig_bar}{dbm_txt}')").append(NL)
+                append("    cells=d.get('cells',[])").append(NL)
+                append("    if not cells:").append(NL)
+                append("        print()").append(NL)
+                append("        print('Žádné věže v dosahu.')").append(NL)
+                append("    else:").append(NL)
+                append("        for idx,c in enumerate(cells):").append(NL)
+                append("            print()").append(NL)
+                // Header row
+                append("            reg=c.get('registered',False)").append(NL)
+                append("            stav='REGISTROVÁN' if reg else 'SOUSEDNÍ'").append(NL)
+                append("            print(f\\\"Vysílač #{idx+1} [{stav}]\\\")").append(NL)
+                // Type | MCC | MNC
+                append("            typ=c.get('type','N/A')").append(NL)
+                append("            mcc=c.get('mcc','?')").append(NL)
+                append("            mnc=c.get('mnc','?')").append(NL)
+                append("            print(f\\\"Typ: {typ} | MCC: {mcc} | MNC: {mnc}\\\")").append(NL)
+                // TAC/LAC | CID | PCI/PSC
+                append("            tac=c.get('tac_lac','N/A')").append(NL)
+                append("            cid=c.get('cid','N/A')").append(NL)
+                append("            pci=c.get('pci_psc')").append(NL)
+                append("            pci_txt = str(pci) if pci is not None else 'N/A'").append(NL)
+                append("            print(f\\\"TAC/LAC: {tac} | CID: {cid} | PCI/PSC: {pci_txt}\\\")").append(NL)
+                // Signal strength
+                append("            sdbm=c.get('signal_dbm')").append(NL)
+                append("            slev=c.get('signal_level',0)").append(NL)
+                append("            if sdbm is not None and sdbm > -200:").append(NL)
+                append("                w,n,c = qual_dbm(sdbm)").append(NL)
+                append("                print(f\\\"{c}Síla signálu: {sdbm} dBm ({w})\\033[0m\\\")").append(NL)
+                append("                b=bars(n)").append(NL)
+                append("                print(f\\\"Ukazatel: [{c}{b}\\033[0m] ({c}{w}\\033[0m)\\\")").append(NL)
+                append("            else:").append(NL)
+                append("                print(f\\\"Síla signálu: N/A\\\")").append(NL)
+                append("                print(f\\\"Ukazatel: [░░░░░░░░░░] (N/A)\\\")").append(NL)
+                // Separator
+                append("            if idx < len(cells)-1:").append(NL)
+                append("                print('─'*50)").append(NL)
+                append("except Exception as e: print(f'Chyba: {e}')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
@@ -948,43 +989,44 @@ if __name__ == "__main__":
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/location)").append(NL)
                 append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status").append(NL)
+                append("import sys,json").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(d['error'])").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        res = []").append(NL)
-                append("        res.append(status('Latitude', d.get('latitude')))\n")
-                append("        res.append(status('Longitude', d.get('longitude')))\n")
-                append("        res.append(status('Accuracy', f\\\"±{d.get('accuracy', 0):.1f}m\\\"))\n")
-                append("        res.append(status('Provider', d.get('provider')))\n")
-                append("        res.append(f\\\"\\\\n🗺️  {d.get('maps_url')}\\\")\n")
-                append("        print(box('GPS Location 📍', '\\n'.join(res)))").append(NL)
-                append("except Exception as e: print(f'Error: {e}')").append(NL)
+                append("        lat=d.get('latitude')").append(NL)
+                append("        lng=d.get('longitude')").append(NL)
+                append("        acc=d.get('accuracy')").append(NL)
+                append("        prov=d.get('provider')").append(NL)
+                append("        maps=d.get('maps_url','')").append(NL)
+                append("        geo=d.get('geo_uri','')").append(NL)
+                append("        print(f'📍  {lat}, {lng}  (±{acc:.0f}m)  [{prov}]')").append(NL)
+                append("        print(f'🗺️  Google Maps: {maps}')").append(NL)
+                append("        print(f'🔗 Geo URI:     {geo}')").append(NL)
+                append("except: print('Chyba parsovani')").append(NL)
                 append("\"").append(NL)
             }.toString(),
 
             "nethunter-map" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('TerminalMap', 'Fetching GPS location...'))\"").append(NL)
+                append("# Display current location and run terminalmap to browse OpenStreetMap").append(NL)
+                append("echo \"[*] Fetching current location...\"").append(NL)
                 append("MAP_DATA=\$(curl -s http://127.0.0.1:1337/map)").append(NL)
                 append("echo \"\$MAP_DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status").append(NL)
+                append("import sys,json").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
                 append("    if d.get('success'):").append(NL)
-                append("        res = []").append(NL)
-                append("        res.append(status('Latitude', d.get('latitude')))").append(NL)
-                append("        res.append(status('Longitude', d.get('longitude')))").append(NL)
-                append("        print(box('Location Found 📍', '\\n'.join(res)))").append(NL)
-                append("        print(box('TerminalMap Controls', 'Arrows/HJKL: Pan  |  A/+/-: Zoom  |  Q: Quit', '\\033[38;5;226m'))").append(NL)
-                append("    else: print(d.get('error', 'GPS error'))").append(NL)
+                append("        lat=d.get('latitude')").append(NL)
+                append("        lng=d.get('longitude')").append(NL)
+                append("        print(f'📍 Location: {lat}, {lng}')").append(NL)
+                append("        print('🗺️  Starting TerminalMap...')").append(NL)
+                append("    else:").append(NL)
+                append("        print(d.get('error','Unknown error'))").append(NL)
                 append("except: print('Error parsing location')").append(NL)
                 append("\"").append(NL)
+                append("echo \"[*] Controls: arrow keys/hjkl=pan, a/+/-=zoom, c=braille/ASCII, n=labels, g=tour, w=world, q=quit\"").append(NL)
                 append("terminalmap").append(NL)
             }.toString(),
 
@@ -997,38 +1039,46 @@ if __name__ == "__main__":
             "nethunter-apps-usage" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/apps/usage)").append(NL)
-                append("python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, table").append(NL)
-                append("d = json.loads(sys.argv[1])").append(NL)
-                append("if 'apps' in d:").append(NL)
-                append("    headers = ['PACKAGE', 'TIME (MIN)', 'LAST USED']").append(NL)
-                append("    rows = []").append(NL)
-                append("    for a in d['apps']:").append(NL)
-                append("        rows.append([a['packageName'], f\\\"{a['totalTimeInForeground']//60000}\\\", 'Recent'])").append(NL)
-                append("    print(box('App Usage Statistics 📊', table(headers, rows)))").append(NL)
-                append("else: print(d.get('error', 'Unknown error'))").append(NL)
-                append("\" \"\$DATA\"").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
+                append("    elif 'apps' in d:").append(NL)
+                append("        apps = d['apps'][:10]").append(NL)
+                append("        print(f'{G}\\U0001f4ca  App Usage Statistics:{N}')").append(NL)
+                append("        for a in apps:").append(NL)
+                append("            pkg = a.get('packageName', '?')").append(NL)
+                append("            mins = a.get('totalTimeInForeground', 0) // 60000").append(NL)
+                append("            print(f'   \\U0001f4a0  {pkg}{Gy} - {mins} min{N}')").append(NL)
+                append("    else: print(f'{Y}\\U0001f4ca  No app usage data{N}')").append(NL)
+                append("except: print(f'{Y}\\U0001f4ca  No app usage data{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-notifications-active" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("DATA=\$(curl -s http://127.0.0.1:1337/notifications/active)").append(NL)
-                append("python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, table").append(NL)
-                append("d = json.loads(sys.argv[1])").append(NL)
-                append("if 'notifications' in d:").append(NL)
-                append("    headers = ['PACKAGE', 'TITLE', 'TEXT']").append(NL)
-                append("    rows = []").append(NL)
-                append("    for n in d['notifications']:").append(NL)
-                append("        rows.append([n['package'], n['title'], n['text'][:30]])").append(NL)
-                append("    print(box('Active Notifications 🔔', table(headers, rows)))").append(NL)
-                append("else: print(d.get('error', 'Unknown error'))").append(NL)
-                append("\" \"\$DATA\"").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
+                append("    elif 'notifications' in d:").append(NL)
+                append("        notifs = d['notifications'][:10]").append(NL)
+                append("        print(f'{G}\\U0001f514  Active Notifications:{N}')").append(NL)
+                append("        for n in notifs:").append(NL)
+                append("            title = n.get('title', '(no title)')").append(NL)
+                append("            pkg = n.get('package', '?')").append(NL)
+                append("            print(f'   \\U0001f4ac  {title}{Gy} [{pkg}]{N}')").append(NL)
+                append("    else: print(f'{Y}\\U0001f514  No active notifications{N}')").append(NL)
+                append("except: print(f'{Y}\\U0001f514  No active notifications{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-accessibility-hierarchy" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -1041,19 +1091,39 @@ if __name__ == "__main__":
                 append("case \"\$action\" in").append(NL)
                 append("  status)").append(NL)
                 append("    DATA=\$(curl -s http://127.0.0.1:1337/battery/optimize)").append(NL)
-                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Battery Optimize', 'IGNORED (OK)' if d.get('ignored') else 'RESTRICTED', d.get('ignored')))\" \"\$DATA\"").append(NL)
+                append("    echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if d.get('ignored'): print(f'{G}\\U0001f50b  Battery Optimization: IGNORED (OK){N}')").append(NL)
+                append("    else: print(f'{Y}\\U0001f50b  Battery Optimization: RESTRICTED{N}')").append(NL)
+                append("except: print(f'{Y}\\u2753  Battery Optimization: unknown{N}')").append(NL)
+                append("\"").append(NL)
                 append("    ;;").append(NL)
                 append("  request) curl -s -X POST http://127.0.0.1:1337/battery/optimize ;;").append(NL)
                 append("  *) echo \"Usage: nethunter-battery-optimize [status|request]\"; exit 1 ;;").append(NL)
                 append("esac").append(NL)
             }.toString(),
 
+
             "nethunter-wifi-control" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("state=\"\${1:-status}\"").append(NL)
                 append("DATA=\$(curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/wifi)").append(NL)
-                append("python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Wi-Fi Control', 'ENABLED' if d.get('enabled') else 'DISABLED', d.get('success')))\" \"\$DATA\"").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Wi-Fi: {d[\"error\"]}{N}')").append(NL)
+                append("    else:").append(NL)
+                append("        en = d.get('enabled', False)").append(NL)
+                append("        print(f'{G if en else R}\\U0001f4f6  Wi-Fi: {\"ENABLED\" if en else \"DISABLED\"}{N}')").append(NL)
+                append("except: print(f'{Y}\\U0001f4f6  Wi-Fi: unknown{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-device-admin" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
@@ -1061,7 +1131,17 @@ if __name__ == "__main__":
                 append("case \"\$action\" in").append(NL)
                 append("  status)").append(NL)
                 append("    DATA=\$(curl -s http://127.0.0.1:1337/device/admin)").append(NL)
-                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('Device Admin', 'ACTIVE' if d.get('active') else 'INACTIVE', d.get('active')))\" \"\$DATA\"").append(NL)
+                append("    echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
+                append("    else:").append(NL)
+                append("        act = d.get('active', False)").append(NL)
+                append("        print(f'{G if act else R}\\U0001f511  Device Admin: {\"ACTIVE\" if act else \"INACTIVE\"}{N}')").append(NL)
+                append("except: print(f'{Y}\\u2753  Device Admin: unknown{N}')").append(NL)
+                append("\"").append(NL)
                 append("    ;;").append(NL)
                 append("  request) curl -s -X POST http://127.0.0.1:1337/device/admin ;;").append(NL)
                 append("  lock) curl -s -X POST http://127.0.0.1:1337/device/lock ;;").append(NL)
@@ -1069,24 +1149,26 @@ if __name__ == "__main__":
                 append("esac").append(NL)
             }.toString(),
 
+
             "nethunter-volume" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ -z \"\$1\" ]; then").append(NL)
                 append("  DATA=\$(curl -s http://127.0.0.1:1337/volume)").append(NL)
                 append("  echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import box, status").append(NL)
+                append("import sys,json").append(NL)
+                append("def vol_bar(cur,mx):").append(NL)
+                append("    n=max(1,int(cur/mx*10)) if mx>0 else 1").append(NL)
+                append("    return '█'*n + '░'*(10-n)").append(NL)
                 append("try:").append(NL)
-                append("    d = json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(d['error'])").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d:").append(NL)
+                append("        print(d['error'])").append(NL)
                 append("    else:").append(NL)
-                append("        cur = d.get('volume', 0)").append(NL)
-                append("        mx = d.get('max_volume', 15)").append(NL)
-                append("        pct = int(cur/mx*100) if mx > 0 else 0").append(NL)
-                append("        res = [status('Level', f\\\"{cur}/{mx} ({pct}%)\\\", pct > 0)]").append(NL)
-                append("        print(box('Media Volume 🔊', '\\n'.join(res)))").append(NL)
-                append("except Exception as e: print(f'Error: {e}')").append(NL)
+                append("        cur=d.get('volume',0)").append(NL)
+                append("        mx=d.get('max_volume',15)").append(NL)
+                append("        b=vol_bar(cur,mx)").append(NL)
+                append("        print(f'\\033[92m🔊  Hlasitost: {cur}/{mx}  [{b}]\\033[0m')").append(NL)
+                append("except: print('Chyba parsování')").append(NL)
                 append("\"").append(NL)
                 append("else").append(NL)
                 append("  curl -s -X POST -d \"\$1\" http://127.0.0.1:1337/volume >/dev/null").append(NL)
@@ -1096,16 +1178,21 @@ if __name__ == "__main__":
 
             "nethunter-torch" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
-                append("state=\${1:-on}").append(NL)
-                append("DATA=\$(curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/torch)").append(NL)
-                append("python3 -c \"").append(NL)
-                append("import sys, json, os").append(NL)
-                append("sys.path.append('/usr/local/bin')").append(NL)
-                append("from nethunter_format import status").append(NL)
-                append("d = json.loads(sys.argv[1])").append(NL)
-                append("print(status('Flashlight', d.get('state', 'unknown'), d.get('state') == 'on'))").append(NL)
-                append("\" \"\$DATA\"").append(NL)
+                append("DATA=\$(curl -s -X POST -d \"\${1:-on}\" http://127.0.0.1:1337/torch)").append(NL)
+                append("echo \"\$DATA\" | python3 -c \"").append(NL)
+                append("import sys,json").append(NL)
+                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
+                append("try:").append(NL)
+                append("    d=json.load(sys.stdin)").append(NL)
+                append("    if 'error' in d: print(f'{R}\\u2718  Flashlight: {d[\"error\"]}{N}')").append(NL)
+                append("    else:").append(NL)
+                append("        st = d.get('state', 'unknown')").append(NL)
+                append("        ico = '\\U0001f526' if st == 'on' else '\\U0001f319'").append(NL)
+                append("        print(f'{G if st==\"on\" else Gy}{ico}  Flashlight: {st.upper()}{N}')").append(NL)
+                append("except: print(f'{Y}\\u2753  Flashlight: unknown{N}')").append(NL)
+                append("\"").append(NL)
             }.toString(),
+
 
             "nethunter-log" to StringBuilder().apply {
                 append("#!/usr/bin/env python3").append(NL)
@@ -1177,9 +1264,11 @@ if __name__ == "__main__":
                 append("  exit 1").append(NL)
                 append("fi").append(NL)
                 append("pkg=\"\$1\"").append(NL)
+                append("echo \"[*] Mocking postinst for \$pkg...\"").append(NL)
                 append("ln -sf /bin/true /var/lib/dpkg/info/\$pkg.postinst 2>/dev/null || true").append(NL)
-                append("dpkg --configure -a > /dev/null 2>&1").append(NL)
-                append("python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('Post-Inst Fix', f'Fixed {sys.argv[1]}', True))\" \"\$pkg\"").append(NL)
+                append("echo \"[*] Reconfiguring dpkg...\"").append(NL)
+                append("dpkg --configure -a").append(NL)
+                append("echo \"[+] Successfully fixed postinst for \$pkg!\"").append(NL)
             }.toString(),
 
             "nethunter-desktop" to StringBuilder().apply {
@@ -1260,7 +1349,7 @@ if __name__ == "__main__":
                 append("esac").append(NL)
             }.toString(),
 
-            "nethunter-api" to StringBuilder().apply {
+                        "nethunter-api" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("# NetHunter Local API Control CLI").append(NL)
                 append("API_URL=\"http://127.0.0.1:1337\"").append(NL)
@@ -1272,13 +1361,18 @@ if __name__ == "__main__":
                 append("  mode=\"\${2:-status}\"").append(NL)
                 append("  if [ \"\$mode\" = \"on\" ]; then").append(NL)
                 append("    res=\$(curl -s -X POST --data-binary \"on\" \"\$API_URL/api/share\")").append(NL)
-                append("    python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('API Sharing', 'ENABLED (0.0.0.0)', True))\"").append(NL)
+                append("    echo \"[+] API sharing enabled. Bind address updated to 0.0.0.0.\"").append(NL)
                 append("  elif [ \"\$mode\" = \"off\" ]; then").append(NL)
                 append("    res=\$(curl -s -X POST --data-binary \"off\" \"\$API_URL/api/share\")").append(NL)
-                append("    python3 -c \"import sys, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; print(status('API Sharing', 'DISABLED (127.0.0.1)', False))\"").append(NL)
+                append("    echo \"[-] API sharing disabled. Bind address restored to 127.0.0.1.\"").append(NL)
                 append("  elif [ \"\$mode\" = \"status\" ]; then").append(NL)
                 append("    res=\$(curl -s \"\$API_URL/api/share\")").append(NL)
-                append("    python3 -c \"import sys, json, os; sys.path.append('/usr/local/bin'); from nethunter_format import status; d = json.loads(sys.argv[1]); print(status('API Sharing', 'ENABLED (0.0.0.0)' if d.get('shared') else 'DISABLED (127.0.0.1)', d.get('shared')))\" \"\$res\"").append(NL)
+                append("    shared=\$(echo \"\$res\" | grep -o '\"shared\":[^,]*' | cut -d: -f2)").append(NL)
+                append("    if [ \"\$shared\" = \"true\" ]; then").append(NL)
+                append("      echo \"[+] API sharing is currently ENABLED (0.0.0.0)\"").append(NL)
+                append("    else").append(NL)
+                append("      echo \"[-] API sharing is currently DISABLED (127.0.0.1)\"").append(NL)
+                append("    fi").append(NL)
                 append("  else").append(NL)
                 append("    usage").append(NL)
                 append("  fi").append(NL)
@@ -1348,7 +1442,8 @@ if __name__ == "__main__":
         val assetsToDeploy = listOf(
             "nethunter_agent.py" to "nethunter_agent.py",
             "nethunter-agent-cli" to "nethunter-agent-cli",
-            "bin/terminalmap" to "terminalmap"
+            "bin/terminalmap" to "terminalmap",
+            "bin/nh-ifconfig" to "nh-ifconfig"
         )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
@@ -1463,7 +1558,6 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nethunter-terminalmap` | Alias pro `nethunter-map` — synonym pro spuštění TerminalMap. | `nethunter-terminalmap` |
 | `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
 | `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
-| `nethunter-list` | Zobrazí seznam všech dostupných NetHunter nástrojů. | `nethunter-list` |
 | `nethunter-log [options] [lines]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nethunter-log -n 50 -g "LocalApiServer"` |
 | `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
 
@@ -1657,53 +1751,85 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 
         val isParrot = distroId == "parrot"
 
-        val profileScript = """
-#!/bin/sh
-# NetHunter AI Operator — Welcome (shown once per session)
-SENTINEL="${'$'}HOME/.nethunter_welcome_shown"
-if [ -f "${'$'}SENTINEL" ]; then
-    return 0 2>/dev/null || exit 0
-fi
-touch "${'$'}SENTINEL" 2>/dev/null
+        val profileScript = buildString {
+            appendLine("#!/bin/sh")
+            appendLine("# NetHunter AI Operator - Welcome (shown once per session)")
+            appendLine("SENTINEL=\$HOME/.nethunter_welcome_shown")
+            appendLine("if [ -f \"\$SENTINEL\" ]; then return 0 2>/dev/null || exit 0; fi")
+            appendLine("touch \"\$SENTINEL\" 2>/dev/null")
+            appendLine()
 
-echo ""
-echo "  \033[1;36m╔══════════════════════════════════════════════════════╗\033[0m"
-echo "  \033[1;36m║\033[0m  \033[1;35m🐉 NetHunter AI Operator v4.1\033[0m                          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;33m    Kali Linux • AdGuard VPN • AI Brain • P2P Mesh\033[0m  \033[1;36m║\033[0m"
-echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
-echo "  \033[1;36m║\033[0m  \033[1;32m📡 RYCHLÉ PŘÍKAZY:\033[0m                                    \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-location\033[0m         GPS + Google Maps           \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-cellinfo\033[0m          mobilní síť (5G/4G/3G)      \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-map\033[0m              OSM mapa (OpenStreetMap)    \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-wifi-connectioninfo\033[0m WiFi info                  \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-battery-status\033[0m     stav baterie                \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-clipboard-get/set\033[0m  schránka (čtení/zápis)      \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-toast \"text\"\033[0m       Android toast               \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-vibrate [ms]\033[0m      vibrace                      \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-tts-speak \"text\"\033[0m   přečíst text nahlas          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-notification\033[0m      systémová notifikace         \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-volume 0-15\033[0m        hlasitost                    \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-torch on/off\033[0m      svítilna                     \033[1;36m║\033[0m"
-echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
-echo "  \033[1;36m║\033[0m  \033[1;33m🛡️  VPN:\033[0m                                           \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-on / vpn-off\033[0m            VPN zapnout/vypnout          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli mitm on|off\033[0m        TLS MITM zapnout/vypnout       \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli mitm status\033[0m        MITM stav + session            \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli logs\033[0m                MITM formátované logy          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli status\033[0m              stav VPN                      \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-cli chat\033[0m                AI Expert konzole             \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  vpn-bypass <cmd>\033[0m            obejít VPN pro příkaz          \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  ignore-vpn on/off\033[0m          VPN bypass pro session         \033[1;36m║\033[0m"
-echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
-echo "  \033[1;36m║\033[0m  \033[1;33m🖥️  DESKTOP:\033[0m                                        \033[1;36m║\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;32m  nethunter-desktop start\033[0m     XFCE4 GUI (noVNC :6080)      \033[1;36m║\033[0m"
-echo "  \033[1;36m╠══════════════════════════════════════════════════════╣\033[0m"
-echo "  \033[1;36m║\033[0m  \033[0;33m📖 cat nethunter_docs.md\033[0m  → plná dokumentace           \033[1;36m║\033[0m"
-echo "  \033[1;36m╚══════════════════════════════════════════════════════╝\033[0m"
-echo ""
-echo "  \033[0;90mgithub.com/zombiegirlcz/kali_core_emulator\033[0m"
-echo ""
-""".trimIndent()
+            if (isParrot) {
+                appendLine("echo \"\"")
+                appendLine("echo \"  \\033[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\\033[0m\"")
+                appendLine("echo \"  \\033[1;32m   NetHunter AI Operator v4.1\\033[0m\"")
+                appendLine("echo \"  \\033[1;32m      Parrot OS Security\\033[0m\"")
+            } else {
+                appendLine("echo \"\"")
+                appendLine("echo \"  \\033[1;34m##################################################\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88      a8P         db        88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88    .88'         d88b       88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88   88'          d8''8b      88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88 d88           d8'  '8b     88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88     '88.   d8'        '8b  88        88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
+                appendLine("echo \"  \\033[1;34m####  ############# NetHunter ####################\\033[0m\"")
+            }
+
+            appendLine()
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\\033[0m\"")
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-location\\033[0m              GPS + Google Maps\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-cellinfo\\033[0m               mobilní síť (5G/4G/3G)\"")
+
+            appendLine("echo \"  \\033[0;32m     nethunter-map\\033[0m                   OSM terminálová mapa\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-battery-status\\033[0m          stav baterie\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-wifi-connectioninfo\\033[0m      WiFi info\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-volume 0-15\\033[0m             hlasitost\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-torch on/off\\033[0m           svítilna\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-toast \\\"text\\\"\\033[0m            Android toast\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-vibrate [ms]\\033[0m           vibrace\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-tts-speak \\\"text\\\"\\033[0m        přečíst text nahlas\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-notification\\033[0m           systémová notifikace\"")
+            appendLine("echo \"  \\033[0;32m     nethunter-clipboard-get/set\\033[0m       schránka (čtení/zápis)\"")
+
+            appendLine()
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[1;33m   🛡️  VPN\\033[0m\"")
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;33m     vpn-on / vpn-off\\033[0m                 VPN zapnout/vypnout\"")
+            appendLine("echo \"  \\033[0;33m     vpn-cli mitm on|off\\033[0m             TLS MITM zapnout/vypnout\"")
+            appendLine("echo \"  \\033[0;33m     vpn-cli mitm status\\033[0m             MITM stav + session\"")
+            appendLine("echo \"  \\033[0;33m     vpn-cli logs\\033[0m                     MITM formátované logy\"")
+            appendLine("echo \"  \\033[0;33m     vpn-cli status\\033[0m                   stav VPN\"")
+            appendLine("echo \"  \\033[0;33m     vpn-cli chat\\033[0m                     AI Expert konzole\"")
+            appendLine("echo \"  \\033[0;33m     vpn-bypass <cmd>\\033[0m                 obejít VPN pro příkaz\"")
+            appendLine("echo \"  \\033[0;33m     ignore-vpn on/off\\033[0m               VPN bypass pro session\"")
+
+            appendLine()
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[1;33m   🖥️  DESKTOP\\033[0m\"")
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;33m     nethunter-desktop start\\033[0m          XFCE4 GUI (noVNC :6080)\"")
+
+            appendLine()
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\\033[0m\"")
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"\"")
+            appendLine("echo \"  \\033[0;90m     github.com/zombiegirlcz/kali_core_emulator\\033[0m\"")
+            appendLine("echo \"\"")
+        }
 
         val welcomeFile = File(profileDir, "nethunter-welcome.sh")
         try {
@@ -1722,33 +1848,67 @@ echo ""
         motd.append(NL)
 
         if (isParrot) {
-            motd.append("  \u001b[1;33m╭━━━╮\u001b[0m  \u001b[1;32m╔╗ ╔╗\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━╮┃\u001b[0m  \u001b[1;32m║╚╦╝║\u001b[0m  \u001b[1;36mNetHunter AI Operator v4.1\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╰━╯┃\u001b[0m  \u001b[1;32m╚╗╚╗║\u001b[0m  \u001b[1;35mParrot OS Security\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━━┫\u001b[0m  \u001b[1;32m╔╝╔╝║\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃┃\u001b[0m    \u001b[1;32m╔╝╔╝╔╝\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m╰╯\u001b[0m    \u001b[1;32m╚═╝ ╚═╝\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\u001b[0m").append(NL)
+            motd.append("  \u001b[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\u001b[0m").append(NL)
+            motd.append("  \u001b[1;32m   NetHunter AI Operator v4.1\u001b[0m").append(NL)
+            motd.append("  \u001b[1;32m      Parrot OS Security\u001b[0m").append(NL)
         } else {
-            motd.append("  \u001b[1;34m╦╔═╔═╗╦  ╦\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m╠╩╗╠═╣║  ║\u001b[0m  \u001b[1;36mNetHunter AI Operator v4.1\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m╩ ╩╩ ╩╩═╝╩═╝\u001b[0m  \u001b[1;35mKali NetHunter\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##################################################\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88      a8P         db        88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88    .88'         d88b       88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88   88'          d8''8b      88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88 d88           d8'  '8b     88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88     '88.   d8'        '8b  88        88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
+            motd.append("  \u001b[1;34m####  ############# NetHunter ####################\u001b[0m").append(NL)
         }
 
         motd.append(NL)
-        motd.append("  \u001b[1;32mRYCHLÉ PŘÍKAZY / QUICK HELP\u001b[0m").append(NL)
-        motd.append("  \u001b[0;36mnethunter-location\u001b[0m         GPS + Google Maps").append(NL)
-        motd.append("  \u001b[0;36mnethunter-cellinfo\u001b[0m          mobilní síť (5G/4G/3G)").append(NL)
-        motd.append("  \u001b[0;36mnethunter-map\u001b[0m              OSM terminálová mapa").append(NL)
-        motd.append("  \u001b[0;36mnethunter-battery-status\u001b[0m     stav baterie").append(NL)
-        motd.append("  \u001b[0;36mnethunter-wifi-connectioninfo\u001b[0m WiFi info").append(NL)
-        motd.append("  \u001b[0;36mnethunter-clipboard-get/set\u001b[0m  schránka").append(NL)
-        motd.append("  \u001b[0;36mvpn-on / vpn-off\u001b[0m            VPN přepínač").append(NL)
-        motd.append("  \u001b[0;36mvpn-cli mitm on|off\u001b[0m        TLS MITM dešifrování").append(NL)
-        motd.append("  \u001b[0;36mvpn-cli logs\u001b[0m                MITM dešifrovaný provoz").append(NL)
-        motd.append("  \u001b[0;36mvpn-cli chat\u001b[0m                AI Expert konzole").append(NL)
-        motd.append("  \u001b[0;36mnethunter-desktop start\u001b[0m     GUI (noVNC :6080)").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-location\u001b[0m              GPS + Google Maps").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-cellinfo\u001b[0m               mobilní síť (5G/4G/3G)").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-map\u001b[0m                   OSM terminálová mapa").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-battery-status\u001b[0m          stav baterie").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-wifi-connectioninfo\u001b[0m      WiFi info").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-volume 0-15\u001b[0m             hlasitost").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-torch on/off\u001b[0m           svítilna").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-toast\"text\"\u001b[0m            Android toast").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-vibrate [ms]\u001b[0m           vibrace").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-tts-speak\"text\"\u001b[0m        přečíst text nahlas").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-notification\u001b[0m           systémová notifikace").append(NL)
+        motd.append("  \u001b[0;32m     nethunter-clipboard-get/set\u001b[0m       schránka (čtení/zápis)").append(NL)
+        motd.append("  \u001b[0;32m     nh-ifconfig [rozhraní]\u001b[0m           síťová rozhraní (přes Android API)").append(NL)
         motd.append(NL)
-        motd.append("  \u001b[0;90mcat nethunter_docs.md  → plná dokumentace\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[1;33m   🛡️  VPN\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;33m     vpn-on / vpn-off\u001b[0m                 VPN zapnout/vypnout").append(NL)
+        motd.append("  \u001b[0;33m     vpn-cli mitm on|off\u001b[0m             TLS MITM zapnout/vypnout").append(NL)
+        motd.append("  \u001b[0;33m     vpn-cli mitm status\u001b[0m             MITM stav + session").append(NL)
+        motd.append("  \u001b[0;33m     vpn-cli logs\u001b[0m                     MITM formátované logy").append(NL)
+        motd.append("  \u001b[0;33m     vpn-cli status\u001b[0m                   stav VPN").append(NL)
+        motd.append("  \u001b[0;33m     vpn-cli chat\u001b[0m                     AI Expert konzole").append(NL)
+        motd.append("  \u001b[0;33m     vpn-bypass <cmd>\u001b[0m                 obejít VPN pro příkaz").append(NL)
+        motd.append("  \u001b[0;33m     ignore-vpn on/off\u001b[0m               VPN bypass pro session").append(NL)
+        motd.append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[1;33m   🖥️  DESKTOP\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;33m     nethunter-desktop start\u001b[0m          XFCE4 GUI (noVNC :6080)").append(NL)
+        motd.append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append(NL)
 
         try {
