@@ -99,6 +99,7 @@ fun VpnSecurityTab() {
     var logsOrSockets by remember { mutableStateOf("LOGS") }
     val activeSockets = remember { mutableStateListOf<com.linux_core.core.ActiveSocket>() }
     var mitmSnippets by remember { mutableStateOf(emptyList<Pair<Int, String>>()) }
+    var mitmPrettyHistory by remember { mutableStateOf("") }
     var mitmEnabled by remember { mutableStateOf(
         context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             .getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)
@@ -127,6 +128,8 @@ fun VpnSecurityTab() {
                 activeSockets.clear()
             }
             mitmSnippets = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val store = com.linux_core.core.MitmTrafficStore.get(context)
+            mitmPrettyHistory = store.toPrettyText(store.query(limit = 25))
             delay(1000)
         }
     }
@@ -595,7 +598,7 @@ fun VpnSecurityTab() {
             }
         }
 
-        if (mitmSnippets.isNotEmpty()) {
+        if (mitmPrettyHistory.isNotBlank() || mitmSnippets.isNotEmpty()) {
             Spacer(modifier = Modifier.height(10.dp))
             Card(
                 modifier = Modifier
@@ -619,6 +622,15 @@ fun VpnSecurityTab() {
                         Text("MITM • ${mitmSnippets.size} active sessions", fontSize = 9.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
+                    if (mitmPrettyHistory.isNotBlank()) {
+                        Text(
+                            text = mitmPrettyHistory,
+                            fontSize = 10.sp,
+                            color = Color(0xFFE0E0E0),
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    } else {
                     mitmSnippets.forEach { (port, snippet) ->
                         Column(
                             modifier = Modifier
@@ -635,6 +647,7 @@ fun VpnSecurityTab() {
                             )
                             HorizontalDivider(modifier = Modifier.padding(top = 6.dp), color = Color(0x22FFFFFF))
                         }
+                    }
                     }
                 }
             }

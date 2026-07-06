@@ -1,6 +1,7 @@
 package com.linux_core.core
 
 import android.net.VpnService
+import android.os.Build
 import android.util.Log
 import com.linux_core.security.RootCaInstaller
 import com.linux_core.security.TlsClientHelloParser
@@ -26,10 +27,12 @@ object TlsMitmEngine {
     private val sessions = ConcurrentHashMap<Int, TlsMitmSession>()
     private var executor: ExecutorService? = null
     private var selector: Selector? = null
+    @Volatile private var appContext: android.content.Context? = null
 
-    fun init(executor: ExecutorService, selector: Selector) {
+    fun init(executor: ExecutorService, selector: Selector, context: android.content.Context) {
         this.executor = executor
         this.selector = selector
+        this.appContext = context.applicationContext
     }
 
     fun onClientData(
@@ -63,14 +66,9 @@ object TlsMitmEngine {
     }
 
     fun getSessionSnapshots(): List<Pair<Int, String>> {
-        val out = ArrayList<Pair<Int, String>>()
-        for ((port, sess) in sessions) {
-            val lines = sess.getDecryptedSnippets().takeLast(20)
-            if (lines.isNotEmpty()) {
-                out.add(port to lines.joinToString("\n"))
-            }
-        }
-        return out
+        val ctx = appContext ?: return emptyList()
+        val ports = sessions.keys.toSet()
+        return MitmTrafficStore.get(ctx).queryForSessionSnapshots(ports)
     }
 
     /** True when at least one session reached proxyLoop (actively decrypting TLS). */
@@ -95,7 +93,16 @@ class TlsMitmSession(
     private var serverEngine: SSLEngine? = null
     private var serverCert: X509Certificate? = null
     var sni: String? = null
+    private var sessionAlpn: String? = null
     private var running = true
+
+    private val trafficStore = MitmTrafficStore.get(vpnService)
+    private val clientHttpParser = Http1StreamParser { msg ->
+        trafficStore.logMessage(clientPort, sni ?: msg.headers["host"], msg, sessionAlpn)
+    }
+    private val serverHttpParser = Http1StreamParser { msg ->
+        trafficStore.logMessage(clientPort, sni ?: msg.headers["host"], msg, sessionAlpn)
+    }
 
     private val clientQueue = ArrayDeque<ByteArray>()
     private val clientQueueLock = Any()
@@ -106,35 +113,18 @@ class TlsMitmSession(
     @Volatile private var lastActivityTime = System.currentTimeMillis()
     @Volatile var isActivelyDecrypting = false
 
+    private val PROXY_LOOP_TIMEOUT_MS = 60_000L
+
     init {
         session.clientSeqNum = clientSeqNum
         session.serverSeqNum = serverSeqNum
     }
 
-    private val decryptedSnippets = ArrayDeque<String>()
-    private val decryptedLock = Any()
-    private val PROXY_LOOP_TIMEOUT_MS = 60_000L
-
-    fun getDecryptedSnippets(): List<String> {
-        synchronized(decryptedLock) {
-            return decryptedSnippets.toList()
-        }
-    }
-
-    private fun recordSnippet(direction: String, data: ByteArray) {
-        if (data.isEmpty()) return
-        val text = try {
-            String(data, Charsets.UTF_8).trim()
-        } catch (e: Exception) {
-            return
-        }
-        if (text.isEmpty() || text.length > 512) return
-        val line = "[$direction] $text"
-        synchronized(decryptedLock) {
-            decryptedSnippets.addLast(line)
-            while (decryptedSnippets.size > 200) {
-                decryptedSnippets.removeFirst()
-            }
+    private fun feedPlaintext(direction: String, plain: ByteArray) {
+        if (plain.isEmpty()) return
+        when (direction) {
+            "CLIENT->SERVER" -> clientHttpParser.feed(plain)
+            "SERVER->CLIENT" -> serverHttpParser.feed(plain)
         }
     }
 
@@ -263,6 +253,26 @@ class TlsMitmSession(
             }
 
             Log.i(TAG, "TLS MITM established for port $clientPort (SNI=$sni)")
+            sessionAlpn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    clientEngine?.applicationProtocol?.takeIf { it.isNotBlank() }
+                        ?: serverEngine?.applicationProtocol?.takeIf { it.isNotBlank() }
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
+            trafficStore.logSessionEvent(
+                clientPort,
+                sessionAlpn,
+                "MITM established SNI=${sni ?: effectiveSni}"
+            )
+            if (sessionAlpn == "h2") {
+                trafficStore.logSessionEvent(
+                    clientPort,
+                    "h2",
+                    "HTTP/2 session — metadata only (HPACK not decoded)"
+                )
+            }
             VpnLogManager.logConnection(
                 vpnService,
                 "TCP",
@@ -362,7 +372,7 @@ class TlsMitmSession(
                             val plain = ByteArray(clientNetOut.remaining())
                             clientNetOut.get(plain)
                             clientNetOut.clear()
-                            recordSnippet("CLIENT->SERVER", plain)
+                            feedPlaintext("CLIENT->SERVER", plain)
                             val preview = String(plain, Charsets.UTF_8).take(256)
                             Log.i(TAG, "CAPTURED ${plain.size}B from $sni: $preview")
                         }
@@ -463,7 +473,7 @@ class TlsMitmSession(
                         clientNetOut.get(plain)
                         clientNetOut.clear()
 
-                        recordSnippet("CLIENT->SERVER", plain)
+                        feedPlaintext("CLIENT->SERVER", plain)
 
                         serverNetOut.clear()
                         val wrapResult = serverEngine!!.wrap(ByteBuffer.wrap(plain), serverNetOut)
@@ -513,7 +523,7 @@ class TlsMitmSession(
                         serverAppOut.get(plain)
                         serverAppOut.clear()
 
-                        recordSnippet("SERVER->CLIENT", plain)
+                        feedPlaintext("SERVER->CLIENT", plain)
 
                         clientNetOut.clear()
                         val wrapResult = clientEngine!!.wrap(ByteBuffer.wrap(plain), clientNetOut)
@@ -906,9 +916,8 @@ class TlsMitmSession(
         synchronized(clientQueueLock) {
             clientQueue.clear()
         }
-        synchronized(decryptedLock) {
-            decryptedSnippets.clear()
-        }
+        clientHttpParser.reset()
+        serverHttpParser.reset()
 
         session.isTlsMitm = false
         session.tlsMitmHandler = null
@@ -929,7 +938,11 @@ class TlsMitmSession(
         running = true
         clientEngine = null
         serverEngine = null
-        recordSnippet("PASSTHROUGH", "MITM falling back to passthrough for port $clientPort SNI=$sni".toByteArray())
+        trafficStore.logSessionEvent(
+            clientPort,
+            null,
+            "MITM falling back to passthrough SNI=$sni"
+        )
         // Always fresh socket — poisoned channel may have MITM ClientHello on the wire
         try {
             serverChannel?.close()

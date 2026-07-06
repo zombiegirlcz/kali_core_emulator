@@ -42,8 +42,80 @@ separator() {
     printf "${DIM}──────────────────────────────────────────────${RST}\n"
 }
 
-format_logs() {
-    # Read stdin and colorize MITM log output
+format_pretty_logs() {
+    while IFS= read -r line; do
+        case "$line" in
+            "── "*)
+                printf "${MAGENTA}${BOLD}%s${RST}\n" "$line"
+                ;;
+            *"▶ "*)
+                METHOD=$(echo "$line" | sed 's/.*▶ \([^ ]*\).*/\1/')
+                REST=$(echo "$line" | sed 's/.*▶ [^ ]*  //')
+                printf "${GREEN}${BOLD}  ▶ ${METHOD}${RST} ${GREEN}${REST}${RST}\n"
+                ;;
+            *"← "*)
+                CODE=$(echo "$line" | sed 's/.*← \([0-9][0-9][0-9]\).*/\1/')
+                REST=$(echo "$line" | sed 's/.*← [0-9][0-9][0-9]  //')
+                case "$CODE" in
+                    2*) printf "${BLUE}  ◀ ${BG_GREEN}${WHITE}${BOLD} ${CODE} ${RST} ${GREEN}${REST}${RST}\n" ;;
+                    3*) printf "${BLUE}  ◀ ${BG_BLUE}${WHITE}${BOLD} ${CODE} ${RST} ${YELLOW}${REST}${RST}\n" ;;
+                    4*|5*) printf "${BLUE}  ◀ ${BG_RED}${WHITE}${BOLD} ${CODE} ${RST} ${RED}${REST}${RST}\n" ;;
+                    *)  printf "${BLUE}  ◀ ${line#*← }${RST}\n" ;;
+                esac
+                ;;
+            "         "*)
+                printf "${DIM}%s${RST}\n" "$line"
+                ;;
+            "")
+                printf "\n"
+                ;;
+            *)
+                printf "${DIM}  %s${RST}\n" "$line"
+                ;;
+        esac
+    done
+}
+
+MITM_LATEST_TS=""
+
+fetch_mitm_logs() {
+    FORMAT="$1"
+    LIMIT="$2"
+    SINCE="$3"
+    HOST="$4"
+    GREP="$5"
+    HDR_FILE="${TMPDIR:-/tmp}/mitm_logs_hdr_$$"
+    QUERY="format=${FORMAT}&limit=${LIMIT}&since=${SINCE}"
+    if [ -n "$HOST" ]; then
+        QUERY="${QUERY}&host=$(printf '%s' "$HOST" | sed 's/ /%20/g')"
+    fi
+    if [ -n "$GREP" ]; then
+        QUERY="${QUERY}&grep=$(printf '%s' "$GREP" | sed 's/ /%20/g')"
+    fi
+    RESP=$(curl -s -D "$HDR_FILE" -w "\n%{http_code}" -H "Authorization: Bearer $(get_token)" \
+        "${API_URL}/vpn/mitm/logs?${QUERY}" 2>/dev/null)
+    MITM_LATEST_TS=$(grep -i '^X-Mitm-Latest-Ts:' "$HDR_FILE" 2>/dev/null | awk '{print $2}' | tr -d '\r')
+    rm -f "$HDR_FILE" 2>/dev/null
+    printf '%s' "$RESP"
+}
+
+print_empty_logs_hint() {
+    STATUS=$(curl -s -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm" 2>/dev/null)
+    MITM_STATE=$(echo "$STATUS" | sed 's/.*"mitm":"\([^"]*\)".*/\1/')
+    separator
+    if [ "$MITM_STATE" = "off" ]; then
+        printf "  ${YELLOW}${BOLD}⚠  MITM is OFF${RST} — no traffic is being intercepted.\n"
+        printf "  ${DIM}Enable with:${RST} ${CYAN}vpn-cli mitm on${RST}\n"
+    else
+        printf "  ${DIM}📭 No decrypted HTTP traffic yet.${RST}\n"
+        printf "  ${DIM}Browse HTTPS in Chrome, then retry.${RST}\n"
+        printf "  ${DIM}Note: HTTP/2 shows metadata only; HTTP/1.1 shows full bodies.${RST}\n"
+    fi
+    separator
+}
+
+format_legacy_logs() {
+    # Read stdin and colorize legacy MITM log output
     while IFS= read -r line; do
         case "$line" in
             "=== Port"*)
@@ -113,8 +185,13 @@ usage() {
     printf "  ${GREEN}start${RST}              Start VPN capture\n"
     printf "  ${RED}stop${RST}               Stop VPN capture\n"
     printf "  ${CYAN}status${RST}             Show VPN status\n"
-    printf "  ${YELLOW}logs${RST}               Show formatted MITM decrypted traffic\n"
-    printf "  ${YELLOW}logs json${RST}          Show MITM logs as raw JSON\n"
+    printf "  ${YELLOW}logs${RST}               Show decrypted HTTP traffic (pretty)\n"
+    printf "  ${YELLOW}logs -f${RST}            Follow live traffic (poll every 2s)\n"
+    printf "  ${YELLOW}logs -n 50${RST}         Limit to N records (default 50)\n"
+    printf "  ${YELLOW}logs -g pattern${RST}    Filter by keyword\n"
+    printf "  ${YELLOW}logs --host x.com${RST}  Filter by hostname\n"
+    printf "  ${YELLOW}logs json${RST}          Structured JSON output\n"
+    printf "  ${YELLOW}logs legacy${RST}        Old live-session snippet format\n"
     printf "  ${MAGENTA}mitm on${RST}            Enable TLS MITM inspection\n"
     printf "  ${MAGENTA}mitm off${RST}           Disable TLS MITM inspection\n"
     printf "  ${MAGENTA}mitm status${RST}        Show MITM status & active sessions\n"
@@ -183,44 +260,103 @@ case "$1" in
         ;;
     logs)
         shift
-        FORMAT="text"
-        if [ $# -gt 0 ] && [ "$1" = "json" ]; then
-            FORMAT="json"
-        fi
-        RESP=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm/logs?format=${FORMAT}" 2>/dev/null)
-        HTTP_CODE=$(echo "$RESP" | tail -n1)
-        BODY=$(echo "$RESP" | sed '$d')
+        FORMAT="pretty"
+        LIMIT=50
+        SINCE=0
+        HOST=""
+        GREP=""
+        FOLLOW=0
 
-        if [ "$HTTP_CODE" != "200" ]; then
-            printf "${RED}${BOLD}✗ Error:${RST} API returned HTTP ${HTTP_CODE} (Is the app running?)\n"
-            exit 1
-        fi
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                json) FORMAT="json"; shift ;;
+                legacy) FORMAT="legacy"; shift ;;
+                -f|--follow) FOLLOW=1; shift ;;
+                -n)
+                    LIMIT="$2"
+                    shift 2
+                    ;;
+                -g|--grep)
+                    GREP="$2"
+                    shift 2
+                    ;;
+                --host)
+                    HOST="$2"
+                    shift 2
+                    ;;
+                *)
+                    printf "${RED}${BOLD}Unknown logs option:${RST} $1\n"
+                    usage
+                    ;;
+            esac
+        done
 
-        if [ -z "$BODY" ]; then
-            # Check MITM state to give helpful message
-            STATUS=$(curl -s -H "Authorization: Bearer $(get_token)" "${API_URL}/vpn/mitm" 2>/dev/null)
-            MITM_STATE=$(echo "$STATUS" | sed 's/.*"mitm":"\([^"]*\)".*/\1/')
-            separator
-            if [ "$MITM_STATE" = "off" ]; then
-                printf "  ${YELLOW}${BOLD}⚠  MITM is OFF${RST} — no traffic is being intercepted.\n"
-                printf "  ${DIM}Enable with:${RST} ${CYAN}vpn-cli mitm on${RST}\n"
-            else
-                printf "  ${DIM}📭 No decrypted traffic yet.${RST}\n"
-                printf "  ${DIM}Open a website or app to generate HTTPS traffic.${RST}\n"
+        show_logs_once() {
+            RESP=$(fetch_mitm_logs "$FORMAT" "$LIMIT" "$SINCE" "$HOST" "$GREP")
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+            BODY=$(echo "$RESP" | sed '$d')
+
+            if [ "$HTTP_CODE" != "200" ]; then
+                printf "${RED}${BOLD}✗ Error:${RST} API returned HTTP ${HTTP_CODE} (Is the app running?)\n"
+                return 1
             fi
-            separator
-            exit 0
-        fi
 
-        if [ "$FORMAT" = "json" ]; then
-            echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
-        else
+            if [ "$FORMAT" = "json" ]; then
+                if [ -z "$BODY" ] || echo "$BODY" | grep -q '"count":0'; then
+                    if [ "$FOLLOW" -eq 0 ]; then
+                        print_empty_logs_hint
+                    fi
+                    return 0
+                fi
+                echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+                if [ -n "$MITM_LATEST_TS" ]; then
+                    SINCE="$MITM_LATEST_TS"
+                fi
+                return 0
+            fi
+
+            if [ -z "$BODY" ]; then
+                if [ "$FOLLOW" -eq 0 ]; then
+                    print_empty_logs_hint
+                fi
+                return 0
+            fi
+
+            if [ "$FORMAT" = "legacy" ]; then
+                banner
+                printf "${DIM}  Legacy live-session snippets${RST}\n"
+                separator
+                echo "$BODY" | format_legacy_logs
+                printf "\n"
+                separator
+            else
+                if [ "$FOLLOW" -eq 0 ]; then
+                    banner
+                    printf "${DIM}  Decrypted HTTP traffic (SQLite history)${RST}\n"
+                    separator
+                fi
+                echo "$BODY" | format_pretty_logs
+                if [ -n "$MITM_LATEST_TS" ]; then
+                    SINCE="$MITM_LATEST_TS"
+                fi
+                if [ "$FOLLOW" -eq 0 ]; then
+                    printf "\n"
+                    separator
+                fi
+            fi
+            return 0
+        }
+
+        if [ "$FOLLOW" -eq 1 ]; then
             banner
-            printf "${DIM}  Live decrypted TLS traffic${RST}\n"
+            printf "${DIM}  Following MITM traffic (Ctrl+C to stop)${RST}\n"
             separator
-            echo "$BODY" | format_logs
-            printf "\n"
-            separator
+            while true; do
+                show_logs_once || exit 1
+                sleep 2
+            done
+        else
+            show_logs_once || exit 1
         fi
         ;;
     status)
