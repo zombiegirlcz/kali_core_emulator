@@ -31,7 +31,7 @@ class VpnCaptureService : VpnService() {
         const val ACTION_START = "com.linux_core.ACTION_START"
         const val ACTION_STOP = "com.linux_core.ACTION_STOP"
 
-        private const val MTU = 1400
+        private const val MTU = 1500
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val VPN_DNS = "8.8.8.8"
 

@@ -18,6 +18,14 @@ object VpnLogManager {
     private const val MAX_LOGS = 5000
 
     private var historyStore: TrafficHistoryStore? = null
+    private val logExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    private val totalRequests = java.util.concurrent.atomic.AtomicLong(0)
+    private val totalBlockedAds = java.util.concurrent.atomic.AtomicLong(0)
+    private val totalBlockedTrackers = java.util.concurrent.atomic.AtomicLong(0)
+    private val totalUploaded = java.util.concurrent.atomic.AtomicLong(0)
+    private val totalDownloaded = java.util.concurrent.atomic.AtomicLong(0)
+
     @Volatile
     private var initialized = false
     private var persistCounter = 0
@@ -192,28 +200,20 @@ object VpnLogManager {
     }
 
     // Statistics Aggregations
-    fun getTotalRequests(): Long = entries.size.toLong()
+    fun getTotalRequests(): Long = totalRequests.get()
 
-    fun getTotalBlockedAds(): Long {
-        return entries.count { it.category == AuditCategory.BLOCKED || it.detail.contains("block", ignoreCase = true) || it.detail.contains("ad", ignoreCase = true) }.toLong()
-    }
+    fun getTotalBlockedAds(): Long = totalBlockedAds.get()
 
-    fun getTotalBlockedTrackers(): Long {
-        return entries.count { it.category == AuditCategory.SUSPICIOUS || it.category == AuditCategory.CRITICAL }.toLong()
-    }
+    fun getTotalBlockedTrackers(): Long = totalBlockedTrackers.get()
 
     fun getTotalBytesSaved(): Long {
-        val blockedCount = getTotalBlockedAds() + getTotalBlockedTrackers()
+        val blockedCount = totalBlockedAds.get() + totalBlockedTrackers.get()
         return blockedCount * 180_000L // Estimate 180KB saved per blocked request
     }
 
-    fun getTotalBytesUploaded(): Long {
-        return entries.sumOf { it.bytesSent }
-    }
+    fun getTotalBytesUploaded(): Long = totalUploaded.get()
 
-    fun getTotalBytesDownloaded(): Long {
-        return entries.sumOf { it.bytesReceived }
-    }
+    fun getTotalBytesDownloaded(): Long = totalDownloaded.get()
 
     fun getTopApps(): List<Triple<String, String?, Int>> {
         // Returns list of Triple(appName, packageName, count) sorted by count descending
@@ -266,87 +266,105 @@ object VpnLogManager {
         detail: String = "",
         data: ByteArray? = null
     ) {
-        val entropyVal = data?.let { calculateEntropy(it) } ?: 0.0
+        val timestamp = System.currentTimeMillis()
+        val dataCopy = data?.clone()
+        val appContext = context?.applicationContext
 
-        val cacheKey = "$protocol:$srcIp:$srcPort:$dstIp:$dstPort"
-        val resolved = processCache.getOrPut(cacheKey) {
-            if (context != null) ProcessResolver.resolve(context, protocol, srcIp, srcPort, dstIp, dstPort)
-            else ProcessResolver.ProcessInfo("System", null)
-        }
+        logExecutor.execute {
+            val entropyVal = dataCopy?.let { calculateEntropy(it) } ?: 0.0
 
-        val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
-        val isUpload = (srcIp == "10.0.0.2")
-        val bSent = if (isUpload) size.toLong() else 0L
-        val bRecv = if (!isUpload) size.toLong() else 0L
-
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            protocol = protocol,
-            srcIp = srcIp,
-            srcPort = srcPort,
-            dstIp = dstIp,
-            dstPort = dstPort,
-            size = size,
-            category = category,
-            detail = detail,
-            entropy = entropyVal,
-            appName = resolved.appName,
-            sessionName = resolved.sessionName,
-            packageName = resolved.packageName,
-            elapsedTimeMs = elapsedTime,
-            bytesSent = bSent,
-            bytesReceived = bRecv
-        )
-        entries.add(entry)
-        while (entries.size > MAX_LOGS) {
-            entries.poll()
-        }
-
-        // Aggregate AI brain classification telemetry
-        val deltaVal = if (category == AuditCategory.BLOCKED) 0.0f else (elapsedTime / 1000.0f)
-        aiTelemetryPoints.add(
-            AiTelemetryPoint(
-                timestamp = entry.timestamp,
-                size = entry.size,
-                entropy = entropyVal,
-                deltaTime = deltaVal,
-                category = category
-            )
-        )
-        while (aiTelemetryPoints.size > 100) {
-            aiTelemetryPoints.poll()
-        }
-
-        val hourIndex = (System.currentTimeMillis() / (1000 * 60 * 60) % 24).toInt()
-        val dayIndex = (System.currentTimeMillis() / (1000 * 60 * 60 * 24) % 30).toInt()
-        val weekIndex = (System.currentTimeMillis() / (1000 * 60 * 60 * 24 * 7) % 12).toInt()
-
-        if (srcIp == "10.0.0.2") { 
-            hourlyUpload[hourIndex] += size.toLong()
-            dailyUpload[dayIndex] += size.toLong()
-            weeklyUpload[weekIndex] += size.toLong()
-        } else { 
-            hourlyDownload[hourIndex] += size.toLong()
-            dailyDownload[dayIndex] += size.toLong()
-            weeklyDownload[weekIndex] += size.toLong()
-        }
-
-        ensureInitialized(context)
-        val store = historyStore ?: return
-        persistBatch.add(entry)
-        persistCounter++
-        if (persistCounter >= PERSIST_INTERVAL) {
-            persistCounter = 0
-            while (true) {
-                val batchEntry = persistBatch.poll() ?: break
-                store.persistLogEntry(batchEntry)
+            val cacheKey = "$protocol:$srcIp:$srcPort:$dstIp:$dstPort"
+            val resolved = processCache.getOrPut(cacheKey) {
+                if (appContext != null) ProcessResolver.resolve(appContext, protocol, srcIp, srcPort, dstIp, dstPort)
+                else ProcessResolver.ProcessInfo("System", null)
             }
-            store.saveTrafficArray("hourly_dl", hourlyDownload)
-            store.saveTrafficArray("hourly_ul", hourlyUpload)
-            store.saveTrafficArray("daily_dl", dailyDownload)
-            store.saveTrafficArray("daily_ul", dailyUpload)
-            store.saveTrafficArray("weekly_dl", weeklyDownload)
-            store.saveTrafficArray("weekly_ul", weeklyUpload)
+
+            val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
+            val isUpload = (srcIp == "10.0.0.2")
+            val bSent = if (isUpload) size.toLong() else 0L
+            val bRecv = if (!isUpload) size.toLong() else 0L
+
+            val entry = LogEntry(
+                timestamp = timestamp,
+                protocol = protocol,
+                srcIp = srcIp,
+                srcPort = srcPort,
+                dstIp = dstIp,
+                dstPort = dstPort,
+                size = size,
+                category = category,
+                detail = detail,
+                entropy = entropyVal,
+                appName = resolved.appName,
+                sessionName = resolved.sessionName,
+                packageName = resolved.packageName,
+                elapsedTimeMs = elapsedTime,
+                bytesSent = bSent,
+                bytesReceived = bRecv
+            )
+
+            // Update atomic counters
+            totalRequests.incrementAndGet()
+            if (category == AuditCategory.BLOCKED || detail.contains("block", ignoreCase = true) || detail.contains("ad", ignoreCase = true)) {
+                totalBlockedAds.incrementAndGet()
+            }
+            if (category == AuditCategory.SUSPICIOUS || category == AuditCategory.CRITICAL) {
+                totalBlockedTrackers.incrementAndGet()
+            }
+            totalUploaded.addAndGet(bSent)
+            totalDownloaded.addAndGet(bRecv)
+
+            entries.add(entry)
+            while (entries.size > MAX_LOGS) {
+                entries.poll()
+            }
+
+            // Aggregate AI brain classification telemetry
+            val deltaVal = if (category == AuditCategory.BLOCKED) 0.0f else (elapsedTime / 1000.0f)
+            aiTelemetryPoints.add(
+                AiTelemetryPoint(
+                    timestamp = entry.timestamp,
+                    size = entry.size,
+                    entropy = entropyVal,
+                    deltaTime = deltaVal,
+                    category = category
+                )
+            )
+            while (aiTelemetryPoints.size > 100) {
+                aiTelemetryPoints.poll()
+            }
+
+            val hourIndex = (timestamp / (1000 * 60 * 60) % 24).toInt()
+            val dayIndex = (timestamp / (1000 * 60 * 60 * 24) % 30).toInt()
+            val weekIndex = (timestamp / (1000 * 60 * 60 * 24 * 7) % 12).toInt()
+
+            if (srcIp == "10.0.0.2") {
+                hourlyUpload[hourIndex] += size.toLong()
+                dailyUpload[dayIndex] += size.toLong()
+                weeklyUpload[weekIndex] += size.toLong()
+            } else {
+                hourlyDownload[hourIndex] += size.toLong()
+                dailyDownload[dayIndex] += size.toLong()
+                weeklyDownload[weekIndex] += size.toLong()
+            }
+
+            ensureInitialized(appContext)
+            val store = historyStore ?: return@execute
+            persistBatch.add(entry)
+            persistCounter++
+            if (persistCounter >= PERSIST_INTERVAL) {
+                persistCounter = 0
+                while (true) {
+                    val batchEntry = persistBatch.poll() ?: break
+                    store.persistLogEntry(batchEntry)
+                }
+                store.saveTrafficArray("hourly_dl", hourlyDownload)
+                store.saveTrafficArray("hourly_ul", hourlyUpload)
+                store.saveTrafficArray("daily_dl", dailyDownload)
+                store.saveTrafficArray("daily_ul", dailyUpload)
+                store.saveTrafficArray("weekly_dl", weeklyDownload)
+                store.saveTrafficArray("weekly_ul", weeklyUpload)
+            }
         }
     }
 

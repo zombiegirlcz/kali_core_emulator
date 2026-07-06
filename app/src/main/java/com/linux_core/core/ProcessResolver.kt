@@ -19,7 +19,7 @@ object ProcessResolver {
     // Cache to avoid aggressive proc parsing
     // Key format: "protocol:localPort"
     private val cache = ConcurrentHashMap<String, CachedInfo>()
-    private const val CACHE_TTL_MS = 10000 // 10 seconds
+    private const val CACHE_TTL_MS = 30000 // 30 seconds
 
     private class CachedInfo(
         val info: ProcessInfo,
