@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.linux_core.BuildConfig
 import java.io.ByteArrayInputStream
+import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -90,10 +91,19 @@ class RootCaInstaller(private val context: Context) {
         val caKey = loadCaPrivateKey() ?: return null
         val pwd = resolvePassword() ?: return null
         return try {
-            val forged = MitmCertSigner.sign(ca, caKey, serverCert, serial, sanDns, sanIp)
+            // Vlastni keypair — cert ma nas public key, private key sedi
+            val keyGen = KeyPairGenerator.getInstance("RSA")
+            keyGen.initialize(2048)
+            val keyPair = keyGen.generateKeyPair()
+
+            val cn = sanDns.firstOrNull() ?: serverCert.subjectX500Principal.name
+            val forged = MitmCertSigner.signWithPublicKey(
+                ca, caKey, keyPair.public, serial,
+                cn = cn, sanDns = sanDns
+            )
             val ks = KeyStore.getInstance("PKCS12")
             ks.load(null, null)
-            ks.setKeyEntry(ALIAS, caKey, pwd.toCharArray(), arrayOf(forged, ca))
+            ks.setKeyEntry(ALIAS, keyPair.private, pwd.toCharArray(), arrayOf(forged, ca))
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             kmf.init(ks, pwd.toCharArray())
             val ctx = SSLContext.getInstance("TLS")
@@ -101,6 +111,38 @@ class RootCaInstaller(private val context: Context) {
             ctx
         } catch (e: Exception) {
             Log.e(TAG, "createServerSslContext failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Capture-only SSL context: generuje vlastni RSA klic, podepise certifikat CA,
+     * bez pripojeni k realnemu serveru. Desifrovana data jdou jen do local logu.
+     */
+    fun createCaptureOnlySslContext(sni: String): SSLContext? {
+        val ca = loadCa() ?: return null
+        val caKey = loadCaPrivateKey() ?: return null
+        val pwd = resolvePassword() ?: return null
+        return try {
+            val keyGen = KeyPairGenerator.getInstance("RSA")
+            keyGen.initialize(2048)
+            val keyPair = keyGen.generateKeyPair()
+
+            val forged = MitmCertSigner.signWithPublicKey(
+                ca, caKey, keyPair.public, System.currentTimeMillis(),
+                cn = sni, sanDns = listOf(sni)
+            )
+
+            val ks = KeyStore.getInstance("PKCS12")
+            ks.load(null, null)
+            ks.setKeyEntry(ALIAS, keyPair.private, pwd.toCharArray(), arrayOf(forged, ca))
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, pwd.toCharArray())
+            val ctx = SSLContext.getInstance("TLS")
+            ctx.init(kmf.keyManagers, null, null)
+            ctx
+        } catch (e: Exception) {
+            Log.e(TAG, "createCaptureOnlySslContext failed: ${e.message}")
             null
         }
     }
@@ -160,9 +202,9 @@ class RootCaInstaller(private val context: Context) {
             Log.e(TAG, "No password source available for release build")
             return null
         }
-        // Debug-only: allow local dev build but log warning
-        Log.w(TAG, "Using insecure dev mode - MITM CA key password must be set via KEYSTORE_PASSWORD")
-        return null // Changed from "nethunter-dev" to require explicit configuration
+        // Debug-only: fallback na heslo pouzite pri generovani P12 (assets/certs/mitm-ca.p12)
+        Log.w(TAG, "MITM CA: using debug fallback password for local P12")
+        return "nethunter-dev"
     }
 
     private fun readAssetBytes(name: String): ByteArray? = try {

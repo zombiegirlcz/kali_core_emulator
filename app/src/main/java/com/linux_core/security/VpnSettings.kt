@@ -4,8 +4,13 @@ import android.content.Context
 
 object VpnSettings {
 
+    private const val DEFAULT_SNI_FALLBACK = "www.google.com"
+
     fun getMitmSniFallback(context: Context): String? {
         val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        if (!prefs.contains("mitm_sni_fallback")) {
+            return DEFAULT_SNI_FALLBACK
+        }
         return prefs.getString("mitm_sni_fallback", null)?.takeIf { it.isNotBlank() }
     }
 
@@ -16,5 +21,15 @@ object VpnSettings {
         } else {
             prefs.edit().putString("mitm_sni_fallback", value.trim()).apply()
         }
+    }
+
+    fun isMitmCaptureOnly(context: Context): Boolean {
+        val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        return prefs.getBoolean("mitm_capture_only", false)
+    }
+
+    fun setMitmCaptureOnly(context: Context, value: Boolean) {
+        context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            .edit().putBoolean("mitm_capture_only", value).apply()
     }
 }

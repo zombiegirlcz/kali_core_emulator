@@ -6,6 +6,7 @@ import com.linux_core.security.RootCaInstaller
 import com.linux_core.security.TlsClientHelloParser
 import com.linux_core.security.VpnSettings
 import java.lang.reflect.Constructor
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Selector
@@ -48,12 +49,13 @@ object TlsMitmEngine {
         }
         session.socketChannel?.close()
         session.socketChannel = null
-        val mitm = TlsMitmSession(vpnService, session, payload, writeToTun)
+        val captureOnly = VpnSettings.isMitmCaptureOnly(vpnService)
+        val mitm = TlsMitmSession(vpnService, session, payload, writeToTun, captureOnly)
         sessions[session.clientPort] = mitm
         session.isTlsMitm = true
         session.tlsMitmHandler = mitm
         executor?.submit { mitm.start() }
-        Log.i(TAG, "TLS MITM started for port ${session.clientPort}")
+        Log.i(TAG, "TLS MITM started for port ${session.clientPort} (captureOnly=$captureOnly)")
     }
 
     fun removeSession(clientPort: Int) {
@@ -70,13 +72,17 @@ object TlsMitmEngine {
         }
         return out
     }
+
+    /** True when at least one session reached proxyLoop (actively decrypting TLS). */
+    fun shouldBlockQuic(): Boolean = sessions.values.any { it.isActivelyDecrypting }
 }
 
 class TlsMitmSession(
     private val vpnService: VpnService,
     private val session: VpnNatEngine.TcpSession,
     private val initialClientHello: ByteArray,
-    private val writeToTun: (ByteArray, Int) -> Unit
+    private val writeToTun: (ByteArray, Int) -> Unit,
+    private val captureOnly: Boolean = false
 ) {
     companion object {
         private const val TAG = "TlsMitmSession"
@@ -97,6 +103,8 @@ class TlsMitmSession(
     @Volatile private var clientSeqNum: Long = session.clientSeqNum
     @Volatile private var serverSeqNum: Long = session.serverSeqNum
     @Volatile private var closed = false
+    @Volatile private var lastActivityTime = System.currentTimeMillis()
+    @Volatile var isActivelyDecrypting = false
 
     init {
         session.clientSeqNum = clientSeqNum
@@ -105,6 +113,7 @@ class TlsMitmSession(
 
     private val decryptedSnippets = ArrayDeque<String>()
     private val decryptedLock = Any()
+    private val PROXY_LOOP_TIMEOUT_MS = 60_000L
 
     fun getDecryptedSnippets(): List<String> {
         synchronized(decryptedLock) {
@@ -136,24 +145,30 @@ class TlsMitmSession(
             }
             clientQueue.add(data)
         }
+        lastActivityTime = System.currentTimeMillis()
     }
 
     fun start() {
         try {
             sni = TlsClientHelloParser.extractSni(initialClientHello)
-            Log.i(TAG, "MITM SNI=$sni for port $clientPort")
+            Log.i(TAG, "MITM SNI=$sni for port $clientPort (captureOnly=$captureOnly)")
+
+            if (captureOnly) {
+                startCaptureOnly()
+                return
+            }
 
             val mitm = RootCaInstaller(vpnService)
             if (!mitm.isAvailable()) {
-                Log.e(TAG, "MITM CA not available, cannot intercept TLS")
-                close()
+                Log.w(TAG, "MITM CA not available for $sni — falling back to passthrough")
+                fallingBackToPassthrough()
                 return
             }
 
             serverChannel = connectServer(session.destinationAddress, session.destinationPort)
             if (serverChannel == null) {
-                Log.e(TAG, "Failed to connect to server for MITM")
-                close()
+                Log.w(TAG, "Cannot connect to server for $sni — falling back to passthrough")
+                fallingBackToPassthrough()
                 return
             }
 
@@ -164,15 +179,13 @@ class TlsMitmSession(
             )
             serverEngine!!.setUseClientMode(true)
 
-            val effectiveSni = sni ?: VpnSettings.getMitmSniFallback(vpnService)
-            if (effectiveSni != null) {
-                val serverParams = serverEngine!!.sslParameters
-                serverParams.serverNames = buildSniList(effectiveSni)
-                serverEngine!!.sslParameters = serverParams
-                Log.i(TAG, "serverEngine configured with SNI=$effectiveSni, originalSNI=$sni")
-            } else {
-                Log.d(TAG, "serverEngine SNI not configured (no original SNI, no fallback)")
-            }
+            val fallbackFromPrefs = VpnSettings.getMitmSniFallback(vpnService)
+            val destinationHost = intToIp(session.destinationAddress)
+            val effectiveSni = sni ?: fallbackFromPrefs ?: destinationHost
+            val serverParams = serverEngine!!.sslParameters
+            serverParams.serverNames = buildSniList(effectiveSni)
+            serverEngine!!.sslParameters = serverParams
+            Log.i(TAG, "serverEngine configured with SNI=$effectiveSni, originalSNI=$sni, fallbackPref=$fallbackFromPrefs")
 
             serverEngine!!.beginHandshake()
 
@@ -185,13 +198,17 @@ class TlsMitmSession(
                 netOut = serverNetOut,
                 appOut = ByteBuffer.allocate(16384),
                 readFromTransport = { readFromServer() },
-                writeToTransport = { buf -> writeToServer(buf) }
+                writeToTransport = { buf ->
+                    buf.flip()
+                    writeToServer(buf)
+                },
+                maxIterations = 50
             )
 
             if (!serverOk) {
                 Log.w(TAG, "Server handshake failed: status=${serverEngine?.handshakeStatus}, " +
                     "cipher=${serverEngine?.session?.cipherSuite}, peerHost=${intToIp(session.destinationAddress)}, " +
-                    "sni=$sni")
+                    "sni=$sni, effectiveSni=$effectiveSni")
                 fallingBackToPassthrough()
                 return
             }
@@ -200,7 +217,7 @@ class TlsMitmSession(
             if (serverCert == null) {
                 Log.w(TAG, "Handshake did not yield certificate: status=${serverEngine?.handshakeStatus}, " +
                     "state=${serverEngine?.session?.cipherSuite}, peerHost=${intToIp(session.destinationAddress)}, " +
-                    "sni=$sni")
+                    "sni=$sni, effectiveSni=$effectiveSni")
                 fallingBackToPassthrough()
                 return
             }
@@ -234,7 +251,10 @@ class TlsMitmSession(
                 netOut = clientNetOut,
                 appOut = clientAppOut,
                 readFromTransport = { drainClientQueue() },
-                writeToTransport = { buf -> writeToTunClient(buf) }
+                writeToTransport = { buf ->
+                    buf.flip()
+                    writeToTunClient(buf)
+                }
             )
             Log.i(TAG, "Client-side handshake done=$clientDone, status=${clientEngine?.handshakeStatus}")
 
@@ -254,6 +274,9 @@ class TlsMitmSession(
                 VpnLogManager.AuditCategory.VERBOSE,
                 "TLS MITM active • SNI=$sni"
             )
+            serverChannel?.configureBlocking(false)
+            serverChannel?.socket()?.soTimeout = 0
+            isActivelyDecrypting = true
             proxyLoop()
 
         } catch (e: Exception) {
@@ -261,6 +284,110 @@ class TlsMitmSession(
         } finally {
             close()
         }
+    }
+
+    private fun startCaptureOnly() {
+        Log.i(TAG, "Starting capture-only MITM for $sni on port $clientPort")
+        val mitm = RootCaInstaller(vpnService)
+        if (!mitm.isAvailable()) {
+            Log.e(TAG, "MITM CA not available for capture-only")
+            close()
+            return
+        }
+
+        val sniDomain = sni ?: intToIp(session.destinationAddress)
+        val clientSslContext = mitm.createCaptureOnlySslContext(sniDomain)
+        if (clientSslContext == null) {
+            Log.w(TAG, "Failed to create capture-only SSL context for $sniDomain")
+            close()
+            return
+        }
+
+        clientEngine = clientSslContext.createSSLEngine()
+        clientEngine!!.setUseClientMode(false)
+        clientEngine!!.beginHandshake()
+
+        val clientNetIn = ByteBuffer.allocate(32768)
+        val clientNetOut = ByteBuffer.allocate(32768)
+        val clientAppOut = ByteBuffer.allocate(16384)
+        clientNetIn.put(initialClientHello)
+        clientNetIn.flip()
+
+        val clientDone = runEngineHandshake(
+            engine = clientEngine!!,
+            netIn = clientNetIn,
+            netOut = clientNetOut,
+            appOut = clientAppOut,
+            readFromTransport = { drainClientQueue() },
+            writeToTransport = { buf ->
+                buf.flip()
+                writeToTunClient(buf)
+            }
+        )
+        Log.i(TAG, "Capture-only TLS handshake done=$clientDone for $sni port $clientPort")
+
+        VpnLogManager.logConnection(
+            vpnService, "TCP", "10.0.0.2",
+            session.clientPort, intToIp(session.destinationAddress),
+            session.destinationPort, 0, VpnLogManager.AuditCategory.VERBOSE,
+            "TLS CAPTURE only • SNI=$sni"
+        )
+
+        captureLoop()
+    }
+
+    private fun captureLoop() {
+        val clientAppIn = ByteBuffer.allocate(16384)
+        val clientNetOut = ByteBuffer.allocate(32768)
+
+        while (running) {
+            synchronized(clientQueueLock) {
+                var item: ByteArray?
+                while (clientQueue.poll().also { item = it } != null) {
+                    if (item!!.isNotEmpty()) {
+                        clientAppIn.put(item!!)
+                        lastActivityTime = System.currentTimeMillis()
+                    }
+                }
+            }
+
+            if (clientAppIn.position() > 0) {
+                clientAppIn.flip()
+                while (clientAppIn.hasRemaining()) {
+                    clientNetOut.clear()
+                    val result = clientEngine!!.unwrap(clientAppIn, clientNetOut)
+                    if (result.status == SSLEngineResult.Status.OK) {
+                        if (result.bytesProduced() > 0) {
+                            clientNetOut.flip()
+                            val plain = ByteArray(clientNetOut.remaining())
+                            clientNetOut.get(plain)
+                            clientNetOut.clear()
+                            recordSnippet("CLIENT->SERVER", plain)
+                            val preview = String(plain, Charsets.UTF_8).take(256)
+                            Log.i(TAG, "CAPTURED ${plain.size}B from $sni: $preview")
+                        }
+                    } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+                        break
+                    } else {
+                        Log.w(TAG, "Capture unwrap status: ${result.status} for $sni")
+                        break
+                    }
+                }
+                clientAppIn.compact()
+            }
+
+            if (System.currentTimeMillis() - lastActivityTime > 10000) {
+                Log.i(TAG, "Capture idle timeout for $sni on port $clientPort")
+                break
+            }
+
+            if (clientAppIn.position() == 0) {
+                Thread.sleep(50)
+            }
+        }
+
+        Log.i(TAG, "Capture session ended for $sni on port $clientPort")
+        close()
     }
 
     private fun proxyLoop() {
@@ -274,6 +401,12 @@ class TlsMitmSession(
         while (running) {
             val clientStatus = clientEngine?.handshakeStatus ?: break
             val serverStatus = serverEngine?.handshakeStatus ?: break
+
+            if (System.currentTimeMillis() - lastActivityTime > PROXY_LOOP_TIMEOUT_MS) {
+                Log.w(TAG, "TLS MITM proxy loop idle timeout after ${PROXY_LOOP_TIMEOUT_MS}ms, closing session $clientPort")
+                close()
+                return
+            }
 
             val workDone = if (clientStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
                 serverStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
@@ -292,9 +425,10 @@ class TlsMitmSession(
                 if (!running) break
             }
             if (workDone) {
+                lastActivityTime = System.currentTimeMillis()
                 Thread.sleep(1)
             } else {
-                Thread.sleep(15) // Back off when idle to save CPU and battery
+                Thread.sleep(15)
             }
         }
     }
@@ -312,6 +446,7 @@ class TlsMitmSession(
             while (clientQueue.poll().also { item = it } != null) {
                 if (item!!.isNotEmpty()) {
                     clientAppIn.put(item!!)
+                    lastActivityTime = System.currentTimeMillis()
                     worked = true
                 }
             }
@@ -327,14 +462,15 @@ class TlsMitmSession(
                         val plain = ByteArray(clientNetOut.remaining())
                         clientNetOut.get(plain)
                         clientNetOut.clear()
-                        
+
                         recordSnippet("CLIENT->SERVER", plain)
-                        
-                        // Encrypt plaintext for the secure WAN server
+
                         serverNetOut.clear()
                         val wrapResult = serverEngine!!.wrap(ByteBuffer.wrap(plain), serverNetOut)
                         if (wrapResult.bytesProduced() > 0) {
+                            serverNetOut.flip()
                             writeToServer(serverNetOut)
+                            lastActivityTime = System.currentTimeMillis()
                             worked = true
                         }
                     }
@@ -361,6 +497,7 @@ class TlsMitmSession(
             }
             if (read > 0) {
                 readBytes = read
+                lastActivityTime = System.currentTimeMillis()
                 worked = true
             }
         }
@@ -375,16 +512,15 @@ class TlsMitmSession(
                         val plain = ByteArray(serverAppOut.remaining())
                         serverAppOut.get(plain)
                         serverAppOut.clear()
-                        
+
                         recordSnippet("SERVER->CLIENT", plain)
-                        
-                        // Encrypt server response for the client
+
                         clientNetOut.clear()
                         val wrapResult = clientEngine!!.wrap(ByteBuffer.wrap(plain), clientNetOut)
                         if (wrapResult.bytesProduced() > 0) {
                             clientNetOut.flip()
                             writeToTunClient(clientNetOut)
-                            clientNetOut.clear()
+                            lastActivityTime = System.currentTimeMillis()
                             worked = true
                         }
                     }
@@ -396,7 +532,6 @@ class TlsMitmSession(
                     break
                 }
             }
-            serverNetIn.compact()
         }
         return worked
     }
@@ -542,18 +677,18 @@ class TlsMitmSession(
         netOut: ByteBuffer,
         appOut: ByteBuffer,
         readFromTransport: () -> ByteArray?,
-        writeToTransport: (ByteBuffer) -> Unit
+        writeToTransport: (ByteBuffer) -> Unit,
+        maxIterations: Int = 800
     ): Boolean {
         var iterations = 0
         var needMore = true
-        while (needMore && iterations < 800) {
+        while (needMore && iterations < maxIterations) {
             iterations++
             when (engine.handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> {
                     netOut.clear()
                     val result = engine.wrap(ByteBuffer.allocate(0), netOut)
                     if (result.bytesProduced() > 0) {
-                        netOut.flip()
                         writeToTransport(netOut)
                         netOut.clear()
                     }
@@ -611,8 +746,8 @@ class TlsMitmSession(
                 }
             }
         }
-        if (iterations >= 800) {
-            Log.w(TAG, "Handshake iteration limit reached status=${engine.handshakeStatus}")
+        if (iterations >= maxIterations) {
+            Log.w(TAG, "Handshake iteration limit reached ($maxIterations) status=${engine.handshakeStatus}")
         }
         return engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
                engine.session.cipherSuite != "SSL_NULL_WITH_NULL_NULL"
@@ -671,19 +806,21 @@ class TlsMitmSession(
         }
     }
 
+    private fun writeFully(channel: SocketChannel, buf: ByteBuffer) {
+        while (buf.hasRemaining()) {
+            val w = channel.write(buf)
+            if (w > 0) continue
+            if (w < 0) throw IOException("Channel closed during write")
+            Thread.sleep(1)
+        }
+    }
+
     private fun writeToServer(buf: ByteBuffer) {
         val sc = serverChannel ?: return
         try {
-            buf.flip()
-            var written = 0L
-            while (buf.hasRemaining()) {
-                val w = sc.write(buf)
-                if (w <= 0) break
-                written += w
-            }
+            // buf je již načtený (flipnutý) od volajícího – neflipovat znovu!
+            writeFully(sc, buf)
             buf.clear()
-            serverSeqNum += written
-            session.serverSeqNum = serverSeqNum
         } catch (e: Exception) {
             Log.w(TAG, "Write to server failed: ${e.message}")
             running = false
@@ -730,9 +867,15 @@ class TlsMitmSession(
             ch.configureBlocking(true)
             ch.socket().tcpNoDelay = true
             ch.socket().soTimeout = 15000
+
+            if (!VpnCaptureService.protectSocket(ch.socket())) {
+                Log.e(TAG, "protect() failed for MITM server socket — aborting connect")
+                ch.close()
+                return null
+            }
+
             ch.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
-            ch.configureBlocking(false)
-            ch.socket().soTimeout = 0
+            // Keep blocking until handshake completes; non-blocking set before proxyLoop/passthroughLoop
             Log.i(TAG, "Connected to ${intToIp(dstIp)}:$dstPort for MITM")
             ch
         } catch (e: Exception) {
@@ -746,7 +889,6 @@ class TlsMitmSession(
         running = false
         TlsMitmEngine.removeSession(clientPort)
 
-        // Explicitní uzavření serverového socketu
         try {
             serverChannel?.close()
         } catch (e: Exception) {
@@ -755,14 +897,12 @@ class TlsMitmSession(
             serverChannel = null
         }
 
-        // Uvolnění TLS enginů
         try {
             clientEngine?.session?.invalidate()
         } catch (_: Exception) {}
         clientEngine = null
         serverEngine = null
 
-        // Vyčištění bufferů
         synchronized(clientQueueLock) {
             clientQueue.clear()
         }
@@ -770,34 +910,47 @@ class TlsMitmSession(
             decryptedSnippets.clear()
         }
 
-        // Uzavření socketu relace
+        session.isTlsMitm = false
+        session.tlsMitmHandler = null
+        isActivelyDecrypting = false
+
+        sendRstToClient()
+
         try {
             session.socketChannel?.close()
         } catch (_: Exception) {}
-
-        // Nastavení příznaků na relaci; uzavření WAN relace neřešeno přímo zde
-        session.isTlsMitm = false
-        session.tlsMitmHandler = null
-
-        // Odeslání RST klientovi pro okamžité ukončení
-        sendRstToClient()
 
         closed = true
         Log.i(TAG, "TLS MITM closed for port $clientPort, all resources released")
     }
 
     private fun fallingBackToPassthrough() {
-        Log.w(TAG, "Falling back to passthrough for port $clientPort")
+        Log.w(TAG, "Falling back to passthrough for port $clientPort SNI=$sni")
         running = true
         clientEngine = null
         serverEngine = null
         recordSnippet("PASSTHROUGH", "MITM falling back to passthrough for port $clientPort SNI=$sni".toByteArray())
+        // Always fresh socket — poisoned channel may have MITM ClientHello on the wire
+        try {
+            serverChannel?.close()
+        } catch (_: Exception) {}
+        serverChannel = null
+        serverChannel = connectServer(session.destinationAddress, session.destinationPort)
+        if (serverChannel == null) {
+            Log.e(TAG, "Cannot reconnect to server for passthrough on port $clientPort")
+            close()
+            return
+        }
         try {
             passthroughLoop()
+        } catch (e: Exception) {
+            if (running) {
+                Log.e(TAG, "passthroughLoop error on port $clientPort: ${e.message}")
+            }
         } finally {
             running = false
             closed = true
-            // Robustní uzavření všech zdrojů
+            TlsMitmEngine.removeSession(clientPort)
             try {
                 serverChannel?.close()
             } catch (_: Exception) {}
@@ -805,7 +958,6 @@ class TlsMitmSession(
             try {
                 session.socketChannel?.close()
             } catch (_: Exception) {}
-            // Vyčištění bufferů
             synchronized(clientQueueLock) {
                 clientQueue.clear()
             }
@@ -830,7 +982,27 @@ class TlsMitmSession(
             "TLS MITM passthrough active • SNI=$sni"
         )
         var totalForwarded = 0L
+        var lastActivity = System.currentTimeMillis()
         var lastLog = System.currentTimeMillis()
+        val idleThreshold = 30_000L
+
+        serverChannel?.configureBlocking(false)
+        serverChannel?.socket()?.soTimeout = 5000
+
+        // Poslat initialClientHello na server (nebyl v clientQueue!)
+        if (initialClientHello.isNotEmpty()) {
+            try {
+                val sc = serverChannel
+                if (sc != null && sc.isConnected) {
+                    writeFully(sc, ByteBuffer.wrap(initialClientHello))
+                    totalForwarded += initialClientHello.size
+                    lastActivity = System.currentTimeMillis()
+                    Log.d(TAG, "Forwarded initial TLS ClientHello (${initialClientHello.size}B) for port $clientPort")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to forward initial ClientHello on port $clientPort: ${e.message}")
+            }
+        }
 
         while (running) {
             var worked = false
@@ -838,7 +1010,7 @@ class TlsMitmSession(
             val sc = serverChannel
             if (sc != null && sc.isConnected) {
                 val buf = ByteBuffer.allocate(32768)
-                val read = try { sc.read(buf) } catch (e: Exception) { -1 }
+                val read = try { sc.read(buf) } catch (e: java.net.SocketTimeoutException) { 0 } catch (e: Exception) { -1 }
                 if (read == -1) {
                     break
                 }
@@ -848,6 +1020,7 @@ class TlsMitmSession(
                     buf.get(data)
                     totalForwarded += data.size
                     writeToTunClientData(data)
+                    lastActivity = System.currentTimeMillis()
                     worked = true
                 }
             }
@@ -856,28 +1029,34 @@ class TlsMitmSession(
                 var item: ByteArray?
                 while (clientQueue.poll().also { item = it } != null) {
                     if (item!!.isNotEmpty()) {
-                        val wbuf = ByteBuffer.wrap(item!!)
-                        try {
-                            sc?.write(wbuf)
-                            serverSeqNum += item!!.size
-                            session.serverSeqNum = serverSeqNum
-                            totalForwarded += item!!.size
-                            worked = true
-                        } catch (e: Exception) {
-                            break
+                        val wsc = serverChannel
+                        if (wsc != null && wsc.isConnected) {
+                            val wbuf = ByteBuffer.wrap(item!!)
+                            try {
+                                writeFully(wsc, wbuf)
+                                totalForwarded += item!!.size
+                                lastActivity = System.currentTimeMillis()
+                                worked = true
+                            } catch (e: Exception) {
+                                break
+                            }
                         }
                     }
                 }
             }
 
+            val now = System.currentTimeMillis()
+            if (now - lastActivity > idleThreshold) {
+                Log.w(TAG, "passthroughLoop idle timeout after ${idleThreshold}ms on port $clientPort, forwarded=$totalForwarded")
+                break
+            }
+
             if (!worked) {
-                val now = System.currentTimeMillis()
                 if (now - lastLog > 300) {
                     Log.d(TAG, "passthrough idle port=$clientPort totalForwarded=$totalForwarded")
                     lastLog = now
                 }
             } else {
-                val now = System.currentTimeMillis()
                 if (now - lastLog > 300) {
                     Log.d(TAG, "passthrough active port=$clientPort totalForwarded=$totalForwarded")
                     lastLog = now
@@ -887,7 +1066,7 @@ class TlsMitmSession(
             if (worked) {
                 Thread.sleep(1)
             } else {
-                Thread.sleep(15)
+                Thread.sleep(50)
             }
         }
         Log.i(TAG, "passthroughLoop exiting port=$clientPort totalForwarded=$totalForwarded")
@@ -967,11 +1146,11 @@ class TlsMitmSession(
     }
 
     private fun resolveSniServerNameFactory(): (String) -> javax.net.ssl.SNIServerName {
-        val candidates = listOf(
+        val reflectionCandidates = listOf(
             "sun.net.util.SNIHostName",
             "com.android.org.conscrypt.SNIHostName"
         )
-        for (className in candidates) {
+        for (className in reflectionCandidates) {
             try {
                 val clazz = Class.forName(className)
                 val ctor = clazz.getConstructor(
@@ -985,14 +1164,26 @@ class TlsMitmSession(
                         hostname.toByteArray(Charsets.UTF_8)
                     ) as javax.net.ssl.SNIServerName
                 }
-                Log.i(TAG, "SNIServerName factory resolved: $className")
+                Log.i(TAG, "SNIServerName factory resolved via reflection: $className")
                 return factory
             } catch (_: ClassNotFoundException) {
             } catch (_: NoSuchMethodException) {
             } catch (_: Exception) {
             }
         }
-        Log.w(TAG, "No concrete SNIServerName implementation found; using empty list")
+
+        try {
+            val clazz = Class.forName("javax.net.ssl.SNIHostName")
+            val ctor = clazz.getConstructor(String::class.java)
+            @Suppress("UNCHECKED_CAST")
+            val factory: (String) -> javax.net.ssl.SNIServerName = { hostname ->
+                ctor.newInstance(hostname) as javax.net.ssl.SNIServerName
+            }
+            Log.i(TAG, "SNIServerName factory resolved via javax.net.ssl.SNIHostName")
+            return factory
+        } catch (_: Exception) {}
+
+        Log.w(TAG, "No SNIServerName implementation found; using empty list")
         @Suppress("UNCHECKED_CAST")
         return { _ -> throw UnsupportedOperationException("No SNIServerName implementation available") }
     }

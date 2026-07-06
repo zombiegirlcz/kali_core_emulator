@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.linux_core.BuildConfig
 import com.linux_core.core.VpnProxyManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -49,7 +50,7 @@ fun VpnSettingsTab() {
     var enableCrossMount by remember { mutableStateOf(sharedPrefs.getBoolean("enable_cross_mount", false)) }
     var shareLocalApi by remember { mutableStateOf(sharedPrefs.getBoolean("share_local_api", false)) }
     var shareP2pMesh by remember { mutableStateOf(sharedPrefs.getBoolean("share_p2p_mesh", false)) }
-    var enableMitm by remember { mutableStateOf(sharedPrefs.getBoolean("enable_mitm", true)) }
+    var enableMitm by remember { mutableStateOf(sharedPrefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)) }
     var logVerbosity by remember { mutableStateOf(sharedPrefs.getInt("log_verbosity", 1)) }
     var showActionMenu by remember { mutableStateOf(false) }
     var showProxyMenu by remember { mutableStateOf(false) }

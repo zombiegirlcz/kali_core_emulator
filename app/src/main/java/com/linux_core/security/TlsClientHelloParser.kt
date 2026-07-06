@@ -28,10 +28,11 @@ object TlsClientHelloParser {
             if (!isTlsClientHello(data, offset, len)) return null
             var pos = offset + 5
             if (len < pos + 4) return null
-            val handshakeLen = ((data[pos].toInt() and 0xFF) shl 16) or
-                               ((data[pos + 1].toInt() and 0xFF) shl 8) or
-                               (data[pos + 2].toInt() and 0xFF)
-            pos += 3
+            // handshake_type at pos, 3-byte length at pos+1..pos+3
+            val handshakeLen = ((data[pos + 1].toInt() and 0xFF) shl 16) or
+                               ((data[pos + 2].toInt() and 0xFF) shl 8) or
+                               (data[pos + 3].toInt() and 0xFF)
+            pos += 4
             if (pos >= len) return null
             val clientVersion = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
             pos += 2

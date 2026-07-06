@@ -51,6 +51,7 @@ class VpnNatEngine(
         var clientSeqNum: Long = 0
         var serverSeqNum: Long = 1000 // Server starting sequence number
         var state = TcpState.CLOSED
+        var connectionStartTime = System.currentTimeMillis()
         val sendQueue = java.util.concurrent.ConcurrentLinkedQueue<ByteBuffer>()
         var lastActiveTime = System.currentTimeMillis()
         
@@ -211,7 +212,11 @@ class VpnNatEngine(
 
         // RAW TUN INTERCEPT log removed to prevent logging duplication and performance overhead
 
-        if (ipHeader.version != 4) return // Only support IPv4 in this userspace stack
+        if (ipHeader.version != 4) {
+            // Let IPv6 packets pass through without processing (kernel will handle)
+            writeToTun(rawData, length)
+            return
+        }
 
         val dstIp = ipHeader.destinationAddress
         if (VpnPeerManager.isEnabled() && (dstIp and 0xFFFFFF00.toInt()) == 0x0A090000) {
@@ -241,6 +246,13 @@ class VpnNatEngine(
             return
         }
         
+        // QUIC (HTTP/3) — blokovat jen kdyz MITM aktivne desifruje (ne pri selhani/passthrough)
+        if (dstPort == 443 && isMitmEnabled() && TlsMitmEngine.shouldBlockQuic()) {
+            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort,
+                udpHeader.length - 8, VpnLogManager.AuditCategory.BLOCKED, "QUIC blocked — force TCP fallback")
+            return
+        }
+
         val payloadOffset = ipHeader.ihl + 8
         val payloadLen = udpHeader.length - 8
         if (payloadLen <= 0) return
@@ -285,22 +297,31 @@ class VpnNatEngine(
             VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail, payloadForAi)
 
             try {
-                val channel = DatagramChannel.open().apply {
-                    configureBlocking(false)
-                }
+                val channel = DatagramChannel.open()
                 
-                // CRITICAL: Protect channel socket from loopback routing
                 if (!vpnService.protect(channel.socket())) {
-                    Log.e(TAG, "protect() FAILED for UDP DatagramChannel — outbound traffic may loop back into VPN!")
+                    Log.e(TAG, "protect() FAILED for UDP DatagramChannel")
+                    channel.close()
+                    throw IOException("protect() failed, aborting UDP connection")
                 }
                 
                 val remoteAddr = intToInetAddress(dstIp)
                 channel.connect(InetSocketAddress(remoteAddr, dstPort))
                 
+                // POZOR: zapisujeme data v BLOKUJICIM rezimu (default),
+                // aby non-blocking write (API>33) nevratil 0 a neztratil packet
+                packetBuffer.position(payloadOffset)
+                packetBuffer.limit(payloadOffset + payloadLen)
+                val written = channel.write(packetBuffer)
+                
                 session = UdpSession(srcPort, dstIp, dstPort).apply {
                     datagramChannel = channel
+                    bytesSent = written.toLong()
                 }
                 udpSessions[srcPort] = session
+                
+                // Prepnout na neblokujici rezim az po odeslani prvnich dat
+                channel.configureBlocking(false)
 
                 // Register with Selector (wakeup to avoid blocking on selector contention)
                 selector?.let { sel ->
@@ -320,18 +341,16 @@ class VpnNatEngine(
             }
         } else {
             session.lastActiveTime = System.currentTimeMillis()
-        }
-
-        session.lastActiveTime = System.currentTimeMillis()
-        try {
-            packetBuffer.position(payloadOffset)
-            packetBuffer.limit(payloadOffset + payloadLen)
-            
-            session.datagramChannel?.write(packetBuffer)
-            session.bytesSent += payloadLen
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write UDP data to WAN: ${e.message}")
-            closeUdpSession(srcPort)
+            // Datagram already exists — posli data (jiz v neblokujicim rezimu)
+            try {
+                packetBuffer.position(payloadOffset)
+                packetBuffer.limit(payloadOffset + payloadLen)
+                session.datagramChannel?.write(packetBuffer)
+                session.bytesSent += payloadLen
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to write UDP data to WAN: ${e.message}")
+                closeUdpSession(srcPort)
+            }
         }
     }
 
@@ -366,9 +385,10 @@ class VpnNatEngine(
             try {
                 val channel = SocketChannel.open()
                 
-                // CRITICAL: Protect channel socket from loopback routing
                 if (!vpnService.protect(channel.socket())) {
-                    Log.e(TAG, "protect() FAILED for TCP SocketChannel — outbound traffic may loop back into VPN!")
+                    Log.e(TAG, "protect() FAILED for TCP SocketChannel")
+                    channel.close()
+                    throw IOException("protect() failed, aborting TCP connection")
                 }
                 
                 session = TcpSession(srcPort, dstIp, dstPort).apply {
@@ -465,9 +485,10 @@ class VpnNatEngine(
 
                                 channel.close()
                                 val directChannel = SocketChannel.open()
-                                // CRITICAL FIXED: Protect the fallback channel!
                                 if (!vpnService.protect(directChannel.socket())) {
                                     Log.e(TAG, "protect() FAILED for direct fallback socket!")
+                                    directChannel.close()
+                                    throw IOException("protect() failed for fallback, aborting")
                                 }
                                 session.socketChannel = directChannel
                             }
@@ -566,6 +587,7 @@ class VpnNatEngine(
                     val raw = ByteArray(payloadCopy.remaining())
                     payloadCopy.get(raw)
                     TlsMitmEngine.onClientData(vpnService, session, raw, writeToTun)
+                    sendTcpAck(session)
                     return
                 }
                 
@@ -578,6 +600,7 @@ class VpnNatEngine(
                     if (session.destinationPort in TLS_PORTS) {
                         session.isTlsMitm = true
                         TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
+                        sendTcpAck(session)
                         return
                     }
                     Log.w(TAG, "TLS ClientHello detected on non-whitelisted port ${session.destinationPort} for client ${session.clientPort}")
@@ -686,10 +709,11 @@ class VpnNatEngine(
                     key.interestOps(SelectionKey.OP_READ or SelectionKey.OP_WRITE)
                 }
                 
-                Log.d(TAG, "WAN connection established for port ${session.clientPort}")
+                val elapsed = System.currentTimeMillis() - session.connectionStartTime
+                Log.d(TAG, "WAN connection established for port ${session.clientPort} in ${elapsed}ms")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to complete WAN connection for port ${session.clientPort}: ${e.message}")
+            Log.w(TAG, "WAN connection failed for port ${session.clientPort} after ${System.currentTimeMillis() - session.connectionStartTime}ms: ${e.message}")
             closeTcpSession(session.clientPort, sendRst = true)
         }
     }
@@ -790,13 +814,14 @@ class VpnNatEngine(
                 -1
             }
 
-            if (read > 0) {
+            if (read == -1) {
+                closeUdpSession(session.clientPort)
+            } else if (read > 0) {
                 session.bytesReceived += read
                 buffer.flip()
                 val payload = ByteArray(read)
                 buffer.get(payload)
                 
-                // Wrap in UDP packet and write to TUN
                 sendUdpDataToClient(session, payload)
             }
         }
@@ -997,7 +1022,7 @@ class VpnNatEngine(
         writeToTun(response.array(), totalLength)
     }
 
-    internal fun closeTcpSession(port: Int, sendRst: Boolean = false) {
+    public fun closeTcpSession(port: Int, sendRst: Boolean = false) {
         val session = tcpSessions.remove(port) ?: return
         val prevState = session.state
         
@@ -1044,26 +1069,24 @@ class VpnNatEngine(
     private fun cleanIdleSessions() {
         val now = System.currentTimeMillis()
         
-        // Idle TCP clean (reduced from 5 minutes to 2 minutes)
-        val tcpIterator = tcpSessions.keys().iterator()
+        val tcpPorts = tcpSessions.keys.toList()
         var tcpClosed = 0
-        while (tcpIterator.hasNext()) {
-            val port = tcpIterator.next()
+        for (port in tcpPorts) {
             val session = tcpSessions[port] ?: continue
-            // Zkrácení timeoutu z 300000ms (5 min) na 120000ms (2 min)
-            if (now - session.lastActiveTime > 120000) {
+            if (session.state == TcpState.SYN_RECEIVED && now - session.connectionStartTime > 15000) {
+                Log.w(TAG, "TCP session $port stuck in SYN_RECEIVED for ${now - session.connectionStartTime}ms — closing")
+                closeTcpSessionWithRetry(port)
+                tcpClosed++
+            } else if (session.state == TcpState.ESTABLISHED && now - session.lastActiveTime > 120000) {
                 closeTcpSessionWithRetry(port)
                 tcpClosed++
             }
         }
         
-        // Idle UDP clean (reduced from 1 minute to 30 seconds)
-        val udpIterator = udpSessions.keys().iterator()
+        val udpPorts = udpSessions.keys.toList()
         var udpClosed = 0
-        while (udpIterator.hasNext()) {
-            val port = udpIterator.next()
+        for (port in udpPorts) {
             val session = udpSessions[port] ?: continue
-            // Zkrácení timeoutu z 60000ms (1 min) na 30000ms (30 sekund)
             if (now - session.lastActiveTime > 30000) {
                 closeUdpSession(port)
                 udpClosed++

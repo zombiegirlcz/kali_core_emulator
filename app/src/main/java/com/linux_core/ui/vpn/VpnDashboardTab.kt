@@ -3,6 +3,8 @@ package com.linux_core.ui.vpn
 import android.content.Context
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -39,6 +41,21 @@ fun VpnDashboardTab() {
     var isProxyEnabled by remember { mutableStateOf(VpnProxyManager.isEnabled()) }
     var selectedProxyIndex by remember { mutableStateOf(VpnProxyManager.getSelectedNodeIndex()) }
     var secondsRemaining by remember { mutableStateOf(VpnProxyManager.getSecondsRemaining()) }
+
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val intent = Intent(context, VpnCaptureService::class.java).apply {
+                action = VpnCaptureService.ACTION_START
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -156,9 +173,7 @@ fun VpnDashboardTab() {
                                 if (checked) {
                                     val vpnIntent = android.net.VpnService.prepare(context)
                                     if (vpnIntent != null) {
-                                        if (context is ComponentActivity) {
-                                            context.startActivityForResult(vpnIntent, 24)
-                                        }
+                                        vpnPermissionLauncher.launch(vpnIntent)
                                     } else {
                                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                             context.startForegroundService(intent)

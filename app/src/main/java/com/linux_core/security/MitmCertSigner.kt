@@ -17,6 +17,41 @@ import java.util.regex.Pattern
  */
 internal object MitmCertSigner {
 
+    fun signWithPublicKey(
+        caCert: X509Certificate,
+        caPrivateKey: PrivateKey,
+        subjectPublicKey: java.security.PublicKey,
+        serial: Long,
+        cn: String,
+        sanDns: List<String> = emptyList()
+    ): X509Certificate {
+        val issuer = X500Name.getInstance(caCert.subjectX500Principal.encoded)
+        val subject = X500Name("CN=$cn")
+        val now = Date()
+        val oneDay = 1000L * 60 * 60 * 24
+        val notBefore = Date(now.time - oneDay)
+        val notAfter = Date(now.time + oneDay * 30)
+
+        val builder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
+            caCert, BigInteger.valueOf(serial), notBefore, notAfter, subject, subjectPublicKey
+        )
+
+        sanDns.forEach { validateDnsName(it) }
+        if (sanDns.isNotEmpty()) {
+            val gnBuilder = org.bouncycastle.asn1.x509.GeneralNamesBuilder()
+            sanDns.forEach { gnBuilder.addName(org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.dNSName, it)) }
+            builder.addExtension(org.bouncycastle.asn1.x509.Extension.subjectAlternativeName, false, gnBuilder.build())
+        }
+
+        val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder(SIGNER_ALGO)
+            .setProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            .build(caPrivateKey)
+        val holder = builder.build(signer)
+        return org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
+            .setProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            .getCertificate(holder)
+    }
+
     private const val SIGNER_ALGO = "SHA256WithRSA"
     private const val MAX_HOSTNAME_LENGTH = 253
     private val HOSTNAME_PATTERN = Pattern.compile(

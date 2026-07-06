@@ -134,7 +134,7 @@ fun VpnDnsTab() {
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     LinearProgressIndicator(
-                                        progress = progress,
+                                        progress = { progress },
                                         color = Color(0xFF00FF41),
                                         trackColor = Color(0x11FFFFFF),
                                         modifier = Modifier

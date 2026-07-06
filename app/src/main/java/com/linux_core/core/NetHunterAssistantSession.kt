@@ -128,6 +128,7 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
         // Ensure the window is focusable and alt-focusable is cleared so keyboard doesn't overlap the overlay
         win.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         win.clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+        @Suppress("DEPRECATION")
         win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
 
         val lp = win.attributes

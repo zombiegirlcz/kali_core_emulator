@@ -176,3 +176,315 @@ Tento modul slouží k zajištění (a) analýzy síťového provozu a (b) integ
 - [ ] Jsou certifikáty uloženy v `KeyStore` a ne v prostém souborovém systému?
 - [ ] Jsou citlivé API požadavky podepisovány hardwarově chráněným klíčem?
 - [ ] Je v `network_security_config.xml` produkční prostředí bezpečné- [ ] Probíhá ověření atestačního řetězce na serveru, ne lokálně v aplikaci?
+## Architektura
+
+Přirovnání: dnešní noVNC je jako **kabelová televize** — server (guest OS) vysílá celý obraz plochy jako video, telefon jen pasivně sleduje a klika. Code-server bude fungovat jako **webová aplikace** (podobně jako Google Docs) — HTML/JS/CSS se pošlou jednou do prohlížeče, a pak už se přenášejí jen malé "zprávy" (obsah souboru, klávesa stisknutá, uložit). Je to lehčí, rychlejší a hlavně to umí komunikovat s rozšířeními stejně jako desktopový VS Code, protože code-server *je* VS Code jádro (jen běžící na serveru místo na tvém stroji).
+
+Zapadá to do tvého existujícího vzoru "guest proces + loopback port + CLI toggle + Compose tab", stejně jako `nethunter-desktop` (XFCE/noVNC na 6080) nebo `vpn-cli mitm` (MITM na 1337). Přidáváš jen čtvrtý pilíř vedle Terminálu, VPN a Desktopu: **Editor**.
+
+```
+┌─────────────────────────────────────────────┐
+│ Android Host                                 │
+│  MainActivity / Compose UI                   │
+│   ├─ TerminalActivity (dnes)                 │
+│   ├─ VPN Center tab (dnes)                   │
+│   ├─ Desktop tab → noVNC :6080 (dnes)        │
+│   └─ NOVÝ: Editor tab → WebView :8443        │
+│              │                               │
+│  LocalApiServer :1337 (bridge)               │
+│              │                               │
+│  PRoot guest (Kali/Parrot rootfs)            │
+│   └─ code-server proces (Node.js)            │
+│        poslouchá 127.0.0.1:8443              │
+│        ├─ Open VSX marketplace (rozšíření)   │
+│        └─ /root/projects (tvůj kód)          │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Fáze 1 — Instalace code-serveru do guest rootfs
+
+Analogie: je to jako instalace nové aplikace do "vnitřního telefonu" (Kali), ne do Androidu samotného.
+
+- Ověřit dostupnou Node.js verzi v Kali/Parrot rootfs (code-server potřebuje Node ≥18)
+- Instalovat přes oficiální instalační skript code-serveru (funguje na arm64) nebo přes `npm install -g code-server`
+- Otestovat ruční spuštění v Termuxu: `code-server --bind-addr 127.0.0.1:8443 --auth password`
+- Zapsat cestu k binárce a datovému adresáři (`~/.local/share/code-server`) do dokumentace, podobně jako máš zdokumentované cesty k MITM CA
+
+## Fáze 2 — Deploy skript v ProotManager (podle vzoru desktopu)
+
+Analogie: stejně jako se ti "sám nastěhuje nábytek", když poprvé spustíš appku — `ProotManager` dnes deployuje `vpn-cli`, `nethunter-desktop` atd. do `/usr/local/bin/`. Přidáš tam nový skript.
+
+- Nový soubor `code-server-ctl` v `app/src/main/assets/`, deploynutý stejným mechanismem jako `vpn-cli`
+- Příkazy: `code-server-ctl start|stop|status|password`
+- Heslo generuj náhodně při prvním spuštění a ulož do `SharedPreferences` (stejný vzor jako `api_security` token) — **nikdy** natvrdo v kódu (poučení z C1 v tvém security auditu)
+- Log soubor pro `nethunter-log -g "code-server"` diagnostiku
+
+## Fáze 3 — Bezpečnostní vrstva (kritické, podle tvého vlastního auditu)
+
+Analogie: LocalApiServer bez auth byl jako nechat vchodové dveře bytu dokořán na chodbě plné lidí (C2/C3 v tvém auditu). Editor se stejnou chybou = kdokoli v Wi-Fi síti čte/edituje tvůj kód.
+
+- **Bind pouze na `127.0.0.1`**, nikdy `0.0.0.0` — žádný `--host` toggle jako u `share_local_api`
+- **Vždy `--auth password`**, heslo z `SharedPreferences`, ne z argumentu viditelného v `ps aux`
+- Pokud budeš chtít přístup i z jiného zařízení v síti (např. notebook), tunelovat přes stejný bezpečnostní model jako VPN bypass proxy (13339) — ne přímo vystavit port
+- Přidat endpoint do `LocalApiServer` (`/editor/status`, `/editor/start`, `/editor/stop`) chráněný stejným Bearer tokenem jako `/vpn/mitm`
+
+## Fáze 4 — UI integrace (Compose)
+
+Analogie: nová záložka vedle "Terminal / VPN / Desktop" v drawer menu — stejná dlaždice, jiná ikona.
+
+- Nový tab `EditorTab.kt` po vzoru `VpnSettingsTab.kt`
+- Přepínač "Code Server" (start/stop) + zobrazení vygenerovaného hesla + QR/copy tlačítko
+- `WebView` uvnitř tabu, který načte `http://127.0.0.1:8443` (Android WebView, ne systémový Chrome — víc kontroly, méně tabů)
+- Stavová ikonka v horní liště podobně jako žlutý MITM indikátor
+
+## Fáze 5 — Rozšíření (Open VSX)
+
+Analogie: místo App Store (Microsoft Marketplace, licenčně zamčený) použiješ F-Droid ekvivalent — Open VSX. Většina věcí tam je, ale ne úplně všechno.
+
+- Code-server je defaultně napojený na `open-vsx.org` — funguje out of the box
+- Ověřit klíčová rozšíření pro tvůj use-case (Python, Kotlin, ShellCheck, GitLens) — zkontrolovat dostupnost na Open VSX před spoléháním na ně
+- Pokud něco chybí (typicky C/C++ od Microsoftu), řešení: `.vsix` soubor ručně nahraný přes `code-server --install-extension soubor.vsix`
+
+## Fáze 6 — Perzistence a workspace
+
+- Guest projekt adresář: navrhuji `/root/projects` (mimo `/tmp`, aby přežil restart kontejneru)
+- Nastavení code-serveru (`~/.local/share/code-server/User/settings.json`) verzovat/zálohovat stejně jako session names dnes perzistují v SharedPreferences
+
+## Fáze 7 — Testování
+
+- Spustit `code-server-ctl start`, ověřit `nethunter-log -g "code-server"` na chyby portu/bindu
+- Zkontrolovat, že port 8443 **není** dostupný zvenčí (test z jiného zařízení v síti — mělo by selhat spojení)
+- Otestovat instalaci rozšíření a otevření reálného projektu z `/root/projects`
+
+---
+
+## Architektura
+
+Analogie: `code-server-ctl` bude fungovat jako **vrátný v budově** — nespouští ani neřídí nic sám, jen na povel (od tebe přes terminál, nebo od appky přes API) otevře/zavře dveře a řekne, kdo má klíč (heslo). Samotná "kancelář" (code-server proces) běží pořád stejně, vrátný jen kontroluje přístup a hlásí stav.
+
+`LocalApiServer` endpointy jsou pak jako **recepce v přízemí budovy** — Android appka (Compose UI) se neptá přímo vrátného v Kali kontejneru, ale zavolá na recepci (HTTP na 127.0.0.1:1337), recepce ověří tvůj Bearer token a teprve pak zavolá vrátnému uvnitř. Stejný vzor, jaký už máš u `/vpn/mitm`.
+
+```
+Compose UI (EditorTab.kt)
+     │  HTTP + Bearer token
+     ▼
+LocalApiServer :1337  ← "recepce"
+     │  volá shell v guest PRootu
+     ▼
+code-server-ctl        ← "vrátný"
+     │  spouští/zastavuje
+     ▼
+code-server proces :8443 (jen 127.0.0.1)
+```
+
+---
+
+## 1. Specifikace `code-server-ctl`
+
+Umístění: `app/src/main/assets/code-server-ctl`, deploy mechanismem jako `vpn-cli` (přes `ProotManager` do guest `/usr/local/bin/`).
+
+**Kontrakt příkazů** (vstup/výstup, žádné vedlejší efekty navíc):
+
+| Příkaz | Co dělá | Výstup (stdout) |
+|---|---|---|
+| `code-server-ctl start` | Zkontroluje, jestli neběží (PID soubor); pokud ne, vygeneruje/přečte heslo, spustí proces na pozadí s `nohup`, zapíše PID | `{"status":"started","port":8443}` nebo `{"status":"already_running"}` |
+| `code-server-ctl stop` | Přečte PID soubor, pošle `SIGTERM`, smaže PID soubor | `{"status":"stopped"}` |
+| `code-server-ctl status` | Zkontroluje, jestli PID žije (`kill -0`) | `{"status":"running","port":8443}` / `{"status":"stopped"}` |
+| `code-server-ctl password` | Vygeneruje nové náhodné heslo (pokud ještě neexistuje) nebo vrátí existující | `{"password":"xxxx-xxxx"}` |
+
+**Klíčové návrhové body** (analogie: je to jako trezor s kódem, ne visací zámek s klíčem pod rohožkou):
+
+- Heslo se generuje jednou (`openssl rand -base64 12` nebo podobně) a uloží do `~/.config/code-server/config.yaml` — **nikdy** jako argument příkazové řádky (jinak je vidět v `ps aux` = díra typu C1 z tvého auditu).
+- Config soubor musí mít práva `600` (jen vlastník čte) — stejný princip jako oprava C15 (world-readable token file).
+- Bind adresa v configu natvrdo `127.0.0.1:8443` — žádná proměnná, žádný `--host` parametr zvenčí. Toto je jediné místo, kde se to nastavuje, aby nešlo omylem přepnout na `0.0.0.0`.
+- PID soubor v `/tmp/code-server.pid` — analogie jako "cedulka na dveřích, jestli je vrátný uvnitř".
+
+**Struktura config.yaml, kterou skript zapisuje:**
+
+```yaml
+bind-addr: 127.0.0.1:8443
+auth: password
+password: <vygenerované heslo>
+cert: false
+```
+
+---
+
+## 2. Specifikace endpointů v `LocalApiServer`
+
+Analogie: recepce má tři nová tlačítka na pultu vedle těch, co už má pro MITM. Stejný vzor autentizace (Bearer token z `api_security` SharedPreferences), stejný vzor odpovědí (JSON).
+
+| Endpoint | Metoda | Co dělá | Odpověď |
+|---|---|---|---|
+| `/editor/start` | POST | Zavolá `code-server-ctl start` přes guest shell | `{"status":"started"}` |
+| `/editor/stop` | POST | Zavolá `code-server-ctl stop` | `{"status":"stopped"}` |
+| `/editor/status` | GET | Zavolá `code-server-ctl status` | `{"status":"running","port":8443}` |
+| `/editor/password` | GET | Vrátí heslo pro zobrazení v UI (copy tlačítko) | `{"password":"xxxx-xxxx"}` |
+
+**Bezpečnostní pravidla pro tyto endpointy** (stejná logika jako u MITM endpointů — nic nového nevymýšlet):
+
+- Vyžadovat `Authorization: Bearer <token>` — stejný token jako zbytek API
+- `/editor/password` navíc omezit na `localhost` origin check (stejně jako mají citlivé endpointy dnes) — heslo se nemá posílat, pokud appka náhodou běží v `share_local_api=on` režimu
+- Žádný z těchto endpointů nesmí přijímat volný text/shell příkaz jako parametr (na rozdíl od starého `/shell` endpointu z C2) — jen pevné, neparametrizované akce start/stop/status/password
+
+---
+
+## 3. Compose vrstva — kontrakt, ne kód
+
+Analogie: `EditorTab.kt` je jen "displej na recepci", nemusí nic vědět o vnitřním fungování vrátného.
+
+- Tlačítko Start/Stop volá `/editor/start` nebo `/editor/stop`, čeká na odpověď, přepne stav ikonky (stejný vzor jako toggle u MITM)
+- Po startu: `WebView` načte `http://127.0.0.1:8443`, přihlašovací obrazovka code-serveru se zeptá na heslo — to natáhneš z `/editor/password` a buď předvyplníš, nebo zobrazíš vedle jako "copy to clipboard"
+- Stavová kontrola při otevření tabu: zavolat `/editor/status` a podle toho rozhodnout, jestli ukázat WebView rovnou, nebo tlačítko Start
+
+---
+
+## 4. Pořadí implementace (pro zadání dál)
+
+1. Ručně v Termuxu ověřit, že `code-server --bind-addr 127.0.0.1:8443 --auth password` vůbec naběhne na tvé architektuře (arm64) — toto je nutná validace před psaním čehokoli dalšího
+2. Napsat a nasadit `code-server-ctl` skript, otestovat všechny 4 příkazy ručně z Termuxu
+3. Přidat 4 endpointy do `LocalApiServer`, otestovat přes `curl` s Bearer tokenem (bez UI)
+4. Teprve pak stavět `EditorTab.kt` a napojovat WebView
+
+Chceš, abych rozepsal i konkrétní `curl` testovací sadu pro krok 3 (aby sis to na telefonu ověřil ještě před psaním UI), nebo je tenhle plán dost detailní na předání dál?
+## Architektura
+
+Analogie: navrhni to jako **letištní terminál v miniatuře** — málo gest, velké piktogramy, jasně oddělené "brány" (Start editoru / Nastavení / Samotný kód). Na telefonu nemáš myš ani velký monitor, takže stejně jako se na letišti nespoléháš na drobné cedulky, ale na obří ikony a barevné pruhy, i tady musí každý stav (běží/neběží/chyba) být čitelný na první pohled z 15 cm vzdálenosti, palcem, na sluníčku.
+
+Vychází to z tvého existujícího vizuálního jazyka (Kali cyan/zelená, Termius-styl klávesnice, žluté MITM indikátory) — Editor tab bude čtvrtá "budova" vedle Terminal / VPN / Desktop, ne cizí prvek.
+
+---
+
+## 1. Vstupní obrazovka tabu — dva stavy
+
+Analogie: jako výtah s jedním tlačítkem — buď je "v přízemí" (vypnuto, čekáš), nebo "jede" (zobrazuje obsah). Žádné komplikované menu navíc.
+
+**Stav A — Editor vypnutý (výchozí)**
+
+```
+┌─────────────────────────────┐
+│  🖥️  CODE EDITOR             │
+│                               │
+│      [ ⚪ STOPPED ]           │
+│                               │
+│   ┌───────────────────────┐  │
+│   │   ▶  START EDITOR     │  │  ← velké tlačítko, 56dp výška
+│   └───────────────────────┘  │
+│                               │
+│   Workspace: /root/projects  │
+│   Port: 127.0.0.1:8443       │
+│                               │
+└─────────────────────────────┘
+```
+
+- Status pilulka nahoře (šedá/zelená/žlutá) — stejný vzor jako máš u VPN stavu
+- Jedno primární tlačítko na celou šířku, palec dosáhne odkudkoli
+- Drobné info dole (workspace cesta, port) — pomocné, ne rušivé
+
+**Stav B — Editor běží (po startu, ~2–5s loading)**
+
+```
+┌─────────────────────────────┐
+│ ☰  🟢 RUNNING     🔑  ⏹️  ⋮  │  ← horní lišta, 44dp
+├─────────────────────────────┤
+│                               │
+│                               │
+│      [ WebView: VS Code ]    │
+│                               │
+│                               │
+├─────────────────────────────┤
+│ 🎛️ 🔣 🧭 ⚡ 🛠️              │  ← existující hacker klávesnice
+└─────────────────────────────┘
+```
+
+- Horní lišta je tenký pruh: hamburger (drawer se session tabs zůstává dostupný), stavová tečka, **klíč ikona = zobrazit/kopírovat heslo**, **stop ikona**, **⋮ menu** (restart, otevřít v prohlížeči, log)
+- Dole zůstává tvoje existující Hacker Keyboard (Ctrl kombinace, F-klávesy) — to je klíčové, protože VS Code v prohlížeči na telefonu bez fyzické klávesnice je bez `Ctrl+P`, `Ctrl+~` prakticky nepoužitelný. Nemusíš nic nového vymýšlet, jen napojit stejnou lištu na WebView input.
+
+---
+
+## 2. Heslo — jak ho ukázat, ne aby to bylo otravné
+
+Analogie: jako kód od schránky na balíčky — nechceš ho pořád vypisovat, ale chceš ho mít po ruce jedním klepnutím.
+
+- Klíč ikona v horní liště → bottom sheet (vyjede zdola, ne nový screen):
+
+```
+┌─────────────────────────────┐
+│  Editor Password              │
+│                               │
+│   ┌───────────────────────┐  │
+│   │  xk29-mVq7-plz4        │  │
+│   └───────────────────────┘  │
+│                               │
+│   [ 📋 Copy ]  [ 🔄 Regenerate ]│
+│                               │
+└─────────────────────────────┘
+```
+
+- Regenerate je oddělené, s potvrzením (protože zneplatní aktivní session) — stejný princip opatrnosti jako máš u `event_delete`.
+
+---
+
+## 3. Onboarding při prvním spuštění
+
+Analogie: jako první spuštění bankovní appky — jedna obrazovka, co ti řekne, kde je klíč, než tě pustí dál.
+
+Při úplně prvním `START EDITOR` (heslo ještě neexistuje) — krátký dialog:
+
+```
+┌─────────────────────────────┐
+│  🔐 First-time setup         │
+│                               │
+│  A password has been         │
+│  generated for this editor.  │
+│  It's stored only on this    │
+│  device.                     │
+│                               │
+│  xk29-mVq7-plz4               │
+│                               │
+│  [ 📋 Copy & Continue ]      │
+└─────────────────────────────┘
+```
+
+Tím zajistíš, že si heslo všimneš hned, ne až budeš hledat, kde ho appka schovala.
+
+---
+
+## 4. Chybové stavy — čitelné bez nutnosti chodit do logů
+
+Analogie: jako červené světlo na sporáku "je zapnuto" — okamžitá vizuální zpětná vazba, ne text, který musíš číst.
+
+| Situace | Pilulka nahoře | Akce nabídnutá uživateli |
+|---|---|---|
+| Port obsazený jiným procesem | 🔴 `PORT BUSY` | tlačítko `Force restart` |
+| Node/code-server chybí v rootfs | 🔴 `NOT INSTALLED` | tlačítko `Install now` (spustí instalační skript) |
+| Proces spadl po startu | 🔴 `CRASHED` | tlačítko `View logs` → otevře `nethunter-log -g "code-server"` v terminálu |
+| Vše OK | 🟢 `RUNNING` | — |
+| Startuje (2–5s) | 🟡 `STARTING…` | spinner, tlačítka disabled |
+
+---
+
+## 5. Umístění v navigaci
+
+Analogie: nepřidávat novou "budovu daleko od centra", ale novou dlaždici vedle existujících vchodů.
+
+- Drawer (session panel) dostane čtvrtou ikonu vedle 🐉/🦜 distro badgí a VNC launcheru: **`</> `** ikona pro Editor
+- V minimalizovaném 70dp drawer view (peek gesto, který už máš) přibude jen jedna malá ikonka vedle stávajících — žádné rozšiřování šířky panelu
+
+---
+
+## 6. Barevná signalizace (konzistence s existujícím systémem)
+
+Máš už zavedený kód barev — Editor do něj jen zapadá, nevymýšlí nový:
+
+| Barva | Dnešní použití | Nové použití |
+|---|---|---|
+| 🟡 žlutá | MITM intercept aktivní | Editor startuje |
+| 🟢 zelená | success/established v logu | Editor running |
+| 🔴 červená | error/fail v logu | Editor crashed/port busy |
+| 🟠 oranžová | VPN ignored badge | (nepoužito zde, ponecháno) |
+
+---
+

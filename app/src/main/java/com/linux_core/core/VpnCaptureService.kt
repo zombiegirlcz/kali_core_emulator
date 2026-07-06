@@ -13,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.linux_core.MainActivity
+import com.linux_core.BuildConfig
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
@@ -169,6 +170,7 @@ class VpnCaptureService : VpnService() {
             if (wifiLock == null) {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
                 wifiLock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    @Suppress("DEPRECATION")
                     wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "NetHunter:VpnCaptureServiceWifiLock")
                 } else {
                     @Suppress("DEPRECATION")
@@ -420,29 +422,52 @@ class VpnCaptureService : VpnService() {
             vpnThread = Thread({
                 // Větší buffer (65536) pro efektivní čtení z TUN rozhraní
                 val buffer = ByteArray(65536)
-                try {
-                    val pfd = vpnInterface
-                    if (pfd != null) {
-                        FileInputStream(pfd.fileDescriptor).use { input ->
-                            while (isServiceRunning.get()) {
-                                val length = input.read(buffer)
-                                if (length > 0) {
-                                    packetCount.incrementAndGet()
-                                    byteCount.addAndGet(length.toLong())
-                                    natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
+                while (isServiceRunning.get() && !Thread.currentThread().isInterrupted) {
+                    try {
+                        val pfd = vpnInterface
+                        if (pfd != null) {
+                            FileInputStream(pfd.fileDescriptor).use { input ->
+                                while (isServiceRunning.get() && !Thread.currentThread().isInterrupted) {
+                                    val length = input.read(buffer)
+                                    if (length > 0) {
+                                        packetCount.incrementAndGet()
+                                        byteCount.addAndGet(length.toLong())
+                                        try {
+                                            natEngine?.handlePacketFromTun(ByteBuffer.wrap(buffer, 0, length), length)
+                                        } catch (e: Exception) {
+                                            if (isServiceRunning.get()) {
+                                                Log.e(TAG, "Error processing packet from TUN: ${e.message}", e)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                } catch (e: IOException) {
-                    if (isServiceRunning.get()) {
-                        Log.e(TAG, "VPN read loop error: ${e.message}")
+                    } catch (e: IOException) {
+                        if (isServiceRunning.get()) {
+                            Log.e(TAG, "VPN read loop IO error: ${e.message}")
+                            try { Thread.sleep(500) } catch (_: InterruptedException) { break }
+                        }
+                    } catch (e: Exception) {
+                        if (isServiceRunning.get()) {
+                            Log.e(TAG, "VPN read loop unexpected error: ${e.message}", e)
+                            try { Thread.sleep(500) } catch (_: InterruptedException) { break }
+                        }
                     }
                 }
+                Log.i(TAG, "VPN read loop exited")
             }, "VpnNioThread").apply { start() }
 
             handler.post(statsUpdater)
             scheduleHealthCheck()
+            // Souhrnný stav VPN pro debugování přes nethunter-log
+            val mitmState = if (sharedPrefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)) "ON" else "OFF"
+            val proxyState = if (VpnProxyManager.isEnabled()) "ON (${VpnProxyManager.getActiveProxy()?.country ?: "?"})" else "OFF"
+            val aiState = if (getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE).getBoolean("ai_enabled", true)) "ON" else "OFF"
+            val adbState = if (isAdbActive) "yes (LAN excluded)" else "no"
+            Log.i(TAG, "=== VPN CONFIG ===")
+            Log.i(TAG, "MTU=$customMtu | DNS=$dnsServers | MITM=$mitmState | Proxy=$proxyState | AI=$aiState | ADB=$adbState")
+            Log.i(TAG, "IPv6=passthrough | HealthCheck=3fail/10s | cleartext=allowed")
             Log.i(TAG, "VPN started successfully with Java NAT Engine")
 
         } catch (e: Exception) {
@@ -520,6 +545,7 @@ class VpnCaptureService : VpnService() {
 
     private fun scheduleHealthCheck() {
         val checkCount = intArrayOf(0)
+        val failCount = intArrayOf(0)
         val healthChecker = object : Runnable {
             override fun run() {
                 if (!isServiceRunning.get()) return
@@ -529,15 +555,40 @@ class VpnCaptureService : VpnService() {
                 val pkts = packetCount.get()
                 val bytes = byteCount.get()
                 Log.i(TAG, "HEALTH CHECK #${checkCount[0]}: thread_alive=$threadAlive, engine=$engineActive, packets=$pkts, bytes=$bytes")
-                if (!threadAlive) {
-                    Log.e(TAG, "HEALTH CHECK: VPN read thread has DIED! Traffic will not flow.")
+                if (!threadAlive || !engineActive) {
+                    failCount[0]++
+                    if (failCount[0] >= 3) {
+                        Log.e(TAG, "HEALTH CHECK: VPN degraded for ${failCount[0]} checks. Restarting VPN...")
+                        restartVpn()
+                    } else {
+                        Log.w(TAG, "HEALTH CHECK: VPN degraded (attempt ${failCount[0]}/3), waiting before restart")
+                    }
+                } else {
+                    failCount[0] = 0
                 }
-                if (checkCount[0] <= 6) {
-                    handler.postDelayed(this, 5000)
-                }
+                handler.postDelayed(this, 10000)
             }
         }
-        handler.postDelayed(healthChecker, 5000)
+        handler.postDelayed(healthChecker, 10000)
+    }
+
+    private fun restartVpn() {
+        Log.w(TAG, "Restarting VPN to recover from degraded state...")
+        try {
+            stopVpn()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during restart stopVpn: ${e.message}")
+        }
+        try {
+            Thread.sleep(1000)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        if (!isServiceRunning.get()) {
+            synchronized(vpnSync) {
+                startVpn()
+            }
+        }
     }
 
     private fun isWirelessAdbActive(): Boolean {
@@ -642,22 +693,34 @@ class VpnCaptureService : VpnService() {
     private fun getUnderlyingDnsServers(): List<String> {
         val dnsList = mutableListOf<String>()
         try {
-            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-            if (connectivityManager != null) {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return dnsList
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val activeNetwork = connectivityManager.activeNetwork
+                if (activeNetwork != null) {
+                    val caps = connectivityManager.getNetworkCapabilities(activeNetwork)
+                    if (caps != null) {
+                        val lp = connectivityManager.getLinkProperties(activeNetwork)
+                        lp?.dnsServers?.forEach { dns ->
+                            val ip = dns.hostAddress
+                            if (!ip.isNullOrEmpty() && !ip.contains(":")) {
+                                dnsList.add(ip)
+                            }
+                        }
+                    }
+                }
+            } else {
                 for (network in connectivityManager.allNetworks) {
-                    val capabilities = connectivityManager.getNetworkCapabilities(network)
-                    if (capabilities != null && (
-                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
-                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                    val caps = connectivityManager.getNetworkCapabilities(network)
+                    if (caps != null && (
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
                     )) {
                         val lp = connectivityManager.getLinkProperties(network)
-                        if (lp != null) {
-                            for (dns in lp.dnsServers) {
-                                val ip = dns.hostAddress
-                                if (!ip.isNullOrEmpty() && !ip.contains(":")) {
-                                    dnsList.add(ip)
-                                }
+                        lp?.dnsServers?.forEach { dns ->
+                            val ip = dns.hostAddress
+                            if (!ip.isNullOrEmpty() && !ip.contains(":")) {
+                                dnsList.add(ip)
                             }
                         }
                     }

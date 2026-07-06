@@ -1,7 +1,7 @@
 package com.linux_core.ui.vpn
-
 import android.content.ClipData
 import android.content.ClipboardManager
+import com.linux_core.BuildConfig
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.*
@@ -101,7 +101,7 @@ fun VpnSecurityTab() {
     var mitmSnippets by remember { mutableStateOf(emptyList<Pair<Int, String>>()) }
     var mitmEnabled by remember { mutableStateOf(
         context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
-            .getBoolean("enable_mitm", true)
+            .getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)
     ) }
 
     // Periodic logger & stats updater
@@ -116,7 +116,7 @@ fun VpnSecurityTab() {
             bytesDownloaded = VpnLogManager.getTotalBytesDownloaded()
             topAppsList = VpnLogManager.getTopApps()
             mitmEnabled = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
-                .getBoolean("enable_mitm", true)
+                .getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)
             
             // Load active sockets
             if (VpnCaptureService.isRunning()) {
@@ -633,7 +633,7 @@ fun VpnSecurityTab() {
                                 fontFamily = FontFamily.Monospace,
                                 modifier = Modifier.padding(start = 8.dp, top = 2.dp)
                             )
-                            Divider(modifier = Modifier.padding(top = 6.dp), color = Color(0x22FFFFFF))
+                            HorizontalDivider(modifier = Modifier.padding(top = 6.dp), color = Color(0x22FFFFFF))
                         }
                     }
                 }

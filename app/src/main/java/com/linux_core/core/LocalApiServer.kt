@@ -440,6 +440,7 @@ object LocalApiServer {
 
     private fun handleVibrate(context: Context, body: String, out: OutputStream) {
         val durationMs = body.trim().toLongOrNull() ?: 500L
+        @Suppress("DEPRECATION")
         val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
@@ -658,38 +659,37 @@ object LocalApiServer {
                         cellObj.put("timestamp", cell.timestampMillis)
 
                         try {
+                            @Suppress("DEPRECATION")
                             val ci = cell.cellIdentity
-                            if (ci != null) {
-                                when (ci) {
-                                    is CellIdentityGsm -> {
-                                        cellObj.put("mcc", ci.mcc)
-                                        cellObj.put("mnc", ci.mnc)
-                                        cellObj.put("tac_lac", ci.lac)
-                                        cellObj.put("cid", ci.cid)
-                                        cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
-                                    }
-                                    is CellIdentityLte -> {
-                                        cellObj.put("mcc", ci.mcc)
-                                        cellObj.put("mnc", ci.mnc)
-                                        cellObj.put("tac_lac", ci.tac)
-                                        cellObj.put("cid", ci.ci)
-                                        cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
-                                    }
-                                    is CellIdentityWcdma -> {
-                                        cellObj.put("tac_lac", ci.lac)
-                                        cellObj.put("cid", ci.cid)
-                                        cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
-                                    }
-                                    is CellIdentityNr -> {
-                                        cellObj.put("tac_lac", ci.tac)
-                                        cellObj.put("cid", ci.nci)
-                                        cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
-                                    }
-                                    is CellIdentityTdscdma -> {
-                                        cellObj.put("tac_lac", ci.lac)
-                                        cellObj.put("cid", ci.cid)
-                                        cellObj.put("pci_psc", ci.cpid.takeIf { it != Int.MAX_VALUE })
-                                    }
+                            when (ci) {
+                                is CellIdentityGsm -> {
+                                    cellObj.put("mcc", ci.mcc)
+                                    cellObj.put("mnc", ci.mnc)
+                                    cellObj.put("tac_lac", ci.lac)
+                                    cellObj.put("cid", ci.cid)
+                                    cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
+                                }
+                                is CellIdentityLte -> {
+                                    cellObj.put("mcc", ci.mcc)
+                                    cellObj.put("mnc", ci.mnc)
+                                    cellObj.put("tac_lac", ci.tac)
+                                    cellObj.put("cid", ci.ci)
+                                    cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
+                                }
+                                is CellIdentityWcdma -> {
+                                    cellObj.put("tac_lac", ci.lac)
+                                    cellObj.put("cid", ci.cid)
+                                    cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
+                                }
+                                is CellIdentityNr -> {
+                                    cellObj.put("tac_lac", ci.tac)
+                                    cellObj.put("cid", ci.nci)
+                                    cellObj.put("pci_psc", ci.pci.takeIf { it != Int.MAX_VALUE })
+                                }
+                                is CellIdentityTdscdma -> {
+                                    cellObj.put("tac_lac", ci.lac)
+                                    cellObj.put("cid", ci.cid)
+                                    cellObj.put("pci_psc", ci.cpid.takeIf { it != Int.MAX_VALUE })
                                 }
                             }
                         } catch (_: Exception) {}
@@ -717,6 +717,7 @@ object LocalApiServer {
 
     private fun getNetworkTypeName(tm: TelephonyManager): String {
         return try {
+            @Suppress("DEPRECATION")
             when (tm.networkType) {
                 TelephonyManager.NETWORK_TYPE_NR -> "5G NR"
                 TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE"

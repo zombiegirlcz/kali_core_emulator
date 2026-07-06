@@ -102,7 +102,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
             db.execSQL("""
                 INSERT INTO session_history (app_name, remote_ip, remote_port, domain, total_bytes, max_entropy, ai_strategy_index, risk_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, arrayOf(appName, ip, port, domain ?: "unknown", bytes, entropy, strategy, if (strategy > 0) 100 else 0))
+            """, arrayOf<Any>(appName, ip, port, domain ?: "unknown", bytes, entropy, strategy, if (strategy > 0) 100 else 0))
             db.execSQL("DELETE FROM session_history WHERE timestamp < datetime('now', '-1 day')")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to log session: ${e.message}")

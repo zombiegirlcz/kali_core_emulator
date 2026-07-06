@@ -282,3 +282,134 @@ HTTP API endpoint: `GET /app/logs?limit=N`
 - **Odstranění duplicitního unwrap bloku:** Redundantní druhý `clientEngine.unwrap` + `writeToServer` blok s double-flip chybou byl odstraněn
 - **Adaptivní CPU backoff:** `proxyLoop` nyní spí 1ms při aktivním provozu a 15ms při nečinnosti (dříve konstantně 1ms = burn CPU)
 
+## Session 2026-07-05 — VPN/MITM debugging
+
+### Problém: VPN zabíjí internet na novém zařízení
+
+- GitHub načetl úvodní stránku (HTML), ale CSS/JS z CDN ne — QUIC (HTTP/3) dělal problémy
+- `curl` z terminálu fungoval, protože app je v `addDisallowedApplication` → obchází VPN
+- Chrome na telefonu jel přes NAT engine → pomalejší a timeouty
+
+### Opravy provedené v této session
+
+| Fix | Soubor | Popis |
+|-----|--------|-------|
+| QUIC blokování | `VpnNatEngine.kt:251` | UDP/443 drop (nyní jen když MITM ON) |
+| DNS UDP zápis | `VpnNatEngine.kt:312-316` | První UDP write v BLOCKING režimu (API>33 non-blocking write vrací 0) |
+| TCP SYN_RECEIVED timeout | `VpnNatEngine.kt:1068` | Session stuck v SYN_RECEIVED >15s se ukončí |
+| Diagnostika spojení | `VpnNatEngine.kt:705` | Loguje čas navázání WAN spojení |
+| `ENABLE_MITM` default `false` | `app/build.gradle.kts:28` | MITM defaultně vypnutý |
+| `cleartextTrafficPermitted` | `network_security_config.xml:3` | Povolen HTTP pro testování |
+| Protect() fail → IOException | `VpnNatEngine.kt:297` | Místo tichého pokračování do smyčky |
+| IPv6 passthrough | `VpnNatEngine.kt` | IPv6 pakety se propouští do TUN |
+| Zdravotní check | `VpnCaptureService.kt` | 3 faily/10s místo 1 fail/5s |
+| DNS na API 33+ | `VpnCaptureService.kt` | `activeNetwork` místo deprecated `allNetworks` |
+| Deprecation warnings | celý projekt | API 33+ deprecations, compose, `Divider`→`HorizontalDivider`, `ClipboardManager`→`LocalClipboard`, `startActivityForResult`→`rememberLauncherForActivityResult`, `Icons.Default.ShowChart`→`Icons.AutoMirrored.Filled.ShowChart`, `LinearProgressIndicator` progress lambda |
+
+### MITM engine — zásadní bugy nalezené a opravené
+
+1. **`RootCaInstaller.resolvePassword()` vracel `null`** — security audit smazal hardcoded `"nethunter-dev"` fallback (to je heslo k `assets/certs/mitm-ca.p12`, ne shell prikaz). P12 soubor v assetch ale porad pouziva heslo `"nethunter-dev"`. Debug build bez nej vracel `null` → CA private key se nenacte. Fix: obnoven debug fallback `"nethunter-dev"`.
+
+2. **`createServerSslContext()` ukládal CA key jako private key pro forged cert** — `ks.setKeyEntry(ALIAS, caKey, ...)` uložil CA private key, ale forged cert měl `template.publicKey` (serverův RSA klíč). Privátní klíč nesedí k certu → TLS 1.3 podpis (ECDHE signature) vždy selže → Chrome zahodí spojení. Fix: generuje se vlastní RSA keypair, cert má `keyPair.public`, keystore ukládá `keyPair.private`.
+
+3. **`onClientData()` zavřel `socketChannel` a MITM engine neposlal `initialClientHello` na server** — při pádu do passthrough se initial ClientHello (TLS handshake start) nikdy nedostal k reálnému serveru → server zahodil spojení. Fix: v `passthroughLoop()` se nejdřív pošle `initialClientHello` do `serverChannel`.
+
+4. **MITM selhání → `close()` místo passthrough** — když `connectServer()` nebo `isAvailable()` selhalo, volalo se `close()` (RST) místo `fallingBackToPassthrough()`. Fix: oba případy volají `fallingBackToPassthrough()` který reconnectne server.
+
+5. **Stav k 2026-07-05:** MITM engine stále nefunguje — všechny TLS spojení padají do passthrough s `SNI=null`. Pravděpodobná příčina: `TlsClientHelloParser.extractSni()` vrací null nebo `isTlsClientHello()` nedetekuje TLS. Po pádu do passthrough internet jede (data se proxují), ale při MITM ON je QUIC blokovaný → pomalejší.
+
+### Nové funkce přidané v této session
+
+- **`MitmCertSigner.signWithPublicKey()`** — varianta `sign()` která bere přímo `PublicKey` místo template certu
+- **`RootCaInstaller.createCaptureOnlySslContext()`** — generuje RSA keypair, vytvoří cert podepsaný CA, SSLContext bez spojení k serveru
+- **`VpnSettings.isMitmCaptureOnly()`** — přepínač pro capture-only režim (default `false`)
+- **Capture-only MITM** (`TlsMitmEngine.kt`): `startCaptureOnly()` + `captureLoop()` — dešifruje lokálně, neposílá nic ven, timeout 10s
+
+### Doporučený postup při selhání MITM
+
+1. Zkontrolovat `vpn-cli mitm status` jestli je MITM ON
+2. Zkontrolovat `nethunter-log -g "TlsMitm"` — hledat `SNI=null` nebo `falling back to passthrough`
+3. Zkontrolovat `nethunter-log -g "RootCaInstaller"` — hledat chyby načítání CA
+4. Ověřit že `assets/certs/mitm-ca.crt` a `mitm-ca.p12` existují
+5. Ověřit že CA je nainstalovaná v trust store zařízení
+6. Pokud vše selže: `vpn-cli mitm off` pro návrat k normálnímu provozu
+
+## Session 2026-07-06 — MITM stále mrtvý, nalezen double-flip bug
+
+### Diagnóza
+
+V logu:
+```
+MITM SNI=null for port 45406
+Server handshake failed: status=NEED_UNWRAP, cipher=SSL_NULL_WITH_NULL_NULL
+Falling back to passthrough for port 45406
+```
+
+- `SNI=null` i po opravě `TlsClientHelloParser.extractSni()` — parsování funguje (falešná stopa)
+- **Skutečný bug:** `writeToServer()` v `TlsMitmEngine.kt:804` volá `buf.flip()` — ALE všichni volající už flip volají před voláním:
+  - `runEngineHandshake.writeToTransport` → `buf.flip(); writeToServer(buf)`
+  - `driveServerHandshake` → `netOut.flip(); writeToServer(netOut)`
+  - `handleAppData` → `serverNetOut.flip(); writeToServer(serverNetOut)`
+- Výsledek: **double-flip** — po prvním flippu je position=0, limit=oldPos; po druhém flippu je position=0, limit=0 → `buf.hasRemaining()` vrací false → **ClientHello se nikdy nepošle na server** → server handshake zůstává viset v NEED_UNWRAP navždy (až do timeoutu 800 iterací)
+- `TlsClientHelloParser.extractSni()` oprava (offset+6 místo offset+5 + `pos+=4` místo `pos+=3`) je správná, ale nebyla nutná — `isTlsClientHello` a `extractSni` teď čtou sessionIdLen ze stejného offsetu 43
+
+### Opravy v této session
+
+| Fix | Soubor | Popis |
+|-----|--------|-------|
+| Double-flip `writeToServer` | `TlsMitmEngine.kt:807` | Odebráno `buf.flip()` — všichni volající už flip provedli |
+| `initialClientHello` forwarding | `TlsMitmEngine.kt:973-986` | Při pádu do passthrough se ClientHello pošle do serverChannel před vstupem do smyčky |
+| `extractSni` off-by-one | `TlsClientHelloParser.kt:32-35` | Session ID length čten z offset+43 místo offset+42; handshake length čten z [6],[7],[8] místo [5],[6],[7] |
+
+### Stav k 2026-07-06
+
+- ✅ `writeToServer` double-flip opraven — ClientHello se pošle na server
+- ✅ `initialClientHello` forwarding v passthrough funguje (log: `Forwarded initial TLS ClientHello (536B) for port 45406`)
+- ✅ `extractSni` off-by-one opraven
+- ❓ APK s opravou existuje, ale zatím netestováno na zařízení
+- Stále nevyřešeno: pokud MITM handshake selže, QUIC/443 je blokovaný → Chrome pomalejší
+
+### Relevantní log (2026-07-06, build #2, PID 24759)
+
+```
+TLS MITM started for port 45406 (captureOnly=false)
+MITM SNI=null for port 45406 (captureOnly=false)
+Connected to 142.251.141.174:443 for MITM
+serverEngine configured with SNI=www.google.com, originalSNI=null, fallbackPref=www.google.com
+Server handshake failed: status=NEED_UNWRAP, cipher=SSL_NULL_WITH_NULL_NULL
+Falling back to passthrough for port 45406 SNI=null
+TLS MITM passthrough established for port 45406 (SNI=null)
+Forwarded initial TLS ClientHello (536B) for port 45406  ← tuhle řádku starý build neměl
+passthrough active port=45406 totalForwarded=8804
+```
+
+⚠️ Důležité: `build` bez předchozího `upload_src` použije starou verzi zdrojáků na Volume.
+Vždy spouštět: `modal run modal_build.py::upload_src && modal run modal_build.py::build`
+
+## Session 2026-07-06 (b) — VPN outage při MITM ON
+
+### Root cause (po double-flip fixu)
+
+1. **Poisoned socket v passthrough** — `fallingBackToPassthrough()` reuse kanálu s MITM ClientHello na drátu → druhý browser Hello = neplatné TLS
+2. **Non-blocking write drop** — `writeToServer()` ukončil smyčku při `w=0`, zahodil neodeslaná data → `NEED_UNWRAP` navždy
+3. **Chybějící TCP ACK** při MITM intercept → ClientHello retransmit duplicity
+4. **QUIC blokovaný při jakémkoli `enable_mitm=true`** i když MITM selže → total outage v Chrome
+
+### Opravy (build #6)
+
+| Fix | Soubor | Popis |
+|-----|--------|-------|
+| Fresh socket passthrough | `TlsMitmEngine.kt` | Vždy close + reconnect před passthrough |
+| `writeFully()` | `TlsMitmEngine.kt` | Spolehlivý zápis; blocking kanál během handshake |
+| `sendTcpAck` na MITM cestách | `VpnNatEngine.kt` | ACK před return při hijacku |
+| Fail-fast handshake | `TlsMitmEngine.kt` | Server-side max 50 iterací (~250 ms) |
+| Protect abort | `TlsMitmEngine.kt` | `protect()` failure → null channel |
+| QUIC gating | `VpnNatEngine.kt` | Blok jen když `TlsMitmEngine.shouldBlockQuic()` (proxyLoop aktivní) |
+| MITM log default | `VpnCaptureService.kt` | Sjednoceno s `BuildConfig.ENABLE_MITM` |
+
+### Očekávané chování po opravě
+
+- MITM selže → passthrough s čistým socketem → Chrome funguje (TCP)
+- MITM úspěch → `isActivelyDecrypting=true` → QUIC blokován pro force TCP
+- Log: `passthrough active totalForwarded=N` roste, nebo `Server cert subject:` při plném MITM
+
