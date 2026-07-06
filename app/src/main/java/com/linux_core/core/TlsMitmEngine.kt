@@ -1,6 +1,7 @@
 package com.linux_core.core
 
 import android.net.VpnService
+import android.os.Build
 import android.util.Log
 import com.linux_core.security.RootCaInstaller
 import com.linux_core.security.TlsClientHelloParser
@@ -252,12 +253,14 @@ class TlsMitmSession(
             }
 
             Log.i(TAG, "TLS MITM established for port $clientPort (SNI=$sni)")
-            sessionAlpn = try {
-                clientEngine?.session?.applicationProtocol?.takeIf { it.isNotBlank() }
-                    ?: serverEngine?.session?.applicationProtocol?.takeIf { it.isNotBlank() }
-            } catch (_: Exception) {
-                null
-            }
+            sessionAlpn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    clientEngine?.applicationProtocol?.takeIf { it.isNotBlank() }
+                        ?: serverEngine?.applicationProtocol?.takeIf { it.isNotBlank() }
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
             trafficStore.logSessionEvent(
                 clientPort,
                 sessionAlpn,
