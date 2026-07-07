@@ -579,7 +579,16 @@ fun MainScreen() {
                     }
                 }
 
-                    // Docker Hub custom image card
+                }
+
+                // Docker Hub custom image card — 2nd row, centered
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Spacer(modifier = Modifier.weight(0.5f))
                     Card(
                         modifier = Modifier
                             .weight(1f)
@@ -589,7 +598,8 @@ fun MainScreen() {
                         shape = RoundedCornerShape(14.dp),
                         border = BorderStroke(
                             if (isDockerMode) 2.dp else 1.dp,
-                            if (isDockerMode) Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF))) else Brush.horizontalGradient(colors = listOf(Color(0xFF1E2026), Color(0xFF1E2026)))
+                            if (isDockerMode) Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
+                            else Brush.horizontalGradient(colors = listOf(Color(0xFF1E2026), Color(0xFF1E2026)))
                         ),
                         colors = CardDefaults.cardColors(
                             containerColor = if (isDockerMode) Color(0xF20F111A) else Color(0xE608090D)
@@ -613,17 +623,18 @@ fun MainScreen() {
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Cloud,
-                                    contentDescription = "Docker Hub",
-                                    tint = if (isDockerMode) Color(0xFF00FF41) else Color.Gray,
-                                    modifier = Modifier.size(28.dp)
-                                )
+                                Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                                    // Docker whale icon (text-based)
+                                    Text(
+                                        text = "🐳",
+                                        fontSize = 24.sp
+                                    )
+                                }
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 text = "DOCKER HUB",
-                                fontSize = 12.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isDockerMode) Color(0xFF00FF41) else Color.LightGray,
                                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -637,6 +648,7 @@ fun MainScreen() {
                             )
                         }
                     }
+                    Spacer(modifier = Modifier.weight(0.5f))
 
                 // Docker Hub custom image input (shown when Docker Hub card is selected)
                 if (isDockerMode) {

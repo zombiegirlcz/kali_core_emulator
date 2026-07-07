@@ -368,7 +368,7 @@ object LocalApiServer {
                 path == "/vpn/mitm/sni-fallback" && method == "GET" -> handleVpnMitmSniFallbackGet(context, out)
                 path == "/app/logs/level" && method == "GET" -> handleAppLogsLevel(context, out)
                 path == "/app/logs/level" && method == "POST" -> handleAppLogsLevelSet(context, body, out)
-                path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(path, out)
+                path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(context, path, out)
                 path == "/editor/start" && method == "POST" -> handleEditorStart(context, out)
                 path == "/editor/stop" && method == "POST" -> handleEditorStop(context, out)
                 path == "/editor/status" && method == "GET" -> handleEditorStatus(context, out)
@@ -450,6 +450,10 @@ object LocalApiServer {
         val durationMs = body.trim().toLongOrNull() ?: 500L
         @Suppress("DEPRECATION")
         val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        if (!vibrator.hasVibrator()) {
+            sendResponse(out, 200, "OK", "{\"status\":\"no_vibrator\",\"duration\":$durationMs,\"error\":\"Device has no vibrator hardware\"}")
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
         } else {
@@ -1389,11 +1393,19 @@ object LocalApiServer {
                 }
                 cmd.equals("scan", ignoreCase = true) -> {
                     val scanSuccess = wifiManager.startScan()
-                    // Give scan a moment to complete
-                    try { Thread.sleep(500) } catch (e: Exception) {}
+                    // Android needs time + Location ON + Location runtime permission
+                    try {
+                        // Poll up to ~3s for results
+                        repeat(6) {
+                            Thread.sleep(500)
+                            if (wifiManager.scanResults.isNotEmpty()) return@repeat
+                        }
+                    } catch (e: Exception) {}
                     val results = wifiManager.scanResults
+                    val empty = results.isEmpty()
                     val json = JSONObject().apply {
                         put("scan_complete", scanSuccess)
+                        put("empty", empty)
                         val arr = org.json.JSONArray()
                         val seen = mutableSetOf<String>()
                         for (r in results) {
@@ -1414,7 +1426,9 @@ object LocalApiServer {
                     sendResponse(out, 200, "OK", json)
                 }
                 cmd.startsWith("connect:", ignoreCase = true) -> {
-                    val ssid = cmd.removePrefix("connect:").removePrefix("CONNECT:").trim()
+                    val parts = cmd.removePrefix("connect:").removePrefix("CONNECT:").trim().split(":", limit=2)
+                    val ssid = parts[0].trim()
+                    val password = if (parts.size > 1) parts[1].trim() else ""
                     if (ssid.isEmpty()) {
                         sendResponse(out, 400, "Bad Request", "{\"error\":\"SSID cannot be empty\"}")
                         return
@@ -1422,7 +1436,12 @@ object LocalApiServer {
                     @Suppress("DEPRECATION")
                     val conf = android.net.wifi.WifiConfiguration().apply {
                         SSID = "\"$ssid\""
-                        allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+                        if (password.isNotEmpty()) {
+                            allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.WPA_PSK)
+                            preSharedKey = "\"$password\""
+                        } else {
+                            allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+                        }
                     }
                     val netId = wifiManager.addNetwork(conf)
                     if (netId == -1) {
@@ -1684,21 +1703,58 @@ object LocalApiServer {
         }
     }
 
-    private fun handleAppLogs(path: String, out: OutputStream) {
+    private fun handleAppLogs(context: Context, path: String, out: OutputStream) {
         try {
             val params = parseQueryParams(path)
-            val limit = params["limit"]?.toIntOrNull() ?: 100
-            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "-t", limit.toString()))
+            val limit = params["limit"]?.toIntOrNull() ?: 500
+            val keyboardOnly = params["keyboard_only"]?.toIntOrNull() == 1
+            val pid = android.os.Process.myPid().toString()
+            val prefs = context.getSharedPreferences("log_settings", Context.MODE_PRIVATE)
+            val level = prefs.getInt("log_level", 3)
+            // Map level 1-5 to exact logcat priority: 1=E, 2=W, 3=I, 4=D, 5=V
+            val priority = when (level) {
+                1 -> 'E'
+                2 -> 'W'
+                3 -> 'I'
+                4 -> 'D'
+                5 -> 'V'
+                else -> 'I'
+            }
+            // Build logcat command with PID + exact priority filter (E:E, W:W, etc.)
+            val logcatCmd = arrayListOf(
+                "logcat", "-d", "-v", "time", "-t", limit.toString(),
+                "--pid", pid,
+                "$priority:$priority"  // exact priority
+            )
+            val process = Runtime.getRuntime().exec(logcatCmd.toTypedArray())
             val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val sb = java.lang.StringBuilder()
+            val sb = StringBuilder()
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 sb.append(line).append("\n")
             }
             reader.close()
             process.destroy()
-
-            val raw = sb.toString().toByteArray(Charsets.UTF_8)
+            // If limit reached with no results, fall back to unfiltered logcat
+            if (sb.isEmpty()) {
+                val fallback = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "-t", "200"))
+                fallback.inputStream.bufferedReader().use { r ->
+                    r.forEachLine { sb.append(it).append("\n") }
+                }
+                fallback.destroy()
+            }
+            // Client-side keyboard tag filtering (logcat -v time format: tag after priority)
+            val keyboardTags = setOf("inputreader", "inputdispatcher", "inputmanager", "keyboard", "touchinjector")
+            val filtered = if (keyboardOnly) {
+                sb.lines().filter { line ->
+                    keyboardTags.any { tag -> line.lowercase().contains(tag) }
+                }.joinToString("\n")
+            } else {
+                sb.lines().filter { line ->
+                    !keyboardTags.any { tag -> line.lowercase().contains(tag) }
+                }.joinToString("\n")
+            }
+            val raw = filtered.toByteArray(Charsets.UTF_8)
             val headers = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: text/plain; charset=utf-8\r\n" +
                     "Content-Length: ${raw.size}\r\n" +

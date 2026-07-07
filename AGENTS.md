@@ -43,6 +43,8 @@ Jednomodulová Android aplikace (`:app`), která spouští Kali/ParrotOS v neroo
 | 13338 | AI agent démon (`nethunter_agent.py`) — ReAct LLM agent s nástrojem `analyze_network` |
 | 13339 | VPN bypass proxy — směruje příkazy mimo AdGuard zachytávání |
 
+> **Note (v4.3):** `VpnProxyManager` byl refaktorován — odstraněna SOCKS5 rotace (pool 6 proxy + 3 režimy), nahrazena jedním custom `IP:Port` fieldem pro TCP tunnel. Proxy je čistě volitelná; není-li nastavena, traffic jde direct.
+
 ### Hlavní třídy
 
 | Třída | Role |
@@ -412,4 +414,29 @@ Vždy spouštět: `modal run modal_build.py::upload_src && modal run modal_build
 - MITM selže → passthrough s čistým socketem → Chrome funguje (TCP)
 - MITM úspěch → `isActivelyDecrypting=true` → QUIC blokován pro force TCP
 - Log: `passthrough active totalForwarded=N` roste, nebo `Server cert subject:` při plném MITM
+
+---
+
+## Session 2026-07-07 — Proxy refactoring (SOCKS5 → Custom IP)
+
+### Problém
+- 6 hardcoded SOCKS5 proxy nodes s rotací (Static/Random/Time-loop) byly overengineered
+- SOCKS5 handshake (greeting, auth, connect request) přidával zbytečnou složitost a latency
+- Většina uživatelů potřebuje buď direct, nebo vlastní VPS endpoint
+
+### Změny
+
+| Soubor | Co se změnilo |
+|--------|---------------|
+| `VpnProxyManager.kt` | Smazán `proxyPool`, `rotationMode`, `rotationInterval`, `lastRotationTime`, `rotationThread`, `measureProxyLatencies()`, `triggerRandomRotation()`. Přidáno `setCustomProxy(ipPort)` + `getCustomProxy()` |
+| `VpnNatEngine.kt` | Odstraněn SOCKS5 handshake blok (~40 řádků). Nahrazen přímým `connect()` na custom IP:Port. Fallback při selhání zůstává |
+| `VpnSettingsTab.kt` | Místo 3 dropdownů (režim, node, interval) + slideru → jedno `OutlinedTextField` pro `IP:Port` s validací |
+| `VpnDashboardTab.kt` | Místo vlajky+zamě+režimu rotace → `🌐 Custom Proxy IP:Port` |
+| `VpnCaptureService.kt` | Opravena reference `.country` → `getCustomProxy()` |
+| `OffensiveEngine.kt` | Odstraněno `VpnProxyManager.triggerRandomRotation()` |
+
+### Chování
+- Proxy je **čistě bonusová** — není-li nastavena custom IP, traffic jde direct
+- Pokud proxy selže, automatický fallback na direct
+- Build: **BUILD SUCCESSFUL** (Modal, 1m 32s, 39 tasks)
 

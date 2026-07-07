@@ -251,10 +251,34 @@ This release implements secure peer-to-peer overlay capabilities, geo-proxy loop
 - **ECDH Cryptography:** Secures communications between peers using AES-128-GCM, with keys derived on-the-fly via native Elliptic Curve Diffie-Hellman (ECDH) key agreements.
 - **Serverless Pairing:** Allows direct peer pairing by pasting simple connection strings containing Node IDs, names, public keys, and resolved WAN addresses.
 
-### 2. High-Performance Proxy Loop Refactoring
+### 2. High-Performance SOCKS5 Proxy Loop (original)
 - **Interval Control:** Replaced unstable sleep-modulo logic with a volatile timestamp-tracking loop to guarantee exact rotation intervals.
 - **Interactive Geolocation Nodes:** Upgraded the "Worldwide Rotating Proxy" card to display country flags, resolved IP details, and segmented seg-selectors.
 - **Concurrent Ping Latency Checker:** Added a "PING ALL" diagnostics button, resolving all proxy nodes' latencies concurrently and displaying color-coded speed tags.
+
+### 3. Custom IP Proxy (v4.2+)
+- **Removed SOCKS5 Pool & Rotation:** Replaced 6 hardcoded SOCKS5 proxy nodes with rotation modes (Static/Random/Time-loop) with a single **custom IP:Port** field.
+- **Simplified Tunnel:** All TCP traffic can be forwarded directly to a user-specified endpoint (e.g. a personal VPS) via raw TCP tunnel — no SOCKS5 handshake, no rotation logic.
+- **Fallback to Direct:** Proxy is completely optional. When no custom IP is set, traffic goes direct. When proxy fails, it falls back to direct connection automatically.
+- **UI Cleanup:** Settings tab now shows a simple text input (`IP:Port`) instead of dropdowns for rotation mode, node selection, and interval slider.
+
+**Motivation:** The SOCKS5 rotation was overengineered for most use cases. Users who need a static proxy (their own VPS, a VPN gateway, etc.) just enter the IP:Port and all traffic tunnels through it. Everyone else gets direct connection — zero configuration needed.
+
+---
+
+## 📈 Version 4.3 Changelog
+
+This release replaces the complex SOCKS5 proxy rotation with a simple custom IP:Port tunnel, and adds various MITM stability fixes:
+
+### 1. Custom IP Proxy (replaces SOCKS5 rotation)
+- **Removed:** 6 hardcoded SOCKS5 proxies, 3 rotation modes (Static/Random/Time-loop), interval timer, latency checker
+- **Added:** Single text field for custom `IP:Port` — all TCP traffic tunnels directly to that endpoint
+- **Simplified Engine:** Removed SOCKS5 greeting/connect/response handshake from VpnNatEngine — replaced with raw TCP forward
+- **Graceful Fallback:** If custom proxy connection fails, traffic automatically falls back to direct
+- **Cleaner UI:** Proxy settings reduced from 3 dropdowns + slider to a single text input
+
+### 2. MITM & Stability Fixes
+- (existing fixes from 4.2 — see below)
 
 ---
 

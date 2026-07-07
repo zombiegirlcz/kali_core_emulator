@@ -1,19 +1,14 @@
 package com.linux_core.ui.editor
 
-import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Bitmap
-import android.util.Log
-import android.view.ViewGroup
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +18,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,7 +29,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -57,7 +52,6 @@ private data class EditorInfo(
     val binary: String
 )
 
-@SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorTab() {
@@ -75,20 +69,12 @@ fun EditorTab() {
     var info by remember { mutableStateOf<EditorInfo?>(null) }
     var showPasswordSheet by remember { mutableStateOf(false) }
     var showFirstTimeDialog by remember { mutableStateOf(false) }
-    val webViewRef = remember { mutableStateOf<WebView?>(null) }
-
-    fun bearerHeaders(): Map<String, String> {
-        val token = context.getSharedPreferences("api_security", android.content.Context.MODE_PRIVATE)
-            .getString("auth_token", null).orEmpty()
-        return if (token.isNotEmpty()) mapOf("Authorization" to "Bearer $token") else emptyMap()
-    }
 
     suspend fun callEditor(method: String, path: String): String = withContext(Dispatchers.IO) {
         val conn = (URL("http://127.0.0.1:1337$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 4000
             readTimeout = 12000
-            bearerHeaders().forEach { (k, v) -> setRequestProperty(k, v) }
         }
         try {
             val code = conn.responseCode
@@ -106,7 +92,6 @@ fun EditorTab() {
             val raw = callEditor("GET", "/editor/status")
             val obj = JSONObject(raw)
             val s = obj.optString("status", "unknown")
-            // Detect "binary not found" from embedded error objects
             val errorOutput = obj.optString("output", "") + obj.optString("error", "")
             state = when {
                 s == "running" -> EditorState.Running
@@ -126,7 +111,7 @@ fun EditorTab() {
                 else -> "Status: $s"
             }
         } catch (e: Exception) {
-            Log.w(TAG, "refreshStatus failed: ${e.message}")
+            statusText = "Status check failed: ${e.message}"
         }
     }
 
@@ -149,7 +134,7 @@ fun EditorTab() {
                 Toast.makeText(context, "Password not yet available — start the editor first", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "loadPassword failed: ${e.message}")
+            statusText = "Password load failed: ${e.message}"
         }
     }
 
@@ -165,7 +150,7 @@ fun EditorTab() {
                 binary = obj.optString("binary", "/opt/code-server/bin/code-server")
             )
         } catch (e: Exception) {
-            Log.w(TAG, "loadInfo failed: ${e.message}")
+            statusText = "Info load failed: ${e.message}"
         }
     }
 
@@ -179,7 +164,6 @@ fun EditorTab() {
                 state = EditorState.Error
                 statusText = "Start failed: ${obj.optString("error")}"
             } else {
-                // Poll until running or timeout (~10s)
                 var attempts = 0
                 while (attempts < 20) {
                     delay(500)
@@ -205,18 +189,25 @@ fun EditorTab() {
         }
     }
 
-    // Initial load
+    fun openInBrowser() {
+        try {
+            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(EDITOR_URL))
+            context.startActivity(browserIntent)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Cannot open browser: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     LaunchedEffect(Unit) {
         loadInfo()
         refreshStatus()
         if (state == EditorState.Running) loadPassword(showSheet = false)
     }
 
-    // Status pill colour
     val pillColor = when (state) {
         EditorState.Running -> accentGreen
         EditorState.Starting -> accentYellow
-        EditorState.NotInstalled -> Color(0xFFFF9800) // orange
+        EditorState.NotInstalled -> Color(0xFFFF9800)
         EditorState.Stopped -> Color.Gray
         EditorState.Error -> accentRed
     }
@@ -233,7 +224,6 @@ fun EditorTab() {
             .fillMaxSize()
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        // ===== Status pill =====
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -263,7 +253,6 @@ fun EditorTab() {
             )
         }
 
-        // ===== Control panel =====
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
@@ -275,116 +264,120 @@ fun EditorTab() {
 
                 Spacer(Modifier.height(12.dp))
 
-                if (state == EditorState.NotInstalled) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                state = EditorState.Starting
-                                statusText = "Installing code-server…"
-                                val raw = callEditor("POST", "/editor/install")
-                                val obj = JSONObject(raw)
-                                if (obj.has("error")) {
-                                    state = EditorState.Error
-                                    statusText = "Install failed: ${obj.optString("error")}"
-                                } else {
-                                    statusText = "Install succeeded. You can now start the editor."
-                                    state = EditorState.Stopped
+                when (state) {
+                    EditorState.NotInstalled -> {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    state = EditorState.Starting
+                                    statusText = "Installing code-server…"
+                                    val raw = callEditor("POST", "/editor/install")
+                                    val obj = JSONObject(raw)
+                                    if (obj.has("error")) {
+                                        state = EditorState.Error
+                                        statusText = "Install failed: ${obj.optString("error")}"
+                                    } else {
+                                        statusText = "Install succeeded. You can now start the editor."
+                                        state = EditorState.Stopped
+                                        refreshStatus()
+                                    }
                                 }
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
-                    ) {
-                        Icon(Icons.Default.Code, contentDescription = null, tint = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "INSTALL CODE-SERVER",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                } else if (state == EditorState.Stopped || state == EditorState.Error) {
-                    Button(
-                        onClick = { startEditor() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF008F11))
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "START EDITOR",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                } else if (state == EditorState.Starting) {
-                    Button(
-                        onClick = {},
-                        enabled = false,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            disabledContainerColor = Color(0xFF665700)
-                        )
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = accentYellow,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "STARTING…",
-                            color = accentYellow,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                } else {
-                    // Running — secondary actions
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { webViewRef.value?.reload() },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, Color(0xFF008F11))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, tint = accentGreen)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Reload", color = accentGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            Icon(Icons.Default.Code, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "INSTALL CODE-SERVER",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
-                        OutlinedButton(
-                            onClick = { stopEditor() },
-                            modifier = Modifier.weight(1f).height(48.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, accentRed)
+                    }
+                    EditorState.Stopped, EditorState.Error -> {
+                        Button(
+                            onClick = { startEditor() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF008F11))
                         ) {
-                            Icon(Icons.Default.Stop, contentDescription = null, tint = accentRed)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Stop", color = accentRed, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "START EDITOR",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    EditorState.Starting -> {
+                        Button(
+                            onClick = {},
+                            enabled = false,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                disabledContainerColor = Color(0xFF665700)
+                            )
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = accentYellow,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "STARTING…",
+                                color = accentYellow,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    EditorState.Running -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { openInBrowser() },
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFF008F11))
+                            ) {
+                                Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = accentGreen)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Open", color = accentGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            OutlinedButton(
+                                onClick = { stopEditor() },
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, accentRed)
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = null, tint = accentRed)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Stop", color = accentRed, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            }
                         }
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
 
-                // Secondary actions — always available
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -411,7 +404,6 @@ fun EditorTab() {
 
                 Spacer(Modifier.height(14.dp))
 
-                // Info block
                 info?.let { i ->
                     InfoRow("Bind", i.bind)
                     InfoRow("Workspace", i.workspace)
@@ -427,91 +419,8 @@ fun EditorTab() {
                 }
             }
         }
-
-        Spacer(Modifier.height(10.dp))
-
-        // ===== WebView container (always present, only loaded when running) =====
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            shape = RoundedCornerShape(12.dp),
-            colors = cardColors,
-            border = cardBorder
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                cacheMode = WebSettings.LOAD_DEFAULT
-                                databaseEnabled = true
-                                useWideViewPort = true
-                                loadWithOverviewMode = true
-                                allowFileAccess = false
-                                allowContentAccess = false
-                            }
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                    Log.d(TAG, "onPageStarted: $url")
-                                }
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    Log.d(TAG, "onPageFinished: $url")
-                                }
-                            }
-                            webViewRef.value = this
-                        }
-                    },
-                    update = { wv ->
-                        if (state == EditorState.Running) {
-                            if (wv.url == null || wv.url?.startsWith(EDITOR_URL) != true) {
-                                wv.loadUrl(EDITOR_URL)
-                            }
-                        }
-                    }
-                )
-                if (state != EditorState.Running) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xCC0C0E14)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.Code,
-                                contentDescription = null,
-                                tint = Color.DarkGray,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                when (state) {
-                                    EditorState.Stopped -> "Editor is stopped"
-                                    EditorState.Starting -> "Starting…"
-                                    EditorState.NotInstalled -> "code-server not installed — tap INSTALL"
-                                    EditorState.Error -> "Editor error — check logs"
-                                    EditorState.Running -> ""
-                                },
-                                color = Color.Gray,
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 
-    // ===== Password bottom sheet =====
     if (showPasswordSheet) {
         ModalBottomSheet(
             onDismissRequest = { showPasswordSheet = false },
@@ -567,7 +476,6 @@ fun EditorTab() {
         }
     }
 
-    // ===== First-time setup dialog =====
     if (showFirstTimeDialog) {
         AlertDialog(
             onDismissRequest = { showFirstTimeDialog = false },

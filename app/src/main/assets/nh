@@ -157,8 +157,9 @@ G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
 try:
     d=json.load(sys.stdin)
     if 'error' in d: print(f'{R}✘  Vibration failed: {d[\"error\"]}{N}')
+    elif 'status' in d and d['status'] == 'no_vibrator': print(f'{Y}⚠  No vibrator hardware on this device{N}')
     else: print(f'{G}📳  Vibration: {d.get(\"duration\",\"$duration\")} ms{N}')
-except: print(f'{G}📳  Vibration sent{N}')
+except Exception as e: print(f'{G}📳  Vibration sent ({e}){N}')
 "
 }
 
@@ -264,9 +265,13 @@ network_dispatch() {
 
 network_wifi() {
     local action="${1:-status}"
+    if [ "$action" = "--help" ] || [ "$action" = "-h" ]; then
+        echo "Usage: nh network wifi [on|off|scan|connect <ssid> [pass]|status]"
+        return
+    fi
     if [ "$action" = "connect" ]; then
         shift; local ssid="$*"
-        [ -z "$ssid" ] && { echo "Usage: nh network wifi connect <ssid>"; exit 1; }
+        [ -z "$ssid" ] && { echo "Usage: nh network wifi connect <ssid> [password]"; exit 1; }
         api_post "/wifi" "connect:$ssid" | fmt "
 import sys, json
 G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
@@ -413,9 +418,11 @@ try:
                 print(f'{Y}{BOLD}  {line.strip()}{N}')
             else: print(f'{DIM}  {line}{N}')
     elif 'error' in d: print(f'{R}Error: {d[\"error\"]}{N}')
+    elif 'error' in d: print(f'{R}Error: {d["error"]}{N}')
     else: print(d)
-except: print('Chyba')
-" 2>/dev/null || api_post "/shell" "ifconfig $iface"
+except Exception as e:
+    print(f'{R}Error: {e}{N}')
+"
 }
 
 # ─── VPN ───────────────────────────────────────────────────
@@ -771,16 +778,17 @@ log_dispatch() {
 }
 
 log_view() {
-    local limit=100 grep_pattern=""
+    local limit=500 grep_pattern="" keyboard_only=0
     while [ $# -gt 0 ]; do
         case "$1" in
             -n|--lines) limit="$2"; shift 2 ;;
             -g|--grep) grep_pattern="$2"; shift 2 ;;
+            -K|--keyboard) keyboard_only=1 ;;
             -h|--help) log_usage ;;
             *) limit="$1"; shift ;;
         esac
     done
-    local url="/app/logs?limit=$limit"
+    local url="/app/logs?limit=$limit&keyboard_only=$keyboard_only"
     local body
     body=$(api_get "$url")
     if [ -z "$body" ]; then
@@ -792,6 +800,8 @@ import sys, re
 RST, DIM, BOLD = '\033[0m', '\033[2m', '\033[1m'
 RED, GREEN, YELLOW = '\033[1;31m', '\033[1;32m', '\033[1;33m'
 BLUE, MAGENTA, CYAN = '\033[1;34m', '\033[1;35m', '\033[1;36m'
+KEYBOARD_TAGS={'inputreader','inputdispatcher','inputmanager','keyboard','touchinjector'}
+kb_only=$keyboard_only
 LVL_COLORS = {'V': DIM, 'D': BLUE, 'I': GREEN, 'W': YELLOW, 'E': RED, 'F': BOLD + RED}
 LOG_RE = re.compile(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEF])/([^(:\\s]+)\s*(?:\(\s*(\d+)\))?\s*:\s*(.*)$')
 grep_pat = '$grep_pattern'.lower()
@@ -800,6 +810,10 @@ for line in sys.stdin:
     m = LOG_RE.match(line)
     if m:
         ts, lvl, tag, pid, msg = m.groups()
+        tag_l = tag.lower()
+        is_kb = any(t in tag_l for t in KEYBOARD_TAGS)
+        if kb_only and not is_kb: continue
+        if not kb_only and is_kb: continue
         lc = LVL_COLORS.get(lvl, RST)
         ps = f'({pid.strip()})' if pid else ''
         ml = msg.lower()
@@ -807,7 +821,7 @@ for line in sys.stdin:
         elif 'warn' in ml: msg = YELLOW + msg + RST
         elif 'success' in ml or 'established' in ml: msg = GREEN + msg + RST
         print(f'{DIM}{ts}{RST} {lc}{lvl}{RST} {MAGENTA}{tag}{CYAN}{ps}{RST}: {msg}')
-    else: print(line)
+    elif not kb_only: print(line)
 "
 }
 
@@ -815,6 +829,10 @@ log_set() {
     case "$1" in
         lvl)
             local level="${2:-3}"
+            if ! [[ "$level" =~ ^[1-5]$ ]]; then
+                echo "Usage: nh log set lvl 1-5 (1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)"
+                exit 1
+            fi
             api_post "/app/logs/level" "$level" >/dev/null
             echo "Log level set to $level"
             ;;
@@ -824,8 +842,8 @@ log_set() {
 
 log_usage() {
     echo "Usage:"
-    echo "  nh log [-n N] [-g P] [lines]     View logcat (colorized)"
-    echo "  nh log set lvl 1-5               Set logging level"
+    echo "  nh log [-n N] [-g P] [-K] [lines]  View logcat (colorized, -K = keyboard only)"
+    echo "  nh log set lvl 1-5                  Set logging level (1=Error,5=Verbose)"
     exit 0
 }
 
@@ -880,7 +898,25 @@ except: print(f'{Y}❓  Battery Optimization: unknown{N}')
 }
 
 device_accessibility() {
-    api_get "/accessibility/hierarchy"
+    api_get "/accessibility/hierarchy" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  {d[\"error\"]}{N}')
+    else:
+        def walk(n,i=0):
+            p='  '*i
+            cl=n.get('className','')
+            tx=n.get('text','') or n.get('contentDescription','') or ''
+            ck='☑' if n.get('checkable') else ''
+            en='' if n.get('enabled',True) else ' 🔒'
+            print(f'{p}{Gy}{cl}{N}{en} {G}{tx}{N}')
+            for ch in n.get('children',[]): walk(ch,i+1)
+        walk(d)
+except Exception as e:
+    print(f'{R}Parse error: {e}{N}')
+"
 }
 
 # ─── API ───────────────────────────────────────────────────
@@ -1026,13 +1062,23 @@ try:
     d=json.load(sys.stdin)
     if 'error' in d: print(f'{R}✘  {d[\"error\"]}{N}')
     elif 'apps' in d:
-        apps=d['apps'][:10]
-        print(f'{G}📊  App Usage Statistics:{N}')
+        from collections import defaultdict
+        by_pkg=defaultdict(lambda: {'t':0,'n':''})
+        for a in d['apps']:
+            pkg=a.get('packageName','?').split('.')[-1]
+            if not by_pkg[pkg]['n']: by_pkg[pkg]['n']=pkg
+            by_pkg[pkg]['t']+=a.get('totalTimeInForeground',0)
+        apps=sorted(by_pkg.values(), key=lambda x: -x['t'])
+        apps=[a for a in apps if a['t']>60000][:10]
+        print(f'{G}📊  App Usage Statistics (24h):{N}')
         for a in apps:
-            pkg=a.get('packageName','?'); mins=a.get('totalTimeInForeground',0)//60000
-            print(f'   💠  {pkg}{Gy} - {mins} min{N}')
+            pkg=a['n']; t=a['t']
+            mins=t//60000; secs=(t//1000)%60
+            print(f'   💠  {pkg}{Gy} - {mins}:{secs:02d} min{N}')
+        if not apps: print(f'{Y}📊  No foreground app data{N}')
     else: print(f'{Y}📊  No app usage data{N}')
-except: print(f'{Y}📊  No app usage data{N}')
+except Exception as e:
+    print(f'{R}Parse error: {e}{N}')
 "
 }
 
@@ -1093,7 +1139,7 @@ help_network() {
     echo ""
     echo "  ${WHITE}${BOLD}NETWORK${RST}"
     separator
-    echo "  ${GREEN}wifi [on|off|scan|connect <ssid>]${RST}  Správa Wi-Fi"
+    echo "  ${GREEN}wifi [on|off|scan|connect <ssid> <pass>]${RST}  Správa Wi-Fi"
     echo "  ${GREEN}cell${RST}                     Informace o mobilní síti"
     echo "  ${GREEN}location${RST}                 GPS souřadnice"
     echo "  ${GREEN}map${RST}                      TerminalMap s aktuální lokací"

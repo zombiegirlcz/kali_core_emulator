@@ -300,10 +300,11 @@ class VpnNatEngine(
                 val channel = DatagramChannel.open()
                 
                 if (!vpnService.protect(channel.socket())) {
-                    Log.e(TAG, "protect() FAILED for UDP DatagramChannel")
+                    Log.e(TAG, "protect() FAILED for UDP DatagramChannel to $dstIpStr:$dstPort")
                     channel.close()
                     throw IOException("protect() failed, aborting UDP connection")
                 }
+                Log.v(TAG, "protect() OK for UDP $dstIpStr:$dstPort (session $srcPort)")
                 
                 val remoteAddr = intToInetAddress(dstIp)
                 channel.connect(InetSocketAddress(remoteAddr, dstPort))
@@ -313,6 +314,7 @@ class VpnNatEngine(
                 packetBuffer.position(payloadOffset)
                 packetBuffer.limit(payloadOffset + payloadLen)
                 val written = channel.write(packetBuffer)
+                Log.v(TAG, "UDP $srcPort -> $dstIpStr:$dstPort: wrote $written/$payloadLen bytes")
                 
                 session = UdpSession(srcPort, dstIp, dstPort).apply {
                     datagramChannel = channel
@@ -345,8 +347,9 @@ class VpnNatEngine(
             try {
                 packetBuffer.position(payloadOffset)
                 packetBuffer.limit(payloadOffset + payloadLen)
-                session.datagramChannel?.write(packetBuffer)
-                session.bytesSent += payloadLen
+                val written = session.datagramChannel?.write(packetBuffer) ?: 0
+                session.bytesSent += written
+                Log.v(TAG, "UDP $srcPort -> $dstIpStr:$dstPort: sent $written/$payloadLen bytes (existing session)")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to write UDP data to WAN: ${e.message}")
                 closeUdpSession(srcPort)
@@ -386,10 +389,11 @@ class VpnNatEngine(
                 val channel = SocketChannel.open()
                 
                 if (!vpnService.protect(channel.socket())) {
-                    Log.e(TAG, "protect() FAILED for TCP SocketChannel")
+                    Log.e(TAG, "protect() FAILED for TCP SocketChannel to $dstIpStr:$dstPort")
                     channel.close()
                     throw IOException("protect() failed, aborting TCP connection")
                 }
+                Log.v(TAG, "protect() OK for TCP $dstIpStr:$dstPort (session $srcPort)")
                 
                 session = TcpSession(srcPort, dstIp, dstPort).apply {
                     socketChannel = channel
@@ -404,6 +408,9 @@ class VpnNatEngine(
                 val isBypassed = bypassedSession != null && TerminalService.isSessionVpnIgnored(bypassedSession)
 
                 val activeProxy = if (isBypassed) null else VpnProxyManager.getActiveProxy()
+                Log.v(TAG, "TCP SYN $srcPort -> $dstIpStr:$dstPort | proxy=${
+                    if (activeProxy != null) "${activeProxy.ip}:${activeProxy.port}" else "none"
+                } | bypass=$isBypassed")
 
                 if (activeProxy == null) {
                     // DIRECT CONNECTION: Non-blocking direct connect in selector loop
@@ -414,7 +421,7 @@ class VpnNatEngine(
                     } else {
                         Log.i(TAG, "Routing session $srcPort directly non-blocking")
                     }
-                    
+                    Log.v(TAG, "Connecting TCP $srcPort to $dstIpStr:$dstPort (direct)")
                     channel.connect(InetSocketAddress(intToInetAddress(dstIp), dstPort))
                     selector?.let { sel ->
                         pendingRegistrations.offer(Runnable {
@@ -428,12 +435,14 @@ class VpnNatEngine(
                     }
                 } else {
                     // PROXY CONNECTION: simple TCP tunnel to custom IP:Port
+                    Log.v(TAG, "Submitting proxy connect for session $srcPort -> ${activeProxy.ip}:${activeProxy.port}")
                     connectionThreadPool.submit {
                         try {
                             Log.i(TAG, "Routing session $srcPort through custom proxy ${activeProxy.ip}:${activeProxy.port}")
                             VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Tunnel via ${activeProxy.ip}:${activeProxy.port}")
 
                             // Connect directly to custom proxy endpoint (user's VPS/tunnel server)
+                            Log.v(TAG, "Proxy connect $srcPort to ${activeProxy.ip}:${activeProxy.port} (5s timeout)")
                             channel.socket().connect(InetSocketAddress(activeProxy.ip, activeProxy.port), 5000)
                             channel.configureBlocking(true)
 
@@ -454,6 +463,8 @@ class VpnNatEngine(
                             Log.d(TAG, "Custom proxy connection established for session $srcPort")
                         } catch (e: Exception) {
                             Log.w(TAG, "Custom proxy failed for session $srcPort (${e.message}), falling back to direct")
+                            Log.v(TAG, "Proxy fallback for $srcPort: opening new direct socket")
+                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
                             VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
 
                             channel.close()
@@ -537,6 +548,8 @@ class VpnNatEngine(
                 val payloadCopy = ByteBuffer.allocate(payloadLen)
                 payloadCopy.put(packetBuffer)
                 payloadCopy.flip()
+                
+                Log.v(TAG, "TCP clientData port ${session.clientPort}: $payloadLen bytes (connected=${session.socketChannel?.isConnected}, mitm=${session.isTlsMitm})")
 
                 if (session.isTlsMitm) {
                     val raw = ByteArray(payloadCopy.remaining())
@@ -562,10 +575,12 @@ class VpnNatEngine(
                 }
 
                 if (session.socketChannel?.isConnected == true) {
+                    Log.v(TAG, "TCP clientData port ${session.clientPort}: forwarding $payloadLen bytes to WAN")
                     if (!writeOrQueue(session, session.socketChannel!!, payloadCopy)) {
                         return
                     }
                 } else {
+                    Log.v(TAG, "TCP clientData port ${session.clientPort}: queueing $payloadLen bytes (WAN not connected yet)")
                     session.sendQueue.offer(payloadCopy)
                 }
                 
@@ -594,17 +609,17 @@ class VpnNatEngine(
 
                     val count = selector?.select(2000) ?: 0
                     if (count == 0) {
-                        // Pravidelné čištění neaktivních spojení každých 30 sekund
                         val now = System.currentTimeMillis()
                         if (now - lastCleanup > cleanupInterval) {
+                            Log.v(TAG, "Selector idle — cleaning sessions (TCP=${tcpSessions.size}, UDP=${udpSessions.size})")
                             cleanIdleSessions()
                             lastCleanup = now
                         } else {
-                            // Lehké čištění - pouze zastaralé spojení
                             cleanIdleSessions()
                         }
                         continue
                     }
+                    Log.v(TAG, "Selector woke with $count events (TCP=${tcpSessions.size}, UDP=${udpSessions.size})")
 
                     val keys = selector?.selectedKeys() ?: continue
                     val iterator = keys.iterator()
@@ -646,14 +661,16 @@ class VpnNatEngine(
         
         try {
             if (channel.finishConnect()) {
-                // Done connecting, default to reading
+                Log.v(TAG, "TCP connect complete for port ${session.clientPort} (${intToIp(session.destinationAddress)}:${session.destinationPort})")
                 key.interestOps(SelectionKey.OP_READ)
                 
-                // Try flushing any buffered outgoing payloads
+                // Flush buffered payloads
+                var flushCount = 0
                 while (true) {
                     val data = session.sendQueue.peek() ?: break
                     val written = channel.write(data)
                     session.bytesSent += written
+                    flushCount++
                     if (data.hasRemaining()) {
                         break
                     }
@@ -665,7 +682,8 @@ class VpnNatEngine(
                 }
                 
                 val elapsed = System.currentTimeMillis() - session.connectionStartTime
-                Log.d(TAG, "WAN connection established for port ${session.clientPort} in ${elapsed}ms")
+                Log.d(TAG, "WAN connection established for port ${session.clientPort} in ${elapsed}ms (flushed $flushCount buffers)")
+                Log.v(TAG, "TCP state ${session.clientPort}: ${session.state} -> ESTABLISHED, sent=${session.bytesSent}, recv=${session.bytesReceived}")
             }
         } catch (e: Exception) {
             Log.w(TAG, "WAN connection failed for port ${session.clientPort} after ${System.currentTimeMillis() - session.connectionStartTime}ms: ${e.message}")
@@ -678,17 +696,26 @@ class VpnNatEngine(
         val session = key.attachment() as? TcpSession ?: return
         
         try {
+            var totalWritten = 0
+            var queueSize = 0
             while (true) {
                 val data = session.sendQueue.peek() ?: break
+                val len = data.remaining()
                 val written = channel.write(data)
                 session.bytesSent += written
+                totalWritten += written
+                queueSize++
                 if (data.hasRemaining()) {
+                    Log.v(TAG, "handleWritable port ${session.clientPort}: partial write $written/$len bytes, ${data.remaining()} remaining")
                     break
                 }
                 session.sendQueue.poll()
             }
             if (session.sendQueue.isEmpty()) {
                 key.interestOps(SelectionKey.OP_READ)
+                Log.v(TAG, "handleWritable port ${session.clientPort}: flushed $totalWritten bytes in $queueSize writes, queue empty")
+            } else {
+                Log.v(TAG, "handleWritable port ${session.clientPort}: wrote $totalWritten bytes in $queueSize buffers, ${session.sendQueue.size} still queued")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Socket write error on port ${session.clientPort}: ${e.message}")
@@ -698,17 +725,21 @@ class VpnNatEngine(
 
     private fun writeOrQueue(session: TcpSession, channel: SocketChannel, data: ByteBuffer): Boolean {
         return try {
+            val len = data.remaining()
             if (session.sendQueue.isNotEmpty()) {
                 session.sendQueue.offer(data)
+                Log.v(TAG, "writeOrQueue port ${session.clientPort}: queued $len bytes (queue depth ${session.sendQueue.size})")
                 registerWriteInterest(channel)
                 return true
             }
             
             val written = channel.write(data)
             session.bytesSent += written
+            Log.v(TAG, "writeOrQueue port ${session.clientPort}: wrote $written/$len bytes")
             
             if (data.hasRemaining()) {
                 session.sendQueue.offer(data)
+                Log.v(TAG, "writeOrQueue port ${session.clientPort}: partial write, queued ${data.remaining()} remaining")
                 registerWriteInterest(channel)
             }
             true
@@ -745,7 +776,7 @@ class VpnNatEngine(
             }
 
             if (read == -1) {
-                // Connection closed by remote WAN server -> send FIN to local client
+                Log.v(TAG, "TCP WAN closed for port ${session.clientPort} — sending FIN to client")
                 sendTcpFin(session)
                 closeTcpSession(session.clientPort)
             } else if (read > 0) {
@@ -753,9 +784,12 @@ class VpnNatEngine(
                 buffer.flip()
                 val payload = ByteArray(read)
                 buffer.get(payload)
+                Log.v(TAG, "TCP WAN->client port ${session.clientPort}: ${read} bytes (total recv=${session.bytesReceived}, sent=${session.bytesSent})")
                 
                 // Wrap in TCP packet and write to TUN
                 sendTcpDataToClient(session, payload)
+            } else {
+                Log.v(TAG, "TCP read 0 bytes on port ${session.clientPort}")
             }
         } else if (key.channel() is DatagramChannel) {
             val channel = key.channel() as DatagramChannel
@@ -770,6 +804,7 @@ class VpnNatEngine(
             }
 
             if (read == -1) {
+                Log.v(TAG, "UDP remote closed port ${session.clientPort}")
                 closeUdpSession(session.clientPort)
             } else if (read > 0) {
                 session.bytesReceived += read
@@ -841,6 +876,7 @@ class VpnNatEngine(
 
     fun sendTcpDataToClient(session: TcpSession, data: ByteArray) {
         val totalLength = 40 + data.size
+        Log.v(TAG, "TCP WAN->client port ${session.clientPort}: ${data.size} bytes (total recv=${session.bytesReceived}, sent=${session.bytesSent})")
         val response = ByteBuffer.allocate(totalLength)
         
         val ip = IpHeader(response, 0)
@@ -926,6 +962,7 @@ class VpnNatEngine(
     private fun sendUdpDataToClient(session: UdpSession, data: ByteArray) {
         val udpLen = 8 + data.size
         val totalLength = 20 + udpLen
+        Log.v(TAG, "UDP WAN->client port ${session.clientPort}: ${data.size} bytes (total recv=${session.bytesReceived}, sent=${session.bytesSent})")
         val response = ByteBuffer.allocate(totalLength)
         
         val ip = IpHeader(response, 0)

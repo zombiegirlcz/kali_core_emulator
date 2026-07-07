@@ -2,7 +2,6 @@ package com.linux_core.ui.vpn
 
 import android.content.Context
 import android.content.Intent
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
@@ -286,8 +285,8 @@ fun VpnDashboardTab() {
                             Icon(Icons.Default.NetworkCheck, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Column {
-                                Text("Rotating SOCKS5 Proxy", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                Text("Route outbound packets via anonymous nodes", fontSize = 10.sp, color = Color.Gray)
+                                Text("Custom Proxy / Tunnel", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text("Route outbound packets through custom IP:Port", fontSize = 10.sp, color = Color.Gray)
                             }
                         }
                         Switch(
