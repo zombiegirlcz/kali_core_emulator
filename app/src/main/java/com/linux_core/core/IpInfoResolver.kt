@@ -14,7 +14,10 @@ data class IpInfo(
     val cityName: String?,
     val zipCode: String?,
     val isProxy: Boolean,
-    val flagEmoji: String
+    val flagEmoji: String,
+    val isp: String? = null,
+    val org: String? = null,
+    val asn: String? = null
 )
 
 object IpInfoResolver {

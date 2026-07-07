@@ -167,7 +167,7 @@ object OffensiveEngine {
 
     private fun emergencyShutdown() {
         Log.e(TAG, "DEFENSE FAILED. RETREATING...")
-        VpnProxyManager.triggerRandomRotation()
+        // Proxy rotation removed — custom IP only
     }
 
     private fun runMsfResource(scriptContent: String) {

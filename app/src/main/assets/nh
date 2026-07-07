@@ -1,0 +1,1239 @@
+#!/bin/sh
+# NetHunter Unified CLI — nh (alias: nethunter)
+# Consolidated replacement for all nethunter-* and VPN shell scripts
+# Talks to LocalApiServer on 127.0.0.1:1337
+#
+# Usage: nh <category> <action> [args...]
+#        nethunter <category> <action> [args...]
+
+API_HOST="${API_HOST:-127.0.0.1}"
+API_PORT="${API_PORT:-1337}"
+API_URL="http://${API_HOST}:${API_PORT}"
+
+# ─── ANSI Colors ───────────────────────────────────────────
+RST='\033[0m'; BOLD='\033[1m'; DIM='\033[2m'
+RED='\033[1;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
+BLUE='\033[1;34m'; MAGENTA='\033[1;35m'; CYAN='\033[1;36m'; WHITE='\033[1;37m'
+BG_RED='\033[41m'; BG_GREEN='\033[42m'; BG_BLUE='\033[44m'
+GRAY='\033[0;90m'
+
+# ─── Helpers ───────────────────────────────────────────────
+
+get_token() {
+    TOKEN=$(cat /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
+        grep 'name="auth_token"' | sed 's/.*value="\([^"]*\)".*/\1/' | head -n 1)
+    if [ -z "$TOKEN" ]; then
+        TOKEN=$(cat /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
+            grep 'name="auth_token"' | sed "s/.*value='\([^']*\)'.*/\1/" | head -n 1)
+    fi
+    echo "$TOKEN"
+}
+
+TOKEN=""
+ensure_token() {
+    if [ -z "$TOKEN" ]; then
+        TOKEN=$(get_token)
+    fi
+}
+
+api_get() {
+    ensure_token
+    curl -s -H "Authorization: Bearer $TOKEN" "$API_URL$1"
+}
+
+api_post() {
+    ensure_token
+    curl -s -X POST -H "Authorization: Bearer $TOKEN" -d "$2" "$API_URL$1"
+}
+
+api_post_bin() {
+    ensure_token
+    echo "$2" | curl -s -X POST --data-binary @- -H "Authorization: Bearer $TOKEN" "$API_URL$1"
+}
+
+api_post_json() {
+    ensure_token
+    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$2" "$API_URL$1"
+}
+
+# Shortcut: pipe JSON through python3 formatter
+# Usage: echo '{"key":"val"}' | fmt 'python code'
+fmt() {
+    python3 -c "$1" 2>/dev/null
+}
+
+# ─── UI Helpers ────────────────────────────────────────────
+
+banner() {
+    printf "${MAGENTA}${BOLD}"
+    printf "╔══════════════════════════════════════════╗\n"
+    printf "║   🛡️  NetHunter Unified CLI              ║\n"
+    printf "╚══════════════════════════════════════════╝${RST}\n"
+}
+
+separator() {
+    printf "${DIM}──────────────────────────────────────────────${RST}\n"
+}
+
+# ─── SYSTEM ────────────────────────────────────────────────
+
+system_dispatch() {
+    case "$1" in
+        battery) system_battery ;;
+        volume) shift; system_volume "$@" ;;
+        torch) shift; system_torch "$@" ;;
+        vibrate) shift; system_vibrate "$@" ;;
+        toast) shift; system_toast "$@" ;;
+        clipboard) shift; system_clipboard "$@" ;;
+        notification) shift; system_notification "$@" ;;
+        speech) system_speech ;;
+        *) echo "Usage: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech"; exit 1 ;;
+    esac
+}
+
+system_battery() {
+    api_get "/battery" | fmt '
+import sys, json
+G,R,Y,N,Gy=chr(27)+"[92m",chr(27)+"[91m",chr(27)+"[93m",chr(27)+"[0m",chr(27)+"[90m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d: print(d["error"]); sys.exit(0)
+    pct=d.get("percentage",-1); st=d.get("status","?"); hl=d.get("health","?")
+    temp=d.get("temperature",0); volt=d.get("voltage",0); pl=d.get("plugged","none")
+    n=max(1,int(pct/10)) if pct>0 else 0; bar="█"*n+"░"*(10-n)
+    c = G if st=="charging" else (G if pct>50 else (Y if pct>20 else R))
+    ico = "🔌" if st=="charging" else "🔋"
+    print(f"{c}{ico}  {pct}%  [{bar}]{N}")
+    print(f"   Status:  {st}")
+    print(f"   Health:  {hl}")
+    print(f"   Teplota: {temp}°C")
+    print(f"   Napětí:  {volt} mV")
+    if pl!="none": print(f"   Nabíjení: {pl}")
+except Exception as e: print(f"Chyba: {e}")
+'
+}
+
+system_volume() {
+    if [ -z "$1" ]; then
+        api_get "/volume" | fmt '
+import sys, json
+G,R,Y,N=chr(27)+"[92m",chr(27)+"[91m",chr(27)+"[93m",chr(27)+"[0m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d: print(d["error"]); sys.exit(0)
+    cur=d.get("volume",0); mx=d.get("max_volume",15)
+    n=max(1,int(cur/mx*10)) if mx>0 else 1; bar="█"*n+"░"*(10-n)
+    print(f"{G}🔊  Hlasitost: {cur}/{mx}  [{bar}]{N}")
+except: print("Chyba")
+'
+    else
+        api_post "/volume" "$1" >/dev/null
+        echo "${GREEN}✅ Hlasitost nastavena na $1${RST}"
+    fi
+}
+
+system_torch() {
+    local state="${1:-on}"
+    api_post "/torch" "$state" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Flashlight: {d[\"error\"]}{N}')
+    else:
+        st = d.get('state', 'unknown')
+        ico = '🔦' if st == 'on' else '🌙'
+        c = G if st=='on' else Gy
+        print(f'{c}{ico}  Flashlight: {st.upper()}{N}')
+except: print(f'{Y}❓  Flashlight: unknown{N}')
+"
+}
+
+system_vibrate() {
+    local duration="${1:-500}"
+    api_post "/vibrate" "$duration" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Vibration failed: {d[\"error\"]}{N}')
+    else: print(f'{G}📳  Vibration: {d.get(\"duration\",\"$duration\")} ms{N}')
+except: print(f'{G}📳  Vibration sent{N}')
+"
+}
+
+system_toast() {
+    local text="$*"
+    if [ -z "$text" ]; then
+        if [ -p /dev/stdin ]; then text=$(cat); else echo "Usage: nh system toast <message>"; exit 1; fi
+    fi
+    api_post_bin "/toast" "$text" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Toast failed: {d[\"error\"]}{N}')
+    else: print(f'{G}✔  Toast sent to host engine{N}')
+except: print(f'{G}✔  Toast sent to host engine{N}')
+"
+}
+
+system_clipboard() {
+    case "$1" in
+        get)
+            local raw_mode="$2"
+            api_get "/clipboard" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'text' in d:
+        txt = d['text']
+        if '${raw_mode}' == '--raw': print(txt)
+        else: print(f'{G}📋  Clipboard: {txt[:200]}{N}')
+    else: print(f'{Y}📋  Clipboard: (empty){N}')
+except: print(f'{R}✘  Error reading clipboard{N}')
+" ;;
+        set)
+            shift
+            local text="$*"
+            if [ -z "$text" ]; then
+                if [ -p /dev/stdin ]; then text=$(cat); else echo "Usage: nh system clipboard set <text>"; exit 1; fi
+            fi
+            api_post "/clipboard" "$text" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Clipboard error: {d[\"error\"]}{N}')
+    else: print(f'{G}📋  Clipboard: Text copied to host{N}')
+except: print(f'{G}📋  Clipboard: Text copied to host{N}')
+" ;;
+        *)
+            echo "Usage: nh system clipboard get|set [text]"
+            exit 1 ;;
+    esac
+}
+
+system_notification() {
+    local title="NetHunter"
+    local content=""
+    while getopts "t:c:" opt; do
+        case "$opt" in
+            t) title="$OPTARG" ;;
+            c) content="$OPTARG" ;;
+        esac
+    done
+    shift $((OPTIND-1))
+    if [ -z "$content" ]; then content="$*"; fi
+    api_post_json "/notification" "{\"title\":\"$title\",\"content\":\"$content\"}" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Notification failed: {d[\"error\"]}{N}')
+    else: print(f'{G}🔔  Notification posted: {d.get(\"title\",\"\")}{N}')
+except: print(f'{G}🔔  Notification posted to host{N}')
+"
+}
+
+system_speech() {
+    api_get "/voice_input" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'text' in d: print(f'{G}🎙️  Voice: {d[\"text\"]}{N}')
+    else: print(f'{R}✘  {d.get(\"error\", \"No response\")}{N}')
+except: print(f'{R}✘  Error parsing voice input{N}')
+"
+}
+
+# ─── NETWORK ───────────────────────────────────────────────
+
+network_dispatch() {
+    case "$1" in
+        wifi) shift; network_wifi "$@" ;;
+        cell) network_cell ;;
+        location) network_location ;;
+        map) network_map ;;
+        ifconfig) shift; network_ifconfig "$@" ;;
+        *) echo "Usage: nh network wifi|cell|location|map|ifconfig"; exit 1 ;;
+    esac
+}
+
+network_wifi() {
+    local action="${1:-status}"
+    if [ "$action" = "connect" ]; then
+        shift; local ssid="$*"
+        [ -z "$ssid" ] && { echo "Usage: nh network wifi connect <ssid>"; exit 1; }
+        api_post "/wifi" "connect:$ssid" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Wi-Fi: {d[\"error\"]}{N}')
+    else: print(f'{G}📶  Connected to: {d.get(\"ssid\",\"\")}{N}')
+except: print(f'{Y}📶  Wi-Fi connect: unknown{N}')
+"
+        return
+    fi
+    api_post "/wifi" "$action" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+def wifi_qual(rssi):
+    if rssi is None: return ('N/A',0,'\033[0m')
+    if rssi> -50: return ('Excelentní',10,'\033[92m')
+    if rssi> -60: return ('Velmi dobrý',8,'\033[92m')
+    if rssi> -70: return ('Dobrý',6,'\033[93m')
+    if rssi> -80: return ('Střední',4,'\033[93m')
+    if rssi> -90: return ('Slabý',2,'\033[91m')
+    return ('Velmi slabý',1,'\033[91m')
+def wifi_bar(n): return '█'*n + '░'*(10-n)
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(d['error'])
+    elif 'networks' in d:
+        print(f'{G}📶  Nearby Wi-Fi Networks:{N}')
+        for nw in d.get('networks',[]):
+            s=nw.get('ssid','?'); b=nw.get('bssid','?'); l=nw.get('level',0); cap=nw.get('capabilities','')
+            w,n,c=wifi_qual(l); bw=wifi_bar(n)
+            print(f'   {c}{bw}{RST} {s}  {Gy}({l} dBm)  [{cap}]{N}')
+    else:
+        ssid=d.get('ssid','N/A'); bssid=d.get('bssid','N/A')
+        rssi=d.get('rssi'); link=d.get('link_speed_mbps','?')
+        if 'enabled' in d:
+            en=d.get('enabled',False)
+            print(f'{G if en else R}📶  Wi-Fi: {\"ENABLED\" if en else \"DISABLED\"}{N}')
+        else:
+            print(f'📡  SSID: {ssid}')
+            print(f'🔗  BSSID: {bssid}')
+            if rssi is not None:
+                w,n,c=wifi_qual(rssi)
+                bw=wifi_bar(n)
+                print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')
+                print(f'   [{c}{bw}{chr(27)}[0m]')
+            print(f'📶  Rychlost: {link} Mbps')
+except: print('Chyba parsování')
+"
+}
+
+network_cell() {
+    api_get "/cellinfo" | fmt "
+import sys, json
+def qual_dbm(dbm):
+    if dbm is None or dbm <= -200: return ('Mimo dosah',0,'\033[0m')
+    if dbm >  -75: return ('Excelentní',10,'\033[92m')
+    if dbm >  -85: return ('Velmi dobrý',8,'\033[92m')
+    if dbm >  -95: return ('Dobrý',6,'\033[93m')
+    if dbm > -105: return ('Střední',4,'\033[93m')
+    if dbm > -115: return ('Slabý',2,'\033[91m')
+    return ('Velmi slabý',1,'\033[91m')
+def bars(n): return '█'*n + '░'*(10-n)
+try:
+    d=json.load(sys.stdin)
+    net=d.get('network_type','?'); carr=d.get('carrier','?')
+    sim=d.get('sim_carrier','?'); data_st=d.get('data_state','?')
+    roam=d.get('is_roaming',False); sig_dbm=d.get('signal_dbm')
+    print(f'📶  {carr}  ({net})')
+    print(f'📋  SIM: {sim}  |  Data: {data_st}  |  Roaming: {roam}')
+    if d.get('signal_bar',''): print(f'{d[\"signal_bar\"]}')
+    cells=d.get('cells',[])
+    if not cells: print('\\nŽádné věže v dosahu.')
+    else:
+        for idx,c in enumerate(cells):
+            print()
+            reg=c.get('registered',False); stav='REGISTROVÁN' if reg else 'SOUSEDNÍ'
+            print(f'Vysílač #{idx+1} [{stav}]')
+            typ=c.get('type','N/A'); mcc=c.get('mcc','?'); mnc=c.get('mnc','?')
+            print(f'Typ: {typ} | MCC: {mcc} | MNC: {mnc}')
+            tac=c.get('tac_lac','N/A'); cid=c.get('cid','N/A'); pci=c.get('pci_psc')
+            pci_txt=str(pci) if pci is not None else 'N/A'
+            print(f'TAC/LAC: {tac} | CID: {cid} | PCI/PSC: {pci_txt}')
+            sdbm=c.get('signal_dbm'); slev=c.get('signal_level',0)
+            if sdbm is not None and sdbm > -200:
+                w,n,c = qual_dbm(sdbm)
+                print(f'{c}Síla signálu: {sdbm} dBm ({w})\033[0m')
+                b=bars(n); print(f'Ukazatel: [{c}{b}\033[0m] ({c}{w}\033[0m)')
+            else: print(f'Síla signálu: N/A')
+            if idx < len(cells)-1: print('─'*50)
+except Exception as e: print(f'Chyba: {e}')
+"
+}
+
+network_location() {
+    api_get "/location" | fmt "
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(d['error'])
+    else:
+        lat=d.get('latitude'); lng=d.get('longitude')
+        acc=d.get('accuracy'); prov=d.get('provider')
+        maps=d.get('maps_url',''); geo=d.get('geo_uri','')
+        print(f'📍  {lat}, {lng}  (±{acc:.0f}m)  [{prov}]')
+        print(f'🗺️  Google Maps: {maps}')
+        print(f'🔗 Geo URI:     {geo}')
+except: print('Chyba')
+"
+}
+
+network_map() {
+    echo "[*] Fetching current location..."
+    api_get "/map" | fmt "
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get('success'):
+        print(f'📍 Location: {d[\"latitude\"]}, {d[\"longitude\"]}')
+        print('🗺️  Starting TerminalMap...')
+    else: print(d.get('error','Unknown error'))
+except: print('Error')
+"
+    echo "[*] Controls: arrow keys/hjkl=pan, a/+/-=zoom, c=braille/ASCII, n=labels, g=tour, w=world, q=quit"
+    command -v terminalmap >/dev/null 2>&1 && terminalmap || echo "[-] terminalmap binary not found"
+}
+
+network_ifconfig() {
+    local iface="$1"
+    local cmd="ip addr show"
+    [ -n "$iface" ] && cmd="ip addr show $iface"
+    api_post "/shell" "$cmd" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'stdout' in d:
+        for line in d['stdout'].split(chr(10)):
+            if 'inet ' in line or 'inet6 ' in line:
+                print(f'{G}  {line.strip()}{N}')
+            elif line.strip().startswith('mtu') or 'link/' in line:
+                print(f'{Gy}  {line.strip()}{N}')
+            elif line.strip().endswith(':'):
+                print(f'{Y}{BOLD}  {line.strip()}{N}')
+            else: print(f'{DIM}  {line}{N}')
+    elif 'error' in d: print(f'{R}Error: {d[\"error\"]}{N}')
+    else: print(d)
+except: print('Chyba')
+" 2>/dev/null || api_post "/shell" "ifconfig $iface"
+}
+
+# ─── VPN ───────────────────────────────────────────────────
+
+vpn_dispatch() {
+    case "$1" in
+        status) vpn_status ;;
+        start) vpn_start ;;
+        stop) vpn_stop ;;
+        on) shift; vpn_on "$@" ;;
+        off) shift; vpn_off "$@" ;;
+        logs) shift; vpn_logs "$@" ;;
+        mitm) shift; vpn_mitm "$@" ;;
+        bypass) shift; vpn_bypass "$@" ;;
+        ignore) shift; vpn_ignore "$@" ;;
+        sni-fallback) shift; vpn_sni_fallback "$@" ;;
+        *) echo "Usage: nh vpn status|start|stop|on|off|logs|mitm|bypass|ignore|sni-fallback"; exit 1 ;;
+    esac
+}
+
+vpn_status() {
+    RESP=$(api_get "/vpn")
+    HTTP_CODE=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('_http_code',200))" 2>/dev/null || echo 200)
+    BODY="$RESP"
+    separator
+    RUNNING=$(echo "$BODY" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(d.get('running',False))
+" 2>/dev/null)
+    PACKETS=$(echo "$BODY" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(d.get('packets',0))
+" 2>/dev/null)
+    BYTES=$(echo "$BODY" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(d.get('bytes','0'))
+" 2>/dev/null)
+    if [ "$RUNNING" = "True" ] || [ "$RUNNING" = "true" ]; then
+        printf "  ${BOLD}VPN Status:${RST}  ${BG_GREEN}${WHITE}${BOLD} RUNNING ${RST}\n"
+    else
+        printf "  ${BOLD}VPN Status:${RST}  ${BG_RED}${WHITE}${BOLD} STOPPED ${RST}\n"
+    fi
+    printf "  ${BOLD}Packets:${RST}     ${CYAN}${PACKETS}${RST}\n"
+    # Human-readable bytes
+    HR_BYTES=$(python3 -c "
+b=int('$BYTES')
+if b>1073741824: print(f'{b/1073741824:.1f} GB')
+elif b>1048576: print(f'{b/1048576:.1f} MB')
+elif b>1024: print(f'{b/1024:.1f} KB')
+else: print(f'{b} B')
+" 2>/dev/null)
+    printf "  ${BOLD}Traffic:${RST}     ${CYAN}${HR_BYTES}${RST}\n"
+    separator
+}
+
+vpn_start() {
+    api_post "/vpn/start" "" >/dev/null
+    printf "${GREEN}${BOLD}▶ VPN starting...${RST}\n"
+}
+
+vpn_stop() {
+    api_post "/vpn/stop" "" >/dev/null
+    printf "${YELLOW}${BOLD}■ VPN stopping...${RST}\n"
+}
+
+vpn_on() {
+    if [ $# -eq 0 ]; then
+        vpn_start
+        return
+    fi
+    if ! echo "$(api_get '/vpn')" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('running') else 1)" 2>/dev/null; then
+        vpn_start
+        sleep 1
+    fi
+    echo "[*] Executing (VPN on): $@"
+    "$@"
+}
+
+vpn_off() {
+    if [ $# -eq 0 ]; then
+        vpn_stop
+        return
+    fi
+    was_running=false
+    if echo "$(api_get '/vpn')" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('running') else 1)" 2>/dev/null; then
+        was_running=true
+        echo "[*] Temporarily disabling VPN"
+        vpn_stop
+        sleep 1
+    fi
+    echo "[*] Executing (VPN off): $@"
+    "$@"
+    exit_code=$?
+    if [ "$was_running" = "true" ]; then
+        echo "[*] Restoring VPN"
+        vpn_start
+    fi
+    exit $exit_code
+}
+
+vpn_logs() {
+    local FORMAT="pretty" LIMIT=50 SINCE=0 HOST="" GREP="" FOLLOW=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            json) FORMAT="json"; shift ;;
+            legacy) FORMAT="legacy"; shift ;;
+            -f|--follow) FOLLOW=1; shift ;;
+            -n) LIMIT="$2"; shift 2 ;;
+            -g|--grep) GREP="$2"; shift 2 ;;
+            --host) HOST="$2"; shift 2 ;;
+            *) echo "Unknown logs option: $1"; exit 1 ;;
+        esac
+    done
+
+    fetch_mitm_logs() {
+        local query="format=$FORMAT&limit=$LIMIT&since=$SINCE"
+        [ -n "$HOST" ] && query="${query}&host=$(echo "$HOST" | sed 's/ /%20/g')"
+        [ -n "$GREP" ] && query="${query}&grep=$(echo "$GREP" | sed 's/ /%20/g')"
+        ensure_token
+        curl -s -H "Authorization: Bearer $TOKEN" "${API_URL}/vpn/mitm/logs?${query}" 2>/dev/null
+    }
+
+    show_once() {
+        local body
+        body=$(fetch_mitm_logs)
+        if [ -z "$body" ]; then
+            [ $FOLLOW -eq 0 ] && { separator; printf "  ${YELLOW}⏹  No decrypted traffic yet.${RST}\n"; separator; }
+            return
+        fi
+        if [ "$FORMAT" = "json" ]; then
+            echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+            return
+        fi
+        if [ "$FORMAT" = "legacy" ]; then
+            echo "$body"
+            return
+        fi
+        # Pretty format
+        echo "$body" | python3 -c "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    data=json.load(sys.stdin)
+    records=data if isinstance(data,list) else data.get('records',data.get('logs',[]))
+    for r in records:
+        src=r.get('srcIp','?'); dst=r.get('dstIp','?')
+        dp=r.get('dstPort','?'); method=r.get('method','')
+        host=r.get('host',''); path=r.get('path',''); code=r.get('statusCode','')
+        ts=r.get('timestamp','')
+        print(f'{Gy}{ts}{N} {G}▶ {method}{N} {host}{path}')
+        if code: print(f'  {BOLD}◀ {code}{N}')
+        print(f'  {Gy}{src} → {dst}:{dp}{N}')
+except: print(data)
+" 2>/dev/null || echo "$body"
+    }
+
+    if [ $FOLLOW -eq 1 ]; then
+        banner
+        printf "${DIM}  Following MITM traffic (Ctrl+C to stop)${RST}\n"
+        separator
+        while true; do show_once; sleep 2; done
+    else
+        banner
+        printf "${DIM}  Decrypted HTTP traffic${RST}\n"
+        separator
+        show_once
+        printf "\n"
+        separator
+    fi
+}
+
+vpn_mitm() {
+    local action="$1"
+    case "$action" in
+        on|off)
+            api_post "/vpn/mitm" "$action" >/dev/null
+            if [ "$action" = "on" ]; then
+                printf "${GREEN}${BOLD}✓${RST} TLS MITM inspection ${GREEN}${BOLD}enabled${RST}\n"
+            else
+                printf "${YELLOW}${BOLD}✓${RST} TLS MITM inspection ${YELLOW}${BOLD}disabled${RST}\n"
+            fi
+            ;;
+        status)
+            api_get "/vpn/mitm" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    st=d.get('mitm','off'); act=d.get('active_sessions',0)
+    print(f'  TLS MITM: {G if st==\"on\" else R}{st.upper()}{N}')
+    print(f'  Active Sessions: {act}')
+except: print('Error')
+" ;;
+        ca)
+            ensure_token
+            curl -s -H "Authorization: Bearer $TOKEN" "${API_URL}/vpn/mitm/ca"
+            ;;
+        *)
+            echo "Usage: nh vpn mitm on|off|status|ca"
+            exit 1 ;;
+    esac
+}
+
+vpn_bypass() {
+    if [ $# -eq 0 ]; then echo "Usage: nh vpn bypass <command>"; exit 1; fi
+    export http_proxy=http://127.0.0.1:13339
+    export https_proxy=http://127.0.0.1:13339
+    export all_proxy=http://127.0.0.1:13339
+    export HTTP_PROXY=http://127.0.0.1:13339
+    export HTTPS_PROXY=http://127.0.0.1:13339
+    export ALL_PROXY=http://127.0.0.1:13339
+    echo "[*] Executing in VPN bypass mode: $@"
+    exec "$@"
+}
+
+vpn_ignore() {
+    local mode="${1:-status}"
+    if [ -z "$NETHUNTER_SESSION_ID" ]; then
+        echo "[-] Error: NETHUNTER_SESSION_ID is not set in this terminal session."
+        exit 1
+    fi
+    local sid="$NETHUNTER_SESSION_ID"
+    case "$mode" in
+        on)  api_post "/vpn/ignore" "session_id=$sid&ignored=true" >/dev/null; echo "${GREEN}[*] VPN sniffer bypassed for this session.${RST}" ;;
+        off) api_post "/vpn/ignore" "session_id=$sid&ignored=false" >/dev/null; echo "${YELLOW}[*] VPN sniffer routing restored for this session.${RST}" ;;
+        status)
+            api_get "/vpn/ignore?session_id=$sid" | fmt "
+import sys, json
+try: d=json.load(sys.stdin); print(f'VPN ignore status: {d}')
+except: print('Unknown')
+" ;;
+        *) echo "Usage: nh vpn ignore on|off|status"; exit 1 ;;
+    esac
+}
+
+vpn_sni_fallback() {
+    local action="$1"
+    case "$action" in
+        get)
+            api_get "/vpn/mitm/sni-fallback" | fmt "
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    fb=d.get('fallback')
+    if not fb: print('MITM SNI fallback: unset')
+    else: print(f'MITM SNI fallback: {fb}')
+except: print('Error')
+" ;;
+        set)
+            local fqdn="$2"
+            [ -z "$fqdn" ] && { echo "Usage: nh vpn sni-fallback set <hostname>"; exit 1; }
+            api_post "/vpn/mitm/sni-fallback" "$fqdn" >/dev/null
+            printf "  ${GREEN}✓${RST} MITM SNI fallback set to ${CYAN}${fqdn}${RST}\n"
+            ;;
+        clear)
+            api_post "/vpn/mitm/sni-fallback" "" >/dev/null
+            printf "  ${YELLOW}✓${RST} MITM SNI fallback cleared\n"
+            ;;
+        *) echo "Usage: nh vpn sni-fallback get|set <fqdn>|clear"; exit 1 ;;
+    esac
+}
+
+# ─── AGENT ─────────────────────────────────────────────────
+
+agent_dispatch() {
+    local config_dir="$HOME/.config/nethunter"
+    case "$1" in
+        config)
+            shift
+            local provider="" key="" model=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --provider) provider="$2"; shift 2 ;;
+                    --key) key="$2"; shift 2 ;;
+                    --model) model="$2"; shift 2 ;;
+                    *) echo "Unknown parameter: $1"; exit 1 ;;
+                esac
+            done
+            mkdir -p "$config_dir"
+            if [ ! -f "$config_dir/agent.json" ]; then
+                echo '{"provider":"gemini","key":"","model":"gemini-2.0-flash"}' > "$config_dir/agent.json"
+            fi
+            python3 -c "
+import json, os
+f='$config_dir/agent.json'
+data=json.load(open(f))
+if '$provider': data['provider']='$provider'
+if '$key': data['key']='$key'
+if '$model': data['model']='$model'
+elif '$provider':
+    m={'gemini':'gemini-2.0-flash','openai':'gpt-4o-mini','anthropic':'claude-3-5-sonnet-20240620','ollama':'llama3'}
+    data['model']=m.get('$provider','gemini-2.0-flash')
+json.dump(data,open(f,'w'),indent=2)
+print(f'[+] Configuration updated: {json.dumps(data,indent=2)}')
+"
+            ;;
+        start)
+            local pid_file="/tmp/nethunter_agent.pid"
+            if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                echo "[*] Agent daemon already running (PID: $(cat "$pid_file"))"
+            else
+                echo "[*] Starting Agent daemon..."
+                nohup python3 /usr/local/bin/nethunter_agent.py > /tmp/nethunter_agent.log 2>&1 &
+                echo $! > "$pid_file"
+                sleep 1
+                if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                    echo "[+] Agent daemon started (PID: $(cat "$pid_file"))"
+                else
+                    echo "[-] Daemon failed to start. Logs:"; cat /tmp/nethunter_agent.log
+                fi
+            fi
+            ;;
+        stop)
+            local pid_file="/tmp/nethunter_agent.pid"
+            if [ -f "$pid_file" ]; then
+                kill "$(cat "$pid_file")" 2>/dev/null; rm -f "$pid_file"
+                echo "[-] Agent daemon stopped."
+            else
+                pkill -f nethunter_agent.py 2>/dev/null || true
+                echo "[-] Agent daemon stopped."
+            fi
+            ;;
+        status)
+            local pid_file="/tmp/nethunter_agent.pid"
+            if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+                printf "${GREEN}${BOLD}🟢 Agent daemon RUNNING${RST} (PID: $(cat "$pid_file"))\n"
+            else
+                printf "${RED}${BOLD}🔴 Agent daemon STOPPED${RST}\n"
+            fi
+            ;;
+        ask)
+            shift
+            [ $# -eq 0 ] && { echo "Usage: nh agent ask <prompt...>"; exit 1; }
+            python3 /usr/local/bin/nethunter_agent.py run-direct "$*"
+            ;;
+        chat)
+            python3 /usr/local/bin/nethunter_agent.py chat
+            ;;
+        *) echo "Usage: nh agent config|start|stop|status|ask|chat"; exit 1 ;;
+    esac
+}
+
+# ─── LOG ───────────────────────────────────────────────────
+
+log_dispatch() {
+    case "$1" in
+        set) shift; log_set "$@" ;;
+        *) log_view "$@" ;;
+    esac
+}
+
+log_view() {
+    local limit=100 grep_pattern=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -n|--lines) limit="$2"; shift 2 ;;
+            -g|--grep) grep_pattern="$2"; shift 2 ;;
+            -h|--help) log_usage ;;
+            *) limit="$1"; shift ;;
+        esac
+    done
+    local url="/app/logs?limit=$limit"
+    local body
+    body=$(api_get "$url")
+    if [ -z "$body" ]; then
+        echo "[-] Cannot connect to LocalApiServer"
+        exit 1
+    fi
+    echo "$body" | python3 -c "
+import sys, re
+RST, DIM, BOLD = '\033[0m', '\033[2m', '\033[1m'
+RED, GREEN, YELLOW = '\033[1;31m', '\033[1;32m', '\033[1;33m'
+BLUE, MAGENTA, CYAN = '\033[1;34m', '\033[1;35m', '\033[1;36m'
+LVL_COLORS = {'V': DIM, 'D': BLUE, 'I': GREEN, 'W': YELLOW, 'E': RED, 'F': BOLD + RED}
+LOG_RE = re.compile(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEF])/([^(:\\s]+)\s*(?:\(\s*(\d+)\))?\s*:\s*(.*)$')
+grep_pat = '$grep_pattern'.lower()
+for line in sys.stdin:
+    if grep_pat and grep_pat not in line.lower(): continue
+    m = LOG_RE.match(line)
+    if m:
+        ts, lvl, tag, pid, msg = m.groups()
+        lc = LVL_COLORS.get(lvl, RST)
+        ps = f'({pid.strip()})' if pid else ''
+        ml = msg.lower()
+        if lvl in ('E','F') or 'denied' in ml or 'fail' in ml or 'error' in ml: msg = RED + msg + RST
+        elif 'warn' in ml: msg = YELLOW + msg + RST
+        elif 'success' in ml or 'established' in ml: msg = GREEN + msg + RST
+        print(f'{DIM}{ts}{RST} {lc}{lvl}{RST} {MAGENTA}{tag}{CYAN}{ps}{RST}: {msg}')
+    else: print(line)
+"
+}
+
+log_set() {
+    case "$1" in
+        lvl)
+            local level="${2:-3}"
+            api_post "/app/logs/level" "$level" >/dev/null
+            echo "Log level set to $level"
+            ;;
+        *) log_usage ;;
+    esac
+}
+
+log_usage() {
+    echo "Usage:"
+    echo "  nh log [-n N] [-g P] [lines]     View logcat (colorized)"
+    echo "  nh log set lvl 1-5               Set logging level"
+    exit 0
+}
+
+# ─── DEVICE ────────────────────────────────────────────────
+
+device_dispatch() {
+    case "$1" in
+        admin) shift; device_admin "$@" ;;
+        battery-optimize) shift; device_battery_optimize "$@" ;;
+        accessibility) device_accessibility ;;
+        *) echo "Usage: nh device admin|battery-optimize|accessibility"; exit 1 ;;
+    esac
+}
+
+device_admin() {
+    local action="${1:-status}"
+    case "$action" in
+        status)
+            api_get "/device/admin" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  {d[\"error\"]}{N}')
+    else:
+        act=d.get('active',False)
+        print(f'{G if act else R}🔑  Device Admin: {\"ACTIVE\" if act else \"INACTIVE\"}{N}')
+except: print(f'{Y}❓  Device Admin: unknown{N}')
+" ;;
+        request) api_post "/device/admin" "" >/dev/null; echo "Device admin request sent" ;;
+        lock) api_post "/device/lock" "" >/dev/null; echo "Device locked" ;;
+        *) echo "Usage: nh device admin status|request|lock"; exit 1 ;;
+    esac
+}
+
+device_battery_optimize() {
+    local action="${1:-status}"
+    case "$action" in
+        status)
+            api_get "/battery/optimize" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if d.get('ignored'): print(f'{G}🔋  Battery Optimization: IGNORED (OK){N}')
+    else: print(f'{Y}🔋  Battery Optimization: RESTRICTED{N}')
+except: print(f'{Y}❓  Battery Optimization: unknown{N}')
+" ;;
+        request) api_post "/battery/optimize" "" >/dev/null; echo "Battery optimization exemption requested" ;;
+        *) echo "Usage: nh device battery-optimize status|request"; exit 1 ;;
+    esac
+}
+
+device_accessibility() {
+    api_get "/accessibility/hierarchy"
+}
+
+# ─── API ───────────────────────────────────────────────────
+
+api_dispatch() {
+    case "$1" in
+        share) shift; api_share "$@" ;;
+        *) echo "Usage: nh api share on|off|status"; exit 1 ;;
+    esac
+}
+
+api_share() {
+    local mode="${1:-status}"
+    case "$mode" in
+        on)
+            api_post_bin "/api/share" "on" >/dev/null
+            echo "[+] API sharing enabled (0.0.0.0)"
+            ;;
+        off)
+            api_post_bin "/api/share" "off" >/dev/null
+            echo "[-] API sharing disabled (127.0.0.1)"
+            ;;
+        status)
+            api_get "/api/share" | fmt "
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    shared=d.get('shared',False)
+    if shared: print('[+] API sharing is ENABLED (0.0.0.0)')
+    else: print('[-] API sharing is DISABLED (127.0.0.1)')
+except: print('Unknown')
+" ;;
+        *) echo "Usage: nh api share on|off|status"; exit 1 ;;
+    esac
+}
+
+# ─── DESKTOP ───────────────────────────────────────────────
+
+desktop_dispatch() {
+    case "$1" in
+        start) desktop_start ;;
+        stop) desktop_stop ;;
+        status) desktop_status ;;
+        *) echo "Usage: nh desktop start|stop|status"; exit 1 ;;
+    esac
+}
+
+desktop_start() {
+    echo "[*] Clearing package locks..."
+    rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
+    export DEBIAN_FRONTEND=noninteractive
+    dpkg --configure -a 2>/dev/null || true
+    echo "[*] Checking desktop dependencies..."
+    if ! command -v vncserver >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1; then
+        echo "[*] Installing XFCE4, VNC and noVNC..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 novnc websockify curl procps </dev/null
+    fi
+    echo "[*] Stopping existing sessions..."
+    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+    echo "[*] Configuring VNC..."
+    mkdir -p ~/.vnc
+    echo "kali_operator" | vncpasswd -f > ~/.vnc/passwd
+    chmod 600 ~/.vnc/passwd
+    cat > ~/.vnc/xstartup << 'EOF'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+startxfce4 &
+EOF
+    chmod +x ~/.vnc/xstartup
+    echo "[*] Starting VNC server :1 (5901)..."
+    vncserver :1 -geometry 1280x720 -depth 24 2>&1 | tee /tmp/vnc.log
+    echo "[*] Starting noVNC on :6080..."
+    websockify --web=/usr/share/novnc/ 6080 127.0.0.1:5901 &>/dev/null &
+    echo "[+] Desktop ready! http://127.0.0.1:6080/vnc.html"
+}
+
+desktop_stop() {
+    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
+    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+    echo "[-] Desktop stopped."
+}
+
+desktop_status() {
+    echo "=== DESKTOP STATUS ==="
+    if pgrep -f "Xvnc|Xtightvnc|Xtigervnc" >/dev/null 2>&1; then echo "[+] VNC Server: RUNNING"; else echo "[-] VNC Server: STOPPED"; fi
+    if pgrep -f "websockify" >/dev/null 2>&1; then echo "[+] noVNC: RUNNING"; else echo "[-] noVNC: STOPPED"; fi
+}
+
+# ─── FIX ───────────────────────────────────────────────────
+
+fix_dispatch() {
+    case "$1" in
+        pkg) fix_pkg "$2" ;;
+        auto) fix_auto ;;
+        *) echo "Usage: nh fix pkg <name>|auto"; exit 1 ;;
+    esac
+}
+
+fix_pkg() {
+    local pkg="$1"
+    [ -z "$pkg" ] && { echo "Usage: nh fix pkg <package-name>"; exit 1; }
+    echo "[*] Mocking postinst for $pkg..."
+    ln -sf /bin/true "/var/lib/dpkg/info/$pkg.postinst" 2>/dev/null || true
+    echo "[*] Reconfiguring dpkg..."
+    dpkg --configure -a
+    echo "[+] Fixed postinst for $pkg!"
+}
+
+fix_auto() {
+    echo "[*] Scanning for broken packages..."
+    dpkg --configure -a 2>&1 || true
+    # Find packages with failed postinst
+    for info in /var/lib/dpkg/info/*.postinst; do
+        [ -f "$info" ] || continue
+        pkg=$(basename "$info" .postinst)
+        if [ -x "$info" ] && ! "$info" configure 2>/dev/null; then
+            echo "[*] Fixing $pkg..."
+            ln -sf /bin/true "/var/lib/dpkg/info/$pkg.postinst" 2>/dev/null || true
+        fi
+    done
+    dpkg --configure -a
+    echo "[+] Auto-fix complete."
+}
+
+# ─── APPS ──────────────────────────────────────────────────
+
+apps_dispatch() {
+    case "$1" in
+        usage) apps_usage ;;
+        *) echo "Usage: nh apps usage"; exit 1 ;;
+    esac
+}
+
+apps_usage() {
+    api_get "/apps/usage" | fmt "
+import sys, json
+G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  {d[\"error\"]}{N}')
+    elif 'apps' in d:
+        apps=d['apps'][:10]
+        print(f'{G}📊  App Usage Statistics:{N}')
+        for a in apps:
+            pkg=a.get('packageName','?'); mins=a.get('totalTimeInForeground',0)//60000
+            print(f'   💠  {pkg}{Gy} - {mins} min{N}')
+    else: print(f'{Y}📊  No app usage data{N}')
+except: print(f'{Y}📊  No app usage data{N}')
+"
+}
+
+# ─── HELP ──────────────────────────────────────────────────
+
+help_dispatch() {
+    local topic="$1"
+    case "$topic" in
+        system|network|vpn|agent|log|device|api|desktop|fix|apps)
+            "help_$topic"
+            ;;
+        *)
+            banner
+            echo ""
+            echo "  ${WHITE}${BOLD}Použití:${RST} nh ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
+            echo "         nethunter ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
+            echo ""
+            separator
+            echo "  ${WHITE}${BOLD}Kategorie:${RST}"
+            echo ""
+            printf "  ${CYAN}system${RST}     battery, volume, torch, vibrate, toast, clipboard, notification, speech\n"
+            printf "  ${CYAN}network${RST}    wifi, cell, location, map, ifconfig\n"
+            printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, bypass, ignore, sni-fallback\n"
+            printf "  ${CYAN}agent${RST}      config, start, stop, status, ask, chat\n"
+            printf "  ${CYAN}log${RST}        [-n N] [-g P], set lvl 1-5\n"
+            printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility\n"
+            printf "  ${CYAN}api${RST}        share on/off/status\n"
+            printf "  ${CYAN}desktop${RST}    start, stop, status\n"
+            printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
+            printf "  ${CYAN}apps${RST}       usage\n"
+            echo ""
+            separator
+            echo "  ${DIM}Pro detaily: nh help <kategorie>${RST}"
+            echo "  ${DIM}Seznam všech příkazů: nh list${RST}"
+            echo ""
+            ;;
+    esac
+}
+
+help_system() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}SYSTEM${RST}"
+    separator
+    echo "  ${GREEN}battery${RST}                 Stav baterie (%, bar, teplota, napětí)"
+    echo "  ${GREEN}volume [N]${RST}              Zobrazit/nastavit hlasitost (0-15)"
+    echo "  ${GREEN}torch on|off${RST}            Zapnout/vypnout svítilnu"
+    echo "  ${GREEN}vibrate [ms]${RST}            Vibrovat (výchozí 500ms)"
+    echo "  ${GREEN}toast <msg>${RST}             Android Toast notifikace"
+    echo "  ${GREEN}clipboard get|set [text]${RST} Číst/zapsat schránku"
+    echo "  ${GREEN}notification -t T -c C${RST}  Systémová notifikace"
+    echo "  ${GREEN}speech${RST}                  Rozpoznávání řeči"
+    echo ""
+}
+
+help_network() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}NETWORK${RST}"
+    separator
+    echo "  ${GREEN}wifi [on|off|scan|connect <ssid>]${RST}  Správa Wi-Fi"
+    echo "  ${GREEN}cell${RST}                     Informace o mobilní síti"
+    echo "  ${GREEN}location${RST}                 GPS souřadnice"
+    echo "  ${GREEN}map${RST}                      TerminalMap s aktuální lokací"
+    echo "  ${GREEN}ifconfig [rozhraní]${RST}      Síťová rozhraní"
+    echo ""
+}
+
+help_vpn() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}VPN${RST}"
+    separator
+    echo "  ${GREEN}status${RST}                   Stav VPN (běží/packety/traffic)"
+    echo "  ${GREEN}start|stop${RST}               Spustit/zastavit VPN"
+    echo "  ${GREEN}on [cmd]${RST}                 Zapnout VPN (volitelně spustit příkaz)"
+    echo "  ${GREEN}off [cmd]${RST}                Vypnout VPN (volitelně spustit příkaz a obnovit)"
+    echo "  ${GREEN}logs [-f] [-n N] [-g P] [json|legacy]${RST}  MITM provoz"
+    echo "  ${GREEN}mitm on|off${RST}              Zapnout/vypnout TLS MITM"
+    echo "  ${GREEN}mitm status${RST}              Stav MITM + aktivní session"
+    echo "  ${GREEN}mitm ca${RST}                  Export Root CA certifikátu"
+    echo "  ${GREEN}bypass <cmd>${RST}             Spustit příkaz mimo VPN"
+    echo "  ${GREEN}ignore on|off|status${RST}     VPN bypass pro aktuální session"
+    echo "  ${GREEN}sni-fallback get|set|clear${RST} Správa SNI fallback hostnamu"
+    echo ""
+}
+
+list_cmds() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy:${RST}"
+    echo ""
+    for cmd in \
+        "system battery" "system volume" "system torch" "system vibrate" \
+        "system toast" "system clipboard" "system notification" "system speech" \
+        "network wifi" "network cell" "network location" "network map" "network ifconfig" \
+        "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
+        "vpn logs" "vpn mitm" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
+        "agent config" "agent start" "agent stop" "agent status" "agent ask" "agent chat" \
+        "log" "log set" \
+        "device admin" "device battery-optimize" "device accessibility" \
+        "api share" \
+        "desktop start" "desktop stop" "desktop status" \
+        "fix pkg" "fix auto" \
+        "apps usage"; do
+        printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
+    done
+    echo ""
+}
+
+usage() {
+    help_dispatch
+    exit 1
+}
+
+# ─── COMPAT DISPATCH (for symlinked old names) ────────────
+
+compat_dispatch() {
+    local invoked="$1"
+    shift
+    local name
+    name=$(basename "$invoked")
+    case "$name" in
+        nethunter-battery-status)       exec "$0" system battery "$@" ;;
+        nethunter-toast)                exec "$0" system toast "$@" ;;
+        nethunter-vibrate)              exec "$0" system vibrate "$@" ;;
+        nethunter-tts-speak)            exec "$0" system tts-speak "$@" ;;
+        nethunter-clipboard-get)        exec "$0" system clipboard get "$@" ;;
+        nethunter-clipboard-set)        exec "$0" system clipboard set "$@" ;;
+        nethunter-notification)         exec "$0" system notification "$@" ;;
+        nethunter-wifi-connectioninfo)  exec "$0" network wifi status "$@" ;;
+        nethunter-wifi-control)         exec "$0" network wifi "$@" ;;
+        nethunter-cellinfo)             exec "$0" network cell "$@" ;;
+        nethunter-location)             exec "$0" network location "$@" ;;
+        nethunter-map)                  exec "$0" network map "$@" ;;
+        nethunter-terminalmap)          exec "$0" network map "$@" ;;
+        nethunter-battery-optimize)     exec "$0" device battery-optimize "$@" ;;
+        nethunter-device-admin)         exec "$0" device admin "$@" ;;
+        nethunter-volume)               exec "$0" system volume "$@" ;;
+        nethunter-torch)                exec "$0" system torch "$@" ;;
+        nethunter-log)                  exec "$0" log "$@" ;;
+        nethunter-speech-input)         exec "$0" system speech "$@" ;;
+        nethunter-notifications-active) exec "$0" device notifications "$@" ;;
+        nethunter-apps-usage)           exec "$0" apps usage "$@" ;;
+        nethunter-accessibility-hierarchy) exec "$0" device accessibility "$@" ;;
+        nethunter-fix-postinst)         exec "$0" fix pkg "$@" ;;
+        nethunter-desktop)              exec "$0" desktop "$@" ;;
+        nethunter-api)                  exec "$0" api share "$@" ;;
+        vpn-cli)                        exec "$0" vpn "$@" ;;
+        vpn-on)                         exec "$0" vpn on "$@" ;;
+        vpn-off)                        exec "$0" vpn off "$@" ;;
+        vpn-bypass)                     exec "$0" vpn bypass "$@" ;;
+        ignore-vpn)                     exec "$0" vpn ignore "$@" ;;
+        nethunter-agent-cli)            exec "$0" agent "$@" ;;
+        nh-ifconfig)                    exec "$0" network ifconfig "$@" ;;
+        *) return 1 ;; # Not a compat name — fall through to usage
+    esac
+}
+
+# ─── MAIN ──────────────────────────────────────────────────
+
+# Check if invoked via compat symlink
+case "$(basename "$0")" in
+    nethunter-*|vpn-*|ignore-vpn|vpn-cli|nethunter-agent-cli|nh-ifconfig)
+        compat_dispatch "$0" "$@"
+        exit $?
+        ;;
+esac
+
+# Self-dispatch: "nethunter" and "nh" are the same
+case "$(basename "$0")" in
+    nethunter|nh) ;;
+    *)
+        # Also check if full path ends with nethunter or nh
+        case "$0" in */nethunter|*/nh) ;; *)
+            compat_dispatch "$0" "$@" && exit $?
+        esac
+        ;;
+esac
+
+# Normal dispatch
+CMD="$1"
+[ -z "$CMD" ] && { usage; exit 1; }
+shift
+
+case "$CMD" in
+    system)     system_dispatch "$@" ;;
+    network)    network_dispatch "$@" ;;
+    vpn)        vpn_dispatch "$@" ;;
+    agent)      agent_dispatch "$@" ;;
+    log)        log_dispatch "$@" ;;
+    device)     device_dispatch "$@" ;;
+    api)        api_dispatch "$@" ;;
+    desktop)    desktop_dispatch "$@" ;;
+    fix)        fix_dispatch "$@" ;;
+    apps)       apps_dispatch "$@" ;;
+    help|--help|-h) help_dispatch "$@" ;;
+    list)       list_cmds ;;
+    *)
+        # Try compat as last resort
+        compat_dispatch "nethunter-$CMD" "$@" 2>/dev/null && exit $?
+        usage
+        ;;
+esac

@@ -33,6 +33,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import com.linux_core.core.DockerImageRef
+import com.linux_core.core.DockerLayer
+import com.linux_core.core.DockerManifest
+import com.linux_core.core.DockerRegistryClient
+
 data class Distro(
     val id: String,
     val name: String,
@@ -641,5 +646,115 @@ object RootfsManager {
         return downloads.listFiles { f ->
             f.name.startsWith("${distro.id}-rootfs-backup-") && f.name.endsWith(".tar.gz")
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
+    }
+
+    /**
+     * Pulls a Docker image from Docker Hub and extracts it as a rootfs.
+     * Uses Docker Registry API v2 (no Docker daemon required).
+     * Emits progress 0..100.
+     */
+    suspend fun pullDockerImage(
+        context: Context,
+        imageRef: DockerImageRef,
+        client: OkHttpClient = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    ): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Resolving image: ${imageRef.fullName}:${imageRef.tag}")
+
+        val registry = DockerRegistryClient(client)
+
+        // 1. Fetch manifest
+        emit(5 to "Fetching image manifest…")
+        val manifest = registry.fetchManifest(imageRef)
+
+        val rootfsDir = File(context.filesDir, "docker-${imageRef.namespace}-${imageRef.repository}")
+        rootfsDir.mkdirs()
+
+        // 2. Download and extract each layer
+        val totalLayers = manifest.layers.size
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:pullDocker")
+        wakeLock.acquire(2 * 60 * 60 * 1000L) // 2 hours max for large images
+
+        try {
+            for ((index, layer) in manifest.layers.withIndex()) {
+                val layerProgress = 5 + ((index * 90) / totalLayers)
+                emit(layerProgress to "Downloading layer ${index + 1}/$totalLayers…")
+
+                // Download layer bytes
+                val layerBytes = mutableListOf<ByteArray>()
+                registry.downloadLayer(imageRef, layer).collect { chunk ->
+                    layerBytes.add(chunk)
+                }
+
+                emit(layerProgress + 5 to "Extracting layer ${index + 1}/$totalLayers…")
+
+                // Extract tar.gz layer into rootfs
+                val combined = layerBytes.flatMap { it.toList() }.toByteArray()
+                extractTarGzip(combined, rootfsDir)
+
+                Log.i("RootfsManager", "Layer ${index + 1}/$totalLayers extracted: ${layer.digest}")
+            }
+
+            // 3. Validate rootfs
+            emit(98 to "Validating rootfs…")
+            val hasBin = File(rootfsDir, "bin").exists() || File(rootfsDir, "usr/bin").exists()
+            val hasLib = File(rootfsDir, "lib").exists() || File(rootfsDir, "usr/lib").exists()
+            if (!hasBin && !hasLib) {
+                Log.w("RootfsManager", "Pulled image may not be a valid rootfs (no bin/lib found)")
+            }
+
+            emit(100 to rootfsDir.absolutePath)
+            Log.i("RootfsManager", "Docker image pull complete: ${rootfsDir.absolutePath}")
+
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "Docker pull failed: ${e.message}", e)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun extractTarGzip(data: ByteArray, targetDir: File) {
+        java.io.ByteArrayInputStream(data).use { bais ->
+            BufferedInputStream(bais, 512 * 1024).use { bis ->
+                GzipCompressorInputStream(bis).use { gzIn ->
+                    TarArchiveInputStream(gzIn).use { tarIn ->
+                        val canonicalBase = targetDir.canonicalPath
+                        var entry: ArchiveEntry? = tarIn.nextEntry
+                        while (entry != null) {
+                            val entryFile = File(targetDir, entry.name)
+                            val canonicalDest = entryFile.canonicalPath
+                            if (!canonicalDest.startsWith(canonicalBase + java.io.File.separator) && canonicalDest != canonicalBase) {
+                                entry = tarIn.nextEntry
+                                continue
+                            }
+
+                            val tarEntry = entry as? TarArchiveEntry
+                            when {
+                                tarEntry?.isSymbolicLink == true -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    try {
+                                        android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+                                    } catch (_: Exception) {}
+                                }
+                                tarEntry?.isDirectory == true -> entryFile.mkdirs()
+                                else -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
+                                        entryFile.setExecutable(true, false)
+                                    }
+                                    entryFile.setReadable(true, false)
+                                }
+                            }
+                            entry = tarIn.nextEntry
+                        }
+                    }
+                }
+            }
+        }
     }
 }

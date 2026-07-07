@@ -29,6 +29,19 @@ object TlsMitmEngine {
     private var selector: Selector? = null
     @Volatile private var appContext: android.content.Context? = null
 
+    data class MitmSessionInfo(
+        val clientPort: Int,
+        val sni: String?,
+        val alpn: String?,
+        val cipherSuite: String?,
+        val certSubject: String?,
+        val certIssuer: String?,
+        val certNotBefore: String?,
+        val certNotAfter: String?,
+        val isActivelyDecrypting: Boolean,
+        val startTime: Long
+    )
+
     fun init(executor: ExecutorService, selector: Selector, context: android.content.Context) {
         this.executor = executor
         this.selector = selector
@@ -71,6 +84,29 @@ object TlsMitmEngine {
         return MitmTrafficStore.get(ctx).queryForSessionSnapshots(ports)
     }
 
+    fun getActiveSessionPorts(): Set<Int> = sessions.keys.toSet()
+
+    fun getSessionInfo(port: Int): MitmSessionInfo? {
+        val session = sessions[port] ?: return null
+        return MitmSessionInfo(
+            clientPort = session.clientPort,
+            sni = session.sni,
+            alpn = session.sessionAlpn,
+            cipherSuite = session.serverEngine?.session?.cipherSuite,
+            certSubject = session.serverCert?.subjectX500Principal?.name,
+            certIssuer = session.serverCert?.issuerX500Principal?.name,
+            certNotBefore = session.serverCert?.notBefore?.toString(),
+            certNotAfter = session.serverCert?.notAfter?.toString(),
+            isActivelyDecrypting = session.isActivelyDecrypting,
+            startTime = session.startTime
+        )
+    }
+
+    fun getTrafficRecords(port: Int, limit: Int = 50): List<MitmTrafficStore.Record> {
+        val ctx = appContext ?: return emptyList()
+        return MitmTrafficStore.get(ctx).query(limit = limit, sessionPort = port)
+    }
+
     /** True when at least one session reached proxyLoop (actively decrypting TLS). */
     fun shouldBlockQuic(): Boolean = sessions.values.any { it.isActivelyDecrypting }
 }
@@ -87,13 +123,13 @@ class TlsMitmSession(
         @Volatile private var sniServerNameFactory: ((String) -> javax.net.ssl.SNIServerName)? = null
     }
 
-    private val clientPort = session.clientPort
+    @Volatile var clientPort = session.clientPort
     private var serverChannel: SocketChannel? = null
     private var clientEngine: SSLEngine? = null
-    private var serverEngine: SSLEngine? = null
-    private var serverCert: X509Certificate? = null
+    @Volatile var serverEngine: SSLEngine? = null
+    @Volatile var serverCert: X509Certificate? = null
     var sni: String? = null
-    private var sessionAlpn: String? = null
+    @Volatile var sessionAlpn: String? = null
     private var running = true
 
     private val trafficStore = MitmTrafficStore.get(vpnService)
@@ -112,6 +148,7 @@ class TlsMitmSession(
     @Volatile private var closed = false
     @Volatile private var lastActivityTime = System.currentTimeMillis()
     @Volatile var isActivelyDecrypting = false
+    @Volatile var startTime = System.currentTimeMillis()
 
     private val PROXY_LOOP_TIMEOUT_MS = 60_000L
 

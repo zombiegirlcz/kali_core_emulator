@@ -486,47 +486,65 @@ object ProotManager {
 
 
 
-        val scripts = mapOf(
-
-
-            "apt" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("# NetHunter AI Operator APT Wrapper").append(NL)
-                append("export DEBIAN_FRONTEND=noninteractive").append(NL)
-                append("# 1. Fix debconf syntax error if present").append(NL)
-                append("if [ -f /usr/share/debconf/confmodule ]; then").append(NL)
-                append("  sed -i \"s/eval \\\"\\\$RET=''\\\"/RET=''/g\" /usr/share/debconf/confmodule 2>/dev/null").append(NL)
-                append("fi").append(NL)
-                append("# 2. Reinforce diversions for systemd tools if missing").append(NL)
-                append("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do").append(NL)
-                append("  if [ -f \"/usr/bin/\$cmd\" ] && [ ! -L \"/usr/bin/\$cmd\" ]; then").append(NL)
-                append("    dpkg-divert --add --local --rename --divert \"/usr/bin/\$cmd.distrib\" \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
-                append("    ln -sf /bin/true \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
-                append("  fi").append(NL)
-                append("done").append(NL)
-                append("# 3. Run real apt").append(NL)
-                append("exec /usr/bin/apt \"$@\"").append(NL)
-            }.toString(),
-
-            "apt-get" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("# NetHunter AI Operator APT-GET Wrapper").append(NL)
-                append("export DEBIAN_FRONTEND=noninteractive").append(NL)
-                append("# 1. Fix debconf syntax error if present").append(NL)
-                append("if [ -f /usr/share/debconf/confmodule ]; then").append(NL)
-                append("  sed -i \"s/eval \\\"\\\$RET=''\\\"/RET=''/g\" /usr/share/debconf/confmodule 2>/dev/null").append(NL)
-                append("fi").append(NL)
-                append("# 2. Reinforce diversions for systemd tools if missing").append(NL)
-                append("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do").append(NL)
-                append("  if [ -f \"/usr/bin/\$cmd\" ] && [ ! -L \"/usr/bin/\$cmd\" ]; then").append(NL)
-                append("    dpkg-divert --add --local --rename --divert \"/usr/bin/\$cmd.distrib\" \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
-                append("    ln -sf /bin/true \"/usr/bin/\$cmd\" 2>/dev/null").append(NL)
-                append("  fi").append(NL)
-                append("done").append(NL)
-                append("# 3. Run real apt-get").append(NL)
-                append("exec /usr/bin/apt-get \"$@\"").append(NL)
-            }.toString(),
-
+                val scripts = mapOf(
+            "apt" to buildString {
+                appendLine("#!/bin/sh")
+                appendLine("# NetHunter AI Operator APT Wrapper")
+                appendLine("export DEBIAN_FRONTEND=noninteractive")
+                appendLine("# Fix debconf syntax error if present")
+                appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
+                appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
+                appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
+                appendLine("#!/bin/sh")
+                appendLine("RET=''")
+                appendLine("eval \"\$RET\"=\"")
+                appendLine("ENDCONF")
+                appendLine("fi")
+                appendLine("# Reinforce diversions for systemd tools if missing")
+                appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
+                appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
+                appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
+                appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
+                appendLine("  fi")
+                appendLine("done")
+                appendLine("# Restore debconf confmodule if backup exists")
+                appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
+                appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
+                appendLine("fi")
+                appendLine("# Fix half-configured packages")
+                appendLine("dpkg --configure -a 2>&1 || true")
+                appendLine("# Run real apt")
+                appendLine("exec /usr/bin/apt \"\$@\"")
+            },
+            "apt-get" to buildString {
+                appendLine("#!/bin/sh")
+                appendLine("# NetHunter AI Operator APT-GET Wrapper")
+                appendLine("export DEBIAN_FRONTEND=noninteractive")
+                appendLine("# Fix debconf syntax error if present")
+                appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
+                appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
+                appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
+                appendLine("#!/bin/sh")
+                appendLine("RET=''")
+                appendLine("eval \"\$RET\"=\"")
+                appendLine("ENDCONF")
+                appendLine("fi")
+                appendLine("# Reinforce diversions for systemd tools if missing")
+                appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
+                appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
+                appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
+                appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
+                appendLine("  fi")
+                appendLine("done")
+                appendLine("# Restore debconf confmodule if backup exists")
+                appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
+                appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
+                appendLine("fi")
+                appendLine("# Fix half-configured packages")
+                appendLine("dpkg --configure -a 2>&1 || true")
+                appendLine("# Run real apt-get")
+                appendLine("exec /usr/bin/apt-get \"\$@\"")
+            },
             "vpn-bypass" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
@@ -542,7 +560,6 @@ object ProotManager {
                 append("echo \"[*] Executing in VPN bypass mode: \$@\"").append(NL)
                 append("exec \"\$@\"").append(NL)
             }.toString(),
-
             "dcheck" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
@@ -558,874 +575,11 @@ object ProotManager {
                 append("echo \"[*] Executing in VPN bypass mode (dcheck): \$@\"").append(NL)
                 append("exec \"\$@\"").append(NL)
             }.toString(),
-
-            "vpn-off" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"[*] Stopping global VPN service...\"").append(NL)
-                append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
-                append("  echo \"[-] Global VPN sniffer disabled.\"").append(NL)
-                append("  exit 0").append(NL)
-                append("fi").append(NL)
-                append("was_running=false").append(NL)
-                append("if curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
-                append("  was_running=true").append(NL)
-                append("  echo \"[*] Temporarily disabling VPN\"").append(NL)
-                append("  curl -s -X POST http://127.0.0.1:1337/vpn/stop >/dev/null").append(NL)
-                append("  sleep 1").append(NL)
-                append("fi").append(NL)
-                append("echo \"[*] Executing (VPN off): \$@\"").append(NL)
-                append("\"\$@\"").append(NL)
-                append("exit_code=\$?").append(NL)
-                append("if [ \"\$was_running\" = \"true\" ]; then").append(NL)
-                append("  echo \"[*] Restoring VPN\"").append(NL)
-                append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
-                append("fi").append(NL)
-                append("exit \$exit_code").append(NL)
-            }.toString(),
-
-            "vpn-on" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"[*] Starting global VPN service...\"").append(NL)
-                append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
-                append("  echo \"[+] Global VPN sniffer enabled.\"").append(NL)
-                append("  exit 0").append(NL)
-                append("fi").append(NL)
-                append("if ! curl -s http://127.0.0.1:1337/vpn | grep -q '\"running\":true'; then").append(NL)
-                append("  echo \"[*] Starting VPN\"").append(NL)
-                append("  curl -s -X POST http://127.0.0.1:1337/vpn/start >/dev/null").append(NL)
-                append("  sleep 1").append(NL)
-                append("fi").append(NL)
-                append("echo \"[*] Executing (VPN on): \$@\"").append(NL)
-                append("\"\$@\"").append(NL)
-                append("exit \$?").append(NL)
-            }.toString(),
-
-            "vpn-cli" to context.assets.open("vpn-cli").bufferedReader().readText(),
-
-            "ai-agent.py" to StringBuilder().apply {
-                append("#!/usr/bin/python3").append(NL)
-                append("import requests, time, json, os, sys").append(NL)
-                append("API_URL = 'http://127.0.0.1:1337'").append(NL)
-                append("def get_logs():").append(NL)
-                append("    try: return requests.get(f'{API_URL}/vpn/logs').json()").append(NL)
-                append("    except: return []").append(NL)
-                append("def run_shell(cmd):").append(NL)
-                append("    try: return requests.post(f'{API_URL}/shell', data=cmd).json()").append(NL)
-                append("    except: return {'error': 'API unreachable'}").append(NL)
-                append("def analyze_network(filter_ip=None, minutes=60):").append(NL)
-                append("    logs = get_logs()").append(NL)
-                append("    now_ms = int(time.time() * 1000)").append(NL)
-                append("    cutoff = now_ms - (minutes * 60 * 1000)").append(NL)
-                append("    recent = [l for l in logs if l.get('timestamp',0) >= cutoff]").append(NL)
-                append("    if filter_ip: recent = [l for l in recent if l.get('srcIp')==filter_ip or l.get('dstIp')==filter_ip]").append(NL)
-                append("    if not recent: return 'Žádný provoz za posledních %d minut.' % minutes").append(NL)
-                append("    total = len(recent)").append(NL)
-                append("    anomalies = [l for l in recent if l.get('category') in ('CRITICAL','SUSPICIOUS')]").append(NL)
-                append("    dst_c = {}").append(NL)
-                append("    for l in recent: dst_c[l.get('dstIp','?')] = dst_c.get(l.get('dstIp','?'),0)+1").append(NL)
-                append("    top5 = sorted(dst_c.items(), key=lambda x:x[1], reverse=True)[:5]").append(NL)
-                append("    ent = [l.get('entropy',0) for l in recent if l.get('entropy',0)>0]").append(NL)
-                append("    avg_e = sum(ent)/len(ent) if ent else 0").append(NL)
-                append("    report = f'📊 Analýza posledních {minutes} minut:\\n'").append(NL)
-                append("    report += f'  Celkem spojení: {total}\\n'").append(NL)
-                append("    report += f'  Anomálie (CRITICAL/SUSPICIOUS): {len(anomalies)}\\n'").append(NL)
-                append("    report += f'  Průměrná entropie: {avg_e:.2f}\\n'").append(NL)
-                append("    report += f'  Top destinace: {top5}\\n'").append(NL)
-                append("    if anomalies:").append(NL)
-                append("        report += '  🔴 Podezřelé:\\n'").append(NL)
-                append("        for a in anomalies[:5]: report += f\"    {a.get('srcIp')} -> {a.get('dstIp')}:{a.get('dstPort')} [{a.get('category')}]\\n\"").append(NL)
-                append("    return report").append(NL)
-                append("def analyze_log(log):").append(NL)
-                append("    src = log.get('srcIp')").append(NL)
-                append("    dst = log.get('dstIp')").append(NL)
-                append("    port = log.get('dstPort')").append(NL)
-                append("    entropy = log.get('entropy', 0)").append(NL)
-                append("    ans = f\"Provoz {src} -> {dst}:{port}. \"").append(NL)
-                append("    if log.get('category') == 'CRITICAL':").append(NL)
-                append("        ans += \"🔴 ANALÝZA: Kritická anomálie detekována! \"").append(NL)
-                append("        if entropy > 7.5: ans += \"Vysoká entropie (šifrovaný tunel). \"").append(NL)
-                append("        ans += f\"\\n👉 Tip: '!iptables -I OUTPUT -d {dst} -j DROP'\"").append(NL)
-                append("    else: ans += \"🟢 Vypadá to v pohodě.\"").append(NL)
-                append("    return ans").append(NL)
-                append("def chat_loop():").append(NL)
-                append("    print('🤖 NetHunter Local AI Expert (v2.0)')").append(NL)
-                append("    print('Příkazy:')").append(NL)
-                append("    print('  stav       - Poslední spojení')").append(NL)
-                append("    print('  analýza    - Statistiky za poslední hodinu')").append(NL)
-                append("    print('  ip X.X.X.X - Provoz k/z konkrétní IP')").append(NL)
-                append("    print('  !příkaz    - Spustit shell příkaz')").append(NL)
-                append("    print('  exit       - Ukončit')").append(NL)
-                append("    while True:").append(NL)
-                append("        user_input = input('👤 Ty: ').strip()").append(NL)
-                append("        lower = user_input.lower()").append(NL)
-                append("        if lower in ['exit', 'quit']: break").append(NL)
-                append("        if 'stav' in lower:").append(NL)
-                append("            logs = get_logs()").append(NL)
-                append("            print(f\"🤖 Agent: {analyze_log(logs[0]) if logs else 'Žádné logy.'}\")").append(NL)
-                append("        elif lower.startswith('ip '):").append(NL)
-                append("            target_ip = user_input[3:].strip()").append(NL)
-                append("            print(f'🤖 Agent: {analyze_network(filter_ip=target_ip)}')").append(NL)
-                append("        elif 'analýza' in lower or 'analyza' in lower or 'analyz' in lower:").append(NL)
-                append("            print(f'🤖 Agent: {analyze_network()}')").append(NL)
-                append("        elif user_input.startswith('!'):").append(NL)
-                append("            res = run_shell(user_input[1:])").append(NL)
-                append("            print(f\"🤖 Shell: {res.get('stdout','')}{res.get('stderr','')}\")").append(NL)
-                append("        else: print(\"🤖 Agent: Napiš 'stav', 'analýza', 'ip X.X.X.X' nebo '!příkaz'.\")").append(NL)
-                append("def monitor_loop():").append(NL)
-                append("    seen = set()").append(NL)
-                append("    while True:").append(NL)
-                append("        for l in get_logs():").append(NL)
-                append("            if f\"{l['timestamp']}:{l['srcIp']}\" not in seen:").append(NL)
-                append("                seen.add(f\"{l['timestamp']}:{l['srcIp']}\")").append(NL)
-                append("                if l.get('category') == 'CRITICAL':").append(NL)
-                append("                    requests.post(f'{API_URL}/toast', data=f\"AI: Detekován útok z {l['srcIp']}!\")").append(NL)
-                append("        time.sleep(5)").append(NL)
-                append("if __name__ == '__main__':").append(NL)
-                append("    if len(sys.argv) > 1 and sys.argv[1] == 'chat': chat_loop()").append(NL)
-                append("    else: monitor_loop()").append(NL)
-            }.toString(),
-
-            "ignore-vpn" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -z \"\$NETHUNTER_SESSION_ID\" ]; then").append(NL)
-                append("  echo \"[-] Error: NETHUNTER_SESSION_ID is not set in this terminal session.\"").append(NL)
-                append("  exit 1").append(NL)
-                append("fi").append(NL)
-                append("mode=\${1:-on}").append(NL)
-                append("if [ \"\$mode\" = \"on\" ]; then").append(NL)
-                append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=true\" >/dev/null").append(NL)
-                append("  echo \"[*] VPN sniffer bypassed for this session.\"").append(NL)
-                append("elif [ \"\$mode\" = \"off\" ]; then").append(NL)
-                append("  curl -s -X POST \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID&ignored=false\" >/dev/null").append(NL)
-                append("  echo \"[*] VPN sniffer routing restored for this session.\"").append(NL)
-                append("elif [ \"\$mode\" = \"status\" ]; then").append(NL)
-                append("  res=\$(curl -s \"http://127.0.0.1:1337/vpn/ignore?session_id=\$NETHUNTER_SESSION_ID\")").append(NL)
-                append("  echo \"[*] VPN ignore status: \$res\"").append(NL)
-                append("else").append(NL)
-                append("  echo \"Usage: ignore-vpn [on|off|status]\"").append(NL)
-                append("  exit 1").append(NL)
-                append("fi").append(NL)
-            }.toString(),
-
-            "nethunter-toast" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -p /dev/stdin ]; then").append(NL)
-                append("  text=\$(cat)").append(NL)
-                append("else").append(NL)
-                append("  text=\"\$*\"").append(NL)
-                append("fi").append(NL)
-                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/toast)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Toast failed: {d[\"error\"]}{N}')").append(NL)
-                append("    else: print(f'{G}\\u2714  Toast sent to host engine{N}')").append(NL)
-                append("except: print(f'{G}\\u2714  Toast sent to host engine{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-battery-status" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/battery)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def bat_color(pct,status):").append(NL)
-                append("    if status=='charging': return '\\033[92m'").append(NL)
-                append("    if pct>50: return '\\033[92m'").append(NL)
-                append("    if pct>20: return '\\033[93m'").append(NL)
-                append("    return '\\033[91m'").append(NL)
-                append("def bat_bar(pct):").append(NL)
-                append("    n=max(1,int(pct/10))").append(NL)
-                append("    return '█'*n + '░'*(10-n)").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
-                append("    else:").append(NL)
-                append("        pct=d.get('percentage',-1)").append(NL)
-                append("        temp=d.get('temperature',0)").append(NL)
-                append("        volt=d.get('voltage',0)").append(NL)
-                append("        st=d.get('status','?')").append(NL)
-                append("        hl=d.get('health','?')").append(NL)
-                append("        pl=d.get('plugged','none')").append(NL)
-                append("        c=bat_color(pct,st)").append(NL)
-                append("        icon='🔌' if st=='charging' else '🔋'").append(NL)
-                append("        b=bat_bar(pct)").append(NL)
-                append("        print(f'{c}{icon}  {pct}%  [{b}]{chr(27)}[0m')").append(NL)
-                append("        print(f'   Status:  {st}')").append(NL)
-                append("        print(f'   Zdraví:  {hl}')").append(NL)
-                append("        print(f'   Teplota: {temp}°C')").append(NL)
-                append("        print(f'   Napětí:  {volt} mV')").append(NL)
-                append("        if pl!='none': print(f'   Nabíjení: {pl}')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-            "nethunter-speech-input" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/voice_input)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'text' in d: print(f'{G}\\U0001f399\\ufe0f  Voice: {d[\"text\"]}{N}')").append(NL)
-                append("    else: print(f'{R}\\u2718  {d.get(\"error\", \"No response\")}{N}')").append(NL)
-                append("except: print(f'{R}\\u2718  Error parsing voice input{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-vibrate" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s -X POST -d \"\${1:-500}\" http://127.0.0.1:1337/vibrate)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Vibration failed: {d[\"error\"]}{N}')").append(NL)
-                append("    else: print(f'{G}\\U0001f4f3  Vibration: {d.get(\"duration\", \"500\")} ms{N}')").append(NL)
-                append("except: print(f'{G}\\U0001f4f3  Vibration sent{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-tts-speak" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -p /dev/stdin ]; then").append(NL)
-                append("  text=\$(cat)").append(NL)
-                append("else").append(NL)
-                append("  text=\"\$*\"").append(NL)
-                append("fi").append(NL)
-                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/tts)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  TTS failed: {d[\"error\"]}{N}')").append(NL)
-                append("    else: print(f'{G}\\U0001f50a  TTS: Sent to host engine{N}')").append(NL)
-                append("except: print(f'{G}\\U0001f50a  TTS: Sent to host engine{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-clipboard-get" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/clipboard)").append(NL)
-                append("if [ \"\$1\" = \"--raw\" ]; then").append(NL)
-                append("  echo \"\$DATA\" | python3 -c \"import sys,json; print(json.load(sys.stdin).get('text',''))\"").append(NL)
-                append("else").append(NL)
-                append("  echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'text' in d:").append(NL)
-                append("        txt = d['text'][:200]").append(NL)
-                append("        print(f'{G}\\U0001f4cb  Clipboard: {txt}{N}')").append(NL)
-                append("    else: print(f'{Y}\\U0001f4cb  Clipboard: (empty){N}')").append(NL)
-                append("except: print(f'{R}\\u2718  Error reading clipboard{N}')").append(NL)
-                append("\"").append(NL)
-                append("fi").append(NL)
-            }.toString(),
-
-
-            "nethunter-clipboard-set" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -p /dev/stdin ]; then").append(NL)
-                append("  text=\$(cat)").append(NL)
-                append("else").append(NL)
-                append("  text=\"\$*\"").append(NL)
-                append("fi").append(NL)
-                append("DATA=\$(curl -s -X POST --data-binary \"\$text\" http://127.0.0.1:1337/clipboard)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Clipboard error: {d[\"error\"]}{N}')").append(NL)
-                append("    else: print(f'{G}\\U0001f4cb  Clipboard: Text copied to host{N}')").append(NL)
-                append("except: print(f'{G}\\U0001f4cb  Clipboard: Text copied to host{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-notification" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("title=\"NetHunter\"").append(NL)
-                append("content=\"\"").append(NL)
-                append("while getopts \"t:c:\" opt; do").append(NL)
-                append("  case \$opt in").append(NL)
-                append("    t) title=\"\$OPTARG\" ;;").append(NL)
-                append("    c) content=\"\$OPTARG\" ;;").append(NL)
-                append("  esac").append(NL)
-                append("done").append(NL)
-                append("if [ -z \"\$content\" ]; then").append(NL)
-                append("  shift \$((OPTIND-1))").append(NL)
-                append("  content=\"\$*\"").append(NL)
-                append("fi").append(NL)
-                append("DATA=\$(curl -s -X POST -H \"Content-Type: application/json\" -d \"{\\\"title\\\":\\\"\$title\\\",\\\"content\\\":\\\"\$content\\\"}\" http://127.0.0.1:1337/notification)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Notification failed: {d[\"error\"]}{N}')").append(NL)
-                append("    else: print(f'{G}\\U0001f514  Notification posted: {d.get(\"title\", \"\")}{N}')").append(NL)
-                append("except: print(f'{G}\\U0001f514  Notification posted to host{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-wifi-connectioninfo" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/wifi)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def wifi_qual(rssi):").append(NL)
-                append("    if rssi is None: return ('N/A',0,'\\033[0m')").append(NL)
-                append("    if rssi> -50: return ('Excelentní',10,'\\033[92m')").append(NL)
-                append("    if rssi> -60: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
-                append("    if rssi> -70: return ('Dobrý',6,'\\033[93m')").append(NL)
-                append("    if rssi> -80: return ('Střední',4,'\\033[93m')").append(NL)
-                append("    if rssi> -90: return ('Slabý',2,'\\033[91m')").append(NL)
-                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
-                append("def wifi_bar(n): return '█'*n + '░'*(10-n)").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
-                append("    else:").append(NL)
-                append("        ssid=d.get('ssid','N/A')").append(NL)
-                append("        bssid=d.get('bssid','N/A')").append(NL)
-                append("        rssi=d.get('rssi')").append(NL)
-                append("        link=d.get('link_speed_mbps','?')").append(NL)
-                append("        w,n,c = wifi_qual(rssi)").append(NL)
-                append("        b=wifi_bar(n)").append(NL)
-                append("        print(f'📡  SSID: {ssid}')").append(NL)
-                append("        print(f'🔗  BSSID: {bssid}')").append(NL)
-                append("        if rssi is not None:").append(NL)
-                append("            print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')").append(NL)
-                append("            print(f'   [{c}{b}{chr(27)}[0m]')").append(NL)
-                append("        print(f'📶  Rychlost: {link} Mbps')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-            "nethunter-cellinfo" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/cellinfo)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def qual_dbm(dbm):").append(NL)
-                append("    if dbm is None or dbm <= -200: return ('Mimo dosah',0,'\\033[0m')").append(NL)
-                append("    if dbm >  -75: return ('Excelentní',10,'\\033[92m')").append(NL)
-                append("    if dbm >  -85: return ('Velmi dobrý',8,'\\033[92m')").append(NL)
-                append("    if dbm >  -95: return ('Dobrý',6,'\\033[93m')").append(NL)
-                append("    if dbm > -105: return ('Střední',4,'\\033[93m')").append(NL)
-                append("    if dbm > -115: return ('Slabý',2,'\\033[91m')").append(NL)
-                append("    return ('Velmi slabý',1,'\\033[91m')").append(NL)
-                append("def bars(n): return '█'*n + '░'*(10-n)").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    net=d.get('network_type','?')").append(NL)
-                append("    carr=d.get('carrier','?')").append(NL)
-                append("    sim=d.get('sim_carrier','?')").append(NL)
-                append("    data_st=d.get('data_state','?')").append(NL)
-                append("    roam=d.get('is_roaming',False)").append(NL)
-                append("    sig_bar=d.get('signal_bar','')").append(NL)
-                append("    sig_dbm=d.get('signal_dbm')").append(NL)
-                append("    print(f'📶  {carr}  ({net})')").append(NL)
-                append("    print(f'📋  SIM: {sim}  |  Data: {data_st}  |  Roaming: {roam}')").append(NL)
-                append("    if sig_bar:").append(NL)
-                append("        dbm_txt = f\\\" ({sig_dbm} dBm)\\\" if sig_dbm else ''").append(NL)
-                append("        print(f'{sig_bar}{dbm_txt}')").append(NL)
-                append("    cells=d.get('cells',[])").append(NL)
-                append("    if not cells:").append(NL)
-                append("        print()").append(NL)
-                append("        print('Žádné věže v dosahu.')").append(NL)
-                append("    else:").append(NL)
-                append("        for idx,c in enumerate(cells):").append(NL)
-                append("            print()").append(NL)
-                // Header row
-                append("            reg=c.get('registered',False)").append(NL)
-                append("            stav='REGISTROVÁN' if reg else 'SOUSEDNÍ'").append(NL)
-                append("            print(f\\\"Vysílač #{idx+1} [{stav}]\\\")").append(NL)
-                // Type | MCC | MNC
-                append("            typ=c.get('type','N/A')").append(NL)
-                append("            mcc=c.get('mcc','?')").append(NL)
-                append("            mnc=c.get('mnc','?')").append(NL)
-                append("            print(f\\\"Typ: {typ} | MCC: {mcc} | MNC: {mnc}\\\")").append(NL)
-                // TAC/LAC | CID | PCI/PSC
-                append("            tac=c.get('tac_lac','N/A')").append(NL)
-                append("            cid=c.get('cid','N/A')").append(NL)
-                append("            pci=c.get('pci_psc')").append(NL)
-                append("            pci_txt = str(pci) if pci is not None else 'N/A'").append(NL)
-                append("            print(f\\\"TAC/LAC: {tac} | CID: {cid} | PCI/PSC: {pci_txt}\\\")").append(NL)
-                // Signal strength
-                append("            sdbm=c.get('signal_dbm')").append(NL)
-                append("            slev=c.get('signal_level',0)").append(NL)
-                append("            if sdbm is not None and sdbm > -200:").append(NL)
-                append("                w,n,c = qual_dbm(sdbm)").append(NL)
-                append("                print(f\\\"{c}Síla signálu: {sdbm} dBm ({w})\\033[0m\\\")").append(NL)
-                append("                b=bars(n)").append(NL)
-                append("                print(f\\\"Ukazatel: [{c}{b}\\033[0m] ({c}{w}\\033[0m)\\\")").append(NL)
-                append("            else:").append(NL)
-                append("                print(f\\\"Síla signálu: N/A\\\")").append(NL)
-                append("                print(f\\\"Ukazatel: [░░░░░░░░░░] (N/A)\\\")").append(NL)
-                // Separator
-                append("            if idx < len(cells)-1:").append(NL)
-                append("                print('─'*50)").append(NL)
-                append("except Exception as e: print(f'Chyba: {e}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-            "nethunter-location" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/location)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
-                append("    else:").append(NL)
-                append("        lat=d.get('latitude')").append(NL)
-                append("        lng=d.get('longitude')").append(NL)
-                append("        acc=d.get('accuracy')").append(NL)
-                append("        prov=d.get('provider')").append(NL)
-                append("        maps=d.get('maps_url','')").append(NL)
-                append("        geo=d.get('geo_uri','')").append(NL)
-                append("        print(f'📍  {lat}, {lng}  (±{acc:.0f}m)  [{prov}]')").append(NL)
-                append("        print(f'🗺️  Google Maps: {maps}')").append(NL)
-                append("        print(f'🔗 Geo URI:     {geo}')").append(NL)
-                append("except: print('Chyba parsovani')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-            "nethunter-map" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("# Display current location and run terminalmap to browse OpenStreetMap").append(NL)
-                append("echo \"[*] Fetching current location...\"").append(NL)
-                append("MAP_DATA=\$(curl -s http://127.0.0.1:1337/map)").append(NL)
-                append("echo \"\$MAP_DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if d.get('success'):").append(NL)
-                append("        lat=d.get('latitude')").append(NL)
-                append("        lng=d.get('longitude')").append(NL)
-                append("        print(f'📍 Location: {lat}, {lng}')").append(NL)
-                append("        print('🗺️  Starting TerminalMap...')").append(NL)
-                append("    else:").append(NL)
-                append("        print(d.get('error','Unknown error'))").append(NL)
-                append("except: print('Error parsing location')").append(NL)
-                append("\"").append(NL)
-                append("echo \"[*] Controls: arrow keys/hjkl=pan, a/+/-=zoom, c=braille/ASCII, n=labels, g=tour, w=world, q=quit\"").append(NL)
-                append("terminalmap").append(NL)
-            }.toString(),
-
-            "nethunter-terminalmap" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("# Alias for nethunter-map (TerminalMap map viewer with current GPS location)").append(NL)
-                append("nethunter-map").append(NL)
-            }.toString(),
-
-            "nethunter-apps-usage" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/apps/usage)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
-                append("    elif 'apps' in d:").append(NL)
-                append("        apps = d['apps'][:10]").append(NL)
-                append("        print(f'{G}\\U0001f4ca  App Usage Statistics:{N}')").append(NL)
-                append("        for a in apps:").append(NL)
-                append("            pkg = a.get('packageName', '?')").append(NL)
-                append("            mins = a.get('totalTimeInForeground', 0) // 60000").append(NL)
-                append("            print(f'   \\U0001f4a0  {pkg}{Gy} - {mins} min{N}')").append(NL)
-                append("    else: print(f'{Y}\\U0001f4ca  No app usage data{N}')").append(NL)
-                append("except: print(f'{Y}\\U0001f4ca  No app usage data{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-notifications-active" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s http://127.0.0.1:1337/notifications/active)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
-                append("    elif 'notifications' in d:").append(NL)
-                append("        notifs = d['notifications'][:10]").append(NL)
-                append("        print(f'{G}\\U0001f514  Active Notifications:{N}')").append(NL)
-                append("        for n in notifs:").append(NL)
-                append("            title = n.get('title', '(no title)')").append(NL)
-                append("            pkg = n.get('package', '?')").append(NL)
-                append("            print(f'   \\U0001f4ac  {title}{Gy} [{pkg}]{N}')").append(NL)
-                append("    else: print(f'{Y}\\U0001f514  No active notifications{N}')").append(NL)
-                append("except: print(f'{Y}\\U0001f514  No active notifications{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-accessibility-hierarchy" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("curl -s http://127.0.0.1:1337/accessibility/hierarchy").append(NL)
-            }.toString(),
-
-            "nethunter-battery-optimize" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("action=\"\${1:-status}\"").append(NL)
-                append("case \"\$action\" in").append(NL)
-                append("  status)").append(NL)
-                append("    DATA=\$(curl -s http://127.0.0.1:1337/battery/optimize)").append(NL)
-                append("    echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if d.get('ignored'): print(f'{G}\\U0001f50b  Battery Optimization: IGNORED (OK){N}')").append(NL)
-                append("    else: print(f'{Y}\\U0001f50b  Battery Optimization: RESTRICTED{N}')").append(NL)
-                append("except: print(f'{Y}\\u2753  Battery Optimization: unknown{N}')").append(NL)
-                append("\"").append(NL)
-                append("    ;;").append(NL)
-                append("  request) curl -s -X POST http://127.0.0.1:1337/battery/optimize ;;").append(NL)
-                append("  *) echo \"Usage: nethunter-battery-optimize [status|request]\"; exit 1 ;;").append(NL)
-                append("esac").append(NL)
-            }.toString(),
-
-
-            "nethunter-wifi-control" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("state=\"\${1:-status}\"").append(NL)
-                append("DATA=\$(curl -s -X POST -d \"\$state\" http://127.0.0.1:1337/wifi)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Wi-Fi: {d[\"error\"]}{N}')").append(NL)
-                append("    else:").append(NL)
-                append("        en = d.get('enabled', False)").append(NL)
-                append("        print(f'{G if en else R}\\U0001f4f6  Wi-Fi: {\"ENABLED\" if en else \"DISABLED\"}{N}')").append(NL)
-                append("except: print(f'{Y}\\U0001f4f6  Wi-Fi: unknown{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-device-admin" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("action=\"\${1:-status}\"").append(NL)
-                append("case \"\$action\" in").append(NL)
-                append("  status)").append(NL)
-                append("    DATA=\$(curl -s http://127.0.0.1:1337/device/admin)").append(NL)
-                append("    echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  {d[\"error\"]}{N}')").append(NL)
-                append("    else:").append(NL)
-                append("        act = d.get('active', False)").append(NL)
-                append("        print(f'{G if act else R}\\U0001f511  Device Admin: {\"ACTIVE\" if act else \"INACTIVE\"}{N}')").append(NL)
-                append("except: print(f'{Y}\\u2753  Device Admin: unknown{N}')").append(NL)
-                append("\"").append(NL)
-                append("    ;;").append(NL)
-                append("  request) curl -s -X POST http://127.0.0.1:1337/device/admin ;;").append(NL)
-                append("  lock) curl -s -X POST http://127.0.0.1:1337/device/lock ;;").append(NL)
-                append("  *) echo \"Usage: nethunter-device-admin [status|request|lock]\"; exit 1 ;;").append(NL)
-                append("esac").append(NL)
-            }.toString(),
-
-
-            "nethunter-volume" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -z \"\$1\" ]; then").append(NL)
-                append("  DATA=\$(curl -s http://127.0.0.1:1337/volume)").append(NL)
-                append("  echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("def vol_bar(cur,mx):").append(NL)
-                append("    n=max(1,int(cur/mx*10)) if mx>0 else 1").append(NL)
-                append("    return '█'*n + '░'*(10-n)").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d:").append(NL)
-                append("        print(d['error'])").append(NL)
-                append("    else:").append(NL)
-                append("        cur=d.get('volume',0)").append(NL)
-                append("        mx=d.get('max_volume',15)").append(NL)
-                append("        b=vol_bar(cur,mx)").append(NL)
-                append("        print(f'\\033[92m🔊  Hlasitost: {cur}/{mx}  [{b}]\\033[0m')").append(NL)
-                append("except: print('Chyba parsování')").append(NL)
-                append("\"").append(NL)
-                append("else").append(NL)
-                append("  curl -s -X POST -d \"\$1\" http://127.0.0.1:1337/volume >/dev/null").append(NL)
-                append("  echo \"✅ Hlasitost nastavena na \$1\"").append(NL)
-                append("fi").append(NL)
-            }.toString(),
-
-            "nethunter-torch" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("DATA=\$(curl -s -X POST -d \"\${1:-on}\" http://127.0.0.1:1337/torch)").append(NL)
-                append("echo \"\$DATA\" | python3 -c \"").append(NL)
-                append("import sys,json").append(NL)
-                append("G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'").append(NL)
-                append("try:").append(NL)
-                append("    d=json.load(sys.stdin)").append(NL)
-                append("    if 'error' in d: print(f'{R}\\u2718  Flashlight: {d[\"error\"]}{N}')").append(NL)
-                append("    else:").append(NL)
-                append("        st = d.get('state', 'unknown')").append(NL)
-                append("        ico = '\\U0001f526' if st == 'on' else '\\U0001f319'").append(NL)
-                append("        print(f'{G if st==\"on\" else Gy}{ico}  Flashlight: {st.upper()}{N}')").append(NL)
-                append("except: print(f'{Y}\\u2753  Flashlight: unknown{N}')").append(NL)
-                append("\"").append(NL)
-            }.toString(),
-
-
-            "nethunter-log" to StringBuilder().apply {
-                append("#!/usr/bin/env python3").append(NL)
-                append("import sys, urllib.request, re").append(NL)
-                append("RST, DIM, BOLD = '\\033[0m', '\\033[2m', '\\033[1m'").append(NL)
-                append("RED, GREEN, YELLOW = '\\033[1;31m', '\\033[1;32m', '\\033[1;33m'").append(NL)
-                append("BLUE, MAGENTA, CYAN = '\\033[1;34m', '\\033[1;35m', '\\033[1;36m'").append(NL)
-                append("LEVEL_COLORS = {'V': DIM, 'D': BLUE, 'I': GREEN, 'W': YELLOW, 'E': RED, 'F': BOLD + RED}").append(NL)
-                append("LOG_RE = re.compile(r'^(\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+([VDIWEF])/([^(:\\s]+)\\s*(?:\\(\\s*(\\d+)\\))?\\s*:\\s*(.*)$')").append(NL)
-                append("def usage():").append(NL)
-                append("    print(f\"{MAGENTA}{BOLD}╔══════════════════════════════════════════╗{RST}\")").append(NL)
-                append("    print(f\"{MAGENTA}{BOLD}║         📋 NetHunter Log Viewer          ║{RST}\")").append(NL)
-                append("    print(f\"{MAGENTA}{BOLD}╚══════════════════════════════════════════╝{RST}\")").append(NL)
-                append("    print(\"Usage: nethunter-log [options] [lines]\")").append(NL)
-                append("    print(\"\\nOptions:\")").append(NL)
-                append("    print(f\"  {CYAN}-n, --lines <number>{RST}   Show last N log lines (default: 100)\")").append(NL)
-                append("    print(f\"  {CYAN}-g, --grep <pattern>{RST}   Filter logs matching pattern\")").append(NL)
-                append("    print(f\"  {CYAN}-h, --help{RST}           Show help menu\")").append(NL)
-                append("    sys.exit(0)").append(NL)
-                append("def main():").append(NL)
-                append("    limit, grep_pattern = 100, None").append(NL)
-                append("    args = sys.argv[1:]").append(NL)
-                append("    i = 0").append(NL)
-                append("    while i < len(args):").append(NL)
-                append("        arg = args[i]").append(NL)
-                append("        if arg in ('-h', '--help'): usage()").append(NL)
-                append("        elif arg in ('-n', '--lines'):").append(NL)
-                append("            if i+1 < len(args):").append(NL)
-                append("                try: limit = int(args[i+1])").append(NL)
-                append("                except: pass").append(NL)
-                append("                i += 2").append(NL)
-                append("            else: usage()").append(NL)
-                append("        elif arg in ('-g', '--grep'):").append(NL)
-                append("            if i+1 < len(args):").append(NL)
-                append("                grep_pattern = args[i+1].lower()").append(NL)
-                append("                i += 2").append(NL)
-                append("            else: usage()").append(NL)
-                append("        else:").append(NL)
-                append("            try: limit = int(arg)").append(NL)
-                append("            except: pass").append(NL)
-                append("            i += 1").append(NL)
-                append("    url = f\"http://127.0.0.1:1337/app/logs?limit={limit}\"").append(NL)
-                append("    try:").append(NL)
-                append("        with urllib.request.urlopen(url) as r:").append(NL)
-                append("            logs = r.read().decode('utf-8')").append(NL)
-                append("    except Exception as e:").append(NL)
-                append("        print(f\"{RED}{BOLD}Error:{RST} Cannot connect to LocalApiServer ({e})\")").append(NL)
-                append("        sys.exit(1)").append(NL)
-                append("    for line in logs.splitlines():").append(NL)
-                append("        if grep_pattern and grep_pattern not in line.lower(): continue").append(NL)
-                append("        m = LOG_RE.match(line)").append(NL)
-                append("        if m:").append(NL)
-                append("            ts, lvl, tag, pid, msg = m.groups()").append(NL)
-                append("            lvl_color = LEVEL_COLORS.get(lvl, RST)").append(NL)
-                append("            pid_str = f\"({pid.strip()})\" if pid else \"\"").append(NL)
-                append("            m_lower = msg.lower()").append(NL)
-                append("            if lvl in ('E', 'F') or 'denied' in m_lower or 'fail' in m_lower or 'error' in m_lower: msg = RED + msg + RST").append(NL)
-                append("            elif 'warn' in m_lower or 'contention' in m_lower: msg = YELLOW + msg + RST").append(NL)
-                append("            elif 'success' in m_lower or 'established' in m_lower: msg = GREEN + msg + RST").append(NL)
-                append("            print(f\"{DIM}{ts}{RST} {lvl_color}{lvl}{RST} {MAGENTA}{tag}{CYAN}{pid_str}{RST}: {msg}\")").append(NL)
-                append("        else: print(line)").append(NL)
-                append("if __name__ == '__main__': main()").append(NL)
-            }.toString(),
-
-            "nethunter-fix-postinst" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ -z \"\$1\" ]; then").append(NL)
-                append("  echo \"Usage: nethunter-fix-postinst <package-name>\"").append(NL)
-                append("  exit 1").append(NL)
-                append("fi").append(NL)
-                append("pkg=\"\$1\"").append(NL)
-                append("echo \"[*] Mocking postinst for \$pkg...\"").append(NL)
-                append("ln -sf /bin/true /var/lib/dpkg/info/\$pkg.postinst 2>/dev/null || true").append(NL)
-                append("echo \"[*] Reconfiguring dpkg...\"").append(NL)
-                append("dpkg --configure -a").append(NL)
-                append("echo \"[+] Successfully fixed postinst for \$pkg!\"").append(NL)
-            }.toString(),
-
-            "nethunter-desktop" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("action=\"\${1:-start}\"").append(NL)
-                append("VNC_PORT=5901").append(NL)
-                append("NO_VNC_PORT=6080").append(NL)
-                append("case \"\$action\" in").append(NL)
-                append("  start)").append(NL)
-                append("    echo \"[*] Clearing potential package manager locks...\"").append(NL)
-                append("    rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
-                append("    echo \"[*] Automatically repairing any half-configured packages...\"").append(NL)
-                append("    export DEBIAN_FRONTEND=noninteractive").append(NL)
-                append("    export DEBIAN_PRIORITY=critical").append(NL)
-                append("    dpkg --configure -a 2>/dev/null || true").append(NL)
-                append("    echo \"[*] Checking desktop dependencies...\"").append(NL)
-                append("    if ! command -v vncserver &>/dev/null || ! command -v websockify &>/dev/null || ! command -v dbus-launch &>/dev/null; then").append(NL)
-                append("      echo \"[*] Graphical packages are missing. Installing XFCE4, VNC server and noVNC...\"").append(NL)
-                append("      echo \"[*] This may take a few minutes. Please wait...\"").append(NL)
-                append("      apt-get update").append(NL)
-                append("      apt-get install -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 novnc websockify curl procps </dev/null").append(NL)
-                append("    fi").append(NL)
-                append("    echo \"[*] Stopping existing VNC sessions...\"").append(NL)
-                append("    vncserver -kill :1 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xvnc 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xtightvnc 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xtigervnc 2>/dev/null || true").append(NL)
-                append("    pkill -f websockify 2>/dev/null || true").append(NL)
-                append("    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true").append(NL)
-                append("    echo \"[*] Configuring VNC password...\"").append(NL)
-                append("    mkdir -p ~/.vnc").append(NL)
-                append("    echo \"kali_operator\" | vncpasswd -f > ~/.vnc/passwd").append(NL)
-                append("    chmod 600 ~/.vnc/passwd").append(NL)
-                append("    echo \"[*] Configuring XFCE4 desktop startup...\"").append(NL)
-                append("    cat << 'EOF' > ~/.vnc/xstartup").append(NL)
-                append("#!/bin/sh").append(NL)
-                append("unset SESSION_MANAGER").append(NL)
-                append("unset DBUS_SESSION_BUS_ADDRESS").append(NL)
-                append("startxfce4 &").append(NL)
-                append("EOF").append(NL)
-                append("    chmod +x ~/.vnc/xstartup").append(NL)
-                append("    echo \"[*] Starting VNC server session on display :1 (port \$VNC_PORT)...\"").append(NL)
-                append("    vncserver :1 -geometry 1280x720 -depth 24 2>&1 | tee /tmp/vnc.log").append(NL)
-                append("    echo \"[*] Starting noVNC proxy websockify on port \$NO_VNC_PORT...\"").append(NL)
-                append("    websockify --web=/usr/share/novnc/ \$NO_VNC_PORT 127.0.0.1:\$VNC_PORT &>/dev/null &").append(NL)
-                append("    echo \"[+] XFCE4 Graphical desktop successfully launched on Display :1!\"").append(NL)
-                append("    echo \"[*] Open noVNC client at http://127.0.0.1:6080/vnc.html\"").append(NL)
-                append("    ;;").append(NL)
-                append("  stop)").append(NL)
-                append("    echo \"[*] Killing VNC server session...\"").append(NL)
-                append("    vncserver -kill :1 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xvnc 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xtightvnc 2>/dev/null || true").append(NL)
-                append("    pkill -9 -f Xtigervnc 2>/dev/null || true").append(NL)
-                append("    pkill -f websockify 2>/dev/null || true").append(NL)
-                append("    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true").append(NL)
-                append("    echo \"[-] Graphical desktop session stopped.\"").append(NL)
-                append("    ;;").append(NL)
-                append("  status)").append(NL)
-                append("    echo \"=== DESKTOP SESSION STATUS ===\"").append(NL)
-                append("    if pgrep -f \"Xvnc|Xtightvnc|Xtigervnc\" &>/dev/null; then").append(NL)
-                append("      echo \"[+] VNC Server: RUNNING\"").append(NL)
-                append("    else").append(NL)
-                append("      echo \"[-] VNC Server: STOPPED\"").append(NL)
-                append("    fi").append(NL)
-                append("    if pgrep -f \"websockify\" &>/dev/null; then").append(NL)
-                append("      echo \"[+] noVNC Websockify: RUNNING\"").append(NL)
-                append("    else").append(NL)
-                append("      echo \"[-] noVNC Websockify: STOPPED\"").append(NL)
-                append("    fi").append(NL)
-                append("    echo \"=== VNC LOGS (LAST 20 LINES) ===\"").append(NL)
-                append("    tail -n 20 ~/.vnc/*.log 2>/dev/null || echo \"No VNC log files found.\"").append(NL)
-                append("    ;;").append(NL)
-                append("  *)").append(NL)
-                append("    echo \"Usage: nethunter-desktop {start|stop|status}\"").append(NL)
-                append("    exit 1").append(NL)
-                append("    ;;").append(NL)
-                append("esac").append(NL)
-            }.toString(),
-
-                        "nethunter-api" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("# NetHunter Local API Control CLI").append(NL)
-                append("API_URL=\"http://127.0.0.1:1337\"").append(NL)
-                append("usage() {").append(NL)
-                append("  echo \"Usage: nethunter-api share [on|off|status]\"").append(NL)
-                append("  exit 1").append(NL)
-                append("}").append(NL)
-                append("if [ \"\$1\" = \"share\" ]; then").append(NL)
-                append("  mode=\"\${2:-status}\"").append(NL)
-                append("  if [ \"\$mode\" = \"on\" ]; then").append(NL)
-                append("    res=\$(curl -s -X POST --data-binary \"on\" \"\$API_URL/api/share\")").append(NL)
-                append("    echo \"[+] API sharing enabled. Bind address updated to 0.0.0.0.\"").append(NL)
-                append("  elif [ \"\$mode\" = \"off\" ]; then").append(NL)
-                append("    res=\$(curl -s -X POST --data-binary \"off\" \"\$API_URL/api/share\")").append(NL)
-                append("    echo \"[-] API sharing disabled. Bind address restored to 127.0.0.1.\"").append(NL)
-                append("  elif [ \"\$mode\" = \"status\" ]; then").append(NL)
-                append("    res=\$(curl -s \"\$API_URL/api/share\")").append(NL)
-                append("    shared=\$(echo \"\$res\" | grep -o '\"shared\":[^,]*' | cut -d: -f2)").append(NL)
-                append("    if [ \"\$shared\" = \"true\" ]; then").append(NL)
-                append("      echo \"[+] API sharing is currently ENABLED (0.0.0.0)\"").append(NL)
-                append("    else").append(NL)
-                append("      echo \"[-] API sharing is currently DISABLED (127.0.0.1)\"").append(NL)
-                append("    fi").append(NL)
-                append("  else").append(NL)
-                append("    usage").append(NL)
-                append("  fi").append(NL)
-                append("else").append(NL)
-                append("  usage").append(NL)
-                append("fi").append(NL)
-            }.toString(),
-
-            "vpn-log-viewer.py" to StringBuilder().apply {
-                append("#!/usr/bin/python3").append(NL)
-                append("import sys, json").append(NL)
-                append("logs = json.load(sys.stdin)").append(NL)
-                append("if not logs:").append(NL)
-                append("    print('No traffic logs yet.')").append(NL)
-                append("    sys.exit(0)").append(NL)
-                append("for log in logs[:30]:").append(NL)
-                append("    p = log.get('protocol', '?')").append(NL)
-                append("    src = log.get('srcIp', '?')").append(NL)
-                append("    sp = str(log.get('srcPort', '?'))").append(NL)
-                append("    dst = log.get('dstIp', '?')").append(NL)
-                append("    dp = str(log.get('dstPort', '?'))").append(NL)
-                append("    sz = log.get('size', 0)").append(NL)
-                append("    cat = log.get('category', '?')").append(NL)
-                append("    det = log.get('detail', '')").append(NL)
-                append("    app = log.get('appName', '') or ''").append(NL)
-                append("    sess = log.get('sessionName', '') or ''").append(NL)
-                append("    ent = log.get('entropy', 0)").append(NL)
-                append("    elapsed = log.get('elapsedTimeMs', 0)").append(NL)
-                append("    sent = log.get('bytesSent', 0)").append(NL)
-                append("    recv = log.get('bytesReceived', 0)").append(NL)
-                append("    ctx = ''").append(NL)
-                append("    if sess and app:").append(NL)
-                append("        ctx = f'[{sess} \u00bb {app}]'").append(NL)
-                append("    elif sess:").append(NL)
-                append("        ctx = f'[{sess}]'").append(NL)
-                append("    elif app:").append(NL)
-                append("        ctx = f'[{app}]'").append(NL)
-                append("    emoji_map = {'ALLOWED': '\uD83D\uDFE2', 'BLOCKED': '\uD83D\uDEAB', 'SUSPICIOUS': '\u26A0\uFE0F', 'CRITICAL': '\uD83D\uDD34', 'VERBOSE': '\uD83D\uDCAC'}").append(NL)
-                append("    emoji = emoji_map.get(cat, '\u2753')").append(NL)
-                append("    print(f'{emoji} [{p:5s}] {src}:{sp} \u2192 {dst}:{dp} ({sz}B, ent={ent:.1f}) - {cat}')").append(NL)
-                append("    if det:").append(NL)
-                append("        print(f'   \u2514\u2500 {det}')").append(NL)
-                append("    if ctx:").append(NL)
-                append("        print(f'   \u2514\u2500 App: {ctx}  |  \u2191{sent}B \u2193{recv}B  |  {elapsed}ms')").append(NL)
-            }.toString(),
-
-            // nethunter-notebook — temporarily disabled for later
         )
 
         for ((name, content) in scripts) {
             val scriptFile = File(binDir, name)
             try {
-                // Optimization: Only write if content changed or missing
                 if (scriptFile.exists() && scriptFile.length() == content.length.toLong()) {
                     continue
                 }
@@ -1434,16 +588,61 @@ object ProotManager {
                 scriptFile.setReadable(true, false)
                 scriptFile.setWritable(true, false)
             } catch (e: Exception) {
-                Log.e("ProotManager", "Failed to deploy API script $name: ${e.message}")
+                Log.e("ProotManager", "Failed to deploy API script $name: \${e.message}")
             }
         }
 
-        // Deploy nethunter_agent.py and nethunter-agent-cli from assets
+        // Deploy unified nh CLI from asset
+        val nhFile = File(binDir, "nh")
+        try {
+            context.assets.open("nh").use { input ->
+                nhFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            nhFile.setExecutable(true, false)
+            nhFile.setReadable(true, false)
+            nhFile.setWritable(true, false)
+            Log.i(TAG, "Deployed unified nh CLI (${nhFile.length()} bytes)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to deploy nh CLI: ${e.message}")
+        }
+
+        // Create backward-compat symlinks pointing to nh
+        val compatNames = listOf(
+            // nethunter-* compatibility
+            "nethunter",  // full name alias
+            "nethunter-battery-status", "nethunter-toast", "nethunter-vibrate",
+            "nethunter-tts-speak", "nethunter-clipboard-get", "nethunter-clipboard-set",
+            "nethunter-notification", "nethunter-wifi-connectioninfo",
+            "nethunter-wifi-control", "nethunter-cellinfo", "nethunter-location",
+            "nethunter-map", "nethunter-terminalmap", "nethunter-battery-optimize",
+            "nethunter-device-admin", "nethunter-volume", "nethunter-torch",
+            "nethunter-log", "nethunter-speech-input", "nethunter-notifications-active",
+            "nethunter-apps-usage", "nethunter-accessibility-hierarchy",
+            "nethunter-fix-postinst", "nethunter-desktop", "nethunter-api",
+            // VPN compatibility
+            "vpn-cli", "vpn-on", "vpn-off", "vpn-bypass", "ignore-vpn",
+            // old standalone
+            "nethunter-agent-cli", "nh-ifconfig"
+        )
+        for (name in compatNames) {
+            try {
+                val link = File(binDir, name)
+                if (!link.exists()) {
+                    java.nio.file.Files.createSymbolicLink(link.toPath(), nhFile.toPath())
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to create symlink $name: ${e.message}")
+            }
+        }
+
         val assetsToDeploy = listOf(
             "nethunter_agent.py" to "nethunter_agent.py",
             "nethunter-agent-cli" to "nethunter-agent-cli",
             "bin/terminalmap" to "terminalmap",
-            "bin/nh-ifconfig" to "nh-ifconfig"
+            "bin/nh-ifconfig" to "nh-ifconfig",
+            "code-server-ctl" to "code-server-ctl",
+            "scripts/ai-agent.py" to "ai-agent.py",
+            "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py"
         )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
@@ -1536,48 +735,79 @@ V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
 - **Přesměrování systemd příkazů:** Nástroje jako `systemctl`, `service`, `update-rc.d`, `resolvconf`, `journalctl` atd. jsou v unrooted prostředí přesměrovány na `/bin/true`, čímž se předchází selhání instalací balíčků.
 - **Oprava zavaděče (linker):** Dynamický zavaděč se kopíruje do `lib/ld-linux-aarch64.so.1` a `lib64/ld-linux-aarch64.so.1`. Knihovna `libtalloc.so.2` se umísťuje do `lib/libtalloc.so.2`.
 - **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
-- **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, dále `vpn-bypass`/`dcheck` pro obcházení filtru přes proxy (port 13339) a nástroje jako `nethunter-fix-postinst`.
+- **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, `dcheck` pro diagnostiku, `vpn-bypass` pro obcházení VPN filtru (port 13339) a sjednocený CLI nástroj `nh` aliasy starších příkazů (zpětná kompatibilita).
+
+## 🆕 Sjednocený CLI příkaz `nh`
+
+Od verze 4.2 jsou všechny dřívější `nethunter-*`, `vpn-*` a `vpn-cli` příkazy sjednoceny do jednoho CLI:
+
+```bash
+nh <kategorie> <akce> [argumenty]
+```
+
+**Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `help`, `list`
+
+**Příklady:**
+```bash
+nh list                          # seznam všech příkazů
+nh help <kategorie>              # nápověda pro kategorii
+nh network location              # GPS + Google Maps
+nh system battery                # stav baterie
+nh vpn on                        # zapnout VPN
+nh vpn mitm on                   # zapnout TLS MITM
+nh log -n 50 -g TlsMitm          # logcat viewer
+```
+
+Staré názvy (`nethunter-toast`, `vpn-cli`, `vpn-on`, `vpn-bypass`, `ignore-vpn`, ...) zůstávají funkční jako symlinky na `nh`.
 
 ## 📱 Hardwarové a Systémové Funkce (Android API Bridge)
 
-Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovládat a číst senzory hostitelského zařízení.
+Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovládat a číst senzory hostitelského zařízení. Všechny jsou dostupné jak přes sjednocený CLI `nh <kategorie> <akce>`, tak přes staré aliasy (symlinky).
 
 | Příkaz | Popis | Příklad použití |
 | :--- | :--- | :--- |
-| `nethunter-battery-status` | Vypíše aktuální stav baterie ve formátu JSON. | `nethunter-battery-status` |
-| `nethunter-toast <msg>` | Zobrazí na obrazovce vyskakovací Toast upozornění. | `nethunter-toast "Úkol úspěšně dokončen!"` |
-| `nethunter-vibrate [ms]` | Rozvibruje zařízení (výchozí doba je 500ms). | `nethunter-vibrate 1000` |
-| `nethunter-tts-speak <text>` | Přečte zadaný text pomocí Text-to-Speech (syntéza řeči). | `echo "Firewall breach detected" | nethunter-tts-speak` |
-| `nethunter-clipboard-get` | Přečte obsah hostitelské schránky. | `nethunter-clipboard-get` |
-| `nethunter-clipboard-set <text>`| Zapíše text do hostitelské schránky. | `nethunter-clipboard-set "MojeTajneHeslo123"` |
-| `nethunter-notification -t <t> -c <c>`| Pošle standardní systémovou notifikaci. | `nethunter-notification -t "Upozornění" -c "Skenování hotovo"` |
-| `nethunter-wifi-connectioninfo`| Vrátí informace o Wi-Fi síti ve formátu JSON. | `nethunter-wifi-connectioninfo` |
-| `nethunter-cellinfo` | Zobrazí informace o mobilní síti — operátor, signál (dBm), typ sítě (5G/4G/3G), věže. | `nethunter-cellinfo` |
-| `nethunter-location` | Vrátí aktuální GPS souřadnice + odkaz na Google Maps pro otevření v mapách. | `nethunter-location` |
-| `nethunter-map` | Spustí TerminalMap interaktivní mapovač OpenStreetMap s aktuální lokací. | `nethunter-map` |
-| `nethunter-terminalmap` | Alias pro `nethunter-map` — synonym pro spuštění TerminalMap. | `nethunter-terminalmap` |
-| `nethunter-volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nethunter-volume 10` |
-| `nethunter-torch [on|off]` | Zapne nebo vypne svítilnu zařízení. | `nethunter-torch on` |
-| `nethunter-log [options] [lines]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nethunter-log -n 50 -g "LocalApiServer"` |
-| `nethunter-api share [on|off|status]`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nethunter-api share on` |
+| `nh system battery` | Vypíše aktuální stav baterie ve formátu JSON. | `nh system battery` |
+| `nh system toast <msg>` | Zobrazí na obrazovce vyskakovací Toast upozornění. | `nh system toast "Úkol úspěšně dokončen!"` |
+| `nh system vibrate [ms]` | Rozvibruje zařízení (výchozí doba je 500ms). | `nh system vibrate 1000` |
+| `nh system tts-speak <text>` | Přečte zadaný text pomocí Text-to-Speech (syntéza řeči). | `echo "Firewall breach detected" | nh system tts-speak` |
+| `nh system clipboard get` | Přečte obsah hostitelské schránky. | `nh system clipboard get` |
+| `nh system clipboard set <text>`| Zapíše text do hostitelské schránky. | `nh system clipboard set "MojeTajneHeslo123"` |
+| `nh system notification -t <t> -c <c>`| Pošle standardní systémovou notifikaci. | `nh system notification -t "Upozornění" -c "Skenování hotovo"` |
+| `nh network wifi`| Vrátí informace o Wi-Fi síti ve formátu JSON. | `nh network wifi` |
+| `nh network cell` | Zobrazí informace o mobilní síti — operátor, signál (dBm), typ sítě (5G/4G/3G), věže. | `nh network cell` |
+| `nh network location` | Vrátí aktuální GPS souřadnice + odkaz na Google Maps pro otevření v mapách. | `nh network location` |
+| `nh network map` | Spustí TerminalMap interaktivní mapovač OpenStreetMap s aktuální lokací. | `nh network map` |
+| `nh system volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nh system volume 10` |
+| `nh system torch on|off` | Zapne nebo vypne svítilnu zařízení. | `nh system torch on` |
+| `nh log [-n N] [-g P]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nh log -n 50 -g "LocalApiServer"` |
+| `nh api share on|off|status`| Ovládá sdílení API serveru do sítě (0.0.0.0 vs 127.0.0.1). | `nh api share on` |
+| `nh log set lvl 1-5` | Nastaví úroveň logování v settings UI (1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose). | `nh log set lvl 4` |
 
 ## 🔧 Diagnostické nástroje
 
 ### nethunter-log
 
-Python skript pro barevné formátované zobrazení logcat záznamů aplikace bez nutnosti ADB.
+Python skript pro barevné formátované zobrazení logcat záznamů aplikace bez nutnosti ADB. Od verze 4.2 je dostupný přes sjednocený CLI `nh log` (případně starý alias `nethunter-log`).
 
 ```bash
 # Výchozí: posledních 100 řádků
+nh log
 nethunter-log
 
 # Posledních 50 řádků
-nethunter-log 50
-nethunter-log -n 50
+nh log 50
+nh log -n 50
 
 # Filtrování podle vzoru (case-insensitive)
-nethunter-log -g "TlsMitm"
-nethunter-log -n 200 -g "LocalApiServer"
+nh log -g "TlsMitm"
+nh log -n 200 -g "LocalApiServer"
+
+# Nastavení úrovně logování (sync s UI)
+nh log set lvl 1   # Error
+nh log set lvl 2   # Warn
+nh log set lvl 3   # Info (výchozí)
+nh log set lvl 4   # Debug
+nh log set lvl 5   # Verbose
 ```
 
 Barevné schéma podle log úrovně:
@@ -1593,15 +823,20 @@ HTTP API endpoint: `GET /app/logs?limit=N`
 
 ## 🛡️ Správa AdGuard VPN Firewallu
 
-Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovacím strojem.
+Tyto skripty umožňují plnou kontrolu nad zabudovaným prémiovým filtrovacím strojem. Všechny jsou dostupné jak přes sjednocený CLI `nh vpn`, tak přes staré aliasy (symlinky).
 
 | Příkaz | Popis | Příklad použití |
 | :--- | :--- | :--- |
-| `vpn-on` | Zapne globální VPN / NAT. | `vpn-on` |
-| `vpn-off` | Vypne globální VPN / NAT. | `vpn-off` |
-| `vpn-cli <action>` | Pokročilé VPN CLI rozhraní: `status`, `start`, `stop`, `logs` (formátovaný výpis MITM provozu), `mitm on|off|status|ca`. | `vpn-cli logs` |
-| `vpn-bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `vpn-bypass curl ipinfo.io` |
-| `ignore-vpn [on|off|status]` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `ignore-vpn on` |
+| `nh vpn on` | Zapne globální VPN / NAT. | `nh vpn on` |
+| `nh vpn off` | Vypne globální VPN / NAT. | `nh vpn off` |
+| `nh vpn status` | Vrátí stav VPN (running/stopped) + uptime + bytes. | `nh vpn status` |
+| `nh vpn mitm on|off` | Zapne/vypne TLS MITM rozhraní. | `nh vpn mitm on` |
+| `nh vpn mitm status` | Stav MITM rozhraní + aktivní session. | `nh vpn mitm status` |
+| `nh vpn mitm ca` | Zobrazí/exportuje Root CA certifikát. | `nh vpn mitm ca > /tmp/ca.crt` |
+| `nh vpn logs [json]` | Formátovaný výpis dešifrovaného MITM provozu. | `nh vpn logs` |
+| `nh vpn bypass <cmd>` | Spustí konkrétní příkaz tak, že úplně obejde VPN zachytávání. | `nh vpn bypass curl ipinfo.io` |
+| `nh vpn ignore on|off` | Přepne ignorování VPN pro aktuální terminálovou relaci. | `nh vpn ignore on` |
+| `nh firewall block|unblock <ip>` | Přidá/odebere IP z blocklistu firewallu. | `nh firewall block 1.2.3.4` |
 
 ## 🔍 TLS MITM Inspection
 
@@ -1621,10 +856,10 @@ Pro správné fungování MITM dešifrování musí být Root CA certifikát nai
 
 ```bash
 # Zobrazit certifikát v terminálu
-vpn-cli mitm ca
+nh vpn mitm ca
 
 # Uložit do souboru
-vpn-cli mitm ca > /tmp/nethunter-ca.crt
+nh vpn mitm ca > /tmp/nethunter-ca.crt
 
 # Nebo přímo přes HTTP API
 curl -s http://127.0.0.1:1337/vpn/mitm/ca > /tmp/nethunter-ca.crt
@@ -1633,42 +868,42 @@ curl -s http://127.0.0.1:1337/vpn/mitm/ca > /tmp/nethunter-ca.crt
 #### Instalace do Kali/PRoot trust store
 
 ```bash
-vpn-cli mitm ca > /usr/local/share/ca-certificates/nethunter-mitm.crt
+nh vpn mitm ca > /usr/local/share/ca-certificates/nethunter-mitm.crt
 update-ca-certificates
 ```
 
 #### Instalace do Androidu
 
-1. Uložit certifikát: `vpn-cli mitm ca > /sdcard/nethunter-ca.crt`
+1. Uložit certifikát: `nh vpn mitm ca > /sdcard/nethunter-ca.crt`
 2. Na telefonu: **Nastavení → Zabezpečení → Šifrování a přihlašovací údaje → Instalovat certifikát → Certifikát CA**
 3. Vybrat soubor `nethunter-ca.crt` ze storage
 4. Potvrdit instalaci (systém vyžádá PIN/otisk prstu)
 
 > **Omezení:** Od Androidu 7.0+ aplikace standardně nedůvěřují uživatelským certifikátům. Pro dešifrování provozu ostatních appek je nutný root a přesun CA do systémového trust store (`/system/etc/security/cacerts/`). Aplikace s certificate pinning (banky, Google, Signal, WhatsApp) odmítnou MITM spojení i s nainstalovaným CA.
 
-### CLI příkazy
+### CLI příkazy (`nh vpn mitm`)
 
 ```bash
 # Zapnutí MITM rozhraní
-vpn-cli mitm on
+nh vpn mitm on
 
 # Vypnutí MITM rozhraní
-vpn-cli mitm off
+nh vpn mitm off
 
 # Stav MITM rozhraní + aktivní session
-vpn-cli mitm status
+nh vpn mitm status
 
 # Stáhnout/zobrazit Root CA certifikát
-vpn-cli mitm ca
+nh vpn mitm ca
 
 # Uložit Root CA certifikát do souboru pro instalaci
-vpn-cli mitm ca > /tmp/nethunter-ca.crt
+nh vpn mitm ca > /tmp/nethunter-ca.crt
 
 # Formátovaný dešifrovaný provoz
-vpn-cli logs
+nh vpn logs
 
 # JSON výstup dešifrovaného provozu
-vpn-cli logs json
+nh vpn logs json
 ```
 
 ### HTTP API (port 1337)
@@ -1689,7 +924,7 @@ GET /vpn/mitm/logs?format=json
 
 ### Zobrazení v terminálové relaci
 
-Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do snippet bufferu. Využijte `vpn-cli logs` pro čitelné zobrazení.
+Po zapnutí MITM se průběžně ukládá dešifrovaný provoz do snippet bufferu. Využijte `nh vpn logs` pro čitelné zobrazení.
 
 ### Klíčové třídy
 
@@ -1711,8 +946,10 @@ NetHunter AI Operator obsahuje lokální AI model pro analýzu síťového provo
 
 | Příkaz | Popis |
 | :--- | :--- |
-| `vpn-cli ai start` | Spustí na pozadí démona, který monitoruje spojení a upozorňuje na rizika (vyskakovací Toasty při detekci anomálie). |
-| `vpn-cli chat` | Otevře konzoli lokálního AI experta pro analýzu síťových dat. |
+| `nh agent start` | Spustí na pozadí démona, který monitoruje spojení a upozorňuje na rizika (vyskakovací Toasty při detekci anomálie). |
+| `nh agent chat` | Otevře konzoli lokálního AI experta pro analýzu síťových dat. |
+| `nh agent status` | Zobrazí stav agenta (port 13338). |
+| `nh agent analyze` | Spustí jednorázovou analýzu aktuálního provozu. |
 
 ## 🎙️ Hlasový Asistent
 
@@ -1789,41 +1026,47 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\\033[0m\"")
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-location\\033[0m              GPS + Google Maps\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-cellinfo\\033[0m               mobilní síť (5G/4G/3G)\"")
-
-            appendLine("echo \"  \\033[0;32m     nethunter-map\\033[0m                   OSM terminálová mapa\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-battery-status\\033[0m          stav baterie\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-wifi-connectioninfo\\033[0m      WiFi info\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-volume 0-15\\033[0m             hlasitost\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-torch on/off\\033[0m           svítilna\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-toast \\\"text\\\"\\033[0m            Android toast\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-vibrate [ms]\\033[0m           vibrace\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-tts-speak \\\"text\\\"\\033[0m        přečíst text nahlas\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-notification\\033[0m           systémová notifikace\"")
-            appendLine("echo \"  \\033[0;32m     nethunter-clipboard-get/set\\033[0m       schránka (čtení/zápis)\"")
-
+            appendLine("echo \"  \\033[0;32m     nh network location\\033[0m              GPS + Google Maps\"")
+            appendLine("echo \"  \\033[0;32m     nh network cell\\033[0m                 mobilní síť (5G/4G/3G)\"")
+            appendLine("echo \"  \\033[0;32m     nh network map\\033[0m                  OSM terminálová mapa\"")
+            appendLine("echo \"  \\033[0;32m     nh system battery\\033[0m               stav baterie\"")
+            appendLine("echo \"  \\033[0;32m     nh network wifi\\033[0m                 WiFi info\"")
+            appendLine("echo \"  \\033[0;32m     nh system volume\\033[0m               hlasitost\"")
+            appendLine("echo \"  \\033[0;32m     nh system torch\\033[0m               svítilna\"")
+            appendLine("echo \"  \\033[0;32m     nh system toast\\033[0m                Android toast\"")
+            appendLine("echo \"  \\033[0;32m     nh system vibrate\\033[0m             vibrace\"")
+            appendLine("echo \"  \\033[0;32m     nh system tts-speak\\033[0m           přečíst text nahlas\"")
+            appendLine("echo \"  \\033[0;32m     nh system notification\\033[0m         systémová notifikace\"")
+            appendLine("echo \"  \\033[0;32m     nh system clipboard\\033[0m           schránka (čtení/zápis)\"")
+            appendLine("echo \"  \\033[0;32m     nh log [-n N] [-g P]\\033[0m          logcat viewer\"")
             appendLine()
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;33m   🛡️  VPN\\033[0m\"")
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     vpn-on / vpn-off\\033[0m                 VPN zapnout/vypnout\"")
-            appendLine("echo \"  \\033[0;33m     vpn-cli mitm on|off\\033[0m             TLS MITM zapnout/vypnout\"")
-            appendLine("echo \"  \\033[0;33m     vpn-cli mitm status\\033[0m             MITM stav + session\"")
-            appendLine("echo \"  \\033[0;33m     vpn-cli logs\\033[0m                     MITM formátované logy\"")
-            appendLine("echo \"  \\033[0;33m     vpn-cli status\\033[0m                   stav VPN\"")
-            appendLine("echo \"  \\033[0;33m     vpn-cli chat\\033[0m                     AI Expert konzole\"")
-            appendLine("echo \"  \\033[0;33m     vpn-bypass <cmd>\\033[0m                 obejít VPN pro příkaz\"")
-            appendLine("echo \"  \\033[0;33m     ignore-vpn on/off\\033[0m               VPN bypass pro session\"")
-
+            appendLine("echo \"  \\033[0;33m     nh vpn on|off\\033[0m                  VPN zapnout/vypnout\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn mitm on|off\\033[0m            TLS MITM zapnout/vypnout\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn mitm status\\033[0m            MITM stav + session\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn logs\\033[0m                    MITM formátované logy\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn status\\033[0m                  stav VPN\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn bypass\\033[0m                 obejít VPN pro příkaz\"")
+            appendLine("echo \"  \\033[0;33m     nh vpn ignore\\033[0m                VPN bypass pro session\"")
             appendLine()
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;33m   🖥️  DESKTOP\\033[0m\"")
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     nethunter-desktop start\\033[0m          XFCE4 GUI (noVNC :6080)\"")
-
+            appendLine("echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (noVNC :6080)\"")
             appendLine()
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[1;33m   </>  EDITOR (VS Code)\\033[0m\"")
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;33m     code-server-ctl start\\033[0m           VS Code v prohlížeči (:8443)\"")
+            appendLine("echo \"  \\033[0;33m     code-server-ctl status\\033[0m          stav editoru\"")
+            appendLine("echo \"  \\033[0;33m     code-server-ctl password\\033[0m         zobrazit heslo\"")
+            appendLine("echo \"  \\033[0;33m     code-server-ctl install\\033[0m         nainstalovat code-server\"")
+            appendLine()
+            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+            appendLine("echo \"  \\033[0;90m     📖 nh list  → seznam všech příkazů\\033[0m\"")
+            appendLine("echo \"  \\033[0;90m     📖 nh help  → nápověda\\033[0m\"")
             appendLine("echo \"  \\033[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\\033[0m\"")
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"\"")
@@ -1875,38 +1118,48 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\u001b[0m").append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-location\u001b[0m              GPS + Google Maps").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-cellinfo\u001b[0m               mobilní síť (5G/4G/3G)").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-map\u001b[0m                   OSM terminálová mapa").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-battery-status\u001b[0m          stav baterie").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-wifi-connectioninfo\u001b[0m      WiFi info").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-volume 0-15\u001b[0m             hlasitost").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-torch on/off\u001b[0m           svítilna").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-toast\"text\"\u001b[0m            Android toast").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-vibrate [ms]\u001b[0m           vibrace").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-tts-speak\"text\"\u001b[0m        přečíst text nahlas").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-notification\u001b[0m           systémová notifikace").append(NL)
-        motd.append("  \u001b[0;32m     nethunter-clipboard-get/set\u001b[0m       schránka (čtení/zápis)").append(NL)
+        motd.append("  \u001b[0;32m     nh network location\u001b[0m              GPS + Google Maps").append(NL)
+        motd.append("  \u001b[0;32m     nh network cell\u001b[0m                 mobilní síť (5G/4G/3G)").append(NL)
+        motd.append("  \u001b[0;32m     nh network map\u001b[0m                  OSM terminálová mapa").append(NL)
+        motd.append("  \u001b[0;32m     nh system battery\u001b[0m               stav baterie").append(NL)
+        motd.append("  \u001b[0;32m     nh network wifi\u001b[0m                 WiFi info").append(NL)
+        motd.append("  \u001b[0;32m     nh system volume\u001b[0m               hlasitost").append(NL)
+        motd.append("  \u001b[0;32m     nh system torch\u001b[0m               svítilna").append(NL)
+        motd.append("  \u001b[0;32m     nh system toast\u001b[0m                Android toast").append(NL)
+        motd.append("  \u001b[0;32m     nh system vibrate\u001b[0m             vibrace").append(NL)
+        motd.append("  \u001b[0;32m     nh system tts-speak\u001b[0m           přečíst text nahlas").append(NL)
+        motd.append("  \u001b[0;32m     nh system notification\u001b[0m         systémová notifikace").append(NL)
+        motd.append("  \u001b[0;32m     nh system clipboard\u001b[0m           schránka (čtení/zápis)").append(NL)
+        motd.append("  \u001b[0;32m     nh log [-n N] [-g P]\u001b[0m          logcat viewer").append(NL)
         motd.append("  \u001b[0;32m     nh-ifconfig [rozhraní]\u001b[0m           síťová rozhraní (přes Android API)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;33m   🛡️  VPN\u001b[0m").append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     vpn-on / vpn-off\u001b[0m                 VPN zapnout/vypnout").append(NL)
-        motd.append("  \u001b[0;33m     vpn-cli mitm on|off\u001b[0m             TLS MITM zapnout/vypnout").append(NL)
-        motd.append("  \u001b[0;33m     vpn-cli mitm status\u001b[0m             MITM stav + session").append(NL)
-        motd.append("  \u001b[0;33m     vpn-cli logs\u001b[0m                     MITM formátované logy").append(NL)
-        motd.append("  \u001b[0;33m     vpn-cli status\u001b[0m                   stav VPN").append(NL)
-        motd.append("  \u001b[0;33m     vpn-cli chat\u001b[0m                     AI Expert konzole").append(NL)
-        motd.append("  \u001b[0;33m     vpn-bypass <cmd>\u001b[0m                 obejít VPN pro příkaz").append(NL)
-        motd.append("  \u001b[0;33m     ignore-vpn on/off\u001b[0m               VPN bypass pro session").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn on|off\u001b[0m                  VPN zapnout/vypnout").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn mitm on|off\u001b[0m            TLS MITM zapnout/vypnout").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn mitm status\u001b[0m            MITM stav + session").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn logs\u001b[0m                    MITM formátované logy").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn status\u001b[0m                  stav VPN").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn bypass\u001b[0m                 obejít VPN pro příkaz").append(NL)
+        motd.append("  \u001b[0;33m     nh vpn ignore\u001b[0m                VPN bypass pro session").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;33m   🖥️  DESKTOP\u001b[0m").append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     nethunter-desktop start\u001b[0m          XFCE4 GUI (noVNC :6080)").append(NL)
+        motd.append("  \u001b[0;33m     nh desktop start|stop|status\u001b[0m  XFCE4 GUI (noVNC :6080)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[1;33m   </>  EDITOR (VS Code)\u001b[0m").append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;33m     code-server-ctl start\u001b[0m           VS Code v prohlížeči (:8443)").append(NL)
+        motd.append("  \u001b[0;33m     code-server-ctl status\u001b[0m          stav editoru").append(NL)
+        motd.append("  \u001b[0;33m     code-server-ctl password\u001b[0m         zobrazit heslo").append(NL)
+        motd.append("  \u001b[0;33m     code-server-ctl install\u001b[0m         nainstalovat code-server").append(NL)
+        motd.append(NL)
+        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        motd.append("  \u001b[0;90m     📖 nh list  → seznam všech příkazů\u001b[0m").append(NL)
+        motd.append("  \u001b[0;90m     📖 nh help  → nápověda\u001b[0m").append(NL)
         motd.append("  \u001b[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\u001b[0m").append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append(NL)

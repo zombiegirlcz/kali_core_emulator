@@ -427,80 +427,46 @@ class VpnNatEngine(
                         sel.wakeup()
                     }
                 } else {
-                    // PROXY CONNECTION: Run on the shared thread pool
+                    // PROXY CONNECTION: simple TCP tunnel to custom IP:Port
                     connectionThreadPool.submit {
                         try {
-                            var connectedViaProxy = false
-                            try {
-                                Log.i(TAG, "Routing session $srcPort through proxy: ${activeProxy.country} (${activeProxy.ip}:${activeProxy.port})")
-                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Redirected via ${activeProxy.country} Proxy")
+                            Log.i(TAG, "Routing session $srcPort through custom proxy ${activeProxy.ip}:${activeProxy.port}")
+                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Tunnel via ${activeProxy.ip}:${activeProxy.port}")
 
-                                channel.socket().connect(InetSocketAddress(activeProxy.ip, activeProxy.port), 5000)
-                                channel.configureBlocking(true)
-                                channel.socket().soTimeout = 5000 // 5 seconds read timeout
+                            // Connect directly to custom proxy endpoint (user's VPS/tunnel server)
+                            channel.socket().connect(InetSocketAddress(activeProxy.ip, activeProxy.port), 5000)
+                            channel.configureBlocking(true)
 
-                                // 1. Send SOCKS5 greeting
-                                val out = channel.socket().getOutputStream()
-                                val input = channel.socket().getInputStream()
-                                out.write(byteArrayOf(0x05, 0x01, 0x00)) // Version 5, 1 auth method: No Auth
-                                out.flush()
-
-                                val response = ByteArray(2)
-                                val read = input.read(response)
-                                if (read < 2 || response[0].toInt() != 0x05 || response[1].toInt() != 0x00) {
-                                    throw IOException("SOCKS5 Proxy rejected authentication method")
-                                }
-
-                                // 2. Request connection to target
-                                val req = ByteArray(10)
-                                req[0] = 0x05 // Version
-                                req[1] = 0x01 // Command: CONNECT
-                                req[2] = 0x00 // Reserved
-                                req[3] = 0x01 // Address Type: IPv4
-
-                                // Destination IP bytes
-                                req[4] = ((dstIp shr 24) and 0xFF).toByte()
-                                req[5] = ((dstIp shr 16) and 0xFF).toByte()
-                                req[6] = ((dstIp shr 8) and 0xFF).toByte()
-                                req[7] = (dstIp and 0xFF).toByte()
-
-                                // Destination Port
-                                req[8] = ((dstPort shr 8) and 0xFF).toByte()
-                                req[9] = (dstPort and 0xFF).toByte()
-
-                                out.write(req)
-                                out.flush()
-
-                                val rep = ByteArray(10)
-                                val r = input.read(rep)
-                                if (r < 10 || rep[0].toInt() != 0x05 || rep[1].toInt() != 0x00) {
-                                    throw IOException("SOCKS5 Tunnel setup failed with error code: ${rep[1].toInt()}")
-                                }
-
-                                connectedViaProxy = true
-                                Log.d(TAG, "Proxy connection established for session $srcPort")
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Proxy failed for session $srcPort (${e.message}), falling back to direct")
-                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, falling back to direct")
-
-                                channel.close()
-                                val directChannel = SocketChannel.open()
-                                if (!vpnService.protect(directChannel.socket())) {
-                                    Log.e(TAG, "protect() FAILED for direct fallback socket!")
-                                    directChannel.close()
-                                    throw IOException("protect() failed for fallback, aborting")
-                                }
-                                session.socketChannel = directChannel
+                            val activeChannel = channel
+                            activeChannel.socket().soTimeout = 0
+                            activeChannel.configureBlocking(false)
+                            selector?.let { sel ->
+                                sel.wakeup()
+                                activeChannel.register(sel, SelectionKey.OP_READ, session)
                             }
 
-                            if (!connectedViaProxy) {
-                                val activeChannel = session.socketChannel ?: channel
-                                Log.i(TAG, "Routing session $srcPort directly (proxy fallback)")
-                                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (Proxy Fallback)")
-                                activeChannel.socket().connect(InetSocketAddress(intToInetAddress(dstIp), dstPort), 10000)
+                            // Flush buffered data
+                            while (true) {
+                                val data = session.sendQueue.poll() ?: break
+                                writeOrQueue(session, activeChannel, data)
                             }
 
-                            val activeChannel = session.socketChannel ?: channel
+                            Log.d(TAG, "Custom proxy connection established for session $srcPort")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Custom proxy failed for session $srcPort (${e.message}), falling back to direct")
+                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
+
+                            channel.close()
+                            val directChannel = SocketChannel.open()
+                            if (!vpnService.protect(directChannel.socket())) {
+                                Log.e(TAG, "protect() FAILED for direct fallback socket!")
+                                directChannel.close()
+                                throw IOException("protect() failed for fallback, aborting")
+                            }
+                            session.socketChannel = directChannel
+
+                            val activeChannel = directChannel
+                            activeChannel.socket().connect(InetSocketAddress(intToInetAddress(dstIp), dstPort), 10000)
                             try { activeChannel.socket().soTimeout = 0 } catch (_: Exception) {}
                             activeChannel.configureBlocking(false)
                             selector?.let { sel ->
@@ -508,21 +474,10 @@ class VpnNatEngine(
                                 activeChannel.register(sel, SelectionKey.OP_READ, session)
                             }
 
-                            // Flush any data buffered while WAN connection was being established
                             while (true) {
                                 val data = session.sendQueue.poll() ?: break
                                 writeOrQueue(session, activeChannel, data)
                             }
-
-                            // Trigger random session-based proxy rotation for the next connection if enabled
-                            if (VpnProxyManager.isEnabled() && VpnProxyManager.getRotationMode() == 1) {
-                                VpnProxyManager.triggerRandomRotation()
-                            }
-
-                            Log.d(TAG, "Connection completed for session $srcPort")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Handshake thread failed for session $srcPort: ${e.message ?: e.javaClass.simpleName}")
-                            closeTcpSession(srcPort, sendRst = true)
                         }
                     }
                 }

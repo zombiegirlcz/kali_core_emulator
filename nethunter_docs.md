@@ -128,9 +128,61 @@ vpn-cli stop
 
 Token se čte z `/data/data/com.linux_core/shared_prefs/api_security.xml`.
 
+## Editor (code-server / VS Code in browser)
+
+Editor provozuje code-server (VS Code jádro) uvnitř PRoot guestu na `127.0.0.1:8443`.
+
+### CLI (uvnitř guestu)
+
+| Příkaz | Popis |
+|--------|-------|
+| `code-server-ctl start` | Spustí code-server na pozadí |
+| `code-server-ctl stop` | Zastaví code-server |
+| `code-server-ctl status` | JSON stav: running/stopped/port_busy |
+| `code-server-ctl password` | Zobrazí heslo |
+| `code-server-ctl install` | Nainstaluje code-server pokud chybí |
+| `code-server-ctl info` | Konfigurace (port, workspace, cesty) |
+| `code-server-ctl log` | Posledních 50 řádků logu |
+
+### HTTP API (port 1337)
+
+Všechny endpointy pod `/editor/*` vyžadují Bearer token.
+`/editor/password` je navíc omezen na localhost (nesmí uniknout při `share_local_api=on`).
+
+| Endpoint | Metoda | Popis |
+|----------|--------|-------|
+| `/editor/start` | POST | Spustí code-server |
+| `/editor/stop` | POST | Zastaví code-server |
+| `/editor/status` | GET | Stav (`running`/`stopped`/`port_busy`) |
+| `/editor/password` | GET | Heslo (JSON) |
+| `/editor/info` | GET | Bind, port, workspace, cesty |
+
+### Bezpečnostní pravidla (analogie s VPN/MITM)
+
+1. **Bind na `127.0.0.1`** — nikdy `0.0.0.0`, natvrdo v config.yaml
+2. **Auth password** — vždy zapnutý, heslo generované náhodně, uložené v `config.yaml` (chmod 600)
+3. **Heslo není v `ps aux`** — ukládá se do configu, ne jako argument příkazové řádky (poučení z C1 security auditu)
+4. **/editor/password** — localhost-only i při `share_local_api=on`
+
+### Perzistence
+
+- Workspace: `/root/projects` (přežije restart kontejneru)
+- Nastavení a rozšíření: `/root/.local/share/code-server/`
+- Config: `/root/.config/code-server/config.yaml` (chmod 600)
+- PID: `/tmp/code-server.pid`
+- Log: `/tmp/code-server.log`
+
+### Rozšíření (Open VSX)
+
+Code-server defaultně používá `open-vsx.org` místo Microsoft Marketplace.
+Pro chybějící rozšíření: stáhnout `.vsix` a nainstalovat ručně:
+```bash
+code-server --install-extension /cesta/k/souboru.vsix
+```
+
 ### Omezení a TODO
 
-- MITM funguje pouze pro TCP provoz
-- TLS 1.3 handshake může vyžadovat úpravy v `SSLEngine` handshake logice
-- Velké binární payloady (obrázky, videa) se nezapisují do snippet bufferu (limit 512 znaků UTF-8)
-- Session buffer je limitován na 200 řádků
+- code-server musí být nainstalovaný v rootfs (automaticky přes `code-server-ctl install` nebo ručně)
+- WebView nezachytává `Ctrl+` kombinace — použití Hacker Keyboard je nutné pro pokročilé operace
+- Port 8443 je vázán pouze na localhost — pro přístup z jiného zařízení použít SSH tunel nebo VPN bypass proxy :13339
+- Workspace je omezen na `/root/projects` — nelze otevřít adresář mimo guest bez symlinku

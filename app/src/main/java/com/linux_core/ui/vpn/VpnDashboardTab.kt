@@ -39,9 +39,7 @@ fun VpnDashboardTab() {
     var byteCount by remember { mutableStateOf(VpnCaptureService.getCapturedByteCount()) }
 
     var isProxyEnabled by remember { mutableStateOf(VpnProxyManager.isEnabled()) }
-    var selectedProxyIndex by remember { mutableStateOf(VpnProxyManager.getSelectedNodeIndex()) }
-    var secondsRemaining by remember { mutableStateOf(VpnProxyManager.getSecondsRemaining()) }
-
+    var customProxyIp by remember { mutableStateOf(VpnProxyManager.getCustomProxy() ?: "") }
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -62,8 +60,7 @@ fun VpnDashboardTab() {
             isVpnRunning = VpnCaptureService.isRunning()
             packetCount = VpnCaptureService.getCapturedPacketCount()
             byteCount = VpnCaptureService.getCapturedByteCount()
-            secondsRemaining = VpnProxyManager.getSecondsRemaining()
-            selectedProxyIndex = VpnProxyManager.getSelectedNodeIndex()
+            customProxyIp = VpnProxyManager.getCustomProxy() ?: ""
             delay(1000)
         }
     }
@@ -308,33 +305,27 @@ fun VpnDashboardTab() {
 
                     if (isProxyEnabled) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        val activeProxy = VpnProxyManager.getActiveProxy()
-                        if (activeProxy != null) {
+                        val customProxy = VpnProxyManager.getCustomProxy()
+                        if (customProxy != null) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(activeProxy.flag, fontSize = 20.sp)
+                                    Text("🌐", fontSize = 20.sp)
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Column {
-                                        Text(activeProxy.country, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                                        Text("${activeProxy.ip}:${activeProxy.port}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.Gray)
+                                        Text("Custom Proxy", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                        Text(customProxy, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Color.Gray)
                                     }
                                 }
-                                val modeLabel = when (VpnProxyManager.getRotationMode()) {
-                                    0 -> "Static"
-                                    1 -> "Per Session"
-                                    2 -> "Time Loop (${secondsRemaining}s)"
-                                    else -> "Unknown"
-                                }
-                                Text(modeLabel, fontSize = 10.sp, color = Color(0xFF00FF41), fontFamily = FontFamily.Monospace)
+                                Text("Active", fontSize = 10.sp, color = Color(0xFF00FF41), fontFamily = FontFamily.Monospace)
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "Manage proxy rotation mode, nodes, and interval in Settings tab",
+                            "Enter your own IP:Port in Settings tab",
                             fontSize = 10.sp, color = Color.Gray, fontFamily = FontFamily.Monospace
                         )
                     }

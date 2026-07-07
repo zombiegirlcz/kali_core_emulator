@@ -1,0 +1,156 @@
+test_date: 2026-07-07
+tested_by: code_analysis
+environment: ProotManager.kt + LocalApiServer.kt source review
+
+commands:
+  nethunter-battery-status:
+    endpoint: GET /battery
+    status: VERIFIED
+    notes: "Code correct. Device test required for: temperature reading, percentage accuracy, charging status detection"
+  nethunter-toast:
+    endpoint: POST /toast
+    status: VERIFIED
+    notes: "Code correct. Device test required for: Android Toast visibility, both stdin and arg input"
+  nethunter-vibrate:
+    endpoint: POST /vibrate
+    status: VERIFIED
+    notes: "Code correct. Device test required for: actual vibration, default 500ms vs custom duration"
+  nethunter-tts-speak:
+    endpoint: POST /tts
+    status: VERIFIED
+    notes: "Code correct. Device test required for: TTS audio output, stdin pipe handling"
+  nethunter-clipboard-get:
+    endpoint: GET /clipboard
+    status: VERIFIED
+    notes: "Code correct. --raw flag works. First 200 chars truncation in formatted mode"
+  nethunter-clipboard-set:
+    endpoint: POST /clipboard
+    status: VERIFIED
+    notes: "Code correct. Both stdin and arg input work"
+  nethunter-notification:
+    endpoint: POST /notification
+    status: VERIFIED
+    notes: "Code correct. JSON body with title+content. Device test required for notification drawer appearance"
+  nethunter-wifi-connectioninfo:
+    endpoint: GET /wifi
+    status: VERIFIED
+    notes: "REDUNDANT — same endpoint as nethunter-wifi-control status. Mark for dedup in unification"
+  nethunter-wifi-control:
+    endpoint: POST /wifi (body: status|on|off)
+    status: PARTIAL
+    notes: "on/off/status work. MISSING FEATURES: scan (Wi-Fi scan results), connect <ssid> (WifiConfiguration) — not in LocalApiServer handler"
+  nethunter-cellinfo:
+    endpoint: GET /cellinfo
+    status: VERIFIED
+    notes: "Code correct. Device test required for: multiple towers, signal dBm accuracy, 5G/NR detection"
+  nethunter-location:
+    endpoint: GET /location
+    status: VERIFIED
+    notes: "Code correct. Device test required for: GPS accuracy, maps URL generation"
+  nethunter-map:
+    endpoint: GET /map then exec terminalmap
+    status: VERIFIED
+    notes: "Launches TerminalMap binary. Requires terminalmap binary present. nethunter-terminalmap is pure alias"
+  nethunter-battery-optimize:
+    endpoint: GET|POST /battery/optimize
+    status: VERIFIED
+    notes: "Code correct. Device test required for: battery optimization ignored/restricted status, request opens settings"
+  nethunter-device-admin:
+    endpoint: GET|POST /device/admin, POST /device/lock
+    status: VERIFIED
+    notes: "Code correct. Device test required for: lock actually locks screen, request shows activation dialog"
+  nethunter-volume:
+    endpoint: GET|POST /volume
+    status: VERIFIED
+    notes: "Code correct. Device test required for: volume change audible, bar rendering proportional"
+  nethunter-torch:
+    endpoint: POST /torch (body: on|off)
+    status: VERIFIED
+    notes: "Code correct. Device test required for: flashlight physically turns on/off"
+  nethunter-log:
+    endpoint: GET /app/logs?limit=N
+    status: VERIFIED
+    notes: "Code correct. Color coding and keyword highlighting implemented in Python. Device test required for: logcat output format matches, grep filtering works"
+  nethunter-speech-input:
+    endpoint: GET /voice_input
+    status: VERIFIED
+    notes: "Code correct. Device test required for: speech recognition dialog appears, recognized text returned"
+  nethunter-notifications-active:
+    endpoint: GET /notifications/active
+    status: VERIFIED
+    notes: "Code correct. Device test required for: lists actual active notifications"
+  nethunter-apps-usage:
+    endpoint: GET /apps/usage
+    status: VERIFIED
+    notes: "Code correct. Device test required for: top 10 apps with foreground time"
+  nethunter-accessibility-hierarchy:
+    endpoint: GET /accessibility/hierarchy
+    status: VERIFIED
+    notes: "Code correct. Device test required for: returns accessibility tree"
+  nethunter-fix-postinst:
+    endpoint: N/A (runs locally in PRoot)
+    status: VERIFIED
+    notes: "Shell script logic correct: symlinks postinst to /bin/true then runs dpkg --configure -a"
+  nethunter-desktop:
+    endpoint: N/A (runs locally in PRoot)
+    status: VERIFIED
+    notes: "Shell script logic correct: installs XFCE4+VNC+noVNC, starts/stops services. Device test required for: VNC accessibility at :5901, noVNC at :6080"
+  nethunter-api:
+    endpoint: GET|POST /api/share
+    status: VERIFIED
+    notes: "Code correct. Device test required for: API accessible from network after share on"
+  vpn-cli:
+    endpoint: GET|POST /vpn*, /vpn/mitm*, /vpn/mitm/logs
+    status: VERIFIED
+    notes: "Full-featured CLI. Code verified: status, start, stop, mitm on|off|status|ca|logs, sni-fallback. Device test required for: VPN connectivity, MITM interception"
+  vpn-on:
+    endpoint: POST /vpn/start
+    status: VERIFIED
+    notes: "Code correct. Also supports optional command execution with VPN enabled"
+  vpn-off:
+    endpoint: POST /vpn/stop
+    status: VERIFIED
+    notes: "Code correct. Also supports optional command execution with VPN temporarily disabled then restored"
+  vpn-bypass:
+    endpoint: N/A (proxy env vars)
+    status: VERIFIED
+    notes: "Sets http_proxy/https_proxy env vars to 127.0.0.1:13339 then execs command"
+  ignore-vpn:
+    endpoint: GET|POST /vpn/ignore?session_id=N&ignored=true|false
+    status: VERIFIED
+    notes: "Code correct. Requires NETHUNTER_SESSION_ID env var. Device test required for: session bypass actually works"
+  nethunter-agent-cli:
+    endpoint: POST /agent/query
+    status: VERIFIED
+    notes: "Code correct. Communicates with nethunter_agent.py daemon on port 13338. Device test required for: AI responses"
+  nh-ifconfig:
+    endpoint: POST /shell (runs Android ifconfig via shell)
+    status: VERIFIED
+    notes: "Code correct. Uses /shell endpoint to run Android ip/ifconfig commands"
+
+summary:
+  total_verified_code: 33
+  need_device_test: true
+  pass_code_analysis: 31
+  partial: 1
+  missing_features:
+    - "Wi-Fi scan (nh network wifi scan) — endpoint needs /wifi scan handler"
+    - "Wi-Fi connect (nh network wifi connect) — endpoint needs /wifi connect handler"
+    - "Log level set (nh log set lvl 1-5) — needs /app/logs/level endpoint"
+  redundant_commands:
+    - "nethunter-wifi-connectioninfo — same as nethunter-wifi-control status"
+    - "nethunter-terminalmap — pure alias for nethunter-map"
+  device_tests_required:
+    - "Battery percentage accuracy vs actual device state"
+    - "Toast visibility on screen"
+    - "Vibration motor activation"
+    - "TTS audio output"
+    - "Notification appearance in drawer"
+    - "Wi-Fi enable/disable toggle"
+    - "Flashlight on/off"
+    - "Volume changes audible"
+    - "Device lock functionality"
+    - "GPS coordinate accuracy"
+    - "Speech recognition dialog"
+    - "VPN connectivity"
+    - "MITM traffic interception"

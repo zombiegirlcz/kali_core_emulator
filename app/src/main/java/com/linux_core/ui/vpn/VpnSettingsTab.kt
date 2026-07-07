@@ -43,9 +43,7 @@ fun VpnSettingsTab() {
     var aiSensitivity by remember { mutableStateOf(sharedPrefs.getFloat("ai_sensitivity", 0.5f)) }
     var aiAutoAction by remember { mutableStateOf(sharedPrefs.getInt("ai_auto_action", 1)) }
     var isProxyEnabled by remember { mutableStateOf(VpnProxyManager.isEnabled()) }
-    var proxyRotationMode by remember { mutableStateOf(VpnProxyManager.getRotationMode()) }
-    var selectedProxyIndex by remember { mutableStateOf(VpnProxyManager.getSelectedNodeIndex()) }
-    var rotationInterval by remember { mutableStateOf(VpnProxyManager.getRotationInterval()) }
+    var customProxyIp by remember { mutableStateOf(VpnProxyManager.getCustomProxy() ?: "") }
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
     var enableCrossMount by remember { mutableStateOf(sharedPrefs.getBoolean("enable_cross_mount", false)) }
     var shareLocalApi by remember { mutableStateOf(sharedPrefs.getBoolean("share_local_api", false)) }
@@ -53,7 +51,7 @@ fun VpnSettingsTab() {
     var enableMitm by remember { mutableStateOf(sharedPrefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)) }
     var logVerbosity by remember { mutableStateOf(sharedPrefs.getInt("log_verbosity", 1)) }
     var showActionMenu by remember { mutableStateOf(false) }
-    var showProxyMenu by remember { mutableStateOf(false) }
+    var customProxyError by remember { mutableStateOf(false) }
     var showLogMenu by remember { mutableStateOf(false) }
     var disallowedPackages by remember { mutableStateOf(sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet()) }
     var appSearchQuery by remember { mutableStateOf("") }
@@ -91,9 +89,10 @@ fun VpnSettingsTab() {
             apply()
         }
         VpnProxyManager.setEnabled(isProxyEnabled)
-        VpnProxyManager.setRotationMode(proxyRotationMode)
-        VpnProxyManager.setSelectedNodeIndex(selectedProxyIndex)
-        VpnProxyManager.setRotationInterval(rotationInterval)
+        if (customProxyIp.isNotBlank()) {
+            val ok = VpnProxyManager.setCustomProxy(customProxyIp)
+            customProxyError = !ok
+        }
         scope.launch {
             withContext(Dispatchers.IO) {
                 if (shareLocalApi || shareP2pMesh) {
@@ -300,76 +299,29 @@ fun VpnSettingsTab() {
 
                     if (isProxyEnabled) {
                         Column(modifier = Modifier.padding(start = 16.dp)) {
-                            Text("Rotation Mode", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                            Spacer(Modifier.height(4.dp))
-                            val rotationModes = listOf("Static IP", "Random Per Session", "Time-based Loop")
-                            Box {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF1A1A3E), RoundedCornerShape(8.dp))
-                                        .border(1.dp, Color(0xFF222244), RoundedCornerShape(8.dp))
-                                        .clickable { showProxyMenu = true }
-                                        .padding(12.dp)
-                                ) {
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(rotationModes.getOrElse(proxyRotationMode) { "Static IP" },
-                                            color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                        Text("▼", color = accentYellow, fontSize = 12.sp)
-                                    }
-                                }
-
-                                DropdownMenu(expanded = showProxyMenu, onDismissRequest = { showProxyMenu = false },
-                                    modifier = Modifier.background(Color(0xFF1A1A3E)).border(1.dp, Color(0xFF222244))) {
-                                    rotationModes.forEachIndexed { index, label ->
-                                        DropdownMenuItem(
-                                            text = { Text(label, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
-                                            onClick = { proxyRotationMode = index; showProxyMenu = false })
-                                    }
-                                }
-                            }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            Text("Proxy Node", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                            Spacer(Modifier.height(4.dp))
-                            val nodes = VpnProxyManager.proxyPool.map { "${it.flag} ${it.country} (${it.ip}:${it.port})" }
-                            var showNodeMenu by remember { mutableStateOf(false) }
-                            Box {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF1A1A3E), RoundedCornerShape(8.dp))
-                                        .border(1.dp, Color(0xFF222244), RoundedCornerShape(8.dp))
-                                        .clickable { showNodeMenu = true }
-                                        .padding(12.dp)
-                                ) {
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(nodes.getOrElse(selectedProxyIndex) { nodes.first() },
-                                            color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                        Text("▼", color = accentYellow, fontSize = 12.sp)
-                                    }
-                                }
-
-                                DropdownMenu(expanded = showNodeMenu, onDismissRequest = { showNodeMenu = false },
-                                    modifier = Modifier.background(Color(0xFF1A1A3E)).border(1.dp, Color(0xFF222244))) {
-                                    nodes.forEachIndexed { index, label ->
-                                        DropdownMenuItem(
-                                            text = { Text(label, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
-                                            onClick = { selectedProxyIndex = index; showNodeMenu = false })
-                                    }
-                                }
-                            }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            Text("Rotation Interval: ${rotationInterval}s", color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                            Slider(
-                                value = rotationInterval.toFloat(),
-                                onValueChange = { rotationInterval = it.toInt() },
-                                valueRange = 5f..300f,
-                                colors = SliderDefaults.colors(thumbColor = accentYellow, activeTrackColor = accentYellow, inactiveTrackColor = Color(0xFF1A1A2E))
+                            Text("Custom Proxy IP:Port", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("All TCP traffic will be tunneled to this endpoint", color = Color.Gray, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = customProxyIp,
+                                onValueChange = { customProxyIp = it; customProxyError = false },
+                                placeholder = { Text("192.168.1.100:8080", color = Color.Gray, fontSize = 12.sp) },
+                                modifier = Modifier.fillMaxWidth().background(Color(0xFF0D0D2B), RoundedCornerShape(8.dp)),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = accentYellow,
+                                    unfocusedBorderColor = Color(0xFF222244),
+                                    cursorColor = accentYellow,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                             )
+                            if (customProxyError) {
+                                Text("Invalid format — use IP:Port (e.g. 1.2.3.4:8080)",
+                                    color = Color(0xFFFF4444), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
                         }
                     }
                 }

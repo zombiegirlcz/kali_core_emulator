@@ -291,7 +291,7 @@ object LocalApiServer {
                 "/notifications/active", "/accessibility/hierarchy", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs")
+                "/battery/optimize", "/app/logs", "/editor/")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -313,7 +313,7 @@ object LocalApiServer {
                 }
             }
 
-            routeRequest(context, method, path, body, out)
+            routeRequest(context, method, path, body, out, isLocalConnection)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling connection: ${e.message}", e)
         } finally {
@@ -321,7 +321,7 @@ object LocalApiServer {
         }
     }
 
-    private fun routeRequest(context: Context, method: String, path: String, body: String, out: OutputStream) {
+    private fun routeRequest(context: Context, method: String, path: String, body: String, out: OutputStream, isLocalConnection: Boolean = true) {
         try {
             when {
                 path == "/battery" && method == "GET" -> handleBattery(context, out)
@@ -366,7 +366,15 @@ object LocalApiServer {
                 path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(context, path, out)
                 path == "/vpn/mitm/sni-fallback" && method == "POST" -> handleVpnMitmSniFallbackPost(context, body, out)
                 path == "/vpn/mitm/sni-fallback" && method == "GET" -> handleVpnMitmSniFallbackGet(context, out)
+                path == "/app/logs/level" && method == "GET" -> handleAppLogsLevel(context, out)
+                path == "/app/logs/level" && method == "POST" -> handleAppLogsLevelSet(context, body, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(path, out)
+                path == "/editor/start" && method == "POST" -> handleEditorStart(context, out)
+                path == "/editor/stop" && method == "POST" -> handleEditorStop(context, out)
+                path == "/editor/status" && method == "GET" -> handleEditorStatus(context, out)
+                path == "/editor/password" && method == "GET" -> handleEditorPassword(context, out, isLocalConnection)
+                path == "/editor/info" && method == "GET" -> handleEditorInfo(context, out)
+                path == "/editor/install" && method == "POST" -> handleEditorInstall(context, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -1353,10 +1361,87 @@ object LocalApiServer {
     private fun handleWifiControl(context: Context, body: String, out: OutputStream) {
         try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val enable = body.trim().equals("on", ignoreCase = true) || body.trim().equals("true", ignoreCase = true)
-            @Suppress("DEPRECATION")
-            val success = wifiManager.setWifiEnabled(enable)
-            sendResponse(out, 200, "OK", "{\"status\":\"wifi_updated\",\"enabled\":$enable,\"success\":$success}")
+            val cmd = body.trim()
+            when {
+                cmd.equals("on", ignoreCase = true) || cmd.equals("true", ignoreCase = true) -> {
+                    @Suppress("DEPRECATION")
+                    val success = wifiManager.setWifiEnabled(true)
+                    sendResponse(out, 200, "OK", "{\"enabled\":true,\"success\":$success}")
+                }
+                cmd.equals("off", ignoreCase = true) || cmd.equals("false", ignoreCase = true) -> {
+                    @Suppress("DEPRECATION")
+                    val success = wifiManager.setWifiEnabled(false)
+                    sendResponse(out, 200, "OK", "{\"enabled\":false,\"success\":$success}")
+                }
+                cmd.equals("status", ignoreCase = true) -> {
+                    @Suppress("DEPRECATION")
+                    val info = wifiManager.connectionInfo
+                    val json = JSONObject().apply {
+                        put("wifi_enabled", wifiManager.isWifiEnabled)
+                        if (info != null) {
+                            put("ssid", info.ssid?.replace("\"", ""))
+                            put("bssid", info.bssid)
+                            put("rssi", info.rssi)
+                            put("link_speed_mbps", info.linkSpeed)
+                        }
+                    }.toString()
+                    sendResponse(out, 200, "OK", json)
+                }
+                cmd.equals("scan", ignoreCase = true) -> {
+                    val scanSuccess = wifiManager.startScan()
+                    // Give scan a moment to complete
+                    try { Thread.sleep(500) } catch (e: Exception) {}
+                    val results = wifiManager.scanResults
+                    val json = JSONObject().apply {
+                        put("scan_complete", scanSuccess)
+                        val arr = org.json.JSONArray()
+                        val seen = mutableSetOf<String>()
+                        for (r in results) {
+                            val key = r.SSID + r.BSSID
+                            if (key in seen) continue
+                            seen.add(key)
+                            if (r.SSID.isNullOrEmpty()) continue
+                            arr.put(JSONObject().apply {
+                                put("ssid", r.SSID)
+                                put("bssid", r.BSSID)
+                                put("level", r.level)
+                                put("capabilities", r.capabilities)
+                                put("frequency", r.frequency)
+                            })
+                        }
+                        put("networks", arr)
+                    }.toString()
+                    sendResponse(out, 200, "OK", json)
+                }
+                cmd.startsWith("connect:", ignoreCase = true) -> {
+                    val ssid = cmd.removePrefix("connect:").removePrefix("CONNECT:").trim()
+                    if (ssid.isEmpty()) {
+                        sendResponse(out, 400, "Bad Request", "{\"error\":\"SSID cannot be empty\"}")
+                        return
+                    }
+                    @Suppress("DEPRECATION")
+                    val conf = android.net.wifi.WifiConfiguration().apply {
+                        SSID = "\"$ssid\""
+                        allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+                    }
+                    val netId = wifiManager.addNetwork(conf)
+                    if (netId == -1) {
+                        sendResponse(out, 500, "Internal Error", "{\"error\":\"Failed to add network\"}")
+                        return
+                    }
+                    wifiManager.disconnect()
+                    wifiManager.enableNetwork(netId, true)
+                    wifiManager.reconnect()
+                    sendResponse(out, 200, "OK", "{\"connected\":true,\"ssid\":\"$ssid\"}")
+                }
+                else -> {
+                    // Legacy compat: treat as enable/disable boolean
+                    val enable = cmd.toBooleanStrictOrNull() ?: false
+                    @Suppress("DEPRECATION")
+                    val success = wifiManager.setWifiEnabled(enable)
+                    sendResponse(out, 200, "OK", "{\"enabled\":$enable,\"success\":$success}")
+                }
+            }
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
@@ -1626,6 +1711,28 @@ object LocalApiServer {
         }
     }
 
+    private fun handleAppLogsLevel(context: Context, out: OutputStream) {
+        try {
+            val prefs = context.getSharedPreferences("log_settings", Context.MODE_PRIVATE)
+            val level = prefs.getInt("log_level", 3)
+            sendResponse(out, 200, "OK", "{\"level\":$level}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAppLogsLevelSet(context: Context, body: String, out: OutputStream) {
+        try {
+            val level = body.trim().toIntOrNull()?.coerceIn(1, 5) ?: 3
+            context.getSharedPreferences("log_settings", Context.MODE_PRIVATE)
+                .edit().putInt("log_level", level).apply()
+            Log.i(TAG, "Log level set to $level")
+            sendResponse(out, 200, "OK", "{\"level\":$level}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleVpnMitmSniFallbackGet(context: Context, out: OutputStream) {
         try {
             val fallback = VpnSettings.getMitmSniFallback(context)
@@ -1680,6 +1787,185 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
+    }
+
+    // ============================================================
+    //  code-server (VS Code in browser) — editor control endpoints
+    // ============================================================
+    //
+    // These endpoints run the code-server-ctl shell script inside the PRoot
+    // guest (the same pattern used for nethunter-desktop start/stop).
+    //
+    // Security:
+    //   - All endpoints require a Bearer token when accessed remotely
+    //     (added to the sensitive-endpoint list at the connection handler).
+    //   - The /editor/password endpoint is additionally localhost-restricted
+    //     so a shared-API listener never leaks the password over the LAN.
+    //   - No free-form shell input is accepted. Only fixed subcommands.
+    //
+    // Storage:
+    //   - code-server state lives in /root/.config/code-server/config.yaml
+    //     (auto-deployed by code-server-ctl with chmod 600).
+    //   - Editor status cache is held in SharedPreferences ("editor_settings").
+
+    private fun editorPrefs(context: Context) =
+        context.getSharedPreferences("editor_settings", Context.MODE_PRIVATE)
+
+    private fun runCodeServerCtl(context: Context, vararg args: String): String {
+        val launcherFile = java.io.File(context.filesDir, "launcher.sh")
+        if (!launcherFile.exists() || !launcherFile.canExecute()) {
+            return "{\"error\":\"launcher.sh not found or not executable. Open a terminal session first to bootstrap the rootfs.\"}"
+        }
+        return try {
+            val pb = ProcessBuilder("sh", launcherFile.absolutePath, "code-server-ctl", *args)
+            pb.directory(context.filesDir)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val output = proc.inputStream.bufferedReader().use { it.readText() }
+            val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                return "{\"error\":\"code-server-ctl timed out after 15s\"}"
+            }
+            val exitCode = proc.exitValue()
+            if (exitCode != 0) {
+                return JSONObject().apply {
+                    put("error", "code-server-ctl exited with code $exitCode")
+                    put("exit_code", exitCode)
+                    put("output", output.take(500))
+                }.toString()
+            }
+            output
+        } catch (e: Exception) {
+            Log.e(TAG, "runCodeServerCtl failed: ${e.message}", e)
+            "{\"error\":\"${e.message}\"}"
+        }
+    }
+
+    private fun handleEditorStart(context: Context, out: OutputStream) {
+        try {
+            val raw = runCodeServerCtl(context, "start")
+            val json = parseScriptJsonOrWrap(raw, "started")
+            editorPrefs(context).edit()
+                .putLong("last_start_ts", System.currentTimeMillis())
+                .apply()
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleEditorStop(context: Context, out: OutputStream) {
+        try {
+            val raw = runCodeServerCtl(context, "stop")
+            val json = parseScriptJsonOrWrap(raw, "stopped")
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleEditorStatus(context: Context, out: OutputStream) {
+        try {
+            val raw = runCodeServerCtl(context, "status")
+            val scriptJson = parseScriptJsonOrNull(raw)
+            val payload = if (scriptJson != null) {
+                // Add last_start_ts from prefs for UI diagnostics
+                try {
+                    val lastStart = editorPrefs(context).getLong("last_start_ts", 0L)
+                    if (lastStart > 0L) scriptJson.put("last_start_ts", lastStart) else scriptJson
+                } catch (e: Exception) { scriptJson }
+                scriptJson
+            } else {
+                JSONObject().apply { put("status", "unknown"); put("raw", raw) }
+            }
+            sendResponse(out, 200, "OK", payload.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleEditorPassword(context: Context, out: OutputStream, isLocalConnection: Boolean = true) {
+        try {
+            // localhost-only enforcement: password must never leak over network
+            // even if the caller presents a valid Bearer token.
+            if (!isLocalConnection) {
+                sendResponse(out, 403, "Forbidden",
+                    "{\"error\":\"Password endpoint is restricted to localhost\"}")
+                return
+            }
+
+            val raw = runCodeServerCtl(context, "password")
+            val scriptJson = parseScriptJsonOrNull(raw)
+            val payload = if (scriptJson != null && scriptJson.has("password")) {
+                scriptJson
+            } else {
+                JSONObject().apply {
+                    put("error", "password not available")
+                    put("raw", raw)
+                }
+            }
+            sendResponse(out, 200, "OK", payload.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleEditorInfo(context: Context, out: OutputStream) {
+        try {
+            val raw = runCodeServerCtl(context, "info")
+            val scriptJson = parseScriptJsonOrNull(raw)
+            val payload = scriptJson ?: JSONObject().apply {
+                put("error", "info not available"); put("raw", raw)
+            }
+            sendResponse(out, 200, "OK", payload.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleEditorInstall(context: Context, out: OutputStream) {
+        try {
+            val raw = runCodeServerCtl(context, "install")
+            val obj = parseScriptJsonOrNull(raw)
+            // If install succeeds, the script may print success messages but not JSON.
+            // Parse the raw output for error keywords.
+            if (obj != null && obj.has("error")) {
+                sendResponse(out, 500, "Internal Error", obj.toString())
+            } else if (raw.lowercase().contains("error") || raw.lowercase().contains("fail")) {
+                sendResponse(out, 500, "Internal Error", JSONObject().apply {
+                    put("error", "Installation failed")
+                    put("output", raw.take(500))
+                }.toString())
+            } else {
+                sendResponse(out, 200, "OK", JSONObject().apply {
+                    put("status", "installed")
+                    put("output", raw.take(500))
+                }.toString())
+            }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun parseScriptJsonOrNull(raw: String): JSONObject? {
+        if (raw.isBlank()) return null
+        return try {
+            val trimmed = raw.trim().lines().lastOrNull { it.trim().startsWith("{") } ?: raw.trim()
+            JSONObject(trimmed)
+        } catch (e: Exception) {
+            Log.w(TAG, "parseScriptJsonOrNull: not JSON: ${raw.take(200)}")
+            null
+        }
+    }
+
+    private fun parseScriptJsonOrWrap(raw: String, fallbackStatus: String): String {
+        val obj = parseScriptJsonOrNull(raw)
+        if (obj != null) return obj.toString()
+        return JSONObject().apply {
+            put("status", fallbackStatus)
+            put("raw", raw)
+        }.toString()
     }
 }
 

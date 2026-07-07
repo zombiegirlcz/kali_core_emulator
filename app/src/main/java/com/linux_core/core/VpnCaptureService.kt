@@ -462,7 +462,7 @@ class VpnCaptureService : VpnService() {
             scheduleHealthCheck()
             // Souhrnný stav VPN pro debugování přes nethunter-log
             val mitmState = if (sharedPrefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)) "ON" else "OFF"
-            val proxyState = if (VpnProxyManager.isEnabled()) "ON (${VpnProxyManager.getActiveProxy()?.country ?: "?"})" else "OFF"
+            val proxyState = if (VpnProxyManager.isEnabled()) "ON (${VpnProxyManager.getCustomProxy() ?: "?"})" else "OFF"
             val aiState = if (getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE).getBoolean("ai_enabled", true)) "ON" else "OFF"
             val adbState = if (isAdbActive) "yes (LAN excluded)" else "no"
             Log.i(TAG, "=== VPN CONFIG ===")
