@@ -20,9 +20,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.ClipboardManager
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -37,7 +37,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun VpnMeshTab() {
     val context = LocalContext.current
-    val clipboardManager: ClipboardManager = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val coroutineScope = rememberCoroutineScope()
 
     var isP2PEnabled by remember { mutableStateOf(VpnPeerManager.isEnabled()) }
     var localIdText by remember { mutableStateOf(VpnPeerManager.getLocalPeerId().toString()) }
@@ -208,7 +209,9 @@ fun VpnMeshTab() {
                                     IconButton(
                                         onClick = {
                                             val connStr = VpnPeerManager.getLocalConnectionString()
-                                            clipboardManager.setText(AnnotatedString(connStr))
+                                            coroutineScope.launch {
+                                                clipboard.setClip(AnnotatedString(connStr).toClipEntry())
+                                            }
                                             Toast.makeText(context, "Copied connection string to clipboard!", Toast.LENGTH_SHORT).show()
                                         },
                                         modifier = Modifier

@@ -709,6 +709,7 @@ class VpnCaptureService : VpnService() {
                     }
                 }
             } else {
+                @Suppress("DEPRECATION")
                 for (network in connectivityManager.allNetworks) {
                     val caps = connectivityManager.getNetworkCapabilities(network)
                     if (caps != null && (

@@ -675,14 +675,19 @@ object LocalApiServer {
                             val ci = cell.cellIdentity
                             when (ci) {
                                 is CellIdentityGsm -> {
+                                    @Suppress("DEPRECATION")
                                     cellObj.put("mcc", ci.mcc)
+                                    @Suppress("DEPRECATION")
                                     cellObj.put("mnc", ci.mnc)
                                     cellObj.put("tac_lac", ci.lac)
                                     cellObj.put("cid", ci.cid)
+                                    @Suppress("DEPRECATION")
                                     cellObj.put("pci_psc", ci.psc.takeIf { it != Int.MAX_VALUE })
                                 }
                                 is CellIdentityLte -> {
+                                    @Suppress("DEPRECATION")
                                     cellObj.put("mcc", ci.mcc)
+                                    @Suppress("DEPRECATION")
                                     cellObj.put("mnc", ci.mnc)
                                     cellObj.put("tac_lac", ci.tac)
                                     cellObj.put("cid", ci.ci)
@@ -1229,7 +1234,8 @@ object LocalApiServer {
         try {
             val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
             val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
             } else {
                 @Suppress("DEPRECATION")
                 appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
@@ -1392,6 +1398,7 @@ object LocalApiServer {
                     sendResponse(out, 200, "OK", json)
                 }
                 cmd.equals("scan", ignoreCase = true) -> {
+                    @Suppress("DEPRECATION")
                     val scanSuccess = wifiManager.startScan()
                     // Android needs time + Location ON + Location runtime permission
                     try {
@@ -1409,11 +1416,14 @@ object LocalApiServer {
                         val arr = org.json.JSONArray()
                         val seen = mutableSetOf<String>()
                         for (r in results) {
+                            @Suppress("DEPRECATION")
                             val key = r.SSID + r.BSSID
                             if (key in seen) continue
                             seen.add(key)
+                            @Suppress("DEPRECATION")
                             if (r.SSID.isNullOrEmpty()) continue
                             arr.put(JSONObject().apply {
+                                @Suppress("DEPRECATION")
                                 put("ssid", r.SSID)
                                 put("bssid", r.BSSID)
                                 put("level", r.level)
@@ -1443,13 +1453,17 @@ object LocalApiServer {
                             allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
                         }
                     }
+                    @Suppress("DEPRECATION")
                     val netId = wifiManager.addNetwork(conf)
                     if (netId == -1) {
                         sendResponse(out, 500, "Internal Error", "{\"error\":\"Failed to add network\"}")
                         return
                     }
+                    @Suppress("DEPRECATION")
                     wifiManager.disconnect()
+                    @Suppress("DEPRECATION")
                     wifiManager.enableNetwork(netId, true)
+                    @Suppress("DEPRECATION")
                     wifiManager.reconnect()
                     sendResponse(out, 200, "OK", "{\"connected\":true,\"ssid\":\"$ssid\"}")
                 }

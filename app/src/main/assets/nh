@@ -287,23 +287,24 @@ except: print(f'{Y}📶  Wi-Fi connect: unknown{N}')
 import sys, json
 G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
 def wifi_qual(rssi):
-    if rssi is None: return ('N/A',0,'\033[0m')
-    if rssi> -50: return ('Excelentní',10,'\033[92m')
-    if rssi> -60: return ('Velmi dobrý',8,'\033[92m')
-    if rssi> -70: return ('Dobrý',6,'\033[93m')
-    if rssi> -80: return ('Střední',4,'\033[93m')
-    if rssi> -90: return ('Slabý',2,'\033[91m')
-    return ('Velmi slabý',1,'\033[91m')
-def wifi_bar(n): return '█'*n + '░'*(10-n)
+    if rssi is None: return ('N/A',0,chr(27)+'[0m')
+    if rssi> -50: return ('Excelentní',10,chr(27)+'[92m')
+    if rssi> -60: return ('Velmi dobrý',8,chr(27)+'[92m')
+    if rssi> -70: return ('Dobrý',6,chr(27)+'[93m')
+    if rssi> -80: return ('Střední',4,chr(27)+'[93m')
+    if rssi> -90: return ('Slabý',2,chr(27)+'[91m')
+    return ('Velmi slabý',1,chr(27)+'[91m')
+def wifi_bar(nb): return '█'*nb + '░'*(10-nb)
 try:
     d=json.load(sys.stdin)
     if 'error' in d: print(d['error'])
     elif 'networks' in d:
-        print(f'{G}📶  Nearby Wi-Fi Networks:{N}')
-        for nw in d.get('networks',[]):
-            s=nw.get('ssid','?'); b=nw.get('bssid','?'); l=nw.get('level',0); cap=nw.get('capabilities','')
-            w,n,c=wifi_qual(l); bw=wifi_bar(n)
-            print(f'   {c}{bw}{RST} {s}  {Gy}({l} dBm)  [{cap}]{N}')
+        nets=d.get('networks',[])
+        print(f'{G}📶  Nalezeno sítí: {len(nets)}{N}')
+        for nw in nets:
+            s=nw.get('ssid','?'); b=nw.get('bssid','?'); lv=nw.get('level',0); cap=nw.get('capabilities','')
+            ql,nb,cl=wifi_qual(lv); bw=wifi_bar(nb)
+            print(f'   {cl}{bw}{N} {s}  {Gy}({lv} dBm)  [{cap}]{N}')
     else:
         ssid=d.get('ssid','N/A'); bssid=d.get('bssid','N/A')
         rssi=d.get('rssi'); link=d.get('link_speed_mbps','?')
@@ -314,12 +315,12 @@ try:
             print(f'📡  SSID: {ssid}')
             print(f'🔗  BSSID: {bssid}')
             if rssi is not None:
-                w,n,c=wifi_qual(rssi)
-                bw=wifi_bar(n)
-                print(f'{c}📶  Signál: {rssi} dBm ({w}){chr(27)}[0m')
-                print(f'   [{c}{bw}{chr(27)}[0m]')
+                ql,nb,cl=wifi_qual(rssi)
+                bw=wifi_bar(nb)
+                print(f'{cl}📶  Signál: {rssi} dBm ({ql}){N}')
+                print(f'   [{cl}{bw}{N}]')
             print(f'📶  Rychlost: {link} Mbps')
-except: print('Chyba parsování')
+except Exception as e: print(f'{R}Chyba parsování: {e}{N}')
 "
 }
 
@@ -418,7 +419,6 @@ try:
                 print(f'{Y}{BOLD}  {line.strip()}{N}')
             else: print(f'{DIM}  {line}{N}')
     elif 'error' in d: print(f'{R}Error: {d[\"error\"]}{N}')
-    elif 'error' in d: print(f'{R}Error: {d["error"]}{N}')
     else: print(d)
 except Exception as e:
     print(f'{R}Error: {e}{N}')

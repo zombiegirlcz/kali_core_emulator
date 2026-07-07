@@ -81,7 +81,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -146,6 +146,7 @@ private fun requestAllFilesAccess(context: Context) {
 class MainActivity : ComponentActivity() {
 
     @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 24 && resultCode == RESULT_OK) {
@@ -233,6 +234,9 @@ fun MatrixBackground() {
     Canvas(
         modifier = Modifier.fillMaxSize()
     ) {
+        // Clear entire canvas first to prevent ghost text from previous frames
+        drawRect(color = Color(0xFF07080A), size = size)
+
         val currentDelta = delta
         val cx = size.width / 2
         val cy = size.height / 2
@@ -579,8 +583,6 @@ fun MainScreen() {
                     }
                 }
 
-                }
-
                 // Docker Hub custom image card — 2nd row, centered
                 Row(
                     modifier = Modifier
@@ -649,6 +651,7 @@ fun MainScreen() {
                         }
                     }
                     Spacer(modifier = Modifier.weight(0.5f))
+                }
 
                 // Docker Hub custom image input (shown when Docker Hub card is selected)
                 if (isDockerMode) {
@@ -1341,7 +1344,8 @@ fun MainScreen() {
                                 }
                             }
                         }
-                    }
+            }
+            }
             }
             if (currentTab == "editor") {
                 com.linux_core.ui.editor.EditorTab()
@@ -1485,7 +1489,7 @@ fun MainScreen() {
                     context.startActivity(intent)
                 },
                 modifier = Modifier
-                    .align(Alignment.Start)
+                    .align(Alignment.TopStart)
                     .padding(12.dp)
             ) {
                 Icon(
@@ -1496,5 +1500,4 @@ fun MainScreen() {
             }
         }
     }
-}
 }

@@ -6,10 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DeviceHub
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -55,7 +55,7 @@ fun VpnCenterScreen(modifier: Modifier = Modifier) {
         ) {
             val tabs = listOf(
                 Triple("dashboard", "Panel", Icons.Default.Dashboard),
-                Triple("traffic", "Traffic", Icons.Default.ShowChart),
+                Triple("traffic", "Traffic", Icons.AutoMirrored.Filled.ShowChart),
                 Triple("security", "Security", Icons.Default.Shield),
                 Triple("dns", "DNS", Icons.Default.Language),
                 Triple("mesh", "Mesh", Icons.Default.DeviceHub),
