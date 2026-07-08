@@ -902,8 +902,15 @@ device_dispatch() {
     case "$1" in
         admin) shift; device_admin "$@" ;;
         battery-optimize) shift; device_battery_optimize "$@" ;;
-        accessibility) device_accessibility ;;
-        *) echo "Usage: nh device admin|battery-optimize|accessibility"; exit 1 ;;
+        accessibility) shift; device_accessibility "$@" ;;
+        tap) shift; device_tap "$@" ;;
+        click) shift; device_click "$@" ;;
+        longclick) shift; device_longclick "$@" ;;
+        swipe) shift; device_swipe "$@" ;;
+        text) shift; device_text "$@" ;;
+        scroll) shift; device_scroll "$@" ;;
+        global) shift; device_global "$@" ;;
+        *) echo "Usage: nh device admin|battery-optimize|accessibility|tap|click|longclick|swipe|text|scroll|global"; exit 1 ;;
     esac
 }
 
@@ -947,25 +954,136 @@ except: print(f'{Y}❓  Battery Optimization: unknown{N}')
 }
 
 device_accessibility() {
-    api_get "/accessibility/hierarchy" | fmt "
+    local mode="${1:-human}"
+    local raw
+    raw=$(api_get "/accessibility/hierarchy")
+
+    if [ "$mode" = "--json" ] || [ "$mode" = "json" ]; then
+        printf '%s\n' "$raw" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    out = []
+    def walk(n):
+        tx = n.get('text','') or n.get('contentDescription','') or ''
+        b = n.get('bounds')
+        if tx and b:
+            cx = (b['left'] + b['right']) // 2
+            cy = (b['top'] + b['bottom']) // 2
+            out.append({
+                'text': tx, 'x': cx, 'y': cy,
+                'clickable': bool(n.get('clickable', False)),
+                'enabled': bool(n.get('enabled', True)),
+                'class': n.get('className','')
+            })
+        for ch in n.get('children', []): walk(ch)
+    walk(d)
+    out.sort(key=lambda e: (e['y'], e['x']))
+    print(json.dumps(out, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({'error': str(e)}))
+"
+    else
+        printf '%s\n' "$raw" | fmt "
 import sys, json
 G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m'
 try:
     d=json.load(sys.stdin)
     if 'error' in d: print(f'{R}✘  {d[\"error\"]}{N}')
     else:
-        def walk(n,i=0):
-            p='  '*i
-            cl=n.get('className','')
+        rows=[]
+        def walk(n):
             tx=n.get('text','') or n.get('contentDescription','') or ''
-            ck='☑' if n.get('checkable') else ''
-            en='' if n.get('enabled',True) else ' 🔒'
-            print(f'{p}{Gy}{cl}{N}{en} {G}{tx}{N}')
-            for ch in n.get('children',[]): walk(ch,i+1)
+            b=n.get('bounds')
+            if tx and b:
+                cx=(b['left']+b['right'])//2
+                cy=(b['top']+b['bottom'])//2
+                ck='clickable' if n.get('clickable') else ''
+                rows.append((cy, cx, tx, ck))
+            for ch in n.get('children',[]): walk(ch)
         walk(d)
+        rows.sort()
+        for cy,cx,tx,ck in rows:
+            tag=f' {Gy}[{ck}]{N}' if ck else ''
+            print(f'{G}[{tx}]{N}  x={cx} y={cy}{tag}')
 except Exception as e:
     print(f'{R}Parse error: {e}{N}')
 "
+    fi
+}
+
+device_tap() {
+    local x="$1" y="$2"
+    [ -z "$y" ] && { echo "Usage: nh device tap <x> <y>"; exit 1; }
+    api_post_json "/accessibility/tap" "{\"x\":$x,\"y\":$y}" | fmt "
+import sys, json
+G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if d.get('success'): print(f'{G}✔ tap $x,$y{N}')
+    else: print(f'{R}✘ tap failed: {d.get(\"error\",\"unknown\")}{N}')
+except: print(f'{R}✘ parse error{N}')
+"
+}
+
+device_click() {
+    local text="$*"
+    [ -z "$text" ] && { echo "Usage: nh device click <text>"; exit 1; }
+    api_post_json "/accessibility/click" "{\"text\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$text")}" | fmt "
+import sys, json
+G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if d.get('success'): print(f'{G}✔ click \"$text\"{N}')
+    else: print(f'{R}✘ click failed: {d.get(\"error\",\"not found\")}{N}')
+except: print(f'{R}✘ parse error{N}')
+"
+}
+
+device_longclick() {
+    local text="$*"
+    [ -z "$text" ] && { echo "Usage: nh device longclick <text>"; exit 1; }
+    api_post_json "/accessibility/longclick" "{\"text\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$text")}" >/dev/null
+    echo "sent"
+}
+
+device_swipe() {
+    local x1="$1" y1="$2" x2="$3" y2="$4" dur="${5:-300}"
+    [ -z "$y2" ] && { echo "Usage: nh device swipe <x1> <y1> <x2> <y2> [duration_ms]"; exit 1; }
+    api_post_json "/accessibility/swipe" "{\"x1\":$x1,\"y1\":$y1,\"x2\":$x2,\"y2\":$y2,\"duration_ms\":$dur}" >/dev/null
+    echo "sent"
+}
+
+device_text() {
+    local text="$1" target="$2"
+    [ -z "$text" ] && { echo "Usage: nh device text <text> [target_field_label]"; exit 1; }
+    local payload
+    if [ -n "$target" ]; then
+        payload=$(python3 -c "import json,sys; print(json.dumps({'text':sys.argv[1],'target_text':sys.argv[2]}))" "$text" "$target")
+    else
+        payload=$(python3 -c "import json,sys; print(json.dumps({'text':sys.argv[1]}))" "$text")
+    fi
+    api_post_json "/accessibility/text" "$payload" >/dev/null
+    echo "sent"
+}
+
+device_scroll() {
+    local dir="${1:-forward}" target="$2"
+    local payload
+    if [ -n "$target" ]; then
+        payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1],'text':sys.argv[2]}))" "$dir" "$target")
+    else
+        payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1]}))" "$dir")
+    fi
+    api_post_json "/accessibility/scroll" "$payload" >/dev/null
+    echo "sent"
+}
+
+device_global() {
+    local action="$1"
+    [ -z "$action" ] && { echo "Usage: nh device global back|home|recents|notifications|quick_settings|lock_screen|screenshot"; exit 1; }
+    api_post_json "/accessibility/global" "{\"action\":\"$action\"}" >/dev/null
+    echo "sent"
 }
 
 # ─── API ───────────────────────────────────────────────────
@@ -1153,7 +1271,7 @@ help_dispatch() {
             printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, bypass, ignore, sni-fallback\n"
             printf "  ${CYAN}agent${RST}      config, start, stop, status, ask, chat\n"
             printf "  ${CYAN}log${RST}        [-n N] [-g P], set lvl 1-5\n"
-            printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility\n"
+            printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility, tap, click, longclick, swipe, text, scroll, global\n"
             printf "  ${CYAN}api${RST}        share on/off/status\n"
             printf "  ${CYAN}desktop${RST}    start, stop, status\n"
             printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
@@ -1215,6 +1333,24 @@ help_vpn() {
     echo ""
 }
 
+help_device() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DEVICE${RST}"
+    separator
+    echo "  ${GREEN}admin status|request|lock${RST}         Správa Device Admin"
+    echo "  ${GREEN}battery-optimize status|request${RST}  Ignorování optimalizace baterie"
+    echo "  ${GREEN}accessibility [--json]${RST}      Získat hierarchii obrazovky"
+    echo "  ${GREEN}tap <x> <y>${RST}                Kliknutí na souřadnice"
+    echo "  ${GREEN}click <text>${RST}              Kliknutí podle textu"
+    echo "  ${GREEN}longclick <text>${RST}          Dlouhé kliknutí podle textu"
+    echo "  ${GREEN}swipe <x1> <y1> <x2> <y2> [ms]${RST}  Přetažení (gestum)"
+    echo "  ${GREEN}text <text> [target]${RST}       Vložení textu"
+    echo "  ${GREEN}scroll forward|backward [text]${RST}  Rolování"
+    echo "  ${GREEN}global back|home|recents|...${RST}  Globální akce zařízení"
+    echo ""
+}
+
 list_cmds() {
     banner
     echo ""
@@ -1229,6 +1365,8 @@ list_cmds() {
         "agent config" "agent start" "agent stop" "agent status" "agent ask" "agent chat" \
         "log" "log set" \
         "device admin" "device battery-optimize" "device accessibility" \
+        "device tap" "device click" "device longclick" "device swipe" \
+        "device text" "device scroll" "device global" \
         "api share" \
         "desktop start" "desktop stop" "desktop status" \
         "fix pkg" "fix auto" \

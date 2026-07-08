@@ -65,6 +65,7 @@ class VpnNatEngine(
 
         var isTlsMitm = false
         var tlsMitmHandler: TlsMitmSession? = null
+        var entropyLogged: Boolean = false
     }
 
     class UdpSession(
@@ -559,6 +560,19 @@ class VpnNatEngine(
                     return
                 }
                 
+                // Log first data payload for entropy calculation
+                if (!session.entropyLogged) {
+                    session.entropyLogged = true
+                    val entropySampleSize = minOf(payloadLen, 256)
+                    val entropySample = ByteArray(entropySampleSize)
+                    payloadCopy.duplicate().get(entropySample)
+                    VpnLogManager.logConnection(
+                        vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort,
+                        payloadLen, VpnLogManager.AuditCategory.ALLOWED,
+                        "TCP data stream", entropySample
+                    )
+                }
+
                 val rawPeek = ByteArray(payloadCopy.remaining())
                 payloadCopy.get(rawPeek)
                 payloadCopy.flip()

@@ -288,7 +288,7 @@ object LocalApiServer {
 
             // Authentication check (exclude internal/loopback-only or non-sensitive endpoints)
             val sensitiveEndpoints = listOf("/shell", "/clipboard", "/location", "/cellinfo",
-                "/notifications/active", "/accessibility/hierarchy", "/voice_input",
+                "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/editor/")
@@ -355,6 +355,14 @@ object LocalApiServer {
                 path == "/apps/usage" && method == "GET" -> handleAppsUsage(context, out)
                 path == "/notifications/active" && method == "GET" -> handleNotificationsActive(context, out)
                 path == "/accessibility/hierarchy" && method == "GET" -> handleAccessibilityHierarchy(out)
+                path == "/accessibility/status" && method == "GET" -> handleAccessibilityStatus(out)
+                path == "/accessibility/tap" && method == "POST" -> handleAccessibilityTap(body, out)
+                path == "/accessibility/click" && method == "POST" -> handleAccessibilityClick(body, out)
+                path == "/accessibility/longclick" && method == "POST" -> handleAccessibilityLongClick(body, out)
+                path == "/accessibility/swipe" && method == "POST" -> handleAccessibilitySwipe(body, out)
+                path == "/accessibility/text" && method == "POST" -> handleAccessibilityText(body, out)
+                path == "/accessibility/scroll" && method == "POST" -> handleAccessibilityScroll(body, out)
+                path == "/accessibility/global" && method == "POST" -> handleAccessibilityGlobal(body, out)
                 path == "/battery/optimize" && method == "GET" -> handleBatteryOptimizeGet(context, out)
                 path == "/battery/optimize" && method == "POST" -> handleBatteryOptimizePost(context, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
@@ -1326,6 +1334,140 @@ object LocalApiServer {
         }
     }
 
+    private fun handleAccessibilityStatus(out: OutputStream) {
+        val enabled = NetHunterAccessibilityService.isServiceRunning()
+        sendResponse(out, 200, "OK", JSONObject().put("enabled", enabled).toString())
+    }
+
+    private fun requireServiceOrError(out: OutputStream): Boolean {
+        if (!NetHunterAccessibilityService.isServiceRunning()) {
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("error", "Accessibility Service not enabled")
+                put("needs_permission", "android.settings.ACCESSIBILITY_SETTINGS")
+            }.toString())
+            return false
+        }
+        return true
+    }
+
+    private fun handleAccessibilityTap(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            if (!j.has("x") || !j.has("y")) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"x and y coordinates are required\"}")
+                return
+            }
+            val ok = NetHunterAccessibilityService.tap(j.optInt("x", 0), j.optInt("y", 0))
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityClick(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            val text = j.optString("text", null)
+            val ok = if (text != null) {
+                NetHunterAccessibilityService.clickByText(text!!)
+            } else {
+                if (!j.has("x") || !j.has("y")) {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"x and y coordinates are required when text is not provided\"}")
+                    return
+                }
+                NetHunterAccessibilityService.tap(j.optInt("x", 0), j.optInt("y", 0))
+            }
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityLongClick(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            val text = j.optString("text", null)
+            val ok = if (text != null) {
+                NetHunterAccessibilityService.longClickByText(text!!)
+            } else {
+                if (!j.has("x") || !j.has("y")) {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"x and y coordinates are required when text is not provided\"}")
+                    return
+                }
+                NetHunterAccessibilityService.longTap(j.optInt("x", 0), j.optInt("y", 0))
+            }
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilitySwipe(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            if (!j.has("x1") || !j.has("y1") || !j.has("x2") || !j.has("y2")) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"x1, y1, x2, y2 coordinates are required\"}")
+                return
+            }
+            val ok = NetHunterAccessibilityService.swipe(
+                j.optInt("x1", 0), j.optInt("y1", 0), j.optInt("x2", 0), j.optInt("y2", 0),
+                j.optLong("duration_ms", 300L)
+            )
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityText(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            if (!j.has("text")) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"text field is required\"}")
+                return
+            }
+            val text = j.getString("text")
+            val targetText = j.optString("target_text", null)
+            val ok = NetHunterAccessibilityService.setText(text, targetText)
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityScroll(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            val forward = j.optString("direction", "forward") == "forward"
+            val targetText = j.optString("text", null)
+            val ok = NetHunterAccessibilityService.scroll(forward, targetText)
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleAccessibilityGlobal(body: String, out: OutputStream) {
+        try {
+            if (!requireServiceOrError(out)) return
+            val j = JSONObject(body)
+            if (!j.has("action")) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"action field is required (back|home|recents|notifications|quick_settings|lock_screen|screenshot)\"}")
+                return
+            }
+            val ok = NetHunterAccessibilityService.globalAction(j.optString("action", ""))
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleBatteryOptimizeGet(context: Context, out: OutputStream) {
         try {
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -1915,11 +2057,19 @@ object LocalApiServer {
     private fun handleEditorStart(context: Context, out: OutputStream) {
         try {
             val raw = runCodeServerCtl(context, "start")
-            val json = parseScriptJsonOrWrap(raw, "started")
+            val scriptJson = parseScriptJsonOrNull(raw)
+            val payload = if (scriptJson != null && !scriptJson.has("error")) {
+                scriptJson
+            } else {
+                val errorMsg = scriptJson?.optString("error")
+                    ?: raw.take(200)
+                JSONObject().apply { put("error", errorMsg) }
+            }
+            val code = if (payload.has("error")) 500 else 200
             editorPrefs(context).edit()
                 .putLong("last_start_ts", System.currentTimeMillis())
                 .apply()
-            sendResponse(out, 200, "OK", json)
+            sendResponse(out, code, if (code == 200) "OK" else "Start Failed", payload.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
@@ -1928,8 +2078,12 @@ object LocalApiServer {
     private fun handleEditorStop(context: Context, out: OutputStream) {
         try {
             val raw = runCodeServerCtl(context, "stop")
-            val json = parseScriptJsonOrWrap(raw, "stopped")
-            sendResponse(out, 200, "OK", json)
+            val scriptJson = parseScriptJsonOrNull(raw)
+            val payload = scriptJson ?: JSONObject().apply {
+                put("status", "stopped"); put("raw", raw)
+            }
+            val code = if (payload.has("error")) 500 else 200
+            sendResponse(out, code, if (code == 200) "OK" else "Stop Failed", payload.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

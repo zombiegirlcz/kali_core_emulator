@@ -1,6 +1,10 @@
 package com.linux_core.core
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
+import android.graphics.Rect
+import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
@@ -30,6 +34,93 @@ class NetHunterAccessibilityService : AccessibilityService() {
             }
         }
 
+        private fun findNodeByText(root: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
+            return root.findAccessibilityNodeInfosByText(text).firstOrNull()
+        }
+
+        fun tap(x: Int, y: Int): Boolean {
+            val inst = instance ?: return false
+            val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+                .build()
+            return inst.dispatchGesture(gesture, null, null)
+        }
+
+        fun longTap(x: Int, y: Int): Boolean {
+            val inst = instance ?: return false
+            val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 600))
+                .build()
+            return inst.dispatchGesture(gesture, null, null)
+        }
+
+        fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): Boolean {
+            val inst = instance ?: return false
+            val path = Path().apply {
+                moveTo(x1.toFloat(), y1.toFloat())
+                lineTo(x2.toFloat(), y2.toFloat())
+            }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+                .build()
+            return inst.dispatchGesture(gesture, null, null)
+        }
+
+        fun clickByText(text: String): Boolean {
+            val inst = instance ?: return false
+            val root = inst.rootInActiveWindow ?: return false
+            val node = findNodeByText(root, text) ?: return false
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        fun longClickByText(text: String): Boolean {
+            val inst = instance ?: return false
+            val root = inst.rootInActiveWindow ?: return false
+            val node = findNodeByText(root, text) ?: return false
+            return node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        }
+
+        fun setText(text: String, targetText: String?): Boolean {
+            val inst = instance ?: return false
+            val root = inst.rootInActiveWindow ?: return false
+            val node = if (targetText != null) {
+                findNodeByText(root, targetText) ?: return false
+            } else {
+                root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+            }
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+            return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+
+        fun scroll(forward: Boolean, targetText: String?): Boolean {
+            val inst = instance ?: return false
+            val root = inst.rootInActiveWindow ?: return false
+            val node = if (targetText != null) findNodeByText(root, targetText) else root
+            node ?: return false
+            val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                         else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            return node.performAction(action)
+        }
+
+        fun globalAction(action: String): Boolean {
+            val inst = instance ?: return false
+            val a = when (action) {
+                "back" -> AccessibilityService.GLOBAL_ACTION_BACK
+                "home" -> AccessibilityService.GLOBAL_ACTION_HOME
+                "recents" -> AccessibilityService.GLOBAL_ACTION_RECENTS
+                "notifications" -> AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+                "quick_settings" -> AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
+                "lock_screen" -> AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN
+                "screenshot" -> AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT
+                else -> return false
+            }
+            return inst.performGlobalAction(a)
+        }
+
         private fun nodeToJSON(node: AccessibilityNodeInfo): JSONObject {
             val json = JSONObject()
             json.put("className", node.className?.toString() ?: "")
@@ -46,6 +137,15 @@ class NetHunterAccessibilityService : AccessibilityService() {
             json.put("clickable", node.isClickable)
             json.put("enabled", node.isEnabled)
             json.put("focused", node.isFocused)
+
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            json.put("bounds", JSONObject().apply {
+                put("left", rect.left)
+                put("top", rect.top)
+                put("right", rect.right)
+                put("bottom", rect.bottom)
+            })
 
             if (node.childCount > 0) {
                 val children = JSONArray()
