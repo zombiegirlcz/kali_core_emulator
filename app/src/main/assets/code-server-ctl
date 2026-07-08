@@ -202,15 +202,21 @@ cmd_install() {
         printf "%s[!] curl is required%s\n" "$RED" "$RST"
         return 1
     fi
-    # Official install script from coder/code-server
-    curl -fsSL https://code-server.dev/install.sh 2>/dev/null | sh >/dev/null 2>&1 || {
-        printf "%s[!] Install script failed. Try: npm install -g code-server%s\n" "$RED" "$RST"
+    # Download with progress, pipe to sh with visible output
+    printf "%s[*] Downloading install.sh...%s\n" "$CYN" "$RST"
+    curl -#fSL https://code-server.dev/install.sh -o /tmp/code-server-install.sh 2>&1 || {
+        printf "%s[!] Download failed. Try: npm install -g code-server%s\n" "$RED" "$RST"
         return 1
     }
+    printf "%s[*] Running installer...%s\n" "$CYN" "$RST"
+    sh /tmp/code-server-install.sh 2>&1 | while IFS= read -r line; do
+        printf "  ${DIM}%s${RST}\n" "$line"
+    done
+    rm -f /tmp/code-server-install.sh
     if [ -x "$CODE_SERVER_BIN" ]; then
-        printf "%s[+] Installed: %s%s\n" "$GRN" "$CODE_SERVER_BIN" "$RST"
+        printf "\n%s[+] Installed: %s%s\n" "$GRN" "$CODE_SERVER_BIN" "$RST"
     else
-        printf "%s[!] Install script ran but binary not found at expected path%s\n" "$YEL" "$RST"
+        printf "\n%s[!] Install script ran but binary not found at expected path%s\n" "$YEL" "$RST"
         printf "%s    Search: find / -name code-server -type f 2>/dev/null%s\n" "$DIM" "$RST"
         return 1
     fi

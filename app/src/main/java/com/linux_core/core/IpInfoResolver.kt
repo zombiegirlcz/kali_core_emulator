@@ -55,7 +55,7 @@ object IpInfoResolver {
     }
 
     fun isPrivateIp(ip: String): Boolean {
-        if (ip == "10.0.0.2" || ip == "127.0.0.1" || ip == "localhost" || ip.startsWith("::1") || ip.startsWith("fe80")) {
+        if (ip == "172.18.11.218" || ip == "127.0.0.1" || ip == "localhost" || ip.startsWith("::1") || ip.startsWith("fe80")) {
             return true
         }
         return try {

@@ -34,7 +34,7 @@ install-nethunter-termux
 launcher_fixed.sh
 proot_debug.log
 GEMINI.md.new
-
+docs/plan-1.md
 # Rootfs remnants (do not commit extracted chroots)
 /usr/
 /kali-arm64/
@@ -48,7 +48,7 @@ __pycache__/
 .copilot/
 .tasks/
 GEMINI.md
-
+docs/prompt.md
 # Local backup archive
 ignore-archi
 v.tar

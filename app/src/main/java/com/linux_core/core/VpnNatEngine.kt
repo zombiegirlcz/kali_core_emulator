@@ -23,7 +23,7 @@ class VpnNatEngine(
 ) {
     companion object {
         const val TAG = "VpnNatEngine"
-        const val LOCAL_IP_INT = 0x0A000002 // 10.0.0.2
+        const val LOCAL_IP_INT = 0xAC120BDA.toInt() // 172.18.11.218
         private val TLS_PORTS = setOf(443, 8443, 993, 995, 587, 465, 25)
     }
 
@@ -242,13 +242,13 @@ class VpnNatEngine(
         
         if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
             val payloadLen = udpHeader.length - 8
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, if (payloadLen > 0) payloadLen else 0, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+            VpnLogManager.logConnection(vpnService, "UDP", "172.18.11.218", srcPort, dstIpStr, dstPort, if (payloadLen > 0) payloadLen else 0, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
             return
         }
         
         // QUIC (HTTP/3) — blokovat jen kdyz MITM aktivne desifruje (ne pri selhani/passthrough)
         if (dstPort == 443 && isMitmEnabled() && TlsMitmEngine.shouldBlockQuic()) {
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort,
+            VpnLogManager.logConnection(vpnService, "UDP", "172.18.11.218", srcPort, dstIpStr, dstPort,
                 udpHeader.length - 8, VpnLogManager.AuditCategory.BLOCKED, "QUIC blocked — force TCP fallback")
             return
         }
@@ -271,7 +271,7 @@ class VpnNatEngine(
                 val isBlocked = VpnLogManager.isDomainBlocked(domain)
                 if (isBlocked) {
                     VpnLogManager.logDnsQuery(domain, qType, VpnLogManager.AuditCategory.BLOCKED, "Blocked by custom rules")
-                    VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.BLOCKED, "DNS Blocked: $domain")
+                    VpnLogManager.logConnection(vpnService, "UDP", "172.18.11.218", srcPort, dstIpStr, dstPort, payloadLen, VpnLogManager.AuditCategory.BLOCKED, "DNS Blocked: $domain")
                     sendDnsNxDomainResponse(packetBuffer, ipHeader, udpHeader, payloadLen)
                     return
                 } else {
@@ -294,7 +294,7 @@ class VpnNatEngine(
                 "AI: Detected critical network anomaly!"
             } else "AI: Verified UDP stream"
 
-            VpnLogManager.logConnection(vpnService, "UDP", "10.0.0.2", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail, payloadForAi)
+            VpnLogManager.logConnection(vpnService, "UDP", "172.18.11.218", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail, payloadForAi)
 
             try {
                 val channel = DatagramChannel.open()
@@ -366,7 +366,7 @@ class VpnNatEngine(
         
         if (VpnFirewallManager.isIpBlocked(dstIpStr)) {
             if (tcpHeader.isSYN) {
-                VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
+                VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.BLOCKED, "Blocked by firewall rules")
                 sendTcpRst(ipHeader, tcpHeader)
             }
             return
@@ -383,7 +383,7 @@ class VpnNatEngine(
             // TCP SYN — defer AI till data payload arrives
             val detail = "AI: New TCP connection (deferred)"
 
-            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.ALLOWED, detail)
+            VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 40, VpnLogManager.AuditCategory.ALLOWED, detail)
 
             try {
                 val channel = SocketChannel.open()
@@ -417,7 +417,7 @@ class VpnNatEngine(
                     channel.configureBlocking(false)
                     if (isBypassed) {
                         Log.i(TAG, "Routing session $srcPort directly non-blocking (VPN bypass active)")
-                        VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
+                        VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Direct Connection (VPN Ignored)")
                     } else {
                         Log.i(TAG, "Routing session $srcPort directly non-blocking")
                     }
@@ -439,7 +439,7 @@ class VpnNatEngine(
                     connectionThreadPool.submit {
                         try {
                             Log.i(TAG, "Routing session $srcPort through custom proxy ${activeProxy.ip}:${activeProxy.port}")
-                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Tunnel via ${activeProxy.ip}:${activeProxy.port}")
+                            VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Tunnel via ${activeProxy.ip}:${activeProxy.port}")
 
                             // Connect directly to custom proxy endpoint (user's VPS/tunnel server)
                             Log.v(TAG, "Proxy connect $srcPort to ${activeProxy.ip}:${activeProxy.port} (5s timeout)")
@@ -464,8 +464,8 @@ class VpnNatEngine(
                         } catch (e: Exception) {
                             Log.w(TAG, "Custom proxy failed for session $srcPort (${e.message}), falling back to direct")
                             Log.v(TAG, "Proxy fallback for $srcPort: opening new direct socket")
-                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
-                            VpnLogManager.logConnection(vpnService, "TCP", "10.0.0.2", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
+                            VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
+                            VpnLogManager.logConnection(vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort, 0, VpnLogManager.AuditCategory.ALLOWED, "Proxy failed, direct fallback")
 
                             channel.close()
                             val directChannel = SocketChannel.open()
@@ -1301,13 +1301,13 @@ class VpnNatEngine(
             }
             
             val dstIpStr = intToIp(session.destinationAddress)
-            val resolved = ProcessResolver.resolve(context, "TCP", "10.0.0.2", session.clientPort, dstIpStr, session.destinationPort)
+            val resolved = ProcessResolver.resolve(context, "TCP", "172.18.11.218", session.clientPort, dstIpStr, session.destinationPort)
             val flag = IpInfoResolver.getCached(dstIpStr)?.flagEmoji ?: "🌐"
 
             list.add(
                 ActiveSocket(
                     protocol = "TCP",
-                    srcIp = "10.0.0.2",
+                    srcIp = "172.18.11.218",
                     srcPort = session.clientPort,
                     dstIp = dstIpStr,
                     dstPort = session.destinationPort,
@@ -1337,13 +1337,13 @@ class VpnNatEngine(
             }
 
             val dstIpStr = intToIp(session.destinationAddress)
-            val resolved = ProcessResolver.resolve(context, "UDP", "10.0.0.2", session.clientPort, dstIpStr, session.destinationPort)
+            val resolved = ProcessResolver.resolve(context, "UDP", "172.18.11.218", session.clientPort, dstIpStr, session.destinationPort)
             val flag = IpInfoResolver.getCached(dstIpStr)?.flagEmoji ?: "🌐"
 
             list.add(
                 ActiveSocket(
                     protocol = "UDP",
-                    srcIp = "10.0.0.2",
+                    srcIp = "172.18.11.218",
                     srcPort = session.clientPort,
                     dstIp = dstIpStr,
                     dstPort = session.destinationPort,

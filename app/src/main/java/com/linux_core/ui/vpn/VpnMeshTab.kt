@@ -22,8 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.toClipEntry
-import androidx.compose.ui.text.AnnotatedString
+import android.content.ClipData
+import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.linux_core.core.VpnPeerManager
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -210,7 +211,7 @@ fun VpnMeshTab() {
                                         onClick = {
                                             val connStr = VpnPeerManager.getLocalConnectionString()
                                             coroutineScope.launch {
-                                                clipboard.setClip(AnnotatedString(connStr).toClipEntry())
+                                                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Connection String", connStr)))
                                             }
                                             Toast.makeText(context, "Copied connection string to clipboard!", Toast.LENGTH_SHORT).show()
                                         },

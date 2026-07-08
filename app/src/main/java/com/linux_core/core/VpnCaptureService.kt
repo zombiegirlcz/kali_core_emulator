@@ -32,7 +32,7 @@ class VpnCaptureService : VpnService() {
         const val ACTION_STOP = "com.linux_core.ACTION_STOP"
 
         private const val MTU = 1500
-        private const val VPN_ADDRESS = "10.0.0.2"
+        private const val VPN_ADDRESS = "172.18.11.218"
         private const val VPN_DNS = "8.8.8.8"
 
         @Volatile
@@ -44,6 +44,7 @@ class VpnCaptureService : VpnService() {
 
         fun getCapturedPacketCount(): Long = instance?.packetCount?.get() ?: 0L
         fun getCapturedByteCount(): Long = instance?.byteCount?.get() ?: 0L
+        fun getVpnAddress(): String = VPN_ADDRESS
 
         @JvmStatic
         fun protectSocket(socketFd: Int): Boolean {
@@ -284,9 +285,7 @@ class VpnCaptureService : VpnService() {
 
             val isAdbActive = isWirelessAdbActive()
             if (isAdbActive) {
-                Log.i(TAG, "Wireless ADB connection detected. Excluding LAN from VPN routes.")
-            } else {
-                Log.i(TAG, "Wireless ADB not active. VPN will capture all LAN traffic.")
+                Log.i(TAG, "Wireless ADB connection detected.")
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -299,14 +298,13 @@ class VpnCaptureService : VpnService() {
                     }
                 }
                 builder.allowBypass()
-                if (isAdbActive) {
-                    try {
-                        builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
-                        builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
-                        Log.i(TAG, "Excluded non-conflicting private subnets from VPN")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not exclude routes: ${e.message}")
-                    }
+                try {
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("10.0.0.0"), 8))
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("172.16.0.0"), 12))
+                    builder.excludeRoute(android.net.IpPrefix(java.net.InetAddress.getByName("192.168.0.0"), 16))
+                    Log.i(TAG, "Excluded private subnets from VPN to prevent LAN conflicts")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not exclude routes: ${e.message}")
                 }
             } else {
                 dnsServers.forEach { dns ->
@@ -318,44 +316,45 @@ class VpnCaptureService : VpnService() {
                 }
                 builder.allowBypass()
                 
-                if (isAdbActive) {
-                    // For API < 33, add routes that cover the IPv4 space except private ranges (192.168.0.0/16 and 172.16.0.0/12)
-                    val bypassRanges = listOf(
-                        "0.0.0.0" to 1,        // 0.0.0.0 - 127.255.255.255
-                        "128.0.0.0" to 3,      // 128.0.0.0 - 159.255.255.255
-                        "160.0.0.0" to 5,      // 160.0.0.0 - 167.255.255.255
-                        "168.0.0.0" to 6,      // 168.0.0.0 - 171.255.255.255
-                        "172.0.0.0" to 12,     // 172.0.0.0 - 172.15.255.255
-                        "172.32.0.0" to 11,    // 172.32.0.0 - 172.63.255.255
-                        "172.64.0.0" to 10,    // 172.64.0.0 - 172.127.255.255
-                        "172.128.0.0" to 9,    // 172.128.0.0 - 172.255.255.255
-                        "173.0.0.0" to 8,      // 173.0.0.0 - 173.255.255.255
-                        "174.0.0.0" to 7,      // 174.0.0.0 - 175.255.255.255
-                        "176.0.0.0" to 4,      // 176.0.0.0 - 191.255.255.255
-                        "192.0.0.0" to 9,      // 192.0.0.0 - 192.127.255.255
-                        "192.128.0.0" to 11,   // 192.128.0.0 - 192.159.255.255
-                        "192.160.0.0" to 13,   // 192.160.0.0 - 192.167.255.255
-                        "192.169.0.0" to 16,   // 192.169.0.0 - 192.169.255.255
-                        "192.170.0.0" to 15,   // 192.170.0.0 - 192.171.255.255
-                        "192.172.0.0" to 14,   // 192.172.0.0 - 192.175.255.255
-                        "192.176.0.0" to 12,   // 192.176.0.0 - 192.191.255.255
-                        "192.192.0.0" to 10,   // 192.192.0.0 - 192.255.255.255
-                        "193.0.0.0" to 8,      // 193.0.0.0 - 193.255.255.255
-                        "194.0.0.0" to 7,      // 194.0.0.0 - 195.255.255.255
-                        "196.0.0.0" to 6,      // 196.0.0.0 - 199.255.255.255
-                        "200.0.0.0" to 5,      // 200.0.0.0 - 207.255.255.255
-                        "208.0.0.0" to 4       // 208.0.0.0 - 223.255.255.255
-                    )
-                    for ((ip, prefix) in bypassRanges) {
-                        try {
-                            builder.addRoute(ip, prefix)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to add route: $ip/$prefix", e)
-                        }
+                // For API < 33, add routes that cover the IPv4 space except private ranges
+                val bypassRanges = listOf(
+                    "0.0.0.0" to 5,        // 0.0.0.0 - 7.255.255.255
+                    "8.0.0.0" to 7,        // 8.0.0.0 - 9.255.255.255
+                    "11.0.0.0" to 8,       // 11.0.0.0 - 11.255.255.255
+                    "12.0.0.0" to 6,       // 12.0.0.0 - 15.255.255.255
+                    "16.0.0.0" to 4,       // 16.0.0.0 - 31.255.255.255
+                    "32.0.0.0" to 3,       // 32.0.0.0 - 63.255.255.255
+                    "64.0.0.0" to 2,       // 64.0.0.0 - 127.255.255.255
+                    "128.0.0.0" to 3,      // 128.0.0.0 - 159.255.255.255
+                    "160.0.0.0" to 5,      // 160.0.0.0 - 167.255.255.255
+                    "168.0.0.0" to 6,      // 168.0.0.0 - 171.255.255.255
+                    "172.0.0.0" to 12,     // 172.0.0.0 - 172.15.255.255
+                    "172.32.0.0" to 11,    // 172.32.0.0 - 172.63.255.255
+                    "172.64.0.0" to 10,    // 172.64.0.0 - 172.127.255.255
+                    "172.128.0.0" to 9,    // 172.128.0.0 - 172.255.255.255
+                    "173.0.0.0" to 8,      // 173.0.0.0 - 173.255.255.255
+                    "174.0.0.0" to 7,      // 174.0.0.0 - 175.255.255.255
+                    "176.0.0.0" to 4,      // 176.0.0.0 - 191.255.255.255
+                    "192.0.0.0" to 9,      // 192.0.0.0 - 192.127.255.255
+                    "192.128.0.0" to 11,   // 192.128.0.0 - 192.159.255.255
+                    "192.160.0.0" to 13,   // 192.160.0.0 - 192.167.255.255
+                    "192.169.0.0" to 16,   // 192.169.0.0 - 192.169.255.255
+                    "192.170.0.0" to 15,   // 192.170.0.0 - 192.171.255.255
+                    "192.172.0.0" to 14,   // 192.172.0.0 - 192.175.255.255
+                    "192.176.0.0" to 12,   // 192.176.0.0 - 192.191.255.255
+                    "192.192.0.0" to 10,   // 192.192.0.0 - 192.255.255.255
+                    "193.0.0.0" to 8,      // 193.0.0.0 - 193.255.255.255
+                    "194.0.0.0" to 7,      // 194.0.0.0 - 195.255.255.255
+                    "196.0.0.0" to 6,      // 196.0.0.0 - 199.255.255.255
+                    "200.0.0.0" to 5,      // 200.0.0.0 - 207.255.255.255
+                    "208.0.0.0" to 4       // 208.0.0.0 - 223.255.255.255
+                )
+                for ((ip, prefix) in bypassRanges) {
+                    try {
+                        builder.addRoute(ip, prefix)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to add route: $ip/$prefix", e)
                     }
-                } else {
-                    // Capture everything including LAN
-                    builder.addRoute("0.0.0.0", 0)
                 }
             }
 

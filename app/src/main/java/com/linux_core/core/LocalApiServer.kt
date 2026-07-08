@@ -892,10 +892,12 @@ object LocalApiServer {
         val running = com.linux_core.core.VpnCaptureService.isRunning()
         val packets = com.linux_core.core.VpnCaptureService.getCapturedPacketCount()
         val bytes = com.linux_core.core.VpnCaptureService.getCapturedByteCount()
+        val vpnIp = com.linux_core.core.VpnCaptureService.getVpnAddress()
         val json = JSONObject().apply {
             put("running", running)
             put("packets", packets)
             put("bytes", bytes)
+            put("vpn_ip", vpnIp)
         }.toString()
         sendResponse(out, 200, "OK", json)
     }
@@ -1761,12 +1763,10 @@ object LocalApiServer {
             val keyboardTags = setOf("inputreader", "inputdispatcher", "inputmanager", "keyboard", "touchinjector")
             val filtered = if (keyboardOnly) {
                 sb.lines().filter { line ->
-                    keyboardTags.any { tag -> line.lowercase().contains(tag) }
-                }.joinToString("\n")
-            } else {
-                sb.lines().filter { line ->
                     !keyboardTags.any { tag -> line.lowercase().contains(tag) }
                 }.joinToString("\n")
+            } else {
+                sb.lines().joinToString("\n")
             }
             val raw = filtered.toByteArray(Charsets.UTF_8)
             val headers = "HTTP/1.1 200 OK\r\n" +

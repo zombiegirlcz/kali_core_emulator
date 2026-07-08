@@ -27,7 +27,7 @@ object ProcessResolver {
     )
 
     fun resolve(context: Context, protocol: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): ProcessInfo {
-        val localPort = if (srcIp == "10.0.0.2") srcPort else dstPort
+        val localPort = if (srcIp == "172.18.11.218") srcPort else dstPort
         val cacheKey = "$protocol:$localPort"
         val cached = cache[cacheKey]
         if (cached != null && System.currentTimeMillis() - cached.timestamp < CACHE_TTL_MS) {
@@ -40,7 +40,7 @@ object ProcessResolver {
     }
 
     private fun performResolve(context: Context, protocol: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): ProcessInfo {
-        val localPort = if (srcIp == "10.0.0.2") srcPort else dstPort
+        val localPort = if (srcIp == "172.18.11.218") srcPort else dstPort
         val isTcp = protocol.equals("TCP", ignoreCase = true)
         val files = if (isTcp) {
             listOf("/proc/self/net/tcp", "/proc/self/net/tcp6")

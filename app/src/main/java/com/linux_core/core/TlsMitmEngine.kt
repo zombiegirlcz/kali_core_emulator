@@ -313,7 +313,7 @@ class TlsMitmSession(
             VpnLogManager.logConnection(
                 vpnService,
                 "TCP",
-                "10.0.0.2",
+                "172.18.11.218",
                 session.clientPort,
                 intToIp(session.destinationAddress),
                 session.destinationPort,
@@ -374,7 +374,7 @@ class TlsMitmSession(
         Log.i(TAG, "Capture-only TLS handshake done=$clientDone for $sni port $clientPort")
 
         VpnLogManager.logConnection(
-            vpnService, "TCP", "10.0.0.2",
+            vpnService, "TCP", "172.18.11.218",
             session.clientPort, intToIp(session.destinationAddress),
             session.destinationPort, 0, VpnLogManager.AuditCategory.VERBOSE,
             "TLS CAPTURE only • SNI=$sni"
@@ -1023,7 +1023,7 @@ class TlsMitmSession(
         VpnLogManager.logConnection(
             vpnService,
             "TCP",
-            "10.0.0.2",
+            "172.18.11.218",
             session.clientPort,
             intToIp(session.destinationAddress),
             session.destinationPort,

@@ -236,6 +236,15 @@ fun VpnDashboardTab() {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
+                                Text("TUN IP ADDRESS", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = VpnCaptureService.getVpnAddress(),
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color(0xFF00FF41)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("VPN GATEWAY RAM", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                                 val vpnRam = remember(packetCount) {
                                     val nativeHeap = android.os.Debug.getNativeHeapAllocatedSize()
@@ -248,6 +257,12 @@ fun VpnDashboardTab() {
                                     color = Color(0xFF00FF41)
                                 )
                             }
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("AI CLASSIFIER RAM", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                                 val aiRam = remember(packetCount) {

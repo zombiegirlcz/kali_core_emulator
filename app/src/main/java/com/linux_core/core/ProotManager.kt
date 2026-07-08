@@ -622,7 +622,7 @@ object ProotManager {
             // VPN compatibility
             "vpn-cli", "vpn-on", "vpn-off", "vpn-bypass", "ignore-vpn",
             // old standalone
-            "nethunter-agent-cli", "nh-ifconfig"
+            "nethunter-agent-cli"
         )
         for (name in compatNames) {
             try {
@@ -637,9 +637,8 @@ object ProotManager {
 
         val assetsToDeploy = listOf(
             "nethunter_agent.py" to "nethunter_agent.py",
-            "nethunter-agent-cli" to "nethunter-agent-cli",
             "bin/terminalmap" to "terminalmap",
-            "bin/nh-ifconfig" to "nh-ifconfig",
+            "bin/ifconfig" to "ifconfig",
             "code-server-ctl" to "code-server-ctl",
             "scripts/ai-agent.py" to "ai-agent.py",
             "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py"
@@ -759,6 +758,7 @@ nh log -n 50 -g TlsMitm          # logcat viewer
 ```
 
 Staré názvy (`nethunter-toast`, `vpn-cli`, `vpn-on`, `vpn-bypass`, `ignore-vpn`, ...) zůstávají funkční jako symlinky na `nh`.
+Klasický příkaz `ifconfig` je k dispozici jako wrapper v `/usr/local/bin/ifconfig` (deleguje na `nh network ifconfig`).
 
 ## 📱 Hardwarové a Systémové Funkce (Android API Bridge)
 
@@ -777,6 +777,8 @@ Tyto příkazy volají lokální API server (`127.0.0.1:1337`) a umožňují ovl
 | `nh network cell` | Zobrazí informace o mobilní síti — operátor, signál (dBm), typ sítě (5G/4G/3G), věže. | `nh network cell` |
 | `nh network location` | Vrátí aktuální GPS souřadnice + odkaz na Google Maps pro otevření v mapách. | `nh network location` |
 | `nh network map` | Spustí TerminalMap interaktivní mapovač OpenStreetMap s aktuální lokací. | `nh network map` |
+| `nh network ifconfig [rozhraní]` | Zobrazí síťová rozhraní hostitelského Androidu (IP, MAC, MTU, statistiky). | `nh network ifconfig wlan0` |
+| `ifconfig [rozhraní]` | Stejné jako `nh network ifconfig`, dostupné jako samostatný wrapper v `/usr/local/bin/ifconfig`. | `ifconfig wlan0` |
 | `nh system volume [level]` | Získá nebo nastaví hlasitost médií (0-15/100). | `nh system volume 10` |
 | `nh system torch on|off` | Zapne nebo vypne svítilnu zařízení. | `nh system torch on` |
 | `nh log [-n N] [-g P]`| Barevné zobrazení logcat záznamů aplikace (V=šedá, D=modrá, I=zelená, W=žlutá, E/F=červená). | `nh log -n 50 -g "LocalApiServer"` |
@@ -1131,7 +1133,7 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
         motd.append("  \u001b[0;32m     nh system notification\u001b[0m         systémová notifikace").append(NL)
         motd.append("  \u001b[0;32m     nh system clipboard\u001b[0m           schránka (čtení/zápis)").append(NL)
         motd.append("  \u001b[0;32m     nh log [-n N] [-g P]\u001b[0m          logcat viewer").append(NL)
-        motd.append("  \u001b[0;32m     nh-ifconfig [rozhraní]\u001b[0m           síťová rozhraní (přes Android API)").append(NL)
+        motd.append("  \u001b[0;32m     ifconfig [rozhraní]\u001b[0m                 síťová rozhraní (přes Android API)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;33m   🛡️  VPN\u001b[0m").append(NL)

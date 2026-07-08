@@ -280,7 +280,7 @@ object VpnLogManager {
             }
 
             val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
-            val isUpload = (srcIp == "10.0.0.2")
+            val isUpload = (srcIp == "172.18.11.218")
             val bSent = if (isUpload) size.toLong() else 0L
             val bRecv = if (!isUpload) size.toLong() else 0L
 
@@ -338,7 +338,7 @@ object VpnLogManager {
             val dayIndex = (timestamp / (1000 * 60 * 60 * 24) % 30).toInt()
             val weekIndex = (timestamp / (1000 * 60 * 60 * 24 * 7) % 12).toInt()
 
-            if (srcIp == "10.0.0.2") {
+            if (srcIp == "172.18.11.218") {
                 hourlyUpload[hourIndex] += size.toLong()
                 dailyUpload[dayIndex] += size.toLong()
                 weeklyUpload[weekIndex] += size.toLong()
