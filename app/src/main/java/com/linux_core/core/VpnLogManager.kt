@@ -217,7 +217,11 @@ object VpnLogManager {
 
     fun getTopApps(): List<Triple<String, String?, Int>> {
         // Returns list of Triple(appName, packageName, count) sorted by count descending
-        return entries.filter { it.appName.isNotEmpty() }
+        return entries
+            .filter {
+                val n = it.appName
+                n.isNotEmpty() && n != "External Android App" && n != "Unknown App" && !n.startsWith("UID:")
+            }
             .groupBy { it.appName to it.packageName }
             .map { Triple(it.key.first, it.key.second, it.value.size) }
             .sortedByDescending { it.third }
@@ -264,7 +268,10 @@ object VpnLogManager {
         size: Int,
         category: AuditCategory,
         detail: String = "",
-        data: ByteArray? = null
+        data: ByteArray? = null,
+        bytesSent: Long = -1L,
+        bytesReceived: Long = -1L,
+        elapsedTimeMs: Long = -1L
     ) {
         val timestamp = System.currentTimeMillis()
         val dataCopy = data?.clone()
@@ -279,10 +286,10 @@ object VpnLogManager {
                 else ProcessResolver.ProcessInfo("System", null)
             }
 
-            val elapsedTime = if (category == AuditCategory.BLOCKED) 0L else (2..180).random().toLong()
             val isUpload = (srcIp == "172.18.11.218")
-            val bSent = if (isUpload) size.toLong() else 0L
-            val bRecv = if (!isUpload) size.toLong() else 0L
+            val bSent = if (bytesSent >= 0) bytesSent else if (isUpload) size.toLong() else 0L
+            val bRecv = if (bytesReceived >= 0) bytesReceived else if (!isUpload) size.toLong() else 0L
+            val elapsed = if (elapsedTimeMs >= 0) elapsedTimeMs else 0L
 
             val entry = LogEntry(
                 timestamp = timestamp,
@@ -298,7 +305,7 @@ object VpnLogManager {
                 appName = resolved.appName,
                 sessionName = resolved.sessionName,
                 packageName = resolved.packageName,
-                elapsedTimeMs = elapsedTime,
+                elapsedTimeMs = elapsed,
                 bytesSent = bSent,
                 bytesReceived = bRecv
             )
@@ -320,7 +327,7 @@ object VpnLogManager {
             }
 
             // Aggregate AI brain classification telemetry
-            val deltaVal = if (category == AuditCategory.BLOCKED) 0.0f else (elapsedTime / 1000.0f)
+            val deltaVal = if (category == AuditCategory.BLOCKED || elapsed == 0L) 0.0f else (elapsed / 1000.0f)
             aiTelemetryPoints.add(
                 AiTelemetryPoint(
                     timestamp = entry.timestamp,

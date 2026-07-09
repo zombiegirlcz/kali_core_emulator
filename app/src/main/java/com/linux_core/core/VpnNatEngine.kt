@@ -25,6 +25,7 @@ class VpnNatEngine(
         const val TAG = "VpnNatEngine"
         const val LOCAL_IP_INT = 0xAC120BDA.toInt() // 172.18.11.218
         private val TLS_PORTS = setOf(443, 8443, 993, 995, 587, 465, 25)
+        private val DOT_PORT = 853
     }
 
     private val isRunning = AtomicBoolean(false)
@@ -569,7 +570,10 @@ class VpnNatEngine(
                     VpnLogManager.logConnection(
                         vpnService, "TCP", "172.18.11.218", srcPort, dstIpStr, dstPort,
                         payloadLen, VpnLogManager.AuditCategory.ALLOWED,
-                        "TCP data stream", entropySample
+                        "TCP data stream", entropySample,
+                        bytesSent = session.bytesSent,
+                        bytesReceived = session.bytesReceived,
+                        elapsedTimeMs = System.currentTimeMillis() - session.connectionStartTime
                     )
                 }
 
@@ -577,9 +581,25 @@ class VpnNatEngine(
                 payloadCopy.get(rawPeek)
                 payloadCopy.flip()
 
-                val looksLikeTls = isMitmEnabled() && TlsClientHelloParser.isTlsClientHello(rawPeek)
+                val isTls = TlsClientHelloParser.isTlsClientHello(rawPeek)
+                // DoH/DoT detection runs regardless of MITM state so DNS tab stays populated
+                if (isTls) {
+                    if (session.destinationPort == DOT_PORT) {
+                        val sni = TlsClientHelloParser.extractSni(rawPeek)
+                        val host = sni ?: intToIp(session.destinationAddress)
+                        VpnLogManager.logDnsQuery(host, "DoT", VpnLogManager.AuditCategory.ALLOWED, "DNS over TLS")
+                        Log.i(TAG, "DoT query to SNI=$sni on port $DOT_PORT for client ${session.clientPort}")
+                    }
+                    if (TlsClientHelloParser.isDohClientHello(rawPeek)) {
+                        val sni = TlsClientHelloParser.extractSni(rawPeek)
+                        val host = sni ?: intToIp(session.destinationAddress)
+                        VpnLogManager.logDnsQuery(host, "DoH", VpnLogManager.AuditCategory.ALLOWED, "DNS over HTTPS")
+                        Log.i(TAG, "DoH query to SNI=$sni for client ${session.clientPort}")
+                    }
+                }
+                val looksLikeTls = isMitmEnabled() && isTls
                 if (looksLikeTls) {
-                    if (session.destinationPort in TLS_PORTS) {
+                    if (session.destinationPort in TLS_PORTS || session.destinationPort == DOT_PORT) {
                         session.isTlsMitm = true
                         TlsMitmEngine.onClientData(vpnService, session, rawPeek, writeToTun)
                         sendTcpAck(session)

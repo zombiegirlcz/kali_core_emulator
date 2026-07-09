@@ -219,18 +219,23 @@ class TlsMitmSession(
             val serverNetIn = ByteBuffer.allocate(32768)
             val serverNetOut = ByteBuffer.allocate(32768)
 
-            val serverOk = runEngineHandshake(
-                engine = serverEngine!!,
-                netIn = serverNetIn,
-                netOut = serverNetOut,
-                appOut = ByteBuffer.allocate(16384),
-                readFromTransport = { readFromServer() },
-                writeToTransport = { buf ->
-                    buf.flip()
-                    writeToServer(buf)
-                },
-                maxIterations = 50
-            )
+            val serverOk = try {
+                runEngineHandshake(
+                    engine = serverEngine!!,
+                    netIn = serverNetIn,
+                    netOut = serverNetOut,
+                    appOut = ByteBuffer.allocate(16384),
+                    readFromTransport = { readFromServer() },
+                    writeToTransport = { buf ->
+                        buf.flip()
+                        writeToServer(buf)
+                    },
+                    maxIterations = 50
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Server handshake threw ${e.javaClass.simpleName}: ${e.message}")
+                false
+            }
 
             if (!serverOk) {
                 Log.w(TAG, "Server handshake failed: status=${serverEngine?.handshakeStatus}, " +
@@ -728,8 +733,9 @@ class TlsMitmSession(
         maxIterations: Int = 800
     ): Boolean {
         var iterations = 0
-        var needMore = true
-        while (needMore && iterations < maxIterations) {
+        var underflowStreak = 0
+        val maxUnderflowStreak = 200
+        while (iterations < maxIterations) {
             iterations++
             when (engine.handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> {
@@ -739,20 +745,21 @@ class TlsMitmSession(
                         writeToTransport(netOut)
                         netOut.clear()
                     }
-                    needMore = when (result.status) {
-                        SSLEngineResult.Status.OK,
-                        SSLEngineResult.Status.CLOSED -> false
-                        SSLEngineResult.Status.BUFFER_UNDERFLOW -> true
+                    when (result.status) {
                         SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                             Log.w(TAG, "Handshake wrap BUFFER_OVERFLOW")
                             val newBuf = ByteBuffer.allocate(netOut.capacity() * 2)
                             netOut.flip()
                             newBuf.put(netOut)
                             netOut.clear()
-                            true
                         }
-                        else -> false
+                        SSLEngineResult.Status.CLOSED -> {
+                            Log.w(TAG, "Handshake wrap CLOSED")
+                            return false
+                        }
+                        else -> {}
                     }
+                    underflowStreak = 0
                 }
                 SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> {
                     val peerData = readFromTransport()
@@ -767,35 +774,38 @@ class TlsMitmSession(
                             Log.d(TAG, "Handshake produced ${appOut.remaining()} app bytes")
                             appOut.clear()
                         }
-                        needMore = when (result.status) {
-                            SSLEngineResult.Status.OK -> false
-                            SSLEngineResult.Status.BUFFER_UNDERFLOW -> true
+                        when (result.status) {
                             SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                                 Log.w(TAG, "Handshake unwrap BUFFER_OVERFLOW")
-                                true
                             }
                             SSLEngineResult.Status.CLOSED -> {
                                 Log.w(TAG, "Handshake transport closed")
-                                false
+                                return false
                             }
-                            else -> false
+                            SSLEngineResult.Status.OK -> underflowStreak = 0
+                            else -> {}
                         }
+                        underflowStreak = 0
                     } else {
+                        underflowStreak++
+                        if (underflowStreak > maxUnderflowStreak) {
+                            Log.w(TAG, "Handshake stuck on NEED_UNWRAP for ${underflowStreak * 5}ms, aborting")
+                            return false
+                        }
                         Thread.sleep(5)
                     }
                 }
                 SSLEngineResult.HandshakeStatus.NEED_TASK -> {
                     runDelegatedTasks(engine)
+                    underflowStreak = 0
                 }
                 SSLEngineResult.HandshakeStatus.FINISHED,
                 SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING -> {
-                    needMore = false
+                    return engine.session.cipherSuite != "SSL_NULL_WITH_NULL_NULL"
                 }
             }
         }
-        if (iterations >= maxIterations) {
-            Log.w(TAG, "Handshake iteration limit reached ($maxIterations) status=${engine.handshakeStatus}")
-        }
+        Log.w(TAG, "Handshake iteration limit reached ($maxIterations) status=${engine.handshakeStatus}")
         return engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
                engine.session.cipherSuite != "SSL_NULL_WITH_NULL_NULL"
     }
@@ -1029,7 +1039,10 @@ class TlsMitmSession(
             session.destinationPort,
             0,
             VpnLogManager.AuditCategory.VERBOSE,
-            "TLS MITM passthrough active • SNI=$sni"
+            "TLS MITM passthrough active • SNI=$sni",
+            bytesSent = session.bytesSent,
+            bytesReceived = session.bytesReceived,
+            elapsedTimeMs = System.currentTimeMillis() - session.connectionStartTime
         )
         var totalForwarded = 0L
         var lastActivity = System.currentTimeMillis()

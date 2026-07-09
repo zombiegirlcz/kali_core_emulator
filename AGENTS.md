@@ -440,3 +440,38 @@ Vždy spouštět: `modal run modal_build.py::upload_src && modal run modal_build
 - Pokud proxy selže, automatický fallback na direct
 - Build: **BUILD SUCCESSFUL** (Modal, 1m 32s, 39 tasks)
 
+
+## Session 2026-07-09 — MITM handshake fix + log accuracy
+
+### Nalezené problémy
+
+1. **`runEngineHandshake` needMore logika** (TlsMitmEngine.kt:721): smyčka končila po prvním `result.status == OK` v NEED_WRAP/NEED_UNWRAP, takže handshake nikdy nepostoupil za první wrap. Engine zůstal v `NEED_UNWRAP` a `serverOk` se vrátil false. Toto bylo v kódu **od `1757e08` MITM** (žádná regrese z posledních commitů).
+
+2. **runEngineHandshake unwrap výjimka**: Když `engine.unwrap()` vyhodí `SSLException: Unable to parse TLS packet header`, výjimka probublala do `start()` try-catch (ř. 329) a rovnou `close()` — **žádný passthrough fallback**. Internet zůstal viset na TCP.
+
+3. **`elapsedTime` fake random**: VpnLogManager.logConnection generoval `(2..180).random()` ms jako elapsed time. Nyní používá skutečný `System.currentTimeMillis() - session.connectionStartTime`.
+
+4. **`getConnectionOwnerUid` reflection**: `checkConnectionOwnerUid` je `@SystemApi` a nelze volat z user app. Vždy vracel -1 → `External Android App`. Nahrazeno čtením `/proc/net/tcp` (celý systém, ne `/proc/self/net/tcp`).
+
+5. **`bytesSent/Received` v exportu**: Byly nastaveny na základě `srcIp` a `size` packetu. Nyní se předávají skutečné `session.bytesSent/bytesReceived` z `TcpSession`.
+
+### Opravy (v4.2-MITM-LOG-FIX, versionCode 8)
+
+| Fix | Soubor | Popis |
+|-----|--------|-------|
+| `needMore` smyčka | TlsMitmEngine.kt:721 | while běží dokud `handshakeStatus != FINISHED`, neukončuje po `result.status == OK` |
+| Underflow streak | TlsMitmEngine.kt:786 | Pokud NEED_UNWRAP vrací null 200× (1s), handshake abort → false |
+| Try-catch kolem handshake | TlsMitmEngine.kt:222 | SSLException neprobublá, vrací false → `fallingBackToPassthrough()` |
+| Fake elapsed | VpnLogManager.kt:282 | Odstraněn random, používá se `elapsedTimeMs` parametr |
+| `/proc/net/tcp` | ProcessResolver.kt:46 | Čte celý systém, ne `/proc/self/`; PackageManager resolvuje UID |
+| getConnectionOwnerUid | VpnCaptureService.kt:84 | Zjednodušeno na `return -1` (nefunguje z user app) |
+| `formatAppName` | VpnSecurityTab.kt:82 | "External Android App" → "Unknown App", "" → "System" |
+| `getTopApps` filtr | VpnLogManager.kt:218 | Filtruje "External/Unknown/UID:" z výsledků |
+
+### Stav po opravě
+
+- VPN běží, internet jede (passthrough funguje)
+- `runEngineHandshake` handshake se nyní pokouší, ale `unwrap` končí s `SSLException` (další bug v chainu)
+- SNI parsování funguje správně
+- Logy ukazují `Unknown App` místo `External Android App` pro nové záznamy
+- DNS tab prázdný — moderní Android (9+) používá DoH přes TCP/443 nebo QUIC, ne klasické UDP/53. Vyžaduje samostatnou implementaci DoH parseru.

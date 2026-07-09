@@ -80,50 +80,13 @@ class VpnCaptureService : VpnService() {
             }
         }
 
+        /**
+         * Returns -1 always. checkConnectionOwnerUid is a @SystemApi hidden method
+         * not callable from a user-installed app (SELinux + signature guard).
+         * ProcessResolver reads /proc/net/tcp directly instead.
+         */
         @JvmStatic
-        fun getConnectionOwnerUid(protocolStr: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): Int {
-            val inst = instance ?: return -1
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1
-            return try {
-                val protocol = if (protocolStr.equals("TCP", ignoreCase = true)) 6 else 17
-                val srcAddr = java.net.InetAddress.getByName(srcIp)
-                val dstAddr = java.net.InetAddress.getByName(dstIp)
-                // checkConnectionOwnerUid is a hidden/system API (not in public SDK)
-                // Try both method names (checkConnectionOwner on API 29,
-                // checkConnectionOwnerUid on API 30+) via reflection
-                var method: java.lang.reflect.Method? = null
-                try {
-                    method = VpnService::class.java.getMethod(
-                        "checkConnectionOwnerUid",
-                        Int::class.javaPrimitiveType,
-                        java.net.InetAddress::class.java,
-                        Int::class.javaPrimitiveType,
-                        java.net.InetAddress::class.java,
-                        Int::class.javaPrimitiveType
-                    )
-                } catch (_: NoSuchMethodException) {
-                    try {
-                        method = VpnService::class.java.getMethod(
-                            "checkConnectionOwner",
-                            Int::class.javaPrimitiveType,
-                            java.net.InetAddress::class.java,
-                            Int::class.javaPrimitiveType,
-                            java.net.InetAddress::class.java,
-                            Int::class.javaPrimitiveType
-                        )
-                    } catch (_: NoSuchMethodException) {}
-                }
-                if (method != null) {
-                    @Suppress("JavaReflectionMemberAccess")
-                    method.invoke(inst, protocol, srcAddr, srcPort, dstAddr, dstPort) as Int
-                } else {
-                    -1
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "getConnectionOwnerUid failed: ${e.message}")
-                -1
-            }
-        }
+        fun getConnectionOwnerUid(protocolStr: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): Int = -1
 
     @JvmStatic
     fun getActiveSockets(context: Context): List<ActiveSocket> {

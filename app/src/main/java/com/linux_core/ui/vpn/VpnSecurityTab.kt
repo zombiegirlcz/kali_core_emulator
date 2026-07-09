@@ -79,6 +79,15 @@ fun formatDuration(startTime: Long): String {
     }
 }
 
+fun formatAppName(appName: String, sessionName: String?): String {
+    return when {
+        appName.isEmpty() -> "System"
+        appName == "External Android App" -> "Unknown App"
+        appName == "Unknown App" -> "Unknown App"
+        else -> appName
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VpnSecurityTab() {
@@ -848,7 +857,7 @@ fun LogEntryRow(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = entry.appName.ifEmpty { "System" },
+                            text = formatAppName(entry.appName, entry.sessionName),
                             color = Color.White,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
@@ -1055,7 +1064,7 @@ fun ActiveSocketRow(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = socket.appName.ifEmpty { "System" },
+                            text = formatAppName(socket.appName, null),
                             color = Color.White,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
@@ -1457,7 +1466,7 @@ fun RequestDetailsDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = entry.appName.ifEmpty { "System" },
+                                text = formatAppName(entry.appName, entry.sessionName),
                                 color = Color.White,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold

@@ -43,11 +43,11 @@ object ProcessResolver {
         val localPort = if (srcIp == "172.18.11.218") srcPort else dstPort
         val isTcp = protocol.equals("TCP", ignoreCase = true)
         val files = if (isTcp) {
-            listOf("/proc/self/net/tcp", "/proc/self/net/tcp6")
+            listOf("/proc/net/tcp", "/proc/net/tcp6", "/proc/self/net/tcp", "/proc/self/net/tcp6")
         } else {
-            listOf("/proc/self/net/udp", "/proc/self/net/udp6")
+            listOf("/proc/net/udp", "/proc/net/udp6", "/proc/self/net/udp", "/proc/self/net/udp6")
         }
-        
+
         val portHex = String.format("%04X", localPort)
         var resolvedUid = -1
         var resolvedInode = -1L
@@ -63,25 +63,29 @@ object ProcessResolver {
                         val localAddress = parts[1]
                         val localPortHex = localAddress.substringAfterLast(":")
                         if (localPortHex.equals(portHex, ignoreCase = true)) {
-                            resolvedUid = parts[7].toIntOrNull() ?: -1
-                            resolvedInode = parts[9].toLongOrNull() ?: -1L
-                            break
+                            val candidateUid = parts[7].toIntOrNull() ?: -1
+                            val candidateInode = parts[9].toLongOrNull() ?: -1L
+                            if (filePath.contains("/proc/self/")) {
+                                if (resolvedUid == -1) {
+                                    resolvedUid = candidateUid
+                                    resolvedInode = candidateInode
+                                }
+                            } else {
+                                resolvedUid = candidateUid
+                                resolvedInode = candidateInode
+                                break
+                            }
                         }
                     }
                 }
             } catch (e: Exception) {
                 // Ignore
             }
-            if (resolvedUid != -1) break
-        }
-
-        // If not found in our own app's socket list, query the VPN service checkConnectionOwner API!
-        if (resolvedUid == -1) {
-            resolvedUid = VpnCaptureService.getConnectionOwnerUid(protocol, srcIp, srcPort, dstIp, dstPort)
+            if (resolvedUid != -1 && !files[files.indexOf(filePath)].contains("/proc/self/")) break
         }
 
         if (resolvedUid == -1) {
-            return ProcessInfo("External Android App", null, null)
+            return ProcessInfo("Unknown App", null, null)
         }
 
         // If the UID is our own app, it is either our loopback API, GUI/PTY app, or one of the guest shell sessions!
@@ -93,7 +97,6 @@ object ProcessResolver {
                     val customName = TerminalService.getSessionName(session)
                     val distroName = TerminalService.getSessionDistro(session)
                     val sessionName = customName ?: "Terminal Session ($distroName)"
-                    // Try to extract the process name currently using this socket inside the guest tree
                     val procName = findProcNameForInode(resolvedInode) ?: "Shell Client"
                     return ProcessInfo(procName, sessionName, context.packageName)
                 }
@@ -101,7 +104,7 @@ object ProcessResolver {
             return ProcessInfo("NetHunter AI Operator", null, context.packageName)
         }
 
-        // Resolve external Android app package name
+        // Resolve external Android app package name from UID
         try {
             val pm = context.packageManager
             val packages = pm.getPackagesForUid(resolvedUid)

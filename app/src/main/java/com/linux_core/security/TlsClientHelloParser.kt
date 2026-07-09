@@ -7,6 +7,9 @@ object TlsClientHelloParser {
     private const val TAG = "TlsClientHelloParser"
     private val TLS_VERSION_MINORS = listOf<Int>(1, 2, 3, 4)
     private const val EXT_SERVER_NAME = 0x0000
+    private const val EXT_ALPN = 0x0010
+    val DOH_ALPN_PROTOCOLS = setOf("h2", "http/1.1")
+    val DOH_INDICATOR = "application/dns-message"
 
     fun isTlsClientHello(data: ByteArray, offset: Int = 0, len: Int = data.size): Boolean {
         if (len < 45) return false
@@ -23,63 +26,108 @@ object TlsClientHelloParser {
         return true
     }
 
+    /**
+     * Walk to the start of the extensions block. Returns (extensionsStart, extensionsEnd) or null.
+     * The returned range covers only the extension TLVs themselves (not the length prefix).
+     */
+    private fun extensionsRange(data: ByteArray, offset: Int, len: Int): IntRange? {
+        if (!isTlsClientHello(data, offset, len)) return null
+        var pos = offset + 5
+        if (len < pos + 4) return null
+        pos += 4
+        if (pos >= len) return null
+        pos += 2 + 32
+        if (pos >= len) return null
+        val sessionIdLen = data[pos].toInt() and 0xFF
+        pos += 1 + sessionIdLen
+        if (pos + 2 > len) return null
+        val cipherSuitesLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+        pos += 2 + cipherSuitesLen
+        if (pos >= len) return null
+        val compressionLen = data[pos].toInt() and 0xFF
+        pos += 1 + compressionLen
+        if (pos + 2 > len) return null
+        val extensionsLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+        pos += 2
+        val extensionsEnd = pos + extensionsLen
+        if (extensionsEnd > len) return null
+        return pos until extensionsEnd
+    }
+
     fun extractSni(data: ByteArray, offset: Int = 0, len: Int = data.size): String? {
-        try {
-            if (!isTlsClientHello(data, offset, len)) return null
-            var pos = offset + 5
-            if (len < pos + 4) return null
-            // handshake_type at pos, 3-byte length at pos+1..pos+3
-            val handshakeLen = ((data[pos + 1].toInt() and 0xFF) shl 16) or
-                               ((data[pos + 2].toInt() and 0xFF) shl 8) or
-                               (data[pos + 3].toInt() and 0xFF)
+        val range = extensionsRange(data, offset, len) ?: return null
+        var pos = range.first
+        val end = range.last + 1
+        while (pos + 4 <= end) {
+            val extType = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+            val extLen = ((data[pos + 2].toInt() and 0xFF) shl 8) or (data[pos + 3].toInt() and 0xFF)
             pos += 4
-            if (pos >= len) return null
-            val clientVersion = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
-            pos += 2
-            val random = ByteArray(32)
-            if (pos + 32 > len) return null
-            System.arraycopy(data, pos, random, 0, 32)
-            pos += 32
-            if (pos >= len) return null
-            val sessionIdLen = data[pos].toInt() and 0xFF
-            pos += 1 + sessionIdLen
-            if (pos + 2 > len) return null
-            val cipherSuitesLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
-            pos += 2 + cipherSuitesLen
-            if (pos >= len) return null
-            val compressionLen = data[pos].toInt() and 0xFF
-            pos += 1 + compressionLen
-            if (pos + 2 > len) return null
-            val extensionsLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
-            pos += 2
-            val extensionsEnd = pos + extensionsLen
-            if (extensionsEnd > len) return null
-            while (pos + 4 <= extensionsEnd) {
-                val extType = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
-                val extLen = ((data[pos + 2].toInt() and 0xFF) shl 8) or (data[pos + 3].toInt() and 0xFF)
-                pos += 4
-                if (extType == EXT_SERVER_NAME && pos + 2 <= extensionsEnd) {
-                    val listLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
-                    pos += 2
-                    val listEnd = pos + listLen
-                    if (listEnd > extensionsEnd) return null
-                    while (pos + 3 <= listEnd) {
-                        val nameType = data[pos].toInt() and 0xFF
-                        val nameLen = ((data[pos + 1].toInt() and 0xFF) shl 8) or (data[pos + 2].toInt() and 0xFF)
-                        pos += 3
-                        if (nameType == 0x00 && pos + nameLen <= listEnd) {
-                            return String(data, pos, nameLen, Charsets.US_ASCII)
-                        }
-                        pos += nameLen
+            if (extType == EXT_SERVER_NAME) {
+                val extEnd = pos + extLen
+                if (extEnd > end) return null
+                val listLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+                var p = pos + 2
+                val listEnd = p + listLen
+                if (listEnd > extEnd) return null
+                while (p + 3 <= listEnd) {
+                    val nameType = data[p].toInt() and 0xFF
+                    val nameLen = ((data[p + 1].toInt() and 0xFF) shl 8) or (data[p + 2].toInt() and 0xFF)
+                    p += 3
+                    if (nameType == 0x00 && p + nameLen <= listEnd) {
+                        return String(data, p, nameLen, Charsets.US_ASCII)
                     }
-                    return null
+                    p += nameLen
                 }
-                pos += extLen
+                return null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "SNI parse failed: ${e.message}")
+            pos += extLen
         }
         return null
+    }
+
+    /**
+     * Returns the list of ALPN protocol names offered by the client.
+     * Example: ["h2", "http/1.1"].
+     */
+    fun extractAlpn(data: ByteArray, offset: Int = 0, len: Int = data.size): List<String> {
+        val range = extensionsRange(data, offset, len) ?: return emptyList()
+        var pos = range.first
+        val end = range.last + 1
+        while (pos + 4 <= end) {
+            val extType = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+            val extLen = ((data[pos + 2].toInt() and 0xFF) shl 8) or (data[pos + 3].toInt() and 0xFF)
+            pos += 4
+            if (extType == EXT_ALPN) {
+                val extEnd = pos + extLen
+                if (extEnd > end) return emptyList()
+                val listLen = ((data[pos].toInt() and 0xFF) shl 8) or (data[pos + 1].toInt() and 0xFF)
+                var p = pos + 2
+                val listEnd = p + listLen
+                if (listEnd > extEnd) return emptyList()
+                val result = ArrayList<String>()
+                while (p < listEnd) {
+                    val protoLen = data[p].toInt() and 0xFF
+                    p += 1
+                    if (p + protoLen > listEnd) return emptyList()
+                    result.add(String(data, p, protoLen, Charsets.US_ASCII))
+                    p += protoLen
+                }
+                return result
+            }
+            pos += extLen
+        }
+        return emptyList()
+    }
+
+    /**
+     * True if the ClientHello advertises DoH (HTTP/2 or HTTP/1.1 + application/dns-message).
+     */
+    fun isDohClientHello(data: ByteArray, offset: Int = 0, len: Int = data.size): Boolean {
+        val alpn = extractAlpn(data, offset, len)
+        if (alpn.isEmpty()) return false
+        val hasHttp = alpn.any { it in DOH_ALPN_PROTOCOLS }
+        if (!hasHttp) return false
+        return alpn.contains(DOH_INDICATOR)
     }
 
     fun resolveFallbackHost(sni: String?, dstIp: String): String =
