@@ -450,7 +450,7 @@ object UsbHostManager {
 
         for (ep in targetEndpoints) {
             try {
-                val chunk = if (ep.maxPacketSize > 0 && data.size > ep.maxPacketSize) {
+                if (ep.maxPacketSize > 0 && data.size > ep.maxPacketSize) {
                     // Split into max-packet-size chunks
                     val chunks = data.size / ep.maxPacketSize + (if (data.size % ep.maxPacketSize != 0) 1 else 0)
                     for (c in 0 until chunks) {
@@ -460,7 +460,6 @@ object UsbHostManager {
                         val t = connection.bulkTransfer(ep, buf, buf.size, timeout)
                         if (t >= 0) totalTransferred += t
                     }
-                    data // mark done
                 } else {
                     val t = connection.bulkTransfer(ep, data, data.size, timeout)
                     if (t >= 0) totalTransferred += t
