@@ -31,7 +31,8 @@ object ProotManager {
 
         val criticalDirs = listOf(
             "system", "dev", "proc", "sys", "tmp", "root", "sdcard",
-            "bin", "usr/bin", "usr/sbin", "sbin", "lib", "lib64", "usr/lib", "etc"
+            "bin", "usr/bin", "usr/sbin", "sbin", "lib", "lib64", "usr/lib", "etc",
+            "dev/bus/usb"
         )
         for (dirName in criticalDirs) {
             val dir = File(rootfsDir, dirName)
@@ -117,7 +118,7 @@ object ProotManager {
             append("export LANG=C.UTF-8").append(NL)
             append("unset LD_PRELOAD").append(NL)
             append("cd \"${context.filesDir.absolutePath}\"").append(NL)
-            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b ${tmpDir.absolutePath}:/tmp -w /root"
+            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b /dev/bus/usb -b ${tmpDir.absolutePath}:/tmp -w /root"
             val sdcardMount = if (mountStorage) " -b /sdcard" else ""
             append("log -t ProotLauncher \"[PROOT] Executing proot now...\"").append(NL)
             append("exec ${'$'}USE_PROOT ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"\$@\"").append(NL)
@@ -744,7 +745,7 @@ Od verze 4.2 jsou všechny dřívější `nethunter-*`, `vpn-*` a `vpn-cli` př�
 nh <kategorie> <akce> [argumenty]
 ```
 
-**Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `help`, `list`
+**Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `usb`, `help`, `list`
 
 **Příklady:**
 ```bash
@@ -962,6 +963,53 @@ Pro jeho správnou funkci je nutné provést následující kroky:
 2. **Výchozí asistent:** V nastavení samotného Androidu (Aplikace -> Výchozí aplikace -> Digitální asistent) nastavte NetHunter AI Operator jako výchozího asistenta.
 3. **Oprávnění mikrofonu:** Ujistěte se, že má aplikace povoleno oprávnění přistupovat k mikrofonu.
 
+## 🔌 USB Host Mode — Ovládání připojených zařízení
+
+Od verze 4.3 je k dispozici plná podpora **USB Host (OTG)** přes Android `UsbManager` API.
+Připojená zařízení (např. druhá deska, USB flashdisk, sériový adaptér) jsou dostupná přes API bridge.
+
+### CLI příkazy (`nh usb`)
+
+| Příkaz | Popis | Příklad použití |
+| :--- | :--- | :--- |
+| `nh usb list` | Zobrazí všechna připojená USB zařízení (VID:PID, rozhraní, endpointy) | `nh usb list` |
+| `nh usb permission <device>` | Vyžádá oprávnění pro přístup k zařízení (Android dialog) | `nh usb permission /dev/bus/usb/001/002` |
+| `nh usb claim <device> [iface]` | Claimuje rozhraní (výchozí 0) a otevře spojení | `nh usb claim /dev/bus/usb/001/002 0` |
+| `nh usb release <device>` | Uvolní rozhraní a zavře spojení | `nh usb release /dev/bus/usb/001/002` |
+| `nh usb send <device> <file>` | Pošle binární soubor přes první OUT bulk endpoint | `nh usb send /dev/bus/usb/001/002 exploit.bin` |
+| `nh usb bulk <device> <ep> [file]` | Bulk transfer na konkrétní endpoint (IN čte, OUT zapisuje) | `nh usb bulk /dev/bus/usb/001/002 2 data.bin` |
+| `nh usb control <device> [req] [val] [idx] [file]` | Control transfer na endpoint 0 | `nh usb control /dev/bus/usb/001/002 64 0 0 config.bin` |
+
+### HTTP API (port 1337)
+
+```http
+GET /usb/devices                     → seznam zařízení (JSON array)
+POST /usb/permission                 → vyžádat oprávnění (body: device_name)
+POST /usb/claim                      → claim rozhraní (JSON: device_name, interface_id)
+POST /usb/release                    → uvolnit rozhraní (JSON: device_name)
+POST /usb/bulk_transfer              → bulk transfer (JSON: device_name, endpoint, data_base64, timeout, direction)
+POST /usb/control_transfer           → control transfer (JSON: device_name, request_type, request, value, index, data_base64)
+POST /usb/send                       → raw send (JSON: device_name, data_base64)
+```
+
+### Příklad poslání exploitu
+
+```bash
+# 1. Zjisti zařízení
+nh usb list
+
+# 2. Vyžádej oprávnění
+nh usb permission "/dev/bus/usb/001/002"
+
+# 3. Claimni rozhraní
+nh usb claim "/dev/bus/usb/001/002" 0
+
+# 4. Pošli binární data
+nh usb send "/dev/bus/usb/001/002" exploit.bin
+```
+
+> **Poznámka:** USB Host vyžaduje, aby první telefon podporoval OTG. Druhé zařízení se musí tvářit jako USB device (gadget režim) - jinak ho `UsbManager` neuvidí.
+
 ## 🌐 Přímé HTTP API Volání
 
 Všechny nástroje výše používají pod kapotou HTTP volání na localhost. Můžete je používat i přímo pomocí `curl`:
@@ -971,6 +1019,8 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 * **Vypnutí VPN:** `curl -s -X POST http://127.0.0.1:1337/vpn/stop`
 * **Stažení Root CA:** `curl -s http://127.0.0.1:1337/vpn/mitm/ca > ca.crt`
 * **Logcat záznamy:** `curl -s http://127.0.0.1:1337/app/logs?limit=100`
+* **USB zařízení:** `curl -s http://127.0.0.1:1337/usb/devices`
+* **USB poslat data:** `curl -s -X POST -H "Content-Type: application/json" -d '{"device_name":"/dev/bus/usb/001/002","data_base64":"$(base64 -w0 exploit.bin)"}' http://127.0.0.1:1337/usb/send`
 
 ---
 *Dokument byl automaticky vygenerován NetHunter AI Operatorem.*
@@ -1041,6 +1091,7 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
             appendLine("echo \"  \\033[0;32m     nh system notification\\033[0m         systémová notifikace\"")
             appendLine("echo \"  \\033[0;32m     nh system clipboard\\033[0m           schránka (čtení/zápis)\"")
             appendLine("echo \"  \\033[0;32m     nh log [-n N] [-g P]\\033[0m          logcat viewer\"")
+            appendLine("echo \"  \\033[0;32m     nh usb list\\033[0m                    USB zařízení (OTG)\"")
             appendLine()
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;33m   🛡️  VPN\\033[0m\"")
@@ -1133,6 +1184,7 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
         motd.append("  \u001b[0;32m     nh system notification\u001b[0m         systémová notifikace").append(NL)
         motd.append("  \u001b[0;32m     nh system clipboard\u001b[0m           schránka (čtení/zápis)").append(NL)
         motd.append("  \u001b[0;32m     nh log [-n N] [-g P]\u001b[0m          logcat viewer").append(NL)
+        motd.append("  \u001b[0;32m     nh usb list\u001b[0m                    USB zařízení (OTG)").append(NL)
         motd.append("  \u001b[0;32m     ifconfig [rozhraní]\u001b[0m                 síťová rozhraní (přes Android API)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)

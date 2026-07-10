@@ -832,7 +832,7 @@ log_view() {
         case "$1" in
             -n|--lines) limit="$2"; shift 2 ;;
             -g|--grep) grep_pattern="$2"; shift 2 ;;
-            -K|--keyboard) filter_kb=1 ;;
+            -K|--keyboard) filter_kb=1; shift ;;
             -h|--help) log_usage ;;
             *) limit="$1"; shift ;;
         esac
@@ -1254,7 +1254,7 @@ except Exception as e:
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps)
+        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb)
             "help_$topic"
             ;;
         *)
@@ -1276,6 +1276,7 @@ help_dispatch() {
             printf "  ${CYAN}desktop${RST}    start, stop, status\n"
             printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
             printf "  ${CYAN}apps${RST}       usage\n"
+            printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
             echo ""
             separator
             echo "  ${DIM}Pro detaily: nh help <kategorie>${RST}"
@@ -1351,6 +1352,35 @@ help_device() {
     echo ""
 }
 
+help_usb() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}USB HOST${RST}"
+    separator
+    echo "  ${GREEN}list${RST}                    Vypsat připojená USB zařízení"
+    echo "  ${GREEN}permission <device>${RST}     Vyžádat oprávnění pro zařízení"
+    echo "  ${GREEN}claim <device> [iface]${RST}  Claimovat rozhraní (výchozí 0)"
+    echo "  ${GREEN}release <device>${RST}        Uvolnit rozhraní"
+    echo "  ${GREEN}send <device> <file>${RST}    Poslat soubor (raw bulk OUT)"
+    echo "  ${GREEN}bulk <device> <ep> [file]${RST} Bulk transfer (IN/OUT podle endpointu)"
+    echo "  ${GREEN}control <device> [req] [val] [idx] [file]${RST}  Control transfer"
+    echo ""
+    echo "  ${YELLOW}Příklad:${RST}"
+    echo "    nh usb list"
+    echo "    nh usb permission /dev/bus/usb/001/002"
+    echo "    nh usb claim /dev/bus/usb/001/002 0"
+    echo "    nh usb send /dev/bus/usb/001/002 exploit.bin"
+    echo ""
+}
+
+list_cmds() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy:${RST}"
+    echo ""
+    for cmd in \
+        "system battery" "system volume" "system torch" "system vibrate" \
+
 list_cmds() {
     banner
     echo ""
@@ -1370,7 +1400,8 @@ list_cmds() {
         "api share" \
         "desktop start" "desktop stop" "desktop status" \
         "fix pkg" "fix auto" \
-        "apps usage"; do
+        "apps usage" \
+        "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control"; do
         printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
     done
     echo ""
@@ -1414,6 +1445,11 @@ compat_dispatch() {
         nethunter-fix-postinst)         exec "$0" fix pkg "$@" ;;
         nethunter-desktop)              exec "$0" desktop "$@" ;;
         nethunter-api)                  exec "$0" api share "$@" ;;
+        nethunter-usb-list)             exec "$0" usb list "$@" ;;
+        nethunter-usb-send)             exec "$0" usb send "$@" ;;
+        nethunter-usb-bulk)             exec "$0" usb bulk "$@" ;;
+        nethunter-usb-claim)            exec "$0" usb claim "$@" ;;
+        nethunter-usb-release)          exec "$0" usb release "$@" ;;
         vpn-cli)                        exec "$0" vpn "$@" ;;
         vpn-on)                         exec "$0" vpn on "$@" ;;
         vpn-off)                        exec "$0" vpn off "$@" ;;
@@ -1461,6 +1497,7 @@ case "$CMD" in
     desktop)    desktop_dispatch "$@" ;;
     fix)        fix_dispatch "$@" ;;
     apps)       apps_dispatch "$@" ;;
+    usb)        usb_dispatch "$@" ;;
     help|--help|-h) help_dispatch "$@" ;;
     list)       list_cmds ;;
     *)

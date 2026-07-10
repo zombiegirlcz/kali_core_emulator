@@ -75,6 +75,7 @@ object LocalApiServer {
         isRunning = true
         appContext = context.applicationContext
         CertificateManager.init(appContext!!)
+        UsbHostManager.init(appContext!!)
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
@@ -114,6 +115,7 @@ object LocalApiServer {
         } catch (e: Exception) {}
         tts = null
         ttsReady = false
+        UsbHostManager.shutdown()
     }
 
     private fun initTts(context: Context) {
@@ -291,7 +293,7 @@ object LocalApiServer {
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/")
+                "/battery/optimize", "/app/logs", "/editor/", "/usb/")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -383,6 +385,15 @@ object LocalApiServer {
                 path == "/editor/password" && method == "GET" -> handleEditorPassword(context, out, isLocalConnection)
                 path == "/editor/info" && method == "GET" -> handleEditorInfo(context, out)
                 path == "/editor/install" && method == "POST" -> handleEditorInstall(context, out)
+
+                // ─── USB Host endpoints ─────────────────────────────────────
+                path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
+                path == "/usb/permission" && method == "POST" -> handleUsbPermission(context, body, out)
+                path == "/usb/claim" && method == "POST" -> handleUsbClaim(context, body, out)
+                path == "/usb/release" && method == "POST" -> handleUsbRelease(body, out)
+                path == "/usb/bulk_transfer" && method == "POST" -> handleUsbBulkTransfer(body, out)
+                path == "/usb/control_transfer" && method == "POST" -> handleUsbControlTransfer(body, out)
+                path == "/usb/send" && method == "POST" -> handleUsbSendRaw(body, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -2190,6 +2201,159 @@ object LocalApiServer {
             put("status", fallbackStatus)
             put("raw", raw)
         }.toString()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  USB Host Mode — enumeration, permission, claim, bulk/control
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These endpoints expose Android's UsbHostManager via the same
+    // localhost API bridge so the PRoot guest can enumerate, connect to,
+    // and exchange data with any USB device attached in Host (OTG) mode.
+    //
+    // Usage from PRoot:
+    //   curl -s http://127.0.0.1:1337/usb/devices
+    //   curl -s -X POST -d "device_name" http://127.0.0.1:1337/usb/permission
+    //   curl -s -X POST -d '{"device_name":"...","interface_id":0}' http://127.0.0.1:1337/usb/claim
+    //   curl -s -X POST -d '{"device_name":"...","endpoint_address":1,"data_base64":"..."}' http://127.0.0.1:1337/usb/bulk_transfer
+    //
+    // All endpoints return JSON. Errors have "success":false + "error":string.
+
+    private fun handleUsbDevices(context: Context, out: OutputStream) {
+        try {
+            val result = UsbHostManager.listDevices()
+            sendResponse(out, 200, "OK", result)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB listDevices error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbPermission(context: Context, body: String, out: OutputStream) {
+        try {
+            val deviceName = body.trim().removeSurrounding("\"").removeSurrounding("'")
+            if (deviceName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name (raw body) required") }.toString())
+                return
+            }
+            val result = UsbHostManager.requestPermission(deviceName)
+            sendResponse(out, 200, "OK", result.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "USB permission error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbClaim(context: Context, body: String, out: OutputStream) {
+        try {
+            val j = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
+            val deviceName = j.optString("device_name", "").ifEmpty {
+                body.trim().removeSurrounding("\"").removeSurrounding("'")
+            }
+            if (deviceName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name required") }.toString())
+                return
+            }
+            val interfaceId = j.optInt("interface_id", 0)
+            val forceClaim = j.optBoolean("force", false)
+            val result = UsbHostManager.claimInterface(deviceName, interfaceId, forceClaim)
+            sendResponse(out, 200, "OK", result.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "USB claim error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbRelease(body: String, out: OutputStream) {
+        try {
+            val j = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
+            val deviceName = j.optString("device_name", "").ifEmpty {
+                body.trim().removeSurrounding("\"").removeSurrounding("'")
+            }
+            if (deviceName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name required") }.toString())
+                return
+            }
+            val interfaceId = if (j.has("interface_id")) j.optInt("interface_id", -1) else null
+            val result = UsbHostManager.releaseInterface(deviceName, interfaceId)
+            sendResponse(out, 200, "OK", result.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "USB release error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbBulkTransfer(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val deviceName = j.optString("device_name", "")
+            val endpointAddress = j.optInt("endpoint", -1)
+            if (deviceName.isEmpty() || endpointAddress < 0) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name and endpoint are required") }.toString())
+                return
+            }
+            val dataBase64 = j.optString("data_base64", "")
+            val timeout = j.optInt("timeout", 1000)
+            val direction = j.optString("direction", null)
+            val result = UsbHostManager.bulkTransfer(deviceName, endpointAddress, dataBase64, timeout, direction)
+            sendResponse(out, 200, "OK", result)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB bulkTransfer error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbControlTransfer(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val deviceName = j.optString("device_name", "")
+            if (deviceName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name required") }.toString())
+                return
+            }
+            val requestType = j.optInt("request_type", 0x40)
+            val request = j.optInt("request", 0)
+            val value = j.optInt("value", 0)
+            val index = j.optInt("index", 0)
+            val dataBase64 = j.optString("data_base64", "")
+            val timeout = j.optInt("timeout", 1000)
+            val result = UsbHostManager.controlTransfer(deviceName, requestType, request, value, index, dataBase64, timeout)
+            sendResponse(out, 200, "OK", result)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB controlTransfer error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    private fun handleUsbSendRaw(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val deviceName = j.optString("device_name", "")
+            val dataBase64 = j.optString("data_base64", "")
+            if (deviceName.isEmpty() || dataBase64.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name and data_base64 are required") }.toString())
+                return
+            }
+            val timeout = j.optInt("timeout", 1000)
+            val result = UsbHostManager.sendRawData(deviceName, dataBase64, timeout)
+            sendResponse(out, 200, "OK", result)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB sendRaw error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
     }
 }
 

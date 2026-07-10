@@ -30,6 +30,10 @@
         android:protectionLevel="signature" />
     <uses-permission android:name="com.linux_core.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
 
+    <!-- USB Host mode (pro připojená zařízení / druhou desku) -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
+
     <queries>
         <package android:name="com.miui.securitycenter" />
         <intent>
@@ -70,6 +74,14 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- USB device attach broadcast -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
 
         <activity
