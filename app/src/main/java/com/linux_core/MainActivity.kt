@@ -16,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -458,6 +460,12 @@ fun MainScreen() {
             }
 
             if (currentTab == "home") {
+                val homeScrollState = rememberScrollState()
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(homeScrollState)
+                ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(bottom = 6.dp)
@@ -653,8 +661,103 @@ fun MainScreen() {
                     Spacer(modifier = Modifier.weight(0.5f))
                 }
 
-                // Docker Hub custom image input (shown when Docker Hub card is selected)
-                if (isDockerMode) {
+                // Docker Hub expanded section (shown when Docker Hub card is selected)
+                if (isDockerMode && selectedDockerDir != null) {
+                    // Docker already installed — show management card with REMOVE
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 20.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0x33FF3333)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Cloud,
+                                    contentDescription = "Docker",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "DOCKER IMAGE INSTALLED",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF00FF41),
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
+
+                            Text(
+                                text = dockerImageRef?.let { "${it.fullName}:${it.tag}" } ?: selectedDockerDir ?: "Unknown",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            try {
+                                                val dockerDir = File(context.filesDir, selectedDockerDir!!)
+                                                if (dockerDir.exists()) dockerDir.deleteRecursively()
+                                                selectedDockerDir = null
+                                                dockerImageRef = null
+                                                isDockerMode = false
+                                                Toast.makeText(context, "Docker image removed", Toast.LENGTH_SHORT).show()
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Remove failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCCFF3333)),
+                                    modifier = Modifier.weight(1f).height(44.dp)
+                                ) {
+                                    Text(
+                                        text = "REMOVE",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val intent = Intent(context, TerminalActivity::class.java).apply {
+                                            putExtra("rootfsDirName", selectedDockerDir!!)
+                                            putExtra("mountStorage", mountStorage)
+                                        }
+                                        context.startActivity(intent)
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF41)),
+                                    modifier = Modifier.weight(1f).height(44.dp)
+                                ) {
+                                    Text(
+                                        text = "BOOT",
+                                        color = Color.Black,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (isDockerMode && selectedDockerDir == null) {
+                    // No Docker image yet — show pull UI
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -954,7 +1057,7 @@ fun MainScreen() {
                         }
                     }
                 } else {
-                    if (isExtracted || (isDockerMode && selectedDockerDir != null)) {
+                    if (isExtracted || selectedDockerDir != null) {
                         val activeBrandGradient = if (isDockerMode) {
                             Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
                         } else if (selectedDistro.id == "kali") {
@@ -965,7 +1068,7 @@ fun MainScreen() {
 
                         Button(
                             onClick = {
-                                val rootfsDirName = if (isDockerMode && selectedDockerDir != null) {
+                                val rootfsDirName = if (selectedDockerDir != null) {
                                     selectedDockerDir!!
                                 } else {
                                     selectedDistro.rootfsDirName
@@ -1129,14 +1232,19 @@ fun MainScreen() {
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        if (isExtracted) {
+                                        if (isExtracted || selectedDockerDir != null) {
+                                            val isDockerBk = selectedDockerDir != null
                                             Button(
                                                 onClick = {
                                                     if (!hasStoragePermission) {
                                                         requestAllFilesAccess(context)
                                                     } else {
                                                         isMoreMenuExpanded = false
-                                                        com.linux_core.core.BackupService.startBackup(context, selectedDistro.id)
+                                                        if (isDockerBk && selectedDockerDir != null) {
+                                                            com.linux_core.core.BackupService.startBackup(context, selectedDockerDir!!)
+                                                        } else {
+                                                            com.linux_core.core.BackupService.startBackup(context, selectedDistro.id)
+                                                        }
                                                         Toast.makeText(context, "Backup started. Check notification for progress.", Toast.LENGTH_SHORT).show()
                                                     }
                                                 },
@@ -1179,51 +1287,68 @@ fun MainScreen() {
                                         }
                                     }
 
-                                    if (isExtracted) {
+                                    if (isExtracted || selectedDockerDir != null) {
+                                        val isDocker = selectedDockerDir != null
                                         Button(
                                             onClick = {
-                                                downloadJob = scope.launch {
-                                                    isDownloading = true
-                                                    isMoreMenuExpanded = false
-                                                    try {
-                                                        val cacheDir = File(context.filesDir, selectedDistro.id)
-                                                        val archiveFile = File(cacheDir, selectedDistro.tarFileName)
-
-                                                        statusText = "Reinstalling: Deleting old files…"
-                                                        val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
-                                                        if (rootfsDir.exists()) {
-                                                            rootfsDir.deleteRecursively()
+                                                if (isDocker) {
+                                                    // Remove Docker image
+                                                    scope.launch {
+                                                        try {
+                                                            val dockerDir = File(context.filesDir, selectedDockerDir!!)
+                                                            if (dockerDir.exists()) dockerDir.deleteRecursively()
+                                                            selectedDockerDir = null
+                                                            dockerImageRef = null
+                                                            isDockerMode = false
+                                                            Toast.makeText(context, "Docker image removed", Toast.LENGTH_SHORT).show()
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(context, "Remove failed: ${e.message}", Toast.LENGTH_SHORT).show()
                                                         }
-                                                        isExtracted = false
-                                                        downloadProgress = 0
+                                                    }
+                                                } else {
+                                                    downloadJob = scope.launch {
+                                                        isDownloading = true
+                                                        isMoreMenuExpanded = false
+                                                        try {
+                                                            val cacheDir = File(context.filesDir, selectedDistro.id)
+                                                            val archiveFile = File(cacheDir, selectedDistro.tarFileName)
 
-                                                        val hasArchive = archiveFile.exists() && archiveFile.length() > 0
-                                                        if (!hasArchive) {
-                                                            statusText = "Reinstalling: Downloading rootfs archive…"
-                                                            RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
+                                                            statusText = "Reinstalling: Deleting old files…"
+                                                            val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
+                                                            if (rootfsDir.exists()) {
+                                                                rootfsDir.deleteRecursively()
+                                                            }
+                                                            isExtracted = false
+                                                            downloadProgress = 0
+
+                                                            val hasArchive = archiveFile.exists() && archiveFile.length() > 0
+                                                            if (!hasArchive) {
+                                                                statusText = "Reinstalling: Downloading rootfs archive…"
+                                                                RootfsManager.downloadRootfs(context, selectedDistro).collect { progress ->
+                                                                    downloadProgress = progress
+                                                                }
+                                                                downloadProgress = 0
+                                                            }
+
+                                                            statusText = "Reinstalling: Extracting filesystem…"
+                                                            RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
                                                                 downloadProgress = progress
                                                             }
+
+                                                            isExtracted = true
+                                                            statusText = ""
+                                                            Toast.makeText(context, "Reinstallation complete!", Toast.LENGTH_LONG).show()
+                                                        } catch (e: kotlinx.coroutines.CancellationException) {
+                                                            isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                            throw e
+                                                        } catch (e: Exception) {
+                                                            isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                            Toast.makeText(context, "Reinstallation failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                        } finally {
+                                                            isDownloading = false
+                                                            statusText = ""
                                                             downloadProgress = 0
                                                         }
-
-                                                        statusText = "Reinstalling: Extracting filesystem…"
-                                                        RootfsManager.extractRootfs(context, selectedDistro).collect { progress ->
-                                                            downloadProgress = progress
-                                                        }
-
-                                                        isExtracted = true
-                                                        statusText = ""
-                                                        Toast.makeText(context, "Reinstallation complete!", Toast.LENGTH_LONG).show()
-                                                    } catch (e: kotlinx.coroutines.CancellationException) {
-                                                        isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                        throw e
-                                                    } catch (e: Exception) {
-                                                        isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                        Toast.makeText(context, "Reinstallation failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                                    } finally {
-                                                        isDownloading = false
-                                                        statusText = ""
-                                                        downloadProgress = 0
                                                     }
                                                 }
                                             },
@@ -1235,9 +1360,20 @@ fun MainScreen() {
                                                 .border(1.dp, Color(0x66FF3333), RoundedCornerShape(6.dp))
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Default.Refresh, contentDescription = "Reinstall", tint = Color(0xFFFF5555), modifier = Modifier.size(14.dp))
+                                                Icon(
+                                                    if (isDocker) Icons.Default.Cloud else Icons.Default.Refresh,
+                                                    contentDescription = if (isDocker) "Remove" else "Reinstall",
+                                                    tint = Color(0xFFFF5555),
+                                                    modifier = Modifier.size(14.dp)
+                                                )
                                                 Spacer(modifier = Modifier.width(6.dp))
-                                                Text("REINSTALL (DESTROY & REBUILD)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF5555), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                                Text(
+                                                    if (isDocker) "REMOVE DOCKER IMAGE" else "REINSTALL (DESTROY & REBUILD)",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFFF5555),
+                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                )
                                             }
                                         }
                                     }
@@ -1344,9 +1480,10 @@ fun MainScreen() {
                                 }
                             }
                         }
-            }
-            }
-            }
+            } // end if(isExtracted) widget
+            } // end else
+            } // end Column (scrollable)
+            } // end if(currentTab == "home")
             if (currentTab == "editor") {
                 com.linux_core.ui.editor.EditorTab()
             } else if (currentTab == "vpn_center") {

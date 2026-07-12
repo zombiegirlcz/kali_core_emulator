@@ -659,11 +659,13 @@ object RootfsManager {
         client: OkHttpClient = okhttp3.OkHttpClient.Builder()
             .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .build()
+            .build(),
+        registryUsername: String? = null,
+        registryPassword: String? = null
     ): Flow<Pair<Int, String>> = flow {
         emit(0 to "Resolving image: ${imageRef.fullName}:${imageRef.tag}")
 
-        val registry = DockerRegistryClient(client)
+        val registry = DockerRegistryClient(client, registryUsername, registryPassword)
 
         // 1. Fetch manifest
         emit(5 to "Fetching image manifest…")
@@ -683,17 +685,22 @@ object RootfsManager {
                 val layerProgress = 5 + ((index * 90) / totalLayers)
                 emit(layerProgress to "Downloading layer ${index + 1}/$totalLayers…")
 
-                // Download layer bytes
-                val layerBytes = mutableListOf<ByteArray>()
-                registry.downloadLayer(imageRef, layer).collect { chunk ->
-                    layerBytes.add(chunk)
+                // Download layer directly to temp file (avoids OOM from in-memory buffering)
+                val tempLayerFile = java.io.File.createTempFile("layer_${index}_", ".tar.gz", context.cacheDir)
+                try {
+                    java.io.FileOutputStream(tempLayerFile).use { out ->
+                        registry.downloadLayer(imageRef, layer).collect { chunk ->
+                            out.write(chunk)
+                        }
+                    }
+
+                    emit(layerProgress + 5 to "Extracting layer ${index + 1}/$totalLayers…")
+
+                    // Extract tar.gz layer into rootfs from temp file
+                    extractTarGzip(tempLayerFile, rootfsDir)
+                } finally {
+                    tempLayerFile.delete()
                 }
-
-                emit(layerProgress + 5 to "Extracting layer ${index + 1}/$totalLayers…")
-
-                // Extract tar.gz layer into rootfs
-                val combined = layerBytes.flatMap { it.toList() }.toByteArray()
-                extractTarGzip(combined, rootfsDir)
 
                 Log.i("RootfsManager", "Layer ${index + 1}/$totalLayers extracted: ${layer.digest}")
             }
@@ -717,9 +724,9 @@ object RootfsManager {
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun extractTarGzip(data: ByteArray, targetDir: File) {
-        java.io.ByteArrayInputStream(data).use { bais ->
-            BufferedInputStream(bais, 512 * 1024).use { bis ->
+    private fun extractTarGzip(source: File, targetDir: File) {
+        java.io.FileInputStream(source).use { fis ->
+            BufferedInputStream(fis, 512 * 1024).use { bis ->
                 GzipCompressorInputStream(bis).use { gzIn ->
                     TarArchiveInputStream(gzIn).use { tarIn ->
                         val canonicalBase = targetDir.canonicalPath

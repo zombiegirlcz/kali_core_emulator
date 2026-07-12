@@ -287,9 +287,9 @@ object ProotManager {
                 append("echo 'deb [trusted=yes] https://deb.parrot.sh/parrot parrot main contrib non-free' > /etc/apt/sources.list").append(NL)
                 append("mkdir -p /etc/apt/trusted.gpg.d").append(NL)
                 append("if command -v curl >/dev/null 2>&1; then").append(NL)
-                append("  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
+                append("  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
                 append("elif command -v wget >/dev/null 2>&1; then").append(NL)
-                append("  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc http://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
+                append("  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
                 append("fi").append(NL)
             }
 

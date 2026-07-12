@@ -1380,14 +1380,6 @@ list_cmds() {
     echo ""
     for cmd in \
         "system battery" "system volume" "system torch" "system vibrate" \
-
-list_cmds() {
-    banner
-    echo ""
-    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy:${RST}"
-    echo ""
-    for cmd in \
-        "system battery" "system volume" "system torch" "system vibrate" \
         "system toast" "system clipboard" "system notification" "system speech" \
         "network wifi" "network cell" "network location" "network map" "network ifconfig" \
         "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
@@ -1458,6 +1450,182 @@ compat_dispatch() {
         nethunter-agent-cli)            exec "$0" agent "$@" ;;
         *) return 1 ;; # Not a compat name — fall through to usage
     esac
+}
+
+# ─── USB HOST ──────────────────────────────────────────────
+
+usb_dispatch() {
+    case "$1" in
+        list)           usb_list ;;
+        permission)     shift; usb_permission "$@" ;;
+        claim)          shift; usb_claim "$@" ;;
+        release)        shift; usb_release "$@" ;;
+        send)           shift; usb_send "$@" ;;
+        bulk)           shift; usb_bulk "$@" ;;
+        control)        shift; usb_control "$@" ;;
+        *)
+            echo "Usage: nh usb list|permission|claim|release|send|bulk|control"
+            exit 1 ;;
+    esac
+}
+
+usb_list() {
+    api_get "/usb/devices" | fmt '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, list) and len(data) == 0:
+        print("No USB devices connected")
+    elif isinstance(data, list):
+        for d in data:
+            name = d.get("device_name","?")
+            vid = d.get("vendor_id",0)
+            pid = d.get("product_id",0)
+            mfg = d.get("manufacturer_name") or ""
+            prod = d.get("product_name") or ""
+            perm = "\u2713" if d.get("has_permission") else "\u2717"
+            print(f"  {name}")
+            print(f"    VID:PID  {vid:04x}:{pid:04x}")
+            print(f"    Vendor:  {mfg}")
+            print(f"    Product: {prod}")
+            print(f"    Perm:    {perm}")
+            ifaces = d.get("interfaces",[])
+            for iface in ifaces:
+                cls = iface.get("class",0)
+                sub = iface.get("subclass",0)
+                proto = iface.get("protocol",0)
+                eps = iface.get("endpoints",[])
+                ep_str = " ".join([f"ep{e.get(\"address\",\"?\")}:{e.get(\"direction\",\"?\")}:{e.get(\"type\",\"?\")}" for e in eps])
+                print(f"    Iface {iface.get(\"id\",0)}: class={cls} sub={sub} proto={proto}  {ep_str}")
+    else:
+        print(f"Error: {data.get(\"error\",\"Unknown\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_permission() {
+    local device="$1"
+    [ -z "$device" ] && { echo "Usage: nh usb permission <device_name>"; exit 1; }
+    api_post "/usb/permission" "$device" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        print("\u2713 Permission requested")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_claim() {
+    local device="$1"
+    local iface_id="${2:-0}"
+    [ -z "$device" ] && { echo "Usage: nh usb claim <device_name> [interface_id]"; exit 1; }
+    api_post_json "/usb/claim" "{\"device_name\":\"$device\",\"interface_id\":$iface_id}" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        print("\u2713 Interface claimed")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_release() {
+    local device="$1"
+    [ -z "$device" ] && { echo "Usage: nh usb release <device_name>"; exit 1; }
+    api_post_json "/usb/release" "{\"device_name\":\"$device\"}" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        print("\u2713 Interface released")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_send() {
+    local device="$1"
+    local file="$2"
+    [ -z "$device" ] && { echo "Usage: nh usb send <device_name> <file>"; exit 1; }
+    if [ ! -f "$file" ]; then
+        echo "File not found: $file"
+        exit 1
+    fi
+    local b64=$(base64 -w0 < "$file" 2>/dev/null || cat "$file" | openssl base64 -A 2>/dev/null)
+    api_post_json "/usb/send" "{\"device_name\":\"$device\",\"data_base64\":\"$b64\"}" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        sent=d.get("total_transferred",0)
+        req=d.get("total_requested",0)
+        print(f"\u2713 Sent {sent}/{req} bytes")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_bulk() {
+    local device="$1"
+    local ep="$2"
+    local file="$3"
+    [ -z "$device" ] && { echo "Usage: nh usb bulk <device_name> <endpoint> [file]"; exit 1; }
+    local b64=""
+    if [ -n "$file" ]; then
+        [ ! -f "$file" ] && { echo "File not found: $file"; exit 1; }
+        b64=$(base64 -w0 < "$file" 2>/dev/null || cat "$file" | openssl base64 -A 2>/dev/null)
+    fi
+    api_post_json "/usb/bulk_transfer" "{\"device_name\":\"$device\",\"endpoint\":$ep,\"data_base64\":\"$b64\"}" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        received=d.get("transferred",0)
+        print(f"\u2713 Bulk transfer: {received} bytes")
+        hx=d.get("data_hex","")
+        if hx: print(f"  Hex: {hx[:64]}..." if len(hx)>64 else f"  Hex: {hx}")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
+}
+
+usb_control() {
+    local device="$1"
+    local req="${2:-0}"
+    local val="${3:-0}"
+    local idx="${4:-0}"
+    local file="$5"
+    [ -z "$device" ] && { echo "Usage: nh usb control <device_name> [request=0] [value=0] [index=0] [file]"; exit 1; }
+    local b64=""
+    if [ -n "$file" ]; then
+        [ ! -f "$file" ] && { echo "File not found: $file"; exit 1; }
+        b64=$(base64 -w0 < "$file" 2>/dev/null || cat "$file" | openssl base64 -A 2>/dev/null)
+    fi
+    api_post_json "/usb/control_transfer" "{\"device_name\":\"$device\",\"request\":$req,\"value\":$val,\"index\":$idx,\"data_base64\":\"$b64\"}" | fmt '
+import sys, json
+try:
+    d=json.load(sys.stdin)
+    if d.get("success"):
+        print(f"\u2713 Control transfer: {d.get(\"transferred\",0)} bytes")
+    else:
+        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+except Exception as e:
+    print(f"Parse error: {e}")
+'
 }
 
 # ─── MAIN ──────────────────────────────────────────────────

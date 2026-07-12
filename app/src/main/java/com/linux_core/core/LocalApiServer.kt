@@ -79,7 +79,11 @@ object LocalApiServer {
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
-        val bindAddress = if (shareLocalApi) "0.0.0.0" else "127.0.0.1"
+        val bindAddress = if (shareLocalApi && com.linux_core.core.VpnCaptureService.isRunning()) {
+            com.linux_core.core.VpnCaptureService.getVpnAddress()
+        } else {
+            "127.0.0.1"
+        }
         executor.execute {
             try {
                 serverSocket = ServerSocket(PORT, 50, InetAddress.getByName(bindAddress))
@@ -169,7 +173,9 @@ object LocalApiServer {
                 return plain
             }
         }
-        prefs.edit().putString("auth_token", plain).apply()
+        // Keystore unavailable — keep token only in memory, do NOT persist plain text to disk.
+        // Token will be regenerated on next cold start (ephemeral single-session token).
+        prefs.edit().remove("auth_token").apply()
         return plain
     }
 
@@ -831,11 +837,59 @@ object LocalApiServer {
         }
     }
 
-    // Blocklist of dangerous shell commands
-    private val SHELL_BLOCKLIST = listOf(
-        "rm -rf /", "mkfs", "dd if=/dev/zero", "dd if=/dev/random",
-        ">:", "format", "mkswap", "reboot", "shutdown", "poweroff",
-        "halt", "init 0", "init 6"
+    // ── Shell command security ──────────────────────────────────────────────
+    // Allowlist of safe shell commands (first word must match)
+    private val SHELL_ALLOWLIST = setOf(
+        // Diagnostic
+        "ls", "cat", "echo", "printf", "pwd", "whoami", "id", "uname",
+        "ps", "df", "du", "free", "uptime", "date", "which", "find",
+        "grep", "egrep", "fgrep", "rg", "head", "tail", "wc", "sort", "cut",
+        "tr", "sed", "awk", "xargs", "tee", "basename", "dirname",
+        "readlink", "realpath", "stat", "file",
+        // Network
+        "ping", "ping6", "curl", "wget", "netstat", "ss", "ip", "ifconfig",
+        "nslookup", "dig", "host", "traceroute", "tracepath", "mtr", "nc", "ncat",
+        // Filesystem (safe subset — rm is allowed but guarded by DESTRUCTIVE_PATTERNS)
+        "touch", "chmod", "chown", "ln", "mkdir", "rmdir",
+        "tar", "gzip", "gunzip", "bzip2", "xz", "unzip", "zip",
+        "cp", "mv", "rm",
+        // Package management
+        "apt", "apt-get", "dpkg", "pip", "pip3", "npm",
+        // System / Android
+        "env", "printenv", "getprop", "dmesg", "logcat",
+        // Interpreters (inline code can still be dangerous — DESTRUCTIVE_PATTERNS also scans
+        // inside the argument string so e.g. 'rm -rf /' inside a python -c is caught)
+        "python", "python3", "perl",
+        "bash", "sh", "zsh",
+        // Project CLI
+        "nh", "nethunter", "vpn-cli",
+        // Editors / pagers
+        "nano", "less", "more", "vim", "vi",
+        // Utility
+        "free", "w", "who", "users", "last",
+        "diff", "cmp", "patch",
+        "clear", "reset", "history",
+        "test", "expr",
+        "sleep", "timeout",
+        "dd"
+    )
+
+    // Destructive patterns — checked across the entire command string *after*
+    // the allowlist gate, so they catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
+    private val DESTRUCTIVE_PATTERNS = listOf(
+        "rm -rf /", "rm -rf /*", "rm -rf *", "rm -rf .", "rm -rf ~",
+        "rm -fr /", "rm -fr /*", "rm -fr *", "rm -fr .", "rm -fr ~",
+        "mkfs.", "mkfs ", "mkswap",
+        "dd if=/dev/zero", "dd if=/dev/random", "dd if=/dev/urandom",
+        ">/dev/sda", ">/dev/sdb", ">/dev/sdc", ">/dev/sdd",
+        ">/dev/mem", ">/dev/kmem", ">/dev/port",
+        "fdisk", "parted", "cfdisk",
+        "reboot", "shutdown", "poweroff", "halt", "init 0", "init 6",
+        "> /proc/", ">/proc/",
+        ":(){ :|:& };:",  // fork bomb
+        "chmod -R 0 /", "chown -R 0 /",
+        "mv /", "mv /*",
+        "cat /dev/sda", "cat /dev/sdb", "cat /dev/mem"
     )
 
     private fun handleShell(body: String, out: OutputStream) {
@@ -846,19 +900,32 @@ object LocalApiServer {
                 return
             }
 
-            // Check against shell command blocklist
-            val commandLower = command.lowercase()
-            for (blocked in SHELL_BLOCKLIST) {
-                if (commandLower.contains(blocked.lowercase())) {
-                    sendResponse(out, 403, "Forbidden", "{\"error\":\"Command blocked for security reasons\"}")
-                    return
-                }
-            }
-
             // Enforce maximum command length
             if (command.length > 1024) {
                 sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long (max 1024 chars)\"}")
                 return
+            }
+
+            // ── 1. Allowlist gate ───────────────────────────────────────────
+            val cmdName = command
+                .trim()
+                .substringBefore(" ")
+                .substringBefore("\t")
+                .substringAfterLast("/")
+            if (cmdName !in SHELL_ALLOWLIST) {
+                sendResponse(out, 403, "Forbidden",
+                    "{\"error\":\"Command '$cmdName' is not in the allowed commands list\"}")
+                return
+            }
+
+            // ── 2. Destructive patterns guard ───────────────────────────────
+            val commandLower = command.lowercase()
+            for (pattern in DESTRUCTIVE_PATTERNS) {
+                if (commandLower.contains(pattern.lowercase())) {
+                    sendResponse(out, 403, "Forbidden",
+                        "{\"error\":\"Command blocked for security reasons\"}")
+                    return
+                }
             }
 
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
@@ -1380,7 +1447,7 @@ object LocalApiServer {
         try {
             if (!requireServiceOrError(out)) return
             val j = JSONObject(body)
-            val text = j.optString("text", null)
+            val text = if (j.has("text")) j.getString("text") else null
             val ok = if (text != null) {
                 NetHunterAccessibilityService.clickByText(text!!)
             } else {
@@ -1400,7 +1467,7 @@ object LocalApiServer {
         try {
             if (!requireServiceOrError(out)) return
             val j = JSONObject(body)
-            val text = j.optString("text", null)
+            val text = if (j.has("text")) j.getString("text") else null
             val ok = if (text != null) {
                 NetHunterAccessibilityService.longClickByText(text!!)
             } else {
@@ -1443,7 +1510,7 @@ object LocalApiServer {
                 return
             }
             val text = j.getString("text")
-            val targetText = j.optString("target_text", null)
+            val targetText = if (j.has("target_text")) j.getString("target_text") else null
             val ok = NetHunterAccessibilityService.setText(text, targetText)
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
@@ -1456,7 +1523,7 @@ object LocalApiServer {
             if (!requireServiceOrError(out)) return
             val j = JSONObject(body)
             val forward = j.optString("direction", "forward") == "forward"
-            val targetText = j.optString("text", null)
+            val targetText = if (j.has("text")) j.getString("text") else null
             val ok = NetHunterAccessibilityService.scroll(forward, targetText)
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
@@ -2302,7 +2369,7 @@ object LocalApiServer {
             }
             val dataBase64 = j.optString("data_base64", "")
             val timeout = j.optInt("timeout", 1000)
-            val direction = j.optString("direction", null)
+            val direction = if (j.has("direction")) j.getString("direction") else null
             val result = UsbHostManager.bulkTransfer(deviceName, endpointAddress, dataBase64, timeout, direction)
             sendResponse(out, 200, "OK", result)
         } catch (e: Exception) {

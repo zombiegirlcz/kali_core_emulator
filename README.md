@@ -21,7 +21,8 @@ A state-of-the-art, highly optimized Android application designed to run full gu
 
 ### ⛓️ Session-Isolated VPN Bypass
 - **BFS Socket Resolution:** Integrates a high-efficiency background socket-to-process crawler. When a TCP connection is established, the VPN service traverses `/proc` using a custom Breadth-First Search (BFS) process-tree resolver to determine if the local socket is owned by a bypassed chroot terminal session.
-- **Dynamic Bypass Controls:** Execute `ignore-vpn on` or `ignore-vpn off` directly inside a terminal tab to instantly bypass VPN routing (e.g., for local network scans) without stopping global VPN protection.
+- **Dynamic Bypass Controls:** Execute `nh vpn ignore on` or `nh vpn ignore off` directly inside a terminal tab to instantly bypass VPN routing (e.g., for local network scans) without stopping global VPN protection.
+  - *Legacy:* `ignore-vpn on` / `ignore-vpn off` still works via compatibility symlink.
 - **Visual Status Badging:** Ignored sessions are dynamically color-coded inside the drawer menu using distinct Orange-Gold text and `[VPN IGNORED]` badges.
 
 ### 🐉 Multi-Distro Sessions Drawer
@@ -45,36 +46,59 @@ A state-of-the-art, highly optimized Android application designed to run full gu
 
 ---
 
-## 🌐 Integrated Android API Bridge & CLI VPN Control
+## 🌐 Integrated Android API Bridge & Unified CLI (`nh`)
 
-The application starts a loopback API server listening at `127.0.0.1:1337` on the Android host, exposing native device sensors and hardware features directly to the guest Linux terminal via standard bash utilities and specialized VPN management scripts:
+The application starts a loopback API server listening at `127.0.0.1:1337` on the Android host, exposing native device sensors and hardware features directly to the guest Linux terminal via the unified **`nh`** CLI tool (also accessible as `nethunter`).
 
-| Command | Action | Example usage |
-| :--- | :--- | :--- |
-| `nethunter-battery-status` | Retrieve detailed battery status in JSON | `nethunter-battery-status` |
-| `nethunter-toast <msg>` | Display an Android Toast popup on the screen | `nethunter-toast "Task completed successfully!"` |
-| `nethunter-vibrate [ms]` | Vibrate the device (defaults to 500ms) | `nethunter-vibrate 1000` |
-| `nethunter-tts-speak <text>` | Speak text aloud using Text-to-Speech | `echo "Firewall breach detected" \| nethunter-tts-speak` |
-| `nethunter-clipboard-get` | Read the current host clipboard content | `nethunter-clipboard-get` |
-| `nethunter-clipboard-set <text>`| Write text to the host clipboard | `nethunter-clipboard-set "GeneratedPassword123"` |
-| `nethunter-notification -t <t> -c <c>`| Post a standard system notification | `nethunter-notification -t "NetHunter Alert" -c "Scan completed"` |
-| `nethunter-wifi-connectioninfo`| Retrieve current Wi-Fi network details in JSON | `nethunter-wifi-connectioninfo` |
-| `nethunter-wifi-control [on\|off]`| Turn the host Wi-Fi interface on or off | `nethunter-wifi-control off` |
-| `nethunter-device-admin [status\|request\|lock]`| Manage Device Admin: query status, request privileges, or force lock screen | `nethunter-device-admin lock` |
-| `nethunter-location` | Retrieve current GPS coordinates in JSON | `nethunter-location` |
-| `nethunter-volume [level]` | Retrieve or set the media stream volume | `nethunter-volume 10` |
-| `nethunter-torch [on\|off]` | Turn the device flashlight on or off | `nethunter-torch on` |
-| `nethunter-log [options] [lines]` | Colorized app logcat viewer (Python) with level-based coloring and keyword highlighting, no adb required | `nethunter-log -n 50 -g "LocalApiServer"` |
-| `nethunter-apps-usage` | Retrieve detailed app usage statistics (last 24h) | `nethunter-apps-usage` |
-| `nethunter-notifications-active`| Retrieve a list of current active notifications | `nethunter-notifications-active` |
-| `nethunter-accessibility-hierarchy`| Extract and output the active UI text hierarchy in JSON | `nethunter-accessibility-hierarchy` |
-| `nethunter-battery-optimize [status\|request]`| Check battery optimization status or request settings prompt | `nethunter-battery-optimize request` |
-| `nethunter-api share [on\|off\|status]`| Control whether the loopback HTTP API is shared externally (0.0.0.0 vs 127.0.0.1) | `nethunter-api share on` |
-| `vpn-on` | Enable global VPN AdGuard Sniffer / NAT Engine | `vpn-on` |
-| `vpn-off` | Disable global VPN AdGuard Sniffer / NAT Engine | `vpn-off` |
-| `vpn-cli <action>` | Advanced VPN CLI: control service (start/stop/status), fetch logs (logs), manage MITM (mitm on/off/status/ca), or start AI monitor (ai/chat) | `vpn-cli logs` |
-| `vpn-bypass <cmd>` | Forces a command to bypass VPN and connect directly | `vpn-bypass curl ipinfo.io` |
-| `ignore-vpn [on\|off\|status]` | Toggle VPN bypass for the current shell session dynamically | `ignore-vpn on` |
+> **Note:** The old `nethunter-*` and `vpn-*` standalone commands are **deprecated**. All functionality is now consolidated under `nh <category> <action>`. Legacy names still work via compatibility symlinks, but the unified CLI is the recommended interface.
+
+| Command | Category | Action | Example |
+| :--- | :--- | :--- | :--- |
+| `nh system battery` | system | Retrieve detailed battery status in JSON | `nh system battery` |
+| `nh system volume [N]` | system | Get or set media volume (0-15) | `nh system volume 10` |
+| `nh system torch on\|off` | system | Turn the device flashlight on or off | `nh system torch on` |
+| `nh system vibrate [ms]` | system | Vibrate the device (default 500ms) | `nh system vibrate 1000` |
+| `nh system toast <msg>` | system | Display an Android Toast popup | `nh system toast "Done!"` |
+| `nh system clipboard get\|set [text]` | system | Read/write host clipboard | `nh system clipboard set "pass123"` |
+| `nh system notification -t T -c C` | system | Post a system notification | `nh system notification -t "Alert" -c "Scan done"` |
+| `nh system speech` | system | Start voice recognition input | `nh system speech` |
+| `nh network wifi [on\|off\|scan\|connect]` | network | Manage Wi-Fi interface | `nh network wifi scan` |
+| `nh network cell` | network | Retrieve mobile network info | `nh network cell` |
+| `nh network location` | network | Retrieve GPS coordinates in JSON | `nh network location` |
+| `nh network map` | network | TerminalMap with current location | `nh network map` |
+| `nh network ifconfig [iface]` | network | Show network interfaces | `nh network ifconfig wlan0` |
+| `nh vpn start\|stop\|status` | vpn | Start/stop/check VPN service | `nh vpn status` |
+| `nh vpn on [cmd]` | vpn | Enable VPN (optionally run a command) | `nh vpn on` |
+| `nh vpn off [cmd]` | vpn | Disable VPN (optionally run a command) | `nh vpn off` |
+| `nh vpn logs [-n N] [-g P] [json]` | vpn | Fetch MITM traffic logs | `nh vpn logs -n 50 -g mitm` |
+| `nh vpn mitm on\|off\|status\|ca` | vpn | Control TLS MITM engine | `nh vpn mitm status` |
+| `nh vpn bypass <cmd>` | vpn | Run a command outside VPN tunnel | `nh vpn bypass curl ipinfo.io` |
+| `nh vpn ignore on\|off\|status` | vpn | Toggle VPN bypass for current shell | `nh vpn ignore on` |
+| `nh vpn sni-fallback get\|set\|clear` | vpn | Manage SNI fallback hostname | `nh vpn sni-fallback set example.com` |
+| `nh agent config\|start\|stop\|status` | agent | Manage the AI agent daemon | `nh agent status` |
+| `nh agent ask <question>` | agent | Ask the AI a security question | `nh agent ask "Analyze this pcap"` |
+| `nh agent chat` | agent | Open interactive AI expert console | `nh agent chat` |
+| `nh log [-n N] [-g P]` | log | Colorized logcat viewer (V/D/I/W/E/F) | `nh log -n 50 -g LocalApiServer` |
+| `nh log set <level>` | log | Set log level (1-5) | `nh log set 3` |
+| `nh device admin status\|request\|lock` | device | Manage Device Admin | `nh device admin lock` |
+| `nh device battery-optimize status\|request` | device | Battery optimization settings | `nh device battery-optimize request` |
+| `nh device tap <x> <y>` | device | Tap at screen coordinates | `nh device tap 500 300` |
+| `nh device click <text>` | device | Click by visible text | `nh device click "Submit"` |
+| `nh device longclick <text>` | device | Long-click by visible text | `nh device longclick "App"` |
+| `nh device swipe <x1> <y1> <x2> <y2>` | device | Swipe gesture | `nh device swipe 100 200 300 400` |
+| `nh device text <text>` | device | Insert text at cursor | `nh device text "hello"` |
+| `nh device scroll forward\|backward` | device | Scroll the active view | `nh device scroll forward` |
+| `nh device global back\|home\|recents` | device | Global device action | `nh device global home` |
+| `nh api share on\|off\|status` | api | Expose API externally (0.0.0.0 vs 127.0.0.1) | `nh api share on` |
+| `nh desktop start\|stop\|status` | desktop | Control noVNC XFCE4 desktop | `nh desktop start` |
+| `nh fix pkg <name>` | fix | Fix a stuck post-install script | `nh fix pkg libc6` |
+| `nh fix auto` | fix | Auto-fix all broken packages | `nh fix auto` |
+| `nh apps usage` | apps | App usage statistics (24h) | `nh apps usage` |
+| `nh usb list` | usb | List USB devices | `nh usb list` |
+| `nh usb permission <device>` | usb | Request USB device permission | `nh usb permission /dev/bus/usb/001/002` |
+| `nh usb claim <device> [iface]` | usb | Claim USB interface | `nh usb claim /dev/bus/usb/001/002 0` |
+| `nh usb release <device>` | usb | Release USB interface | `nh usb release /dev/bus/usb/001/002` |
+| `nh usb send <device> <file>` | usb | Send raw bulk data to USB device | `nh usb send /dev/bus/usb/001/002 exploit.bin` |
 
 ---
 
@@ -84,7 +108,7 @@ NetHunter AI Operator features an embedded **AI Inference Engine** (`AIBrain.kt`
 - **Packet Classification:** Every intercepted TCP/UDP session metadata is analyzed in real-time by a locally running lightweight neural network.
 - **Features Tracked:** Classifies flows based on packet size, protocol number, delta-time intervals, source/destination ports, and payload entropy (to detect hidden encrypted tunnels).
 - **Audit Logging:** Categorizes packets into `ALLOWED`, `VERBOSE`, `SUSPICIOUS`, or `CRITICAL` network anomalies.
-- **Hacker Console Interaction:** Users can execute `vpn-cli chat` to open a local AI Expert console or run `vpn-cli ai start` to spawn a background daemon that monitors connection streams and triggers Android toasts/alerts if high-risk intrusions or security anomalies are detected.
+- **Hacker Console Interaction:** Users can execute `nh agent chat` to open a local AI Expert console or run `nh agent start` to spawn a background daemon that monitors connection streams and triggers Android toasts/alerts if high-risk intrusions or security anomalies are detected.
 
 ---
 
@@ -96,7 +120,8 @@ To prevent ghost background processes and memory leakages, the terminal session 
 ### 📦 APT Installation Protection
 Under unrooted PRoot environments, packages using systemd or low-level capabilities (`setcap`, `sysctl`, `resolvconf`, etc.) often fail to install, causing packages to remain half-configured. NetHunter AI Operator intercepts these operations using wrapper scripts (`apt`, `apt-get`):
 - **Mock Helpers:** Redirects systemd controls to `/bin/true` to bypass failing service configurations.
-- **Post-Install Repair (`nethunter-fix-postinst`):** Exposes a utility to mock corrupted debian configuration scripts dynamically when `dpkg --configure -a` gets stuck, protecting the environment's integrity during complex tool installations.
+- **Post-Install Repair:** `nh fix pkg <name>` mocks corrupted debian configuration scripts to `/bin/true`, unblocking stuck `dpkg --configure -a`.
+- **Auto-Fix All:** `nh fix auto` scans and repairs all broken packages automatically.
 
 ### 🚀 PRoot Container Startup & Setup Lifecycle
 
@@ -126,34 +151,24 @@ To prevent core dump or execution crashes in the sandboxed chroot:
 - The helper library `libtalloc.so.2` is deployed into guest `lib/libtalloc.so.2`.
 - Any broken symbolic links for `bin/sh` and `bin/bash` in the guest OS are automatically dereferenced and replaced with solid binaries to prevent loader failures.
 
-#### 5. Deployed Helper Scripts (Guest `/usr/local/bin/`)
-At startup, `ProotManager` deploys a rich set of command-line tools into `/usr/local/bin/`:
-- **System Wrappers:**
-  - `apt` & `apt-get`: Mitigates `debconf` perl crashes and ensures systemd command diversions are kept active after upgrades.
-  - `nethunter-fix-postinst`: Easily mocks failing post-installation packages (`.postinst`) to `/bin/true` to unblock stuck `dpkg --configure -a` configurations.
-- **VPN Control & Bypass:**
-  - `vpn-on` / `vpn-off`: Starts or stops the global AdGuard JNI sniffer using Local API Server commands.
-  - `vpn-bypass` / `dcheck`: Automatically routes the given command via local proxy on port `13339` to bypass AdGuard capture.
-  - `vpn-cli`: Full Command Line Interface to query VPN stats, get logs, manage exclusions, or boot the local AI agent.
-  - `ignore-vpn`: Toggles dynamic VPN bypass for the active shell session.
-- **AI & Local Agent Integration:**
-  - `ai-agent.py`: Runs interactive AI consultations or streams background network flow inspection.
-  - `nethunter-agent-cli` / `nethunter_agent.py`: P2P mesh network pairing and local communication utilities.
-- **Android API Bridges:** Commands that invoke host sensors, device actions, and notifications via the local server:
-  - `nethunter-toast <msg>`: System-wide pop-up notification.
-  - `nethunter-battery-status`: Battery charge levels and thermals.
-  - `nethunter-speech-input`: Input voice capture.
-  - `nethunter-vibrate [ms]`: Device vibration command.
-  - `nethunter-tts-speak <text>`: Text-To-Speech engine.
-  - `nethunter-clipboard-get` / `nethunter-clipboard-set`: Clipboard operations.
-  - `nethunter-notification`: Standard Android status bar notifications.
-  - `nethunter-wifi-connectioninfo`: Wireless network SSID and state.
-  - `nethunter-location`: GPS coordinates.
-  - `nethunter-volume [level]`: Audio volume settings.
-  - `nethunter-torch [on|off]`: Camera flashlight switch.
-  - `nethunter-log [options] [lines]`: Colorized app logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red) and keyword highlighting.
-- **Desktop Environment:**
-  - `nethunter-desktop [start|stop|status]`: Automates setup and execution of an XFCE4 session running over TigerVNC and websockify (`noVNC` on port `6080`).
+#### 5. Deployed Helper Scripts — Unified `nh` CLI (Guest `/usr/local/bin/`)
+At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked as `nethunter`) into `/usr/local/bin/`. This replaces all legacy `nethunter-*`, `vpn-*`, and `ignore-vpn` scripts. Legacy names are kept as compatibility symlinks but all functionality is consolidated under `nh <category> <action>`:
+
+| Category | Available Actions |
+| :--- | :--- |
+| `nh system` | `battery`, `volume`, `torch`, `vibrate`, `toast`, `clipboard`, `notification`, `speech` |
+| `nh network` | `wifi`, `cell`, `location`, `map`, `ifconfig` |
+| `nh vpn` | `start`, `stop`, `status`, `on`, `off`, `logs`, `mitm`, `bypass`, `ignore`, `sni-fallback` |
+| `nh agent` | `config`, `start`, `stop`, `status`, `ask`, `chat` |
+| `nh log` | `[-n N] [-g P]`, `set <level>` |
+| `nh device` | `admin`, `battery-optimize`, `accessibility`, `tap`, `click`, `longclick`, `swipe`, `text`, `scroll`, `global` |
+| `nh api` | `share on/off/status` |
+| `nh desktop` | `start`, `stop`, `status` |
+| `nh fix` | `pkg <name>`, `auto` |
+| `nh apps` | `usage` |
+| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control` |
+
+> Legacy scripts (`nethunter-*`, `vpn-on`, `vpn-off`, `vpn-cli`, `vpn-bypass`, `ignore-vpn`, `nethunter-agent-cli`, `nethunter-desktop`) are still present as **compatibility symlinks** pointing to `nh`. All new development and documentation should use the unified `nh` syntax.
 
 ---
 
@@ -195,7 +210,7 @@ This release introduces the fully integrated **AI Brain Telemetry & Neural Class
 
 ### 2. Conversational AI Network Agent
 - **ReAct Log Analysis:** Added `analyze_network` tool to the local `ai-agent.py`. The AI agent can now fetch, filter, and break down network telemetry directly from the host.
-- **Hacker Console Integration:** Execute `vpn-cli chat` to open a local AI Expert console or run `vpn-cli ai start` for background monitoring and automated system toasts upon critical anomaly detection.
+- **Hacker Console Integration:** Execute `nh agent chat` to open a local AI Expert console or run `nh agent start` for background monitoring and automated system toasts upon critical anomaly detection.
 
 ### 3. App-level Attribution & Premium Dashboard
 - **Process Traversal:** Socket-to-process tracker using BFS `/proc` traversal to attribute network flows to specific chroot binaries.
@@ -215,12 +230,12 @@ This release fixes critical TLS MITM proxy issues, adds Root CA management, and 
 
 ### 2. Root CA Certificate Management
 - **New API Endpoint:** `GET /vpn/mitm/ca` returns the bundled MITM Root CA certificate in PEM format.
-- **New CLI Command:** `vpn-cli mitm ca` fetches and displays the Root CA for easy export and installation.
+- **New CLI Command:** `nh vpn mitm ca` fetches and displays the Root CA for easy export and installation.
 - **Installation Guide:** Documentation for installing the CA into Kali/PRoot trust store and Android system trust store.
 
 ### 3. Diagnostic CLI Tools
-- **`nethunter-log`:** New Python-based colorized logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red bold), automatic keyword highlighting, and grep filtering.
-- **`/app/logs` API Endpoint:** New LocalApiServer endpoint serving raw logcat output for `nethunter-log`.
+- **`nh log`:** Unified logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red bold), automatic keyword highlighting, and grep filtering.
+- **`/app/logs` API Endpoint:** New LocalApiServer endpoint serving raw logcat output for `nh log`.
 
 ---
 
