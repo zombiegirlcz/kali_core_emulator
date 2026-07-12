@@ -501,7 +501,7 @@ fun MainScreen() {
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     RootfsManager.DISTROS.forEach { distro ->
-                        val isSelected = (distro == selectedDistro)
+                        val isSelected = !isDockerMode && (distro == selectedDistro)
                         val exists = RootfsManager.isRootfsExtracted(context, distro)
                         val activeColor = if (distro.id == "kali") Color(0xFF00B0FF) else Color(0xFF00FF9F)
                         val borderBrush = if (isSelected) {
