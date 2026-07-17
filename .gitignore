@@ -108,6 +108,7 @@ window_dump.xml
 !app/src/main/res/xml/*.xml
 !windows_app/
 !windows_app/*.py
+!modal_build.py
 
 # AI Datasets and Notebooks
 *.csv
