@@ -607,6 +607,9 @@ object ProotManager {
             Log.e(TAG, "Failed to deploy ashell: ${e.message}")
         }
 
+        // Deploy Shizuku rish shell into guest
+        deployShizukuRish(context, rootfsDir)
+
         // Create backward-compat symlinks pointing to nh
         val compatNames = listOf(
             // nethunter-* compatibility
@@ -659,6 +662,49 @@ object ProotManager {
             } catch (e: Exception) {
                 Log.e("ProotManager", "Failed to deploy P2P/AI asset script $targetName: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Deploy Shizuku rish shell (shizuku command) into the guest filesystem.
+     * Only deployed for arm64 (aarch64) — other archs are not supported.
+     */
+    private fun deployShizukuRish(context: Context, rootfsDir: File) {
+        val binDir = File(rootfsDir, "usr/local/bin")
+        if (!binDir.exists()) binDir.mkdirs()
+
+        // Deploy rish script as 'shizuku' command
+        val rishScript = File(binDir, "shizuku")
+        val rishDex = File(binDir, "rish_shizuku.dex")
+
+        var needsDeploy = false
+        if (!rishScript.exists() || rishScript.length() == 0L) needsDeploy = true
+        if (!rishDex.exists() || rishDex.length() == 0L) needsDeploy = true
+
+        if (!needsDeploy) {
+            rishScript.setExecutable(true, false)
+            return
+        }
+
+        try {
+            context.assets.open("shizuku/rish.sh").use { input ->
+                rishScript.outputStream().use { output -> input.copyTo(output) }
+            }
+            rishScript.setExecutable(true, false)
+            rishScript.setReadable(true, false)
+            Log.i(TAG, "Deployed shizuku command to guest (${rishScript.length()} bytes)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to deploy shizuku command: ${e.message}")
+        }
+
+        try {
+            context.assets.open("shizuku/rish_shizuku.dex").use { input ->
+                rishDex.outputStream().use { output -> input.copyTo(output) }
+            }
+            rishDex.setReadable(true, false)
+            Log.i(TAG, "Deployed rish dex to guest (${rishDex.length()} bytes)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to deploy rish dex: ${e.message}")
         }
     }
 
