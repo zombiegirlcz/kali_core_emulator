@@ -201,6 +201,8 @@ class VpnCaptureService : VpnService() {
         VpnLogManager.initialize(this)
         Log.i(TAG, "Service created")
 
+        TrafficAggregator.init(this)
+
         VpnProxyManager.onProxyChangedListener = {
             if (isServiceRunning.get()) {
                 Log.i(TAG, "Proxy changed — new connections will use the new proxy")
@@ -498,6 +500,9 @@ class VpnCaptureService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error flushing logs: ${e.message}")
         }
+
+        // Zastavení TrafficAggregator
+        TrafficAggregator.shutdown()
 
         // Uzavření output streamu
         try {

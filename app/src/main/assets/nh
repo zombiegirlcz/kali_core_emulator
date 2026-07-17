@@ -83,7 +83,8 @@ system_dispatch() {
         clipboard) shift; system_clipboard "$@" ;;
         notification) shift; system_notification "$@" ;;
         speech) system_speech ;;
-        *) echo "Usage: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech"; exit 1 ;;
+        ashell) system_ashell ;;
+        *) echo "Usage: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; exit 1 ;;
     esac
 }
 
@@ -244,6 +245,17 @@ try:
     else: print(f'{R}✘  {d.get(\"error\", \"No response\")}{N}')
 except: print(f'{R}✘  Error parsing voice input{N}')
 "
+}
+
+system_ashell() {
+    # Deleguje na samostatný /usr/local/bin/ashell skript
+    if command -v ashell >/dev/null 2>&1; then
+        exec ashell
+    else
+        echo "[-] ashell script not found in PATH" >&2
+        echo "    Zkuste: /usr/local/bin/ashell" >&2
+        exit 1
+    fi
 }
 
 # ─── NETWORK ───────────────────────────────────────────────
@@ -461,6 +473,7 @@ vpn_dispatch() {
         on) shift; vpn_on "$@" ;;
         off) shift; vpn_off "$@" ;;
         logs) shift; vpn_logs "$@" ;;
+        ai) shift; vpn_ai "$@" ;;
         mitm) shift; vpn_mitm "$@" ;;
         bypass) shift; vpn_bypass "$@" ;;
         ignore) shift; vpn_ignore "$@" ;;
@@ -666,9 +679,153 @@ except: print('Error')
             ensure_token
             curl -s -H "Authorization: Bearer $TOKEN" "${API_URL}/vpn/mitm/ca"
             ;;
+        selective)
+            local address="$2"
+            local duration="${3:-30}"
+            if [ -z "$address" ]; then
+                echo "Usage: nh vpn mitm selective <ip> [duration_sec]"
+                exit 1
+            fi
+            api_post_json "/vpn/mitm/selective" "{\"address\":\"$address\",\"duration_sec\":$duration}" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}Error: {d[\"error\"]}{N}')
+    else:
+        print(f'{G}Selective MITM: {d.get(\"a\",\"?\")} for {d.get(\"duration\",30)}s{N}')
+except: print(f'{G}Selective MITM started{N}')
+"
+            ;;
         *)
-            echo "Usage: nh vpn mitm on|off|status|ca"
+            echo "Usage: nh vpn mitm on|off|status|ca|selective <ip> [sec]"
             exit 1 ;;
+    esac
+}
+
+vpn_ai() {
+    local action="$1"
+    case "$action" in
+        pending)
+            api_get "/vpn/ai/pending" | fmt "
+import sys, json
+G,R,Y,N,Gy,BOLD=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m',chr(27)+'[1m'
+try:
+    d=json.load(sys.stdin)
+    if not isinstance(d, list):
+        print(f'{R}Unexpected response{N}')
+        sys.exit(0)
+    if not d:
+        print(f'{G}✓ No pending flows{N}')
+        sys.exit(0)
+    print(f'{BOLD}Pending AI Flows ({len(d)}):{N}')
+    for f in d:
+        addr=f.get('a','?')
+        n=f.get('n',1)
+        bconf=f.get('b_conf',0)
+        reason=f.get('reason','?')
+        sni=f.get('sni') or '—'
+        esc=f.get('escalated',False)
+        ico = '🔴' if esc else '🟡'
+        print(f'  {ico} {addr}  {N}x{n}  {G}Brain:{N}{bconf:.2f}  {Gy}{reason}{N}  SNI:{sni}')
+except Exception as e:
+    print(f'{R}Parse error: {e}{N}')
+"
+            ;;
+        history)
+            local address="$2"
+            if [ -z "$address" ]; then
+                echo "Usage: nh vpn ai history <ip-address>"
+                exit 1
+            fi
+            api_get "/vpn/ai/history?address=$address" | fmt "
+import sys, json
+G,R,Y,N,Gy,BOLD=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m',chr(27)+'[1m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}{d[\"error\"]}{N}')
+        sys.exit(0)
+    print(f'{BOLD}Address History:{N} {d.get(\"a\",\"?\")}')
+    print(f'  First seen: {d.get(\"first_seen\",0)}')
+    print(f'  Last seen:  {d.get(\"last_seen\",0)}')
+    print(f'  Count:      {d.get(\"count\",0)}')
+    print(f'  Avg entropy: {d.get(\"avg_entropy\",0):.2f}')
+    print(f'  Avg interval: {d.get(\"avg_interval\",0):.0f}s')
+    print(f'  Typical port: {d.get(\"port\",0)}')
+    print(f'  Verdict:     {d.get(\"verdict\",\"unknown\")} ({d.get(\"source\",\"?\")}, conf={d.get(\"confidence\",0):.2f})')
+    print(f'  Baseline entropy: {d.get(\"baseline_entropy\",0):.2f}')
+except Exception as e:
+    print(f'{R}Parse error: {e}{N}')
+"
+            ;;
+        verdict)
+            local address="$2"
+            local verdict="$3"
+            local confidence="${4:-0.9}"
+            if [ -z "$address" ] || [ -z "$verdict" ]; then
+                echo "Usage: nh vpn ai verdict <ip> <allowed|blocked> [confidence]"
+                exit 1
+            fi
+            api_post_json "/vpn/ai/verdict" "{\"a\":\"$address\",\"v\":\"$verdict\",\"conf\":$confidence}" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}Error: {d[\"error\"]}{N}')
+    else:
+        print(f'{G}Verdict set: {d.get(\"a\",\"?\")} → {d.get(\"v\",\"?\")}{N}')
+except: print(f'{G}Verdict set{N}')
+"
+            ;;
+        summary)
+            api_get "/vpn/ai/summary" | fmt "
+import sys, json
+G,R,Y,N,Gy,BOLD=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[90m',chr(27)+'[1m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}{d[\"error\"]}{N}')
+        sys.exit(0)
+    print(f'{BOLD}Daily AI Summary ({d.get(\"date\",\"?\")}):{N}')
+    print(f'  Total flows:   {d.get(\"total_flows\",0)}')
+    print(f'  New addresses: {d.get(\"new_addresses\",0)}')
+    print(f'  Allowed:       {G}{d.get(\"allowed\",0)}{N}')
+    print(f'  Blocked:       {R}{d.get(\"blocked\",0)}{N}')
+    print(f'  Pending:       {Y}{d.get(\"pending\",0)}{N}')
+    top=d.get('top_entropy')
+    if top:
+        print(f'  Top entropy:   {Gy}{top}{N}')
+except Exception as e:
+    print(f'{R}Parse error: {e}{N}')
+"
+            ;;
+        notify)
+            local address="$2"
+            shift 2
+            local question="$*"
+            if [ -z "$address" ]; then
+                echo "Usage: nh vpn ai notify <ip> [question]"
+                exit 1
+            fi
+            api_post_json "/vpn/ai/notify" "{\"address\":\"$address\",\"question\":\"${question:-Allow connection to $address?}\",\"confidence\":0.7}" | fmt "
+import sys, json
+G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}Error: {d[\"error\"]}{N}')
+    else:
+        print(f'{G}Notification sent for {d.get(\"a\",\"?\")}{N}')
+except: print(f'{G}Notification sent{N}')
+"
+            ;;
+        *)
+            echo "Usage: nh vpn ai pending|history <ip>|verdict <ip> <v> [conf]|summary|notify <ip> [question]"
+            exit 1
+            ;;
     esac
 }
 
@@ -1137,7 +1294,7 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     echo "[*] Checking desktop dependencies..."
-    if ! command -v vncserver >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1; then
+    if ! command -v vncserver >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
         echo "[*] Installing XFCE4, VNC and noVNC..."
         apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 novnc websockify curl procps </dev/null
     fi
@@ -1254,7 +1411,7 @@ except Exception as e:
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb)
+        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|ashell)
             "help_$topic"
             ;;
         *)
@@ -1268,7 +1425,7 @@ help_dispatch() {
             echo ""
             printf "  ${CYAN}system${RST}     battery, volume, torch, vibrate, toast, clipboard, notification, speech\n"
             printf "  ${CYAN}network${RST}    wifi, cell, location, map, ifconfig\n"
-            printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, bypass, ignore, sni-fallback\n"
+            printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, ai, bypass, ignore, sni-fallback\n"
             printf "  ${CYAN}agent${RST}      config, start, stop, status, ask, chat\n"
             printf "  ${CYAN}log${RST}        [-n N] [-g P], set lvl 1-5\n"
             printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility, tap, click, longclick, swipe, text, scroll, global\n"
@@ -1277,6 +1434,7 @@ help_dispatch() {
             printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
             printf "  ${CYAN}apps${RST}       usage\n"
             printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
+            printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
             echo ""
             separator
             echo "  ${DIM}Pro detaily: nh help <kategorie>${RST}"
@@ -1328,6 +1486,12 @@ help_vpn() {
     echo "  ${GREEN}mitm on|off${RST}              Zapnout/vypnout TLS MITM"
     echo "  ${GREEN}mitm status${RST}              Stav MITM + aktivní session"
     echo "  ${GREEN}mitm ca${RST}                  Export Root CA certifikátu"
+    echo "  ${GREEN}ai pending${RST}               Čekající flow na AI rozhodnutí"
+    echo "  ${GREEN}ai history <ip>${RST}           Historie adresy"
+    echo "  ${GREEN}ai verdict <ip> <v> [conf]${RST} Nastavit verdikt (allowed/blocked)"
+    echo "  ${GREEN}ai summary${RST}                Denní statistika"
+    echo "  ${GREEN}ai notify <ip> [question]${RST} Allow/Deny notifikace"
+    echo "  ${GREEN}mitm selective <ip> [sec]${RST}  Selective MITM capture (max 60s)"
     echo "  ${GREEN}bypass <cmd>${RST}             Spustit příkaz mimo VPN"
     echo "  ${GREEN}ignore on|off|status${RST}     VPN bypass pro aktuální session"
     echo "  ${GREEN}sni-fallback get|set|clear${RST} Správa SNI fallback hostnamu"
@@ -1373,6 +1537,25 @@ help_usb() {
     echo ""
 }
 
+help_ashell() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}ASHELL${RST}  ${DIM}– escape proot → host app shell${RST}"
+    separator
+    echo "  ${GREEN}ashell${RST}                  Spustí interaktivní shell mimo PRoot,"
+    echo "                              v kontextu Android aplikace"
+    echo "                              (uid aplikace, HOME = filesDir)."
+    echo "                              Otevře nové okno TerminalActivity."
+    echo ""
+    echo "  ${YELLOW}Příklad:${RST}"
+    echo "    nh ashell                  # otevře host shell v novém okně"
+    echo ""
+    echo "  ${DIM}  Slouží k úniku z izolovaného PRootu (root@kali)"
+    echo "  do hostitelského prostředí, kde můžete pracovat"
+    echo "  s interními cestami aplikace (/data/data/com.linux_core/...).${RST}"
+    echo ""
+}
+
 list_cmds() {
     banner
     echo ""
@@ -1383,7 +1566,7 @@ list_cmds() {
         "system toast" "system clipboard" "system notification" "system speech" \
         "network wifi" "network cell" "network location" "network map" "network ifconfig" \
         "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
-        "vpn logs" "vpn mitm" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
+        "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
         "agent config" "agent start" "agent stop" "agent status" "agent ask" "agent chat" \
         "log" "log set" \
         "device admin" "device battery-optimize" "device accessibility" \
@@ -1393,7 +1576,8 @@ list_cmds() {
         "desktop start" "desktop stop" "desktop status" \
         "fix pkg" "fix auto" \
         "apps usage" \
-        "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control"; do
+        "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
+        "ashell"; do
         printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
     done
     echo ""
@@ -1402,6 +1586,37 @@ list_cmds() {
 usage() {
     help_dispatch
     exit 1
+}
+
+# ─── ASHELL (escape proot → host app user shell) ─────────
+
+ashell() {
+    # Spustí interaktivní shell v kontextu Android aplikace (mimo PRoot).
+    # Použití: ashell
+    # Běžně: ashell  → otevře novou TerminalActivity s /system/bin/sh
+    #                        a HOME = /data/data/com.linux_core/files
+    banner
+    printf "${CYAN}${BOLD}  ⬡  ASHELL  –  ESCAPE TO HOST APP SHELL${RST}\n"
+    printf "${DIM}  ─────────────────────────────────────────────────${RST}\n"
+    printf "${WHITE}   Přepne tě z PRootu (root@kali) do kontextu${RST}\n"
+    printf "${WHITE}   aplikace (uid=%s, HOME=%s)${RST}\n" \
+        "$(id -u 2>/dev/null || echo '?')" \
+        "/data/data/com.linux_core/files"
+    printf "${DIM}  ─────────────────────────────────────────────────${RST}\n"
+    api_post "/ashell" "open" | fmt "
+import sys, json
+G,R,Y,N,C=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[96m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d:
+        print(f'{R}✘  ashell failed: {d[\"error\"]}{N}')
+        sys.exit(1)
+    print(f'{C}⬡  uid={d.get(\"uid\",\"?\")}  pwd={d.get(\"pwd\",\"?\")}{N}')
+    print(f'{G}✔  Host shell otevřen v novém okně.{N}')
+    print(f'{G}   Návrat zpět do prootu: zavři okno nebo exit.{N}')
+except Exception as e:
+    print(f'{R}✘  ashell parse error: {e}{N}')
+"
 }
 
 # ─── COMPAT DISPATCH (for symlinked old names) ────────────
@@ -1666,6 +1881,7 @@ case "$CMD" in
     fix)        fix_dispatch "$@" ;;
     apps)       apps_dispatch "$@" ;;
     usb)        usb_dispatch "$@" ;;
+    ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
     help|--help|-h) help_dispatch "$@" ;;
     list)       list_cmds ;;
     *)

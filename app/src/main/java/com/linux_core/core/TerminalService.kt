@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.termux.terminal.TerminalSession
@@ -36,6 +37,12 @@ class TerminalService : Service() {
         val ignoredSessionIds = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
         val sessionNames = java.util.concurrent.ConcurrentHashMap<String, String>()
         val sessionDistros = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        // BUG 5 FIX: Atomic monotonicky rostoucí counter, který se kombinuje
+        // s nanoTime pro 100% unikátní session ID i při paralelních createSession
+        // voláních ve stejné ms (např. hamburger + BOOT UP tlačítko najednou).
+        // Dříve: "session_${currentTimeMillis()}" – kolize na úrovni ms.
+        private val sessionCounter = java.util.concurrent.atomic.AtomicLong(0L)
 
         fun getSessionId(session: TerminalSession): String? {
             return sessionIds[session]
@@ -109,27 +116,46 @@ class TerminalService : Service() {
             onError: (String) -> Unit
         ): TerminalSession {
             startService(context)
-            
-            // Inject NETHUNTER_SESSION_ID environment variable
-            val sessionId = "session_${System.currentTimeMillis()}"
-            val newEnv = config.env.toMutableList().apply {
-                add("NETHUNTER_SESSION_ID=$sessionId")
-            }.toTypedArray()
-            
-            val client = ViewHostSessionClient(view, onError)
-            val session = TerminalSession(
-                config.command[0], config.cwd, config.command, newEnv, 1000, client
-            )
-            
-            sessionIds[session] = sessionId
-            idToSession[sessionId] = session
-            sessionDistros[sessionId] = java.io.File(config.rootfsDir).name
-            
-            sessions.add(session)
-            sessionClients[session] = client
+
+            // BUG 5 FIX: Celé vytvoření session je v synchronized bloku, aby se
+            // zabránilo kolizím ID při paralelních voláních (např. hamburger
+            // tlačítko + BOOT UP). ID se skládá z:
+            //   - nanoTime (časová složka, nekolizní v rámci procesu)
+            //   - atomic counter (pořadové číslo, garantuje unikátnost i pro
+            //     dvě volání v jednom nanoTime)
+            //   - PID (bezpečnostní rezerva, kdyby se counter z nějakého
+            //     důvodu přetočil – což je u Long prakticky nemožné)
+            val session: TerminalSession
+            var sessionId: String
+            synchronized(this) {
+                val seq = sessionCounter.incrementAndGet()
+                val nanos = System.nanoTime()
+                val pid = android.os.Process.myPid()
+                sessionId = "session_${pid}_${nanos}_$seq"
+                while (idToSession.containsKey(sessionId)) {
+                    // Extrémně vzácné: počkej na další nanoTime + inkrementuj
+                    sessionId = "session_${pid}_${System.nanoTime()}_${sessionCounter.incrementAndGet()}"
+                }
+
+                val newEnv = config.env.toMutableList().apply {
+                    add("NETHUNTER_SESSION_ID=$sessionId")
+                }.toTypedArray()
+
+                val client = ViewHostSessionClient(view, onError)
+                session = TerminalSession(
+                    config.command[0], config.cwd, config.command, newEnv, 1000, client
+                )
+
+                sessionIds[session] = sessionId
+                idToSession[sessionId] = session
+                sessionDistros[sessionId] = java.io.File(config.rootfsDir).name
+
+                sessions.add(session)
+                sessionClients[session] = client
+            }
             instance?.updateNotification()
             WidgetProvider.triggerUpdate(context)
-            Log.i(TAG, "Session created. Total sessions: ${sessions.size}")
+            Log.i(TAG, "Session created (id=$sessionId). Total sessions: ${sessions.size}")
             return session
         }
 

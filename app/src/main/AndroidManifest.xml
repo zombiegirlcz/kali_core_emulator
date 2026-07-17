@@ -218,6 +218,9 @@
         <receiver
             android:name=".core.OffensiveActionReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".core.VerdictReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

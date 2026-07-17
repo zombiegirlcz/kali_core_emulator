@@ -169,20 +169,28 @@ cmd_stop() {
     return 0
 }
 
+read_port() {
+    if [ -f "$CODE_SERVER_CONFIG" ]; then
+        awk '/^bind-addr:/{split($2,a,":"); print a[2]; exit}' "$CODE_SERVER_CONFIG" 2>/dev/null
+    fi
+}
+
 cmd_status() {
+    local port
+    port=$(read_port) || port="$CODE_SERVER_PORT"
     if is_running; then
         printf '{"status":"running","port":%s,"pid":%s}\n' \
-            "$CODE_SERVER_PORT" "$(cat "$CODE_SERVER_PIDFILE")"
+            "$port" "$(cat "$CODE_SERVER_PIDFILE")"
         return 0
     fi
     # Check if port is bound by some other process
     if command -v ss >/dev/null 2>&1; then
-        if ss -ltn 2>/dev/null | grep -q ":${CODE_SERVER_PORT} "; then
-            printf '{"status":"port_busy","port":%s}\n' "$CODE_SERVER_PORT"
-            return 0
+        if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+            printf '{"status":"port_busy","port":%s}\n' "$port"
+        return 0
         fi
     fi
-    printf '{"status":"stopped","port":%s}\n' "$CODE_SERVER_PORT"
+    printf '{"status":"stopped","port":%s}\n' "$port"
     return 0
 }
 
@@ -200,10 +208,16 @@ cmd_password() {
 }
 
 cmd_info() {
-    local bin
+    local bin port bind
     bin=$(resolve_code_server_bin)
+    port=$(read_port) || port="$CODE_SERVER_PORT"
+    if [ -f "$CODE_SERVER_CONFIG" ]; then
+        bind=$(awk '/^bind-addr:/{print $2; exit}' "$CODE_SERVER_CONFIG" | cut -d: -f1) || bind="$CODE_SERVER_BIND"
+    else
+        bind="$CODE_SERVER_BIND"
+    fi
     printf '{"bind":"%s","port":%s,"workspace":"%s","config":"%s","binary":"%s"}\n' \
-        "$CODE_SERVER_BIND" "$CODE_SERVER_PORT" "$CODE_SERVER_WORKSPACE" \
+        "$bind" "$port" "$CODE_SERVER_WORKSPACE" \
         "$CODE_SERVER_CONFIG" "$bin"
     return 0
 }
