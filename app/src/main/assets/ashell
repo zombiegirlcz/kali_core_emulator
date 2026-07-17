@@ -1,0 +1,115 @@
+#!/bin/sh
+# ashell — escape PRoot container → host Android app shell
+#
+# Spustí novou TerminalActivity mimo PRoot, přímo v kontextu aplikace
+# (uid aplikace, bez PRoot).
+#
+# Primární metoda: cmd activity (ActivityManager) — nepotřebuje curl/wget ani token
+# Fallback metoda:  POST /ashell na LocalApiServer (127.0.0.1:1337)
+
+APP_PKG="com.linux_core"
+ACTIVITY="${APP_PKG}/com.linux_core.ui.terminal.TerminalActivity"
+
+echo "[*] Opouštím PRoot container → host app shell..."
+
+# ── Metoda 1: cmd/am start (ActivityManager, nepotřebuje curl) ──
+if command -v cmd >/dev/null 2>&1; then
+    cmd activity start-activity -n "$ACTIVITY" \
+        --es rootfsDirName "ashell-host" \
+        --ez mountStorage false \
+        --ez ashellMode true \
+        >/dev/null 2>&1
+    RC=$?
+    if [ $RC -eq 0 ]; then
+        echo "[+] Host shell started (via cmd activity)"
+        echo "    Nový terminál otevřen — jste v Android host shellu."
+        exit 0
+    fi
+    echo "[!] cmd activity se nezdařil (RC=$RC), zkouším fallback..." >&2
+fi
+
+# ── Metoda 2: curl/wget POST na LocalApiServer (fallback) ──
+API_URL="http://127.0.0.1:1337"
+HTTP_CLIENT=""
+
+if command -v curl >/dev/null 2>&1; then
+    HTTP_CLIENT="curl"
+elif command -v wget >/dev/null 2>&1; then
+    HTTP_CLIENT="wget"
+fi
+
+if [ -z "$HTTP_CLIENT" ]; then
+    # Ani curl, ani wget, ani am -> zkusit busybox
+    if busybox wget --help >/dev/null 2>&1; then
+        HTTP_CLIENT="busybox-wget"
+    fi
+fi
+
+if [ -z "$HTTP_CLIENT" ]; then
+    echo "[-] Error: cmd, curl, ani wget nejsou k dispozici." >&2
+    echo "    Nainstaluj curl: apt update && apt install curl -y" >&2
+    echo "    nebo spusť ručně:" >&2
+    echo "      cmd activity start-activity -n ${ACTIVITY} --es rootfsDirName ashell-host --ez ashellMode true" >&2
+    exit 1
+fi
+
+# Volitelně přečíst token (není vyžadován pro localhost /ashell)
+TOKEN=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
+    sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1)
+
+case "$HTTP_CLIENT" in
+    curl)
+        if [ -n "$TOKEN" ]; then
+            RESPONSE=$(curl -s -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                "${API_URL}/ashell" 2>/dev/null)
+        else
+            RESPONSE=$(curl -s -X POST "${API_URL}/ashell" 2>/dev/null)
+        fi
+        ;;
+    wget)
+        if [ -n "$TOKEN" ]; then
+            RESPONSE=$(wget -q -O - --header="Authorization: Bearer $TOKEN" \
+                --post-data="" "${API_URL}/ashell" 2>/dev/null)
+        else
+            RESPONSE=$(wget -q -O - --post-data="" "${API_URL}/ashell" 2>/dev/null)
+        fi
+        ;;
+    busybox-wget)
+        if [ -n "$TOKEN" ]; then
+            RESPONSE=$(busybox wget -q -O - --header="Authorization: Bearer $TOKEN" \
+                --post-data="" "${API_URL}/ashell" 2>/dev/null)
+        else
+            RESPONSE=$(busybox wget -q -O - --post-data="" "${API_URL}/ashell" 2>/dev/null)
+        fi
+        ;;
+esac
+
+if [ -z "$RESPONSE" ]; then
+    echo "[-] Error: LocalApiServer neodpovídá na ${API_URL}/ashell" >&2
+    echo "    Zkus ručně: cmd activity start-activity -n ${ACTIVITY} --es rootfsDirName ashell-host --ez ashellMode true" >&2
+    exit 1
+fi
+
+# Zpracovat JSON odpověď
+if command -v python3 >/dev/null 2>&1; then
+    echo "$RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    s = d.get('status', 'done')
+    u = d.get('uid', '?')
+    us = d.get('user', '?')
+    pw = d.get('pwd', '?')
+    print(f'[+] {s} (uid={u}, user={us})')
+    print(f'    Host filesDir: {pw}')
+    print()
+    print('    Nový terminál otevřen — jste v Android host shellu.')
+except Exception:
+    print(f'[+] Host shell started!')
+    print(f'    (raw: {sys.stdin.read().strip()})')
+"
+else
+    echo "[+] Odpověď ze serveru:"
+    echo "$RESPONSE" | sed 's/^/    /'
+fi

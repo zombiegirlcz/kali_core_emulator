@@ -11,6 +11,29 @@ object TlsClientHelloParser {
     val DOH_ALPN_PROTOCOLS = setOf("h2", "http/1.1")
     val DOH_INDICATOR = "application/dns-message"
 
+    val KNOWN_DOH_DOMAINS = setOf(
+        "cloudflare-dns.com", "one.one.one.one",
+        "dns.google", "dns.google.com",
+        "dns.quad9.net", "dns9.quad9.net",
+        "dns.nextdns.io",
+        "doh.opendns.com", "doh.familyshield.opendns.com",
+        "dns.adguard.com",
+        "dns.mullvad.net",
+        "doh.dns.sb", "doh.sb",
+        "dns.controld.com", "freedns.controld.com",
+        "doh.libredns.gr", "doh.libredns.am",
+        "dns.cfiec.net"
+    )
+
+    val KNOWN_DOH_IPS = setOf(
+        "1.1.1.1", "1.0.0.1",
+        "8.8.8.8", "8.8.4.4",
+        "9.9.9.9", "9.9.9.10",
+        "208.67.222.222", "208.67.220.220",
+        "94.140.14.14", "94.140.15.15",
+        "76.76.2.0", "76.76.10.0"
+    )
+
     fun isTlsClientHello(data: ByteArray, offset: Int = 0, len: Int = data.size): Boolean {
         if (len < 45) return false
         val contentType = data[offset].toInt() and 0xFF
@@ -128,6 +151,19 @@ object TlsClientHelloParser {
         val hasHttp = alpn.any { it in DOH_ALPN_PROTOCOLS }
         if (!hasHttp) return false
         return alpn.contains(DOH_INDICATOR)
+    }
+
+    fun isKnownDohSni(sni: String?): Boolean {
+        if (sni == null) return false
+        return KNOWN_DOH_DOMAINS.any { sni == it || sni.endsWith(".$it") }
+    }
+
+    fun isKnownDohIp(ip: String): Boolean = ip in KNOWN_DOH_IPS
+
+    fun isDohTraffic(data: ByteArray, sni: String?, dstIp: String, offset: Int = 0, len: Int = data.size): Boolean {
+        if (isDohClientHello(data, offset, len)) return true
+        if (isKnownDohSni(sni)) return true
+        return isKnownDohIp(dstIp)
     }
 
     fun resolveFallbackHost(sni: String?, dstIp: String): String =

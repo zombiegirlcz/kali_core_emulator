@@ -299,7 +299,8 @@ object LocalApiServer {
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/", "/usb/")
+                "/battery/optimize", "/app/logs", "/editor/", "/usb/",
+                "/vpn/ai/", "/vpn/mitm/selective")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -350,6 +351,7 @@ object LocalApiServer {
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
                 path == "/shell" && method == "POST" -> handleShell(body, out)
+                path == "/ashell" && method == "POST" -> handleAshell(context, body, out)
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
                 path.startsWith("/vpn/logs") && method == "GET" -> handleVpnLogs(path, out)
                 path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
@@ -382,6 +384,12 @@ object LocalApiServer {
                 path.startsWith("/vpn/mitm/logs") && method == "GET" -> handleVpnMitmLogs(context, path, out)
                 path == "/vpn/mitm/sni-fallback" && method == "POST" -> handleVpnMitmSniFallbackPost(context, body, out)
                 path == "/vpn/mitm/sni-fallback" && method == "GET" -> handleVpnMitmSniFallbackGet(context, out)
+                path == "/vpn/ai/pending" && method == "GET" -> handleVpnAiPending(out)
+                path == "/vpn/ai/history" && method == "GET" -> handleVpnAiHistory(path, out)
+                path == "/vpn/ai/verdict" && method == "POST" -> handleVpnAiVerdict(context, body, out)
+                path == "/vpn/ai/notify" && method == "POST" -> handleVpnAiNotify(context, body, out)
+                path == "/vpn/ai/summary" && method == "GET" -> handleVpnAiSummary(out)
+                path == "/vpn/mitm/selective" && method == "POST" -> handleVpnMitmSelective(body, out)
                 path == "/app/logs/level" && method == "GET" -> handleAppLogsLevel(context, out)
                 path == "/app/logs/level" && method == "POST" -> handleAppLogsLevelSet(context, body, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(context, path, out)
@@ -939,6 +947,49 @@ object LocalApiServer {
                 put("stderr", error)
             }.toString()
             sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    /**
+     * ashell — escape proot → host app shell.
+     *
+     * Spustí interaktivní shell v kontextu aplikace (uid aplikace, HOME = filesDir,
+     * mimo PRoot). Slouží k tomu, aby uživatel zevnitř guestu (root@kali) mohl
+     * přepnout do hostitelského prostředí Androidu.
+     *
+     * Implementace: spustí novou TerminalActivity s rootfsDirName="ashell-host",
+     * což donutí TerminalService vytvořit nový ProcessBuilder, který NEpoužívá
+     * PRoot, ale přímo /system/bin/sh s cestou k host filesDir.
+     *
+     * Vstup: POST /ashell  (body ignorováno, ashell je vždy interaktivní).
+     * Výstup: 200 + JSON s {status, pwd, uid}.
+     */
+    private fun handleAshell(context: Context, body: String, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            // Spustíme novou TerminalActivity v "ashell módu" (rootfsDirName="ashell-host")
+            // FLAG_ACTIVITY_NEW_TASK + FLAG_ACTIVITY_NEW_DOCUMENT + FLAG_ACTIVITY_MULTIPLE_TASK
+            // překoná singleTask launchMode a otevře novou instanci pro ashell escape.
+            val intent = Intent(ctx, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+                putExtra("rootfsDirName", "ashell-host")
+                putExtra("mountStorage", false)
+                putExtra("ashellMode", true)
+            }
+            ctx.startActivity(intent)
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("status", "ashell_started")
+                put("uid", Process.myUid())
+                put("pwd", ctx.filesDir.absolutePath)
+                put("user", "app")
+            }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
@@ -2055,6 +2106,163 @@ object LocalApiServer {
                 put("fallback", effective ?: JSONObject.NULL)
                 put("status", status)
             }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    // ── VPN AI Brain endpointy (Krok 7) ────────────────────────────
+
+    private fun handleVpnAiPending(out: OutputStream) {
+        try {
+            val aggregator = TrafficAggregator.getInstance()
+            if (aggregator == null) {
+                sendResponse(out, 503, "Service Unavailable", "{\"error\":\"TrafficAggregator not initialized\"}")
+                return
+            }
+            val pending = aggregator.getPendingFlows()
+            val array = org.json.JSONArray()
+            for (flow in pending) {
+                array.put(org.json.JSONObject().apply {
+                    put("a", flow.address)
+                    put("n", flow.occurrenceCount)
+                    put("detected", flow.detectedAt)
+                    put("expires", flow.expiresAt)
+                    put("b_conf", flow.brainConfidence)
+                    put("reason", flow.reason)
+                    put("sni", flow.sni ?: org.json.JSONObject.NULL)
+                    put("escalated", flow.escalatedToLlm)
+                })
+            }
+            sendResponse(out, 200, "OK", array.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnAiHistory(path: String, out: OutputStream) {
+        try {
+            val params = parseQueryParams(path)
+            val address = params["address"] ?: run {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"address parameter required\"}")
+                return
+            }
+            val aggregator = TrafficAggregator.getInstance()
+            if (aggregator == null) {
+                sendResponse(out, 503, "Service Unavailable", "{\"error\":\"TrafficAggregator not initialized\"}")
+                return
+            }
+            val history = aggregator.getAddressHistory(address)
+            if (history == null) {
+                sendResponse(out, 404, "Not Found", "{\"error\":\"Address not found\"}")
+                return
+            }
+            sendResponse(out, 200, "OK", org.json.JSONObject().apply {
+                put("a", history.address)
+                put("first_seen", history.firstSeen)
+                put("last_seen", history.lastSeen)
+                put("count", history.occurrenceCount)
+                put("avg_entropy", history.avgEntropy)
+                put("avg_interval", history.avgIntervalSec)
+                put("port", history.typicalPort)
+                put("verdict", history.verdict)
+                put("source", history.verdictSource)
+                put("confidence", history.verdictConfidence)
+                put("baseline_entropy", history.baselineEntropy)
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnAiVerdict(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = org.json.JSONObject(body)
+            val address = json.optString("a", "").takeIf { it.isNotBlank() } ?: run {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"'a' (address) required\"}")
+                return
+            }
+            val verdict = json.optString("v", "blocked")
+            val confidence = json.optDouble("conf", 0.5)
+            val note = json.optString("note", null)
+
+            val aggregator = TrafficAggregator.getInstance()
+            if (aggregator == null) {
+                sendResponse(out, 503, "Service Unavailable", "{\"error\":\"TrafficAggregator not initialized\"}")
+                return
+            }
+            aggregator.setVerdict(
+                address = address,
+                verdict = verdict,
+                source = "api",
+                confidence = confidence,
+                note = note
+            )
+            sendResponse(out, 200, "OK", "{\"status\":\"verdict_set\",\"a\":\"$address\",\"v\":\"$verdict\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnAiNotify(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = org.json.JSONObject(body)
+            val address = json.optString("address", "").takeIf { it.isNotBlank() } ?: run {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"'address' required\"}")
+                return
+            }
+            val question = json.optString("question", "Allow connection to $address?")
+            val confidence = json.optDouble("confidence", 0.5)
+
+            VerdictNotifier.notify(
+                address = address,
+                question = question,
+                confidence = confidence,
+                context = context
+            )
+            sendResponse(out, 200, "OK", "{\"status\":\"notified\",\"a\":\"$address\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnAiSummary(out: OutputStream) {
+        try {
+            val aggregator = TrafficAggregator.getInstance()
+            if (aggregator == null) {
+                sendResponse(out, 503, "Service Unavailable", "{\"error\":\"TrafficAggregator not initialized\"}")
+                return
+            }
+            val stat = aggregator.getDailyStat()
+            if (stat == null) {
+                sendResponse(out, 200, "OK", "{\"total_flows\":0,\"blocked\":0,\"allowed\":0,\"pending\":0}")
+                return
+            }
+            sendResponse(out, 200, "OK", org.json.JSONObject().apply {
+                put("date", stat.date)
+                put("total_flows", stat.totalFlows)
+                put("new_addresses", stat.newAddresses)
+                put("blocked", stat.blockedCount)
+                put("allowed", stat.allowedCount)
+                put("pending", stat.pendingCount)
+                put("top_entropy", stat.topEntropyAddress ?: org.json.JSONObject.NULL)
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleVpnMitmSelective(body: String, out: OutputStream) {
+        try {
+            val json = org.json.JSONObject(body)
+            val address = json.optString("address", "").takeIf { it.isNotBlank() } ?: run {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"'address' required\"}")
+                return
+            }
+            val durationSec = json.optInt("duration_sec", 30).coerceIn(1, 60)
+
+            TlsMitmEngine.startCaptureOnlyForAddress(address, durationSec * 1000L)
+            sendResponse(out, 200, "OK", "{\"status\":\"selective_mitm\",\"a\":\"$address\",\"duration\":$durationSec}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

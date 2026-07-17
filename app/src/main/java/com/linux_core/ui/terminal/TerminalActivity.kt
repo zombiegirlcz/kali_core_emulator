@@ -90,7 +90,6 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var tabLayout: LinearLayout
     private lateinit var btnAddSession: Button
     private var isDrawerExpanded = false
-    private lateinit var btnFloatingMenu: TextView
     private lateinit var topBar: LinearLayout
     private lateinit var statusTitle: TextView
     private var drawerUpdateHandler = Handler(Looper.getMainLooper())
@@ -388,35 +387,6 @@ class TerminalActivity : ComponentActivity() {
 
         terminalContainer.addView(terminalView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-
-        btnFloatingMenu = TextView(this).apply {
-            text = "☰"
-            textSize = 24f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#8000FF41")) // semi-transparent neon green
-            setBackgroundColor(Color.TRANSPARENT)
-            setPadding(12, 12, 12, 12)
-            val params = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins(4, 4, 4, 4)
-            }
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                isDrawerExpanded = false
-                val minWidthPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 70f, resources.displayMetrics).toInt()
-                val dParams = drawerView.layoutParams as DrawerLayout.LayoutParams
-                dParams.width = minWidthPx
-                drawerView.layoutParams = dParams
-                drawerView.requestLayout()
-                updateSessionDrawer()
-                drawerLayout.openDrawer(Gravity.START)
-            }
-        }
-        terminalContainer.addView(btnFloatingMenu)
 
         errorLayout = buildErrorOverlay()
         terminalContainer.addView(errorLayout, FrameLayout.LayoutParams(
@@ -848,7 +818,6 @@ class TerminalActivity : ComponentActivity() {
             btnTouchToggle.visibility = View.GONE
             
             topBar.visibility = View.VISIBLE
-            btnFloatingMenu.visibility = View.GONE
             
             showSoftKeyboard()
         } else {
@@ -865,7 +834,6 @@ class TerminalActivity : ComponentActivity() {
             btnTouchToggle.visibility = View.VISIBLE
 
             topBar.visibility = View.VISIBLE
-            btnFloatingMenu.visibility = View.GONE
 
             // Hide soft keyboard when switching to GUI
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
@@ -1276,6 +1244,13 @@ class TerminalActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // ashell escape: pokud je extra nastavený na novém intentu (např. singleTask
+        // nedovolil vytvoření nové instance), spustíme ashell session v téhle aktivitě
+        if (intent.getBooleanExtra("ashellMode", false) ||
+            intent.getStringExtra("rootfsDirName") == "ashell-host") {
+            startAshellSession()
+            return
+        }
         handleFileIntent(intent)
     }
 
@@ -2446,7 +2421,10 @@ class TerminalActivity : ComponentActivity() {
             val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
             lifecycleScope.launch(Dispatchers.IO) {
                 val cfg = try {
-                    ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false)
+                    val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
+                                   distroName.startsWith("docker-") ||
+                                   distroName.startsWith("oci-")
+                    ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker)
                 } catch (e: Exception) {
                     Log.e(TAG, "Attach setup failed for $distroName", e)
                     null
@@ -2461,6 +2439,18 @@ class TerminalActivity : ComponentActivity() {
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
         val customCommand = intent.getStringExtra("customCommand")
+        val ashellMode = intent.getBooleanExtra("ashellMode", false)
+        // Docker image: rozpozná se podle extra, prefixu adresáře nebo fallback na .docker_image soubor
+        val isDockerImage = intent.getBooleanExtra("isDockerImage", false) ||
+                            rootfsDirName.startsWith("docker-") ||
+                            rootfsDirName.startsWith("oci-") ||
+                            File(filesDir, "$rootfsDirName/.docker_image").exists()
+
+        // ashell: escape z prootu do host app shellu (/system/bin/sh, bez PRoot)
+        if (ashellMode || rootfsDirName == "ashell-host") {
+            startAshellSession()
+            return
+        }
 
         val rootfsDir = File(filesDir, rootfsDirName)
         val setupDoneFile = File(rootfsDir, "root/.setup_done")
@@ -2470,22 +2460,51 @@ class TerminalActivity : ComponentActivity() {
                 .setTitle("Detekce Rootu")
                 .setMessage("Má Vaše zařízení ROOT oprávnění (Magisk / KernelSU)?\n\nPokud zvolíte 'Ano', nebudou se vytvářet falešné mock soubory pro systémové příkazy (jako systemctl, sysctl, atd.), protože je nebudete potřebovat.")
                 .setPositiveButton("Ano") { _, _ ->
-                    startSetup(rootfsDirName, mountStorage, customCommand, true)
+                    startSetup(rootfsDirName, mountStorage, customCommand, true, isDockerImage)
                 }
                 .setNegativeButton("Ne") { _, _ ->
-                    startSetup(rootfsDirName, mountStorage, customCommand, false)
+                    startSetup(rootfsDirName, mountStorage, customCommand, false, isDockerImage)
                 }
                 .setCancelable(false)
                 .show()
         } else {
-            startSetup(rootfsDirName, mountStorage, customCommand, false)
+            startSetup(rootfsDirName, mountStorage, customCommand, false, isDockerImage)
         }
     }
 
-    private fun startSetup(rootfsDirName: String, mountStorage: Boolean, customCommand: String?, hasRoot: Boolean) {
+    /**
+     * ashell — spustí interaktivní host shell (bez PRoot, mimo guest).
+     * Používá /system/bin/sh s HOME = filesDir. Slouží jako escape z prootu.
+     */
+    private fun startAshellSession() {
+        Log.i(TAG, "startAshellSession: escape proot → host app shell")
+        val cwd = filesDir
+        // TerminalSession spouští config.command[0] s config.command jako argv.
+        // Chceme prostě /system/bin/sh -i (interaktivní), cwd = filesDir.
+        val cmd = arrayOf("/system/bin/sh", "-i")
+        val env = arrayOf(
+            "HOME=${filesDir.absolutePath}",
+            "USER=app",
+            "PATH=/system/bin:/system/xbin:/vendor/bin",
+            "TERM=xterm-256color",
+            "ANDROID_DATA=/data",
+            "ANDROID_ROOT=/system"
+        )
+        val cfg = com.linux_core.core.ProotConfig(
+            command = cmd,
+            cwd = cwd.absolutePath,
+            env = env,
+            prootPath = "",
+            rootfsDir = "(host)"   // sentinel: Není rootfs, jsme v hostu
+        )
+        config = cfg
+        startTerminalSession(cfg)
+    }
+
+    private fun startSetup(rootfsDirName: String, mountStorage: Boolean, customCommand: String?, hasRoot: Boolean, isDockerImage: Boolean = false) {
         lifecycleScope.launch(Dispatchers.IO) {
             val result = try {
-                ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot)
+                ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot, isDockerImage)
             } catch (e: Exception) {
                 Log.e(TAG, "Setup failed for $rootfsDirName", e)
                 null
