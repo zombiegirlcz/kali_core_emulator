@@ -667,7 +667,7 @@ object ProotManager {
 
     /**
      * Deploy Shizuku rish shell (shizuku command) into the guest filesystem.
-     * Only deployed for arm64 (aarch64) — other archs are not supported.
+     * Shizuku native binaries in assets are arm64 — other archs are not supported.
      */
     private fun deployShizukuRish(context: Context, rootfsDir: File) {
         val binDir = File(rootfsDir, "usr/local/bin")
@@ -683,6 +683,7 @@ object ProotManager {
 
         if (!needsDeploy) {
             rishScript.setExecutable(true, false)
+            rishScript.setReadable(true, false)
             return
         }
 
@@ -692,6 +693,7 @@ object ProotManager {
             }
             rishScript.setExecutable(true, false)
             rishScript.setReadable(true, false)
+            rishScript.setWritable(true, false)
             Log.i(TAG, "Deployed shizuku command to guest (${rishScript.length()} bytes)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to deploy shizuku command: ${e.message}")
@@ -702,6 +704,7 @@ object ProotManager {
                 rishDex.outputStream().use { output -> input.copyTo(output) }
             }
             rishDex.setReadable(true, false)
+            rishDex.setWritable(false, false)
             Log.i(TAG, "Deployed rish dex to guest (${rishDex.length()} bytes)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to deploy rish dex: ${e.message}")

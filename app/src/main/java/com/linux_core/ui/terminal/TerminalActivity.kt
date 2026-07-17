@@ -2633,8 +2633,7 @@ class TerminalActivity : ComponentActivity() {
             btnShizuku = Button(this@TerminalActivity).apply {
                 text = "\u26A1 SHIZU \u25CB"
                 textSize = 9f
-                typeface = Typeface.MONOSPACE
-                setTypeface(Typeface.DEFAULT_BOLD)
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextColor(Color.Gray)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
@@ -2658,8 +2657,7 @@ class TerminalActivity : ComponentActivity() {
             btnCode = Button(this@TerminalActivity).apply {
                 text = "[code] CODE \u25CB"
                 textSize = 9f
-                typeface = Typeface.MONOSPACE
-                setTypeface(Typeface.DEFAULT_BOLD)
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextColor(Color.Gray)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
@@ -2683,8 +2681,7 @@ class TerminalActivity : ComponentActivity() {
             btnPhoenix = Button(this@TerminalActivity).apply {
                 text = "\uD83D\uDD25 PHOENIX \u25CB"
                 textSize = 9f
-                typeface = Typeface.MONOSPACE
-                setTypeface(Typeface.DEFAULT_BOLD)
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextColor(Color.Gray)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
@@ -2707,8 +2704,7 @@ class TerminalActivity : ComponentActivity() {
             Button(this@TerminalActivity).apply {
                 text = "\u25B6 ALL"
                 textSize = 9f
-                typeface = Typeface.MONOSPACE
-                setTypeface(Typeface.DEFAULT_BOLD)
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextColor(Color.parseColor("#00FF41"))
                 background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#00FF41"), 1f)
                 setPadding(10, 4, 10, 4)
@@ -2793,7 +2789,7 @@ class TerminalActivity : ComponentActivity() {
         updateServiceIndicator("phoenix", btnPhoenix)
 
         if (expandedService != null) {
-            updateServiceDetail(expandedService!!)
+            updateServiceDetail(expandedService)
         }
     }
 
@@ -2841,8 +2837,7 @@ class TerminalActivity : ComponentActivity() {
                     text = "\u26A1 SHIZUKU SERVER  $icon"
                     setTextColor(color)
                     textSize = 11f
-                    typeface = Typeface.MONOSPACE
-                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 })
 
                 row.addView(TextView(this).apply {
@@ -2927,8 +2922,7 @@ class TerminalActivity : ComponentActivity() {
                     text = "[code] CODE-SERVER  $icon"
                     setTextColor(color)
                     textSize = 11f
-                    typeface = Typeface.MONOSPACE
-                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 })
 
                 if (running) {
@@ -3007,8 +3001,7 @@ class TerminalActivity : ComponentActivity() {
                     text = "\uD83D\uDD25 PHOENIX OTLP  \u25CB"
                     setTextColor(Color.Gray)
                     textSize = 11f
-                    typeface = Typeface.MONOSPACE
-                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 })
 
                 row.addView(View(this).apply {
