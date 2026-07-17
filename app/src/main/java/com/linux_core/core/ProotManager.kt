@@ -22,8 +22,7 @@ object ProotManager {
         rootfsDirName: String = "kali-arm64",
         mountStorage: Boolean = false,
         customCommand: String? = null,
-        hasRoot: Boolean = false,
-        isDockerImage: Boolean = false
+        hasRoot: Boolean = false
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -86,22 +85,48 @@ object ProotManager {
         val standaloneLoader = File(context.filesDir, "loader.standalone")
 
         val launcherFile = File(rootDir, "launcher.sh")
-        // Šablona launcher.sh je v assets/launcher.sh – nasadí ji deployLauncherScript()
-        // a vyplní placeholdery (__PROOT_BIN__, __ROOTFS_DIR__ atd.). Žádné ruční
-        // StringBuilder.append peklo, žádná duplikace kódu mezi Docker a non-Docker.
-        deployLauncherScript(
-            context = context,
-            launcherFile = launcherFile,
-            rootfsDir = rootfsDir,
-            prootBin = prootBin,
-            loaderBin = loaderBin,
-            tallocLib = tallocLib,
-            standaloneProot = standaloneProot,
-            standaloneLoader = standaloneLoader,
-            tmpDir = tmpDir,
-            mountStorage = mountStorage,
-            isDockerImage = isDockerImage
-        )
+        val scriptContent = StringBuilder().apply {
+            append("#!/system/bin/sh").append(NL)
+            // Preflight diagnostics
+            append("log -t ProotLauncher \"[PROOT] Starting launcher.sh\"").append(NL)
+            // Try dynamic proot first (needs loader+talloc), fall back to standalone
+            append("USE_PROOT=\"${prootBin.absolutePath}\"").append(NL)
+            append("USE_LOADER=\"${loaderBin.absolutePath}\"").append(NL)
+            append("if [ -x \"${'$'}USE_PROOT\" ] && [ -x \"${'$'}USE_LOADER\" ] && [ -f \"${tallocLib.absolutePath}\" ]; then").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] Using dynamic proot with LOADER+talloc\"").append(NL)
+            append("  export PROOT_LOADER=\"${'$'}USE_LOADER\"").append(NL)
+            append("  export LD_LIBRARY_PATH=\"${context.filesDir.absolutePath}\"").append(NL)
+            append("elif [ -x \"${standaloneProot.absolutePath}\" ] && [ -x \"${standaloneLoader.absolutePath}\" ]; then").append(NL)
+            append("  USE_PROOT=\"${standaloneProot.absolutePath}\"").append(NL)
+            append("  USE_LOADER=\"${standaloneLoader.absolutePath}\"").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] Using standalone proot (static)\"").append(NL)
+            append("  export PROOT_LOADER=\"${'$'}USE_LOADER\"").append(NL)
+            append("else").append(NL)
+            append("  log -t ProotLauncher \"[PROOT] FATAL: no usable proot+loader combination found\"").append(NL)
+            append("  exit 1").append(NL)
+            append("fi").append(NL)
+            append("log -t ProotLauncher \"[PROOT] proot binary: ${'$'}USE_PROOT (exists=\$(test -f \"${'$'}USE_PROOT\" && echo yes || echo no), exec=\$(test -x \"${'$'}USE_PROOT\" && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] loader binary: ${'$'}USE_LOADER (exists=\$(test -f \"${'$'}USE_LOADER\" && echo yes || echo no), exec=\$(test -x \"${'$'}USE_LOADER\" && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] talloc lib: ${tallocLib.absolutePath} (exists=$(test -f '${tallocLib.absolutePath}' && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] rootfs: ${rootfsDir.absolutePath} (exists=$(test -d '${rootfsDir.absolutePath}' && echo yes || echo no))\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] /bin/bash in rootfs: (exists=$(test -e '${rootfsDir.absolutePath}/bin/bash' && echo yes || echo no), islink=$(test -L '${rootfsDir.absolutePath}/bin/bash' && echo yes || echo no))\"").append(NL)
+            append("export PROOT_TMP_DIR=\"${tmpDir.absolutePath}\"").append(NL)
+            append("export HOME=/root").append(NL)
+            append("export USER=root").append(NL)
+            append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
+            append("export TERM=xterm-256color").append(NL)
+            append("export LANG=C.UTF-8").append(NL)
+            append("unset LD_PRELOAD").append(NL)
+            append("cd \"${context.filesDir.absolutePath}\"").append(NL)
+            val baseFlags = "-v 0 --kill-on-exit --link2symlink -0 -r ${rootfsDir.absolutePath} -b /dev -b /proc -b /sys -b /system -b /dev/bus/usb -b ${tmpDir.absolutePath}:/tmp -w /root"
+            val sdcardMount = if (mountStorage) " -b /sdcard" else ""
+            append("log -t ProotLauncher \"[PROOT] Executing proot now...\"").append(NL)
+            append("exec ${'$'}USE_PROOT ${baseFlags}${sdcardMount} /bin/bash /root/entrypoint.sh \"\$@\"").append(NL)
+            append("log -t ProotLauncher \"[PROOT] exec returned \$? (should not reach here)\"").append(NL)
+        }.toString()
+        
+        launcherFile.writeText(scriptContent)
+        launcherFile.setExecutable(true, false)
 
         val fullCommand = mutableListOf("/system/bin/sh", launcherFile.absolutePath)
         if (!customCommand.isNullOrEmpty()) {
@@ -353,9 +378,8 @@ object ProotManager {
             append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
             
             append("if [ -f /root/.bootstrap_required ]; then").append(NL)
-            append("    if /bin/bash /root/bootstrap.sh; then").append(NL)
-            append("        rm -f /root/.bootstrap_required").append(NL)
-            append("    fi").append(NL)
+            append("    /bin/bash /root/bootstrap.sh").append(NL)
+            append("    rm -f /root/.bootstrap_required").append(NL)
             append("    # Restore debconf confmodule if bootstrap left it disabled").append(NL)
             append("    if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
             append("        mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
@@ -410,7 +434,22 @@ object ProotManager {
     }
 
     private fun fixLdLinuxSymlinks(context: Context, rootfsDir: File) {
+        // Also copy the loader into the rootfs as ld-linux fallback
+        val loaderFile = File(context.filesDir, "loader")
         val tallocFile = File(context.filesDir, "libtalloc.so.2")
+        for (destRel in listOf("lib/ld-linux-aarch64.so.1", "lib64/ld-linux-aarch64.so.1")) {
+            val dest = File(rootfsDir, destRel)
+            if (!dest.exists() || dest.length() == 0L) {
+                dest.parentFile?.mkdirs()
+                try {
+                    loaderFile.copyTo(dest, overwrite = true)
+                    dest.setExecutable(true, false)
+                    Log.i(TAG, "Installed loader into rootfs: $destRel")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to install loader into rootfs: ${e.message}")
+                }
+            }
+        }
         // Copy talloc into rootfs lib so guest binaries can find it
         val tallocDest = File(rootfsDir, "lib/libtalloc.so.2")
         if (!tallocDest.exists() || tallocDest.length() == 0L) {
@@ -435,9 +474,7 @@ object ProotManager {
                         resolvedFile.copyTo(linkFile)
                         linkFile.setExecutable(true, false)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "fixLdLinuxSymlinks failed for $relPath: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
         }
     }
@@ -524,29 +561,6 @@ object ProotManager {
                 append("echo \"[*] Executing in VPN bypass mode: \$@\"").append(NL)
                 append("exec \"\$@\"").append(NL)
             }.toString(),
-            "terminalmap" to buildString {
-                appendLine("#!/system/bin/sh")
-                appendLine("# terminalmap wrapper — explicitní ld-linux + LD_LIBRARY_PATH pro glibc")
-                appendLine("# Proot nasazuje loader jako ld-linux fallback, ale pro glibc binary")
-                appendLine("# potřebujeme skutečný dynamic linker z rootfs.")
-                appendLine("")
-                appendLine("# Hledat ld-linux v rootfs (Kali/Parrot ho má v /lib/aarch64-linux-gnu/)")
-            appendLine("for ld in \"/lib/ld-linux-aarch64.so.1\" \"/lib64/ld-linux-aarch64.so.1\" \"/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\"; do")
-                appendLine("    if [ -x \"\$ld\" ]; then")
-                appendLine("        LDR=\"\$ld\"")
-                appendLine("        break")
-                appendLine("    fi")
-                appendLine("done")
-                appendLine("")
-                appendLine("if [ -z \"\$LDR\" ] || [ ! -f \"/data/data/com.linux_core/files/terminalmap\" ]; then")
-                appendLine("    echo \"[-] terminalmap: binary or dynamic linker not found\" >&2")
-                appendLine("    exit 1")
-                appendLine("fi")
-                appendLine("")
-                appendLine("# LD_LIBRARY_PATH: host filesDir (pro talloc/proot libs) + rootfs lib")
-                appendLine("export LD_LIBRARY_PATH=\"/data/data/com.linux_core/files:/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"")
-                appendLine("exec \"\$LDR\" \"/data/data/com.linux_core/files/terminalmap\" \"\$@\"")
-            },
             "dcheck" to StringBuilder().apply {
                 append("#!/bin/sh").append(NL)
                 append("if [ \$# -eq 0 ]; then").append(NL)
@@ -591,20 +605,6 @@ object ProotManager {
             Log.i(TAG, "Deployed unified nh CLI (${nhFile.length()} bytes)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to deploy nh CLI: ${e.message}")
-        }
-
-        // Deploy ashell escape script from asset
-        val ashellFile = File(binDir, "ashell")
-        try {
-            context.assets.open("ashell").use { input ->
-                ashellFile.outputStream().use { output -> input.copyTo(output) }
-            }
-            ashellFile.setExecutable(true, false)
-            ashellFile.setReadable(true, false)
-            ashellFile.setWritable(true, false)
-            Log.i(TAG, "Deployed ashell escape script (${ashellFile.length()} bytes)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to deploy ashell: ${e.message}")
         }
 
         // Create backward-compat symlinks pointing to nh
@@ -1223,73 +1223,6 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
             Log.i(TAG, "Deployed /etc/motd for $distroId")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write /etc/motd: ${e.message}")
-        }
-    }
-
-    /**
-     * Nasadí launcher.sh z assets/ do filesDir (nebo rootDir) a vyplní
-     * placeholdery skutečnými cestami. Společné pro Docker i non-Docker –
-     * šablona assets/launcher.sh se větví přes __DOCKER_MODE__.
-     *
-     * @param launcherFile   cílový soubor (typicky rootDir/launcher.sh)
-     * @param isDockerImage  true = Docker image, false = běžná distribuce
-     */
-    private fun deployLauncherScript(
-        context: Context,
-        launcherFile: File,
-        rootfsDir: File,
-        prootBin: File,
-        loaderBin: File,
-        tallocLib: File,
-        standaloneProot: File,
-        standaloneLoader: File,
-        tmpDir: File,
-        mountStorage: Boolean,
-        isDockerImage: Boolean
-    ) {
-        val template = try {
-            context.assets.open("launcher.sh").use { input ->
-                input.bufferedReader().use { it.readText() }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read launcher.sh from assets: ${e.message}")
-            return
-        }.replace("\r\n", "\n").replace("\r", "\n")
-
-        val logPrefix = if (isDockerImage) "ProotDocker" else "ProotLauncher"
-        val sdcardMount = if (mountStorage) " -b /sdcard" else ""
-
-        val rendered = template
-            .replace("__PROOT_BIN__", prootBin.absolutePath)
-            .replace("__LOADER_BIN__", loaderBin.absolutePath)
-            .replace("__TALLOC_LIB__", tallocLib.absolutePath)
-            .replace("__STANDALONE_PROOT__", standaloneProot.absolutePath)
-            .replace("__STANDALONE_LOADER__", standaloneLoader.absolutePath)
-            .replace("__ROOTFS_DIR__", rootfsDir.absolutePath)
-            .replace("__ROOTFS_NAME__", rootfsDir.name)
-            .replace("__TMP_DIR__", tmpDir.absolutePath)
-            .replace("__FILES_DIR__", context.filesDir.absolutePath)
-            .replace("__SDCARD_MOUNT__", sdcardMount)
-            .replace("__DOCKER_MODE__", if (isDockerImage) "1" else "0")
-            .replace("__LOG_PREFIX__", logPrefix)
-
-        // Ověř, že všechny placeholdery byly nahrazeny (jinak by se spustil
-        // skript s __PROOT_BIN__ v textu – tichá chyba).
-        val unfilled = Regex("__[A-Z_]+__").findAll(rendered).map { it.value }.toList()
-        if (unfilled.isNotEmpty()) {
-            Log.w(TAG, "launcher.sh has unfilled placeholders: $unfilled")
-        }
-
-        try {
-            launcherFile.parentFile?.mkdirs()
-            synchronized(this) {
-                launcherFile.writeText(rendered)
-                launcherFile.setExecutable(true, false)
-                launcherFile.setReadable(true, false)
-            }
-            Log.i(TAG, "Deployed launcher.sh (${launcherFile.length()} bytes, docker=$isDockerImage, log=$logPrefix)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write launcher.sh: ${e.message}")
         }
     }
 }

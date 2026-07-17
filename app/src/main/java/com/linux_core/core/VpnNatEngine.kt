@@ -590,12 +590,11 @@ class VpnNatEngine(
                         VpnLogManager.logDnsQuery(host, "DoT", VpnLogManager.AuditCategory.ALLOWED, "DNS over TLS")
                         Log.i(TAG, "DoT query to SNI=$sni on port $DOT_PORT for client ${session.clientPort}")
                     }
-                    val dohSni = TlsClientHelloParser.extractSni(rawPeek)
-                    val dstIp = intToIp(session.destinationAddress)
-                    if (TlsClientHelloParser.isDohTraffic(rawPeek, dohSni, dstIp)) {
-                        val host = dohSni ?: dstIp
+                    if (TlsClientHelloParser.isDohClientHello(rawPeek)) {
+                        val sni = TlsClientHelloParser.extractSni(rawPeek)
+                        val host = sni ?: intToIp(session.destinationAddress)
                         VpnLogManager.logDnsQuery(host, "DoH", VpnLogManager.AuditCategory.ALLOWED, "DNS over HTTPS")
-                        Log.i(TAG, "DoH query to SNI=$dohSni (IP=$dstIp) for client ${session.clientPort}")
+                        Log.i(TAG, "DoH query to SNI=$sni for client ${session.clientPort}")
                     }
                 }
                 val looksLikeTls = isMitmEnabled() && isTls

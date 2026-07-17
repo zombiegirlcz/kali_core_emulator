@@ -738,7 +738,6 @@ fun MainScreen() {
                                         val intent = Intent(context, TerminalActivity::class.java).apply {
                                             putExtra("rootfsDirName", selectedDockerDir!!)
                                             putExtra("mountStorage", mountStorage)
-                                            putExtra("isDockerImage", true)
                                         }
                                         context.startActivity(intent)
                                     },
@@ -821,9 +820,6 @@ fun MainScreen() {
                                             Toast.makeText(context, "Enter a Docker image reference", Toast.LENGTH_SHORT).show()
                                             return@Button
                                         }
-                                        downloadJob?.cancel()
-                                        // isPullingDocker=true (nastaveno uvnitř jobu) brání double-click,
-                                        // cancel() zajišťuje že starý job neruší nový
                                         downloadJob = scope.launch {
                                             isPullingDocker = true
                                             dockerPullProgress = 0
@@ -839,7 +835,7 @@ fun MainScreen() {
                                                         selectedDockerDir = File(status).name
                                                     }
                                                 }
-                                                isDockerMode = true
+                                                isDockerMode = false
                                                 customDockerImage = ""
                                                 Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
                                             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -915,9 +911,6 @@ fun MainScreen() {
                                 val nextState = !mountStorage
                                 if (nextState && !hasStoragePermission) {
                                     requestAllFilesAccess(context)
-                                    // Nerovnávat mountStorage dokud není oprávnění potvrzeno —
-                                    // lifecycle observer (ON_RESUME) aktualizuje hasStoragePermission
-                                    return@clickable
                                 }
                                 mountStorage = nextState
                                 sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
@@ -976,8 +969,6 @@ fun MainScreen() {
                             onCheckedChange = { checked ->
                                 if (checked && !hasStoragePermission) {
                                     requestAllFilesAccess(context)
-                                    // Nepovolit mount dokud uživatel nepotvrdí oprávnění
-                                    return@Switch
                                 }
                                 mountStorage = checked
                                 sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
@@ -1066,10 +1057,8 @@ fun MainScreen() {
                         }
                     }
                 } else {
-                    val canLaunchDocker = isDockerMode && selectedDockerDir != null
-                    val canLaunchDistro = !isDockerMode && isExtracted
-                    if (canLaunchDocker || canLaunchDistro) {
-                        val activeBrandGradient = if (canLaunchDocker) {
+                    if (isExtracted || selectedDockerDir != null) {
+                        val activeBrandGradient = if (isDockerMode) {
                             Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
                         } else if (selectedDistro.id == "kali") {
                             Brush.horizontalGradient(listOf(Color(0xFF0052D4), Color(0xFF4364F7)))
@@ -1079,7 +1068,7 @@ fun MainScreen() {
 
                         Button(
                             onClick = {
-                                val rootfsDirName = if (canLaunchDocker) {
+                                val rootfsDirName = if (selectedDockerDir != null) {
                                     selectedDockerDir!!
                                 } else {
                                     selectedDistro.rootfsDirName
@@ -1087,10 +1076,6 @@ fun MainScreen() {
                                 val intent = Intent(context, TerminalActivity::class.java).apply {
                                     putExtra("rootfsDirName", rootfsDirName)
                                     putExtra("mountStorage", mountStorage)
-                                    // Docker image: přeskočí bootstrap/entrypoint v ProotManager
-                                    if (canLaunchDocker) {
-                                        putExtra("isDockerImage", true)
-                                    }
                                 }
                                 context.startActivity(intent)
                             },
@@ -1110,7 +1095,7 @@ fun MainScreen() {
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (canLaunchDocker) {
+                                    text = if (isDockerMode) {
                                         "BOOT UP " + (dockerImageRef?.fullName ?: "DOCKER").uppercase()
                                     } else {
                                         "BOOT UP " + selectedDistro.name.uppercase()
@@ -1243,20 +1228,19 @@ fun MainScreen() {
                                     modifier = Modifier.padding(14.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    val canManageDocker = isDockerMode && selectedDockerDir != null
-                                    val canManageDistro = !isDockerMode && isExtracted
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        if (canManageDocker || canManageDistro) {
+                                        if (isExtracted || selectedDockerDir != null) {
+                                            val isDockerBk = selectedDockerDir != null
                                             Button(
                                                 onClick = {
                                                     if (!hasStoragePermission) {
                                                         requestAllFilesAccess(context)
                                                     } else {
                                                         isMoreMenuExpanded = false
-                                                        if (canManageDocker) {
+                                                        if (isDockerBk && selectedDockerDir != null) {
                                                             com.linux_core.core.BackupService.startBackup(context, selectedDockerDir!!)
                                                         } else {
                                                             com.linux_core.core.BackupService.startBackup(context, selectedDistro.id)
@@ -1303,8 +1287,8 @@ fun MainScreen() {
                                         }
                                     }
 
-                                    if (canManageDocker || canManageDistro) {
-                                        val isDocker = canManageDocker
+                                    if (isExtracted || selectedDockerDir != null) {
+                                        val isDocker = selectedDockerDir != null
                                         Button(
                                             onClick = {
                                                 if (isDocker) {

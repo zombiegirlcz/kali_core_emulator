@@ -42,13 +42,6 @@ fun VpnSettingsTab() {
     var aiEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("ai_enabled", true)) }
     var aiSensitivity by remember { mutableStateOf(sharedPrefs.getFloat("ai_sensitivity", 0.5f)) }
     var aiAutoAction by remember { mutableStateOf(sharedPrefs.getInt("ai_auto_action", 1)) }
-    var llmEndpoint by remember { mutableStateOf(sharedPrefs.getString("llm_endpoint", "") ?: "") }
-    var llmApiKey by remember { mutableStateOf(sharedPrefs.getString("llm_api_key", "") ?: "") }
-    var phoenixEndpoint by remember { mutableStateOf(sharedPrefs.getString("phoenix_endpoint", "http://localhost:6006/v1/traces") ?: "http://localhost:6006/v1/traces") }
-    var phoenixEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("phoenix_enabled", true)) }
-    var notifyMode by remember { mutableStateOf(sharedPrefs.getInt("notify_mode", 0)) }
-    var verdictNotifyMode by remember { mutableStateOf(sharedPrefs.getInt("verdict_notify_mode", 0)) }
-    var selectiveMitmEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("selective_mitm_enabled", true)) }
     var isProxyEnabled by remember { mutableStateOf(VpnProxyManager.isEnabled()) }
     var customProxyIp by remember { mutableStateOf(VpnProxyManager.getCustomProxy() ?: "") }
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
@@ -58,7 +51,6 @@ fun VpnSettingsTab() {
     var enableMitm by remember { mutableStateOf(sharedPrefs.getBoolean("enable_mitm", BuildConfig.ENABLE_MITM)) }
     var logVerbosity by remember { mutableStateOf(sharedPrefs.getInt("log_verbosity", 1)) }
     var showActionMenu by remember { mutableStateOf(false) }
-    var showNotifyMenu by remember { mutableStateOf(false) }
     var customProxyError by remember { mutableStateOf(false) }
     var showLogMenu by remember { mutableStateOf(false) }
     var disallowedPackages by remember { mutableStateOf(sharedPrefs.getStringSet("disallowed_packages", emptySet()) ?: emptySet()) }
@@ -87,12 +79,6 @@ fun VpnSettingsTab() {
             putBoolean("ai_enabled", aiEnabled)
             putFloat("ai_sensitivity", aiSensitivity)
             putInt("ai_auto_action", aiAutoAction)
-            putString("llm_endpoint", llmEndpoint)
-            putString("llm_api_key", llmApiKey)
-            putString("phoenix_endpoint", phoenixEndpoint)
-            putBoolean("phoenix_enabled", phoenixEnabled)
-            putInt("verdict_notify_mode", verdictNotifyMode)
-            putBoolean("selective_mitm_enabled", selectiveMitmEnabled)
             putBoolean("mount_storage", mountStorage)
             putBoolean("enable_cross_mount", enableCrossMount)
             putBoolean("share_local_api", shareLocalApi)
@@ -279,80 +265,6 @@ fun VpnSettingsTab() {
                                     }
                                 }
                             }
-                        }
-
-                        // ─── AI Brain: LLM + Phoenix ───
-                        Spacer(modifier = Modifier.padding(top = 16.dp))
-                        Divider(color = Color(0xFF222244), thickness = 1.dp)
-                        Spacer(modifier = Modifier.padding(top = 8.dp))
-                        Text("AI Brain — LLM Arbiter & Phoenix Telemetry",
-                            color = accentOrange, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-
-                        OutlinedTextField(
-                            value = llmEndpoint,
-                            onValueChange = { llmEndpoint = it },
-                            label = { Text("LLM Endpoint", color = Color.Gray) },
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            colors = darkTextFieldColors()
-                        )
-
-                        OutlinedTextField(
-                            value = llmApiKey,
-                            onValueChange = { llmApiKey = it },
-                            label = { Text("LLM API Key (plaintext → enc on save)", color = Color.Gray) },
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                            colors = darkTextFieldColors()
-                        )
-
-                        OutlinedTextField(
-                            value = phoenixEndpoint,
-                            onValueChange = { phoenixEndpoint = it },
-                            label = { Text("Phoenix OTLP Endpoint", color = Color.Gray) },
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            colors = darkTextFieldColors()
-                        )
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Switch(checked = phoenixEnabled, onCheckedChange = { phoenixEnabled = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = accentGreen, checkedTrackColor = accentGreen.copy(alpha = 0.5f)))
-                            Text("Phoenix Export Enabled", color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        }
-
-                        Text("Verdict Notify Mode", modifier = Modifier.padding(top = 8.dp), color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        val notifyLabels = listOf("Notification (Allow/Deny)", "Silent Auto (auto-deny on timeout)")
-                        Box {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(Color(0xFF1A1A3E), RoundedCornerShape(8.dp))
-                                    .border(1.dp, Color(0xFF222244), RoundedCornerShape(8.dp))
-                                    .clickable { showNotifyMenu = true }
-                                    .padding(12.dp)
-                            ) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(notifyLabels[notifyMode], color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                    Text("▼", color = accentGreen, fontSize = 12.sp)
-                                }
-                            }
-                            DropdownMenu(expanded = showNotifyMenu, onDismissRequest = { showNotifyMenu = false },
-                                modifier = Modifier.background(Color(0xFF1A1A3E)).border(1.dp, Color(0xFF222244))) {
-                                notifyLabels.forEachIndexed { index, label ->
-                                    DropdownMenuItem(text = { Text(label, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
-                                        onClick = { notifyMode = index; showNotifyMenu = false })
-                                }
-                            }
-                        }
-
-                        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Switch(checked = selectiveMitmEnabled, onCheckedChange = { selectiveMitmEnabled = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = accentGreen, checkedTrackColor = accentGreen.copy(alpha = 0.5f)))
-                            Text("Selective MITM Capture Enabled", color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }

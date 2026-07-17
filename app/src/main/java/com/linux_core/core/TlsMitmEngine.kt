@@ -29,51 +29,6 @@ object TlsMitmEngine {
     private var selector: Selector? = null
     @Volatile private var appContext: android.content.Context? = null
 
-    // ── Selective MITM (capture-only pro konkrétní IP) ──────────────
-    @Volatile private var selectiveTargetIp: String? = null
-    @Volatile private var selectiveExpiresAt: Long = 0L
-
-    /**
-     * Zapne capture-only MITM pouze pro jednu cílovou IP.
-     * Všechny ostatní TLS spojení jdou passthrough.
-     * @param ip Cílová IPv4 adresa
-     * @param durationMs Doba trvání v ms (max 60 000 = 1 min)
-     */
-    fun startCaptureOnlyForAddress(ip: String, durationMs: Long) {
-        val clamped = durationMs.coerceIn(1_000L, 60_000L)
-        selectiveTargetIp = ip
-        selectiveExpiresAt = System.currentTimeMillis() + clamped
-        Log.i(TAG, "Selective MITM capture for $ip (${clamped}ms, expires at $selectiveExpiresAt)")
-    }
-
-    /** Vypne selective MITM */
-    fun stopSelectiveCapture() {
-        selectiveTargetIp = null
-        selectiveExpiresAt = 0L
-        Log.i(TAG, "Selective MITM capture stopped")
-    }
-
-    /**
-     * Je selective MITM stále aktivní?
-     * Pokud vypršel timeout, automaticky se vypne.
-     */
-    fun isSelectiveCaptureActive(): Boolean {
-        val ip = selectiveTargetIp ?: return false
-        if (System.currentTimeMillis() > selectiveExpiresAt) {
-            stopSelectiveCapture()
-            return false
-        }
-        return true
-    }
-
-    /** Cílová IP selective MITM (null pokud není aktivní) */
-    fun getSelectiveTargetIp(): String? = selectiveTargetIp?.takeIf { isSelectiveCaptureActive() }
-
-    /** Převede int (network byte order) na IPv4 string */
-    private fun intToIp(addr: Int): String {
-        return "${addr and 0xFF}.${(addr shr 8) and 0xFF}.${(addr shr 16) and 0xFF}.${(addr shr 24) and 0xFF}"
-    }
-
     data class MitmSessionInfo(
         val clientPort: Int,
         val sni: String?,
@@ -105,29 +60,12 @@ object TlsMitmEngine {
             return
         }
         if (!TlsClientHelloParser.isTlsClientHello(payload)) return
-
-        // ── Selective MITM check ────────────────────────────────────
-        // Pokud je aktivní selective MITM, zachytíme jen cílovou IP.
-        // Všechny ostatní IP propustíme passthrough (žádný MITM).
-        val selectiveIp = getSelectiveTargetIp()
-        if (selectiveIp != null) {
-            val destIp = intToIp(session.destinationAddress)
-            if (destIp != selectiveIp) {
-                // Tato IP není cílem — necháme ji projít bez MITM
-                Log.v(TAG, "Selective MITM skip $destIp (target=$selectiveIp)")
-                return
-            }
-            Log.i(TAG, "Selective MITM capture $destIp:$session.destinationPort")
-        }
-
         selector?.let { sel ->
             session.socketChannel?.keyFor(sel)?.cancel()
         }
         session.socketChannel?.close()
         session.socketChannel = null
-        val baseCaptureOnly = VpnSettings.isMitmCaptureOnly(vpnService)
-        // Pokud je aktivní selective MITM, vynutíme captureOnly=true
-        val captureOnly = baseCaptureOnly || (selectiveIp != null)
+        val captureOnly = VpnSettings.isMitmCaptureOnly(vpnService)
         val mitm = TlsMitmSession(vpnService, session, payload, writeToTun, captureOnly)
         sessions[session.clientPort] = mitm
         session.isTlsMitm = true

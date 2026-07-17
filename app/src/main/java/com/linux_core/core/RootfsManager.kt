@@ -713,21 +713,6 @@ object RootfsManager {
                 Log.w("RootfsManager", "Pulled image may not be a valid rootfs (no bin/lib found)")
             }
 
-            // 3b. Označ rootfs jako Docker image (marker pro ProotManager/ashell fallback)
-            // - Přeskočí bootstrap/entrypoint v ProotManager.setupProotEnvironment
-            // - Nastaví /etc/resolv.conf + /etc/hostname (kontejner-like identita)
-            try {
-                File(rootfsDir, ".docker_image").writeText(
-                    "image=${imageRef.fullName}:${imageRef.tag}\n" +
-                    "pulled_at=${System.currentTimeMillis()}\n" +
-                    "namespace=${imageRef.namespace}\n" +
-                    "repository=${imageRef.repository}\n"
-                )
-                File(rootfsDir, "etc/hostname").writeText("${imageRef.repository}-docker\n")
-            } catch (e: Exception) {
-                Log.w("RootfsManager", "Failed to write docker markers: ${e.message}")
-            }
-
             emit(100 to rootfsDir.absolutePath)
             Log.i("RootfsManager", "Docker image pull complete: ${rootfsDir.absolutePath}")
 
