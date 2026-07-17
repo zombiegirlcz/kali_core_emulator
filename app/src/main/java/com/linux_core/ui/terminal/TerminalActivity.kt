@@ -2833,9 +2833,9 @@ class TerminalActivity : ComponentActivity() {
 
         when (service) {
             "shizuku" -> {
-                val status = com.linux_core.core.ShizukuManager.status(applicationContext)
-                val icon = if (status.running) "\u25CF" else "\u25CB"
-                val color = if (status.running) Color.parseColor("#00FF41") else Color.Gray
+                val st = com.linux_core.core.ShizukuManager.status(applicationContext)
+                val icon = if (st.running) "\u25CF" else "\u25CB"
+                val color = if (st.running) Color.parseColor("#00FF41") else Color.Gray
 
                 row.addView(TextView(this).apply {
                     text = "\u26A1 SHIZUKU SERVER  $icon"
@@ -2845,21 +2845,26 @@ class TerminalActivity : ComponentActivity() {
                     setTypeface(Typeface.DEFAULT_BOLD)
                 })
 
-                if (status.running) {
-                    row.addView(TextView(this).apply {
-                        val info = "  pid:${status.pid ?: "?"}  uid:${status.uid?.toString() ?: "shell"}"
-                        text = info
-                        setTextColor(Color.LightGray)
-                        textSize = 10f
-                        typeface = Typeface.MONOSPACE
-                    })
-                }
+                row.addView(TextView(this).apply {
+                    val info = when {
+                        st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
+                        st.suAvailable -> "  su available"
+                        st.shizukuApkPath != null -> "  Shizuku APK ready"
+                        st.adbAvailable -> "  ADB enabled"
+                        else -> ""
+                    }
+                    text = info
+                    setTextColor(Color.LightGray)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                })
 
                 row.addView(View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
                 })
 
-                if (status.running) {
+                // START/STOP button
+                if (st.running) {
                     row.addView(Button(this).apply {
                         text = "\u23F9 STOP"
                         textSize = 9f
@@ -2876,7 +2881,7 @@ class TerminalActivity : ComponentActivity() {
                             updateAllServiceIndicators()
                         }
                     })
-                } else {
+                } else if (st.suAvailable || st.shizukuApkPath != null) {
                     row.addView(Button(this).apply {
                         text = "\u25B6 START"
                         textSize = 9f
@@ -2891,6 +2896,23 @@ class TerminalActivity : ComponentActivity() {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             com.linux_core.core.ShizukuManager.startServer(applicationContext)
                             updateAllServiceIndicators()
+                        }
+                    })
+                } else {
+                    // No startup method available — show setup options
+                    row.addView(Button(this).apply {
+                        text = "\u2699 SETUP"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FF6B35"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            showShizukuSetupDialog()
                         }
                     })
                 }
@@ -3058,6 +3080,50 @@ class TerminalActivity : ComponentActivity() {
             .setPositiveButton("SAVE") { _, _ ->
                 val newEndpoint = input.text.toString().trim()
                 prefs.edit().putString("phoenix_endpoint", newEndpoint).apply()
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun showShizukuSetupDialog() {
+        val sb = StringBuilder()
+        sb.appendLine("Shizuku server potřebuje root nebo ADB.")
+        sb.appendLine()
+        sb.appendLine("\u2022 Instaluj Shizuku z Play Store / F-Droid")
+        sb.appendLine("\u2022 Nebo povol Wireless debugging v Developer options")
+        sb.appendLine()
+        sb.appendLine("Po instalaci restartuj Shizuku v tomto panelu.")
+
+        val adbCmd = com.linux_core.core.ShizukuManager.getShizukuApkPath(applicationContext)
+        if (adbCmd != null) {
+            sb.appendLine()
+            sb.appendLine("ADB příkaz (spustit z počítače):")
+            sb.appendLine("adb shell /data/data/${applicationContext.packageName}/files/shizuku-server --apk=$adbCmd")
+        }
+
+        android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
+            .setTitle("\u26A1 Shizuku Setup")
+            .setMessage(sb.toString())
+            .setPositiveButton("OPEN PLAY STORE") { _, _ ->
+                try {
+                    val intent = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("market://details?id=moe.shizuku.privileged.api")
+                    )
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    val intent = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api")
+                    )
+                    startActivity(intent)
+                }
+            }
+            .setNeutralButton("OPEN ADB SETTINGS") { _, _ ->
+                try {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                    startActivity(intent)
+                } catch (e: Exception) { /* ignore */ }
             }
             .setNegativeButton("CANCEL", null)
             .show()
