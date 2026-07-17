@@ -190,8 +190,8 @@ def init_keys():
 )
 def build():
     """Build the debug APK from the source tree on the Volume."""
-    # Prefer /vol/src (uploaded via upload_src), fall back to /src-baked (baked into image)
-    if os.path.isdir("/vol/src"):
+    # Prefer /vol/src (uploaded via upload_src) if it has gradlew, else fall back to /src-baked
+    if os.path.isfile("/vol/src/gradlew"):
         src_dir = "/vol/src"
         print(f"[build] Using Volume source: {src_dir}")
     else:
