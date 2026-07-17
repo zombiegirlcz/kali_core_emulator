@@ -2877,7 +2877,7 @@ class TerminalActivity : ComponentActivity() {
                             updateAllServiceIndicators()
                         }
                     })
-                } else if (st.suAvailable || st.shizukuApkPath != null) {
+                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable) {
                     row.addView(Button(this).apply {
                         text = "\u25B6 START"
                         textSize = 9f

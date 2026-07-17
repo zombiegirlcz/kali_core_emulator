@@ -158,12 +158,10 @@ object ShizukuManager {
             ai.sourceDir
         } catch (e: PackageManager.NameNotFoundException) { null }
 
-        // 5. Check ADB debugging enabled (Settings.Global.ADB_ENABLED)
-        // This requires no special permission on Android 10+
+        // 5. Check ADB debugging — adbd running (via getprop, works without special permissions)
         val adbAvailable = try {
-            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c",
-                "settings get global adb_enabled 2>/dev/null || echo 0"))
-            p.inputStream.bufferedReader().readText().trim() == "1"
+            val p = Runtime.getRuntime().exec(arrayOf("getprop", "init.svc.adbd"))
+            p.inputStream.bufferedReader().readText().trim() == "running"
         } catch (e: Exception) { false }
 
         return ShizukuStatus(
