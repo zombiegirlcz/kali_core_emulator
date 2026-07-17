@@ -106,10 +106,30 @@ class TerminalActivity : ComponentActivity() {
     private val servicesUpdateHandler = Handler(Looper.getMainLooper())
     private val servicesPoller = object : Runnable {
         override fun run() {
-            if (isServicesExpanded) {
-                updateAllServiceIndicators()
-                servicesUpdateHandler.postDelayed(this, 5000)
+            if (!isServicesExpanded) return
+            // Run status checks on background thread — process spawning blocks
+            thread {
+                try {
+                    val shizukuSt = com.linux_core.core.ShizukuManager.status(applicationContext)
+                    val codeRaw = runCodeServerCtl("status")
+                    val codeRunning = codeRaw.contains("running", ignoreCase = true) ||
+                            codeRaw.contains("pid", ignoreCase = true)
+
+                    runOnUiThread {
+                        updateServiceIndicator("shizuku", btnShizuku, shizukuSt.running)
+                        updateServiceIndicator("code", btnCode, codeRunning)
+                        updateServiceIndicator("phoenix", btnPhoenix, false)
+
+                        val svc = expandedService
+                        if (svc != null) {
+                            updateServiceDetail(svc, shizukuSt)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "servicesPoller error: ${e.message}")
+                }
             }
+            servicesUpdateHandler.postDelayed(this, 5000)
         }
     }
 
@@ -2835,7 +2855,7 @@ class TerminalActivity : ComponentActivity() {
     /**
      * Update service detail with pre-computed ShizukuStatus (main-thread safe).
      */
-    private fun updateServiceDetail(service: String, shizukuSt: com.linux_core.core.ShizukuManager.StatusInfo) {
+    private fun updateServiceDetail(service: String, shizukuSt: com.linux_core.core.ShizukuStatus) {
         servicesDetailPanel.removeAllViews()
 
         val row = LinearLayout(this).apply {
