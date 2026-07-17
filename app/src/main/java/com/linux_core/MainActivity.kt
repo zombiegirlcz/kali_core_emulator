@@ -328,6 +328,8 @@ fun MainScreen() {
     var dockerPullStatus by remember { mutableStateOf("") }
     var selectedDockerDir by remember { mutableStateOf<String?>(null) }
     var isDockerMode by remember { mutableStateOf(false) }
+    // Seznam všech existujících Docker/OCI image dirů (pro výběr v UI)
+    var dockerImageDirs by remember { mutableStateOf<List<String>>(emptyList()) }
 
     var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
     var currentTab by remember { mutableStateOf("home") }
@@ -339,6 +341,19 @@ fun MainScreen() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasStoragePermission = hasAllFilesAccess(context)
                 activeSessionCount = com.linux_core.core.TerminalService.sessions.size
+                // Skenovat existující Docker image adresáře
+                val dirs = context.filesDir.listFiles()
+                    ?.filter { it.isDirectory && (it.name.startsWith("docker-") || it.name.startsWith("oci-")) }
+                    ?.map { it.name }
+                    ?.sortedDescending() // nejnovější první (suffix timestamp)
+                    ?: emptyList()
+                dockerImageDirs = dirs
+                // Pokud není vybrán žádný Docker dir a existuje alespoň jeden, vyber první
+                if (selectedDockerDir == null && dirs.isNotEmpty()) {
+                    selectedDockerDir = dirs.first()
+                    // Automaticky přepnout do Docker módu, aby BOOT tlačítko bootovalo Docker
+                    isDockerMode = true
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -661,103 +676,8 @@ fun MainScreen() {
                     Spacer(modifier = Modifier.weight(0.5f))
                 }
 
-                // Docker Hub expanded section (shown when Docker Hub card is selected)
-                if (isDockerMode && selectedDockerDir != null) {
-                    // Docker already installed — show management card with REMOVE
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 20.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0x33FF3333)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Cloud,
-                                    contentDescription = "Docker",
-                                    tint = Color(0xFF00FF41),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "DOCKER IMAGE INSTALLED",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF00FF41),
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                )
-                            }
-
-                            Text(
-                                text = dockerImageRef?.let { "${it.fullName}:${it.tag}" } ?: selectedDockerDir ?: "Unknown",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            try {
-                                                val dockerDir = File(context.filesDir, selectedDockerDir!!)
-                                                if (dockerDir.exists()) dockerDir.deleteRecursively()
-                                                selectedDockerDir = null
-                                                dockerImageRef = null
-                                                isDockerMode = false
-                                                Toast.makeText(context, "Docker image removed", Toast.LENGTH_SHORT).show()
-                                            } catch (e: Exception) {
-                                                Toast.makeText(context, "Remove failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCCFF3333)),
-                                    modifier = Modifier.weight(1f).height(44.dp)
-                                ) {
-                                    Text(
-                                        text = "REMOVE",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                    )
-                                }
-
-                                Button(
-                                    onClick = {
-                                        val intent = Intent(context, TerminalActivity::class.java).apply {
-                                            putExtra("rootfsDirName", selectedDockerDir!!)
-                                            putExtra("mountStorage", mountStorage)
-                                            putExtra("isDockerImage", true)
-                                        }
-                                        context.startActivity(intent)
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF41)),
-                                    modifier = Modifier.weight(1f).height(44.dp)
-                                ) {
-                                    Text(
-                                        text = "BOOT",
-                                        color = Color.Black,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else if (isDockerMode && selectedDockerDir == null) {
+                // Docker Hub — pull form (shown when Docker card selected but no image)
+                if (isDockerMode && selectedDockerDir == null) {
                     // No Docker image yet — show pull UI
                     Card(
                         modifier = Modifier

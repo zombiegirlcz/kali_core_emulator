@@ -283,7 +283,7 @@ fun VpnSettingsTab() {
 
                         // ─── AI Brain: LLM + Phoenix ───
                         Spacer(modifier = Modifier.padding(top = 16.dp))
-                        Divider(color = Color(0xFF222244), thickness = 1.dp)
+                        HorizontalDivider(color = Color(0xFF222244), thickness = 1.dp)
                         Spacer(modifier = Modifier.padding(top = 8.dp))
                         Text("AI Brain — LLM Arbiter & Phoenix Telemetry",
                             color = accentOrange, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)

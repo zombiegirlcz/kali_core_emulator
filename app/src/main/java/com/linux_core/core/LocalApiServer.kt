@@ -745,11 +745,9 @@ object LocalApiServer {
                         } catch (_: Exception) {}
                         try {
                             val ss = cell.cellSignalStrength
-                            if (ss != null) {
-                                cellObj.put("signal_dbm", ss.dbm)
-                                cellObj.put("signal_level", ss.level)
-                                cellObj.put("asu", ss.asuLevel)
-                            }
+                            cellObj.put("signal_dbm", ss.dbm)
+                            cellObj.put("signal_level", ss.level)
+                            cellObj.put("asu", ss.asuLevel)
                         } catch (_: Exception) {}
                         cellsArray.put(cellObj)
                     }
@@ -2184,7 +2182,7 @@ object LocalApiServer {
             }
             val verdict = json.optString("v", "blocked")
             val confidence = json.optDouble("conf", 0.5)
-            val note = json.optString("note", null)
+            val note = json.optString("note", "")
 
             val aggregator = TrafficAggregator.getInstance()
             if (aggregator == null) {

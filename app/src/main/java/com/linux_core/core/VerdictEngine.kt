@@ -255,7 +255,7 @@ class VerdictEngine(
                 val address = args.optString("address", "")
                 val verdict = args.optString("verdict", "pending_user")
                 val confidence = args.optDouble("confidence", 0.5)
-                val note = args.optString("note", null)
+                val note = args.optString("note", "")
                 if (address.isNotBlank()) {
                     trafficAggregator.setVerdict(
                         address = address,

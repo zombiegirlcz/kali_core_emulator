@@ -314,7 +314,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                 if (baselineEntropy == null) {
                     db.execSQL(
                         "UPDATE known_addresses SET baseline_entropy = ?, baseline_interval_sec = ? WHERE id = ?",
-                        arrayOf(entropy, 0.0, id)
+                        arrayOf<Any?>(entropy, 0.0, id)
                     )
                 }
 
@@ -329,7 +329,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                         avg_interval_sec = ?, avg_entropy = ?,
                         typical_port = CASE WHEN typical_port IS NULL THEN ? ELSE typical_port END
                      WHERE id = ?""",
-                    arrayOf(now, newAvgInterval, newAvgEntropy, port, id)
+                    arrayOf<Any?>(now, newAvgInterval, newAvgEntropy, port, id)
                 )
             } else {
                 existing.close()
@@ -411,7 +411,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                     notes = CASE WHEN ? IS NOT NULL THEN ? ELSE notes END,
                     trace_id = CASE WHEN ? IS NOT NULL THEN ? ELSE trace_id END
                  WHERE address = ?""",
-                arrayOf(verdict, source, confidence, note, note, traceId, traceId, address)
+                arrayOf<Any?>(verdict, source, confidence, note, note, traceId, traceId, address)
             )
         } catch (e: Exception) {
             Log.e(TAG, "setVerdict failed: ${e.message}")
@@ -471,7 +471,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                     brain_confidence = ?,
                     detected_at = ?
                  WHERE address = ? AND expires_at > ?""",
-                arrayOf(confidence, now, address, now)
+                arrayOf<Any?>(confidence, now, address, now)
             )
 
             // 2. Pokud neexistuje, vlož nový (INSERT OR IGNORE + NOT EXISTS)
@@ -482,7 +482,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
                  WHERE NOT EXISTS (
                     SELECT 1 FROM pending_flows WHERE address = ? AND expires_at > ?
                  )""",
-                arrayOf(address, now, confidence, expiresAt, reason, sni, address, now)
+                arrayOf<Any?>(address, now, confidence, expiresAt, reason, sni, address, now)
             )
         } catch (e: Exception) {
             Log.e(TAG, "upsertPendingFlow failed: ${e.message}")
@@ -600,7 +600,7 @@ class TrafficHistoryStore(context: Context) : SQLiteOpenHelper(context, "traffic
         try {
             writableDatabase.execSQL(
                 "UPDATE known_addresses SET last_reverify_at = ? WHERE address = ?",
-                arrayOf(System.currentTimeMillis(), address)
+                arrayOf<Any?>(System.currentTimeMillis(), address)
             )
         } catch (e: Exception) {
             Log.e(TAG, "updateReverifyTimestamp failed: ${e.message}")
