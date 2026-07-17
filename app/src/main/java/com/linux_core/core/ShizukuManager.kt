@@ -362,3 +362,4 @@ private fun String.escapeJson(): String {
             .replace("\n", "\\n")
             .replace("\r", "\\r")
             .replace("\t", "\\t")
+}

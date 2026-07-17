@@ -217,16 +217,15 @@ def build():
             "Run init_keys first (or ensure app/release.jks is in source tree)."
         )
 
-    # ---- list source dir contents for diagnostics ----
-    print(f"[build] Contents of {src_dir}:")
-    for entry in sorted(os.listdir(src_dir)):
-        full = os.path.join(src_dir, entry)
-        sz = os.path.getsize(full) if os.path.isfile(full) else 0
-        print(f"  {'FILE' if os.path.isfile(full) else 'DIR '}  {entry}  ({sz:,} bytes)")
-    print(f"[build] gradlew exists: {os.path.isfile(os.path.join(src_dir, 'gradlew'))}")
+    # ---- copy source to /tmp/build-src (Volume is FUSE — can't exec directly) ----
+    work_dir = "/tmp/build-src"
+    if os.path.isdir(work_dir):
+        shutil.rmtree(work_dir)
+    print(f"[build] Copying source to {work_dir} (bypass FUSE)...")
+    shutil.copytree(src_dir, work_dir, symlinks=False, ignore_dangling_symlinks=True)
 
     # ---- gradle wrapper ----
-    gradlew = os.path.join(src_dir, "gradlew")
+    gradlew = os.path.join(work_dir, "gradlew")
     os.chmod(gradlew, 0o755)
 
     # ---- ensure gradle cache dir ----
@@ -235,11 +234,14 @@ def build():
     # ---- build ----
     print("[build] Running: ./gradlew assembleDebug")
     result = subprocess.run(
-        [str(gradlew), "assembleDebug", "--no-daemon", "--stacktrace"],
-        cwd=src_dir,
+        ["./gradlew", "assembleDebug", "--no-daemon", "--stacktrace"],
+        cwd=work_dir,
         capture_output=False,
         text=True,
     )
+
+    # ---- copy APK back to Volume if successful ----
+    apk_src = os.path.join(work_dir, "app/build/outputs/apk/debug/app-debug.apk")
 
     if result.returncode != 0:
         print("[build] BUILD FAILED", file=sys.stderr)

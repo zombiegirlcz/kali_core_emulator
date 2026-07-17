@@ -2634,7 +2634,7 @@ class TerminalActivity : ComponentActivity() {
                 text = "\u26A1 SHIZU \u25CB"
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.Gray)
+                setTextColor(Color.GRAY)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
                 layoutParams = LinearLayout.LayoutParams(
@@ -2658,7 +2658,7 @@ class TerminalActivity : ComponentActivity() {
                 text = "[code] CODE \u25CB"
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.Gray)
+                setTextColor(Color.GRAY)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
                 layoutParams = LinearLayout.LayoutParams(
@@ -2682,7 +2682,7 @@ class TerminalActivity : ComponentActivity() {
                 text = "\uD83D\uDD25 PHOENIX \u25CB"
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.Gray)
+                setTextColor(Color.GRAY)
                 background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
                 setPadding(10, 4, 10, 4)
                 layoutParams = LinearLayout.LayoutParams(
@@ -2728,7 +2728,7 @@ class TerminalActivity : ComponentActivity() {
             Button(this@TerminalActivity).apply {
                 text = "\u21BB"
                 textSize = 12f
-                setTextColor(Color.Gray)
+                setTextColor(Color.GRAY)
                 background = null
                 setPadding(6, 0, 6, 0)
                 layoutParams = LinearLayout.LayoutParams(
@@ -2788,8 +2788,9 @@ class TerminalActivity : ComponentActivity() {
         updateServiceIndicator("code", btnCode)
         updateServiceIndicator("phoenix", btnPhoenix)
 
-        if (expandedService != null) {
-            updateServiceDetail(expandedService)
+        val svc = expandedService
+        if (svc != null) {
+            updateServiceDetail(svc)
         }
     }
 
@@ -2805,7 +2806,7 @@ class TerminalActivity : ComponentActivity() {
         }
 
         val icon = if (running) "\u25CF" else "\u25CB"
-        val color = if (running) Color.parseColor("#00FF41") else Color.Gray
+        val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
         button.text = when (service) {
             "shizuku" -> "\u26A1 SHIZU $icon"
             "code" -> "[code] CODE $icon"
@@ -2831,7 +2832,7 @@ class TerminalActivity : ComponentActivity() {
             "shizuku" -> {
                 val st = com.linux_core.core.ShizukuManager.status(applicationContext)
                 val icon = if (st.running) "\u25CF" else "\u25CB"
-                val color = if (st.running) Color.parseColor("#00FF41") else Color.Gray
+                val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
 
                 row.addView(TextView(this).apply {
                     text = "\u26A1 SHIZUKU SERVER  $icon"
@@ -2849,7 +2850,7 @@ class TerminalActivity : ComponentActivity() {
                         else -> ""
                     }
                     text = info
-                    setTextColor(Color.LightGray)
+                    setTextColor(Color.LTGRAY)
                     textSize = 10f
                     typeface = Typeface.MONOSPACE
                 })
@@ -2916,7 +2917,7 @@ class TerminalActivity : ComponentActivity() {
                 val raw = runCodeServerCtl("status")
                 val running = raw.contains("running", ignoreCase = true) || raw.contains("pid", ignoreCase = true)
                 val icon = if (running) "\u25CF" else "\u25CB"
-                val color = if (running) Color.parseColor("#00FF41") else Color.Gray
+                val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
 
                 row.addView(TextView(this).apply {
                     text = "[code] CODE-SERVER  $icon"
@@ -2928,7 +2929,7 @@ class TerminalActivity : ComponentActivity() {
                 if (running) {
                     row.addView(TextView(this).apply {
                         text = "  :8443"
-                        setTextColor(Color.LightGray)
+                        setTextColor(Color.LTGRAY)
                         textSize = 10f
                         typeface = Typeface.MONOSPACE
                     })
@@ -2999,7 +3000,7 @@ class TerminalActivity : ComponentActivity() {
             "phoenix" -> {
                 row.addView(TextView(this).apply {
                     text = "\uD83D\uDD25 PHOENIX OTLP  \u25CB"
-                    setTextColor(Color.Gray)
+                    setTextColor(Color.GRAY)
                     textSize = 11f
                     setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 })
@@ -3053,7 +3054,7 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun showPhoenixConfigDialog() {
-        val prefs = applicationContext.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val prefs = applicationContext.getSharedPreferences("vpn_settings", android.content.Context.MODE_PRIVATE)
         val currentEndpoint = prefs.getString("phoenix_endpoint",
             "http://localhost:6006/v1/traces") ?: "http://localhost:6006/v1/traces"
 
@@ -3061,7 +3062,7 @@ class TerminalActivity : ComponentActivity() {
             setText(currentEndpoint)
             setHint("http://localhost:6006/v1/traces")
             setTextColor(Color.WHITE)
-            setHintTextColor(Color.Gray)
+            setHintTextColor(Color.GRAY)
             textSize = 12f
             setPadding(24, 16, 24, 16)
         }
