@@ -305,15 +305,52 @@ object ShizukuManager {
     }
 
     /**
-     * Start Shizuku server via ADB shell (wireless debugging).
+     * Start Shizuku server via app_process (limited, runs as app UID).
+     *
+     * ADB daemon protocol requires RSA key exchange (Android 11+ wireless pairing).
+     * Since the app doesn't have the ADB private key, we can't authenticate
+     * with the ADB daemon. Instead, we start Shizuku via app_process which
+     * gives us basic functionality. For elevated commands, exec() falls back
+     * to su -c.
+     *
+     * The user can also run this ADB command from their computer for full access:
+     *   adb shell /data/data/${context.packageName}/files/shizuku-server --apk=...
      */
     private fun startWithAdb(context: Context, apkPath: String?): Boolean {
-        // ADB pairing requires the full libadb.so protocol over TCP (wireless debugging).
-        // Not yet implemented — Shizuku app or su is the recommended path.
-        // TODO: implement ADB pairing via libadb.so for Android 11+ wireless debugging
-        Log.w(TAG, "ADB available but self-pairing not yet implemented — " +
-                "use Shizuku app or root for privileged access")
-        return false
+        return try {
+            val dexFile = deployDex(context) ?: return false
+
+            // Start server via app_process (runs as app UID)
+            Log.i(TAG, "Starting Shizuku server via app_process (app UID)...")
+            val pb = ProcessBuilder(
+                "/system/bin/app_process",
+                "-Djava.class.path=$dexFile",
+                "/system/bin",
+                "--nice-name=shizuku_daemon",
+                "rikka.shizuku.shell.ShizukuShellLoader",
+                "--daemon"
+            )
+            pb.environment()["RISH_APPLICATION_ID"] = context.packageName
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            Thread.sleep(1500)
+
+            val newStatus = status(context)
+            if (newStatus.running) {
+                if (newStatus.pid != null) {
+                    File(context.filesDir, PID_FILE).writeText(newStatus.pid.toString())
+                }
+                Log.i(TAG, "Shizuku server started via app_process" +
+                        " (pid=${newStatus.pid}, limited to app UID)")
+                return true
+            }
+
+            Log.w(TAG, "app_process start failed — show ADB command to user")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "ADB start failed: ${e.message}")
+            false
+        }
     }
 
     /**

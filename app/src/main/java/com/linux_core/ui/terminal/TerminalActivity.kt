@@ -2913,6 +2913,65 @@ class TerminalActivity : ComponentActivity() {
                     })
                 }
             }
+
+            // ADB hint when server not running but ADB is available
+            if (!st.running && st.adbAvailable) {
+                servicesDetailPanel.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { setMargins(0, 4, 0, 0) }
+
+                    val pkg = applicationContext.packageName
+                    val adbCmd = if (st.shizukuApkPath != null) {
+                        "adb shell /data/data/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
+                    } else {
+                        "adb shell /data/data/$pkg/files/shizuku-server"
+                    }
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = "ADB command (run on computer):"
+                        setTextColor(Color.parseColor("#FF6B35"))
+                        textSize = 9f
+                        setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    })
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = adbCmd
+                        setTextColor(Color.parseColor("#888888"))
+                        textSize = 8f
+                        typeface = Typeface.MONOSPACE
+                    })
+
+                    addView(Button(this@TerminalActivity).apply {
+                        text = "\uD83D\uDCCB COPY"
+                        textSize = 8f
+                        setTextColor(Color.parseColor("#00FF41"))
+                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
+                        setPadding(8, 2, 8, 2)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
+                            android.widget.Toast.makeText(this@TerminalActivity,
+                                "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    })
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = "After running, restart app or press \u21BB"
+                        setTextColor(Color.parseColor("#666666"))
+                        textSize = 8f
+                        typeface = Typeface.MONOSPACE
+                    })
+                })
+            }
+
             "code" -> {
                 val raw = runCodeServerCtl("status")
                 val running = raw.contains("running", ignoreCase = true) || raw.contains("pid", ignoreCase = true)
