@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlin.concurrent.thread
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -2816,6 +2817,286 @@ class TerminalActivity : ComponentActivity() {
         button.setTextColor(color)
     }
 
+    /**
+     * Update service indicator with pre-computed running state (main-thread safe).
+     */
+    private fun updateServiceIndicator(service: String, button: Button, running: Boolean) {
+        val icon = if (running) "\u25CF" else "\u25CB"
+        val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
+        button.text = when (service) {
+            "shizuku" -> "\u26A1 SHIZU $icon"
+            "code" -> "[code] CODE $icon"
+            "phoenix" -> "\uD83D\uDD25 PHOENIX $icon"
+            else -> button.text
+        }
+        button.setTextColor(color)
+    }
+
+    /**
+     * Update service detail with pre-computed ShizukuStatus (main-thread safe).
+     */
+    private fun updateServiceDetail(service: String, shizukuSt: com.linux_core.core.ShizukuManager.StatusInfo) {
+        servicesDetailPanel.removeAllViews()
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        when (service) {
+            "shizuku" -> {
+                val st = shizukuSt
+                val icon = if (st.running) "\u25CF" else "\u25CB"
+                val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
+
+                row.addView(TextView(this).apply {
+                    text = "\u26A1 SHIZUKU SERVER  $icon"
+                    setTextColor(color)
+                    textSize = 11f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                })
+
+                row.addView(TextView(this).apply {
+                    val info = when {
+                        st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
+                        st.suAvailable -> "  su available"
+                        st.shizukuApkPath != null -> "  Shizuku APK ready"
+                        st.adbAvailable -> "  ADB enabled"
+                        else -> ""
+                    }
+                    text = info
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                })
+
+                row.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                })
+
+                // START/STOP button
+                if (st.running) {
+                    row.addView(Button(this).apply {
+                        text = "\u23F9 STOP"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FF5555"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            com.linux_core.core.ShizukuManager.stopServer(applicationContext)
+                            updateAllServiceIndicators()
+                        }
+                    })
+                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable) {
+                    row.addView(Button(this).apply {
+                        text = "\u25B6 START"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#00FF41"))
+                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            com.linux_core.core.ShizukuManager.startServer(applicationContext)
+                            updateAllServiceIndicators()
+                        }
+                    })
+                } else {
+                    // No startup method available — show setup options
+                    row.addView(Button(this).apply {
+                        text = "\u2699 SETUP"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FF6B35"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            showShizukuSetupDialog()
+                        }
+                    })
+                }
+            }
+
+            // ADB hint when server not running but ADB is available
+            if (!st.running && st.adbAvailable) {
+                servicesDetailPanel.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { setMargins(0, 4, 0, 0) }
+
+                    val pkg = applicationContext.packageName
+                    val adbCmd = if (st.shizukuApkPath != null) {
+                        "adb shell /data/data/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
+                    } else {
+                        "adb shell /data/data/$pkg/files/shizuku-server"
+                    }
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = "ADB command (run on computer):"
+                        setTextColor(Color.parseColor("#FF6B35"))
+                        textSize = 9f
+                        setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    })
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = adbCmd
+                        setTextColor(Color.parseColor("#888888"))
+                        textSize = 8f
+                        typeface = Typeface.MONOSPACE
+                    })
+
+                    addView(Button(this@TerminalActivity).apply {
+                        text = "\uD83D\uDCCB COPY"
+                        textSize = 8f
+                        setTextColor(Color.parseColor("#00FF41"))
+                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
+                        setPadding(8, 2, 8, 2)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
+                            android.widget.Toast.makeText(this@TerminalActivity,
+                                "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    })
+
+                    addView(TextView(this@TerminalActivity).apply {
+                        text = "After running, restart app or press \u21BB"
+                        setTextColor(Color.parseColor("#666666"))
+                        textSize = 8f
+                        typeface = Typeface.MONOSPACE
+                    })
+                })
+            }
+
+            "code" -> {
+                val raw = runCodeServerCtl("status")
+                val running = raw.contains("running", ignoreCase = true) || raw.contains("pid", ignoreCase = true)
+                val icon = if (running) "\u25CF" else "\u25CB"
+                val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
+
+                row.addView(TextView(this).apply {
+                    text = "[code] CODE-SERVER  $icon"
+                    setTextColor(color)
+                    textSize = 11f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                })
+
+                row.addView(TextView(this).apply {
+                    text = if (running) {
+                        val lines = raw.split("\n").filter { it.contains("running") || it.contains("pid") }
+                        if (lines.isNotEmpty()) "  ${lines.first().trim()}" else ""
+                    } else ""
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                })
+
+                row.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                })
+
+                if (running) {
+                    row.addView(Button(this).apply {
+                        text = "\u23F9 STOP"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FF5555"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            runCodeServerCtl("stop")
+                            updateAllServiceIndicators()
+                        }
+                    })
+                } else {
+                    row.addView(Button(this).apply {
+                        text = "\u25B6 START"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#00FF41"))
+                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                        )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            runCodeServerCtl("start")
+                            updateAllServiceIndicators()
+                        }
+                    })
+                }
+            }
+            "phoenix" -> {
+                row.addView(TextView(this).apply {
+                    text = "PHOENIX SERVER"
+                    setTextColor(Color.GRAY)
+                    textSize = 11f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                })
+
+                row.addView(TextView(this).apply {
+                    text = "  OTLP endpoint"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                })
+
+                row.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                })
+
+                row.addView(Button(this).apply {
+                    text = "\u2699 CONFIGURE"
+                    textSize = 9f
+                    setTextColor(Color.parseColor("#FF6B35"))
+                    background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
+                    setPadding(10, 4, 10, 4)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
+                    )
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        showPhoenixConfigDialog()
+                    }
+                })
+            }
+        }
+
+        servicesDetailPanel.addView(row)
+    }
+
+    /**
+     * Update service detail (calls status() inline — used from button handlers).
+     */
     private fun updateServiceDetail(service: String) {
         servicesDetailPanel.removeAllViews()
 
