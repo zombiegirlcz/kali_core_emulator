@@ -1,4 +1,11 @@
+
 # Android standard
+
+shizuku/
+!app/src/main/assets/shizuku/
+!app/src/main/assets/shizuku/*.sh
+shi/
+arm64/
 .gradle
 
 /captures
