@@ -181,7 +181,7 @@ def init_keys():
 
 # ── Build APK ────────────────────────────────────────────────────────────────
 @app.function(
-    image=base_image,
+    image=source_image,
     volumes={"/vol": build_vol},
     secrets=[modal.Secret.from_name("build-secrets")],
     timeout=3600,
@@ -190,17 +190,15 @@ def init_keys():
 )
 def build():
     """Build the debug APK from the source tree on the Volume."""
-    src_dir = "/vol/src"
-    vol_keys = "/vol/keys"
+    # Prefer /vol/src (uploaded via upload_src), fall back to /src-baked (baked into image)
+    if os.path.isdir("/vol/src"):
+        src_dir = "/vol/src"
+        print(f"[build] Using Volume source: {src_dir}")
+    else:
+        src_dir = "/src-baked"
+        print(f"[build] Using baked-in source: {src_dir}")
 
-    if not os.path.isdir(src_dir):
-        print(
-            "[build] Source directory not found on Volume.  "
-            "Run upload_src first:\n"
-            "  modal run modal_build.py::upload_src",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    vol_keys = "/vol/keys"
 
     # ---- local.properties ----
     with open(os.path.join(src_dir, "local.properties"), "w") as f:
