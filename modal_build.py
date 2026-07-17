@@ -11,9 +11,6 @@ Setup:
   2) modal run modal_build.py::init_keys
   3) modal run modal_build.py::upload_src
   4) modal run modal_build.py::build
-
-  Or do upload+build in one step:
-     modal run modal_build.py all
 """
 
 # Force rebuild marker: 2026-07-07T02:00:00Z
@@ -23,10 +20,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
-
-# Auto-detect local repo root — directory containing this script
-REPO_ROOT = Path(__file__).resolve().parent
 
 app = modal.App("kali-core-build")
 
@@ -73,7 +66,7 @@ base_image = (
 
 # Static image: base + source baked in (for upload_src)
 source_image = base_image.add_local_dir(
-    str(REPO_ROOT),
+    "/root/kali_core_emulator",
     remote_path="/src-baked",
     ignore=_ignore_path,
 )
@@ -181,7 +174,7 @@ def init_keys():
 
 # ── Build APK ────────────────────────────────────────────────────────────────
 @app.function(
-    image=source_image,
+    image=base_image,
     volumes={"/vol": build_vol},
     secrets=[modal.Secret.from_name("build-secrets")],
     timeout=3600,
@@ -190,15 +183,17 @@ def init_keys():
 )
 def build():
     """Build the debug APK from the source tree on the Volume."""
-    # Prefer /vol/src (uploaded via upload_src) if it has gradlew, else fall back to /src-baked
-    if os.path.isfile("/vol/src/gradlew"):
-        src_dir = "/vol/src"
-        print(f"[build] Using Volume source: {src_dir}")
-    else:
-        src_dir = "/src-baked"
-        print(f"[build] Using baked-in source: {src_dir}")
-
+    src_dir = "/vol/src"
     vol_keys = "/vol/keys"
+
+    if not os.path.isdir(src_dir):
+        print(
+            "[build] Source directory not found on Volume.  "
+            "Run upload_src first:\n"
+            "  modal run modal_build.py::upload_src",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # ---- local.properties ----
     with open(os.path.join(src_dir, "local.properties"), "w") as f:
@@ -217,14 +212,6 @@ def build():
             "Run init_keys first (or ensure app/release.jks is in source tree)."
         )
 
-    # ---- list source dir contents for diagnostics ----
-    print(f"[build] Contents of {src_dir}:")
-    for entry in sorted(os.listdir(src_dir)):
-        full = os.path.join(src_dir, entry)
-        sz = os.path.getsize(full) if os.path.isfile(full) else 0
-        print(f"  {'FILE' if os.path.isfile(full) else 'DIR '}  {entry}  ({sz:,} bytes)")
-    print(f"[build] gradlew exists: {os.path.isfile(os.path.join(src_dir, 'gradlew'))}")
-
     # ---- gradle wrapper ----
     gradlew = os.path.join(src_dir, "gradlew")
     os.chmod(gradlew, 0o755)
@@ -235,7 +222,7 @@ def build():
     # ---- build ----
     print("[build] Running: ./gradlew assembleDebug")
     result = subprocess.run(
-        [str(gradlew), "assembleDebug", "--no-daemon", "--stacktrace"],
+        ["./gradlew", "assembleDebug", "--no-daemon", "--stacktrace"],
         cwd=src_dir,
         capture_output=False,
         text=True,
@@ -292,9 +279,5 @@ def main():
         build.remote()
     elif cmd == "list":
         list_volume.remote()
-    elif cmd in ("all", "pipeline"):
-        print("[pipeline] Running: upload_src → build")
-        upload_src.remote()
-        build.remote()
     else:
-        print("Usage: modal run modal_build.py [init|upload|clean|build|list|all]")
+        print("Usage: modal run modal_build.py [init|upload|clean|build|list]")
