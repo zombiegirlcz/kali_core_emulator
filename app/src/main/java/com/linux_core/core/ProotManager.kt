@@ -1068,6 +1068,51 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 * **USB zařízení:** `curl -s http://127.0.0.1:1337/usb/devices`
 * **USB poslat data:** `curl -s -X POST -H "Content-Type: application/json" -d '{"device_name":"/dev/bus/usb/001/002","data_base64":"$(base64 -w0 exploit.bin)"}' http://127.0.0.1:1337/usb/send`
 
+## ⚡ Shizuku Integration — Privilege Escalation
+
+Shizuku umožňuje spouštět příkazy s vyššími právy (root/shell UID) přímo z PRoot terminálu, bez nutnosti rootovat zařízení.
+
+### Services Panel v Terminálu
+
+V horní liště terminálu (vedle `🐉 KALI`) je tlačítko `▼`, které rozbalí ovládací panel služeb:
+
+| Služba | Status | Akce |
+|---|---|---|
+| `⚡ SHIZU` | `●` běží / `○` zastaven | START / STOP / SETUP |
+| `[code] CODE` | `●` běží / `○` zastaven | START / STOP / OPEN :8443 |
+| `🔥 PHOENIX` | `○` vždy (není health check) | CONFIGURE |
+
+### CLI příkaz `shizuku`
+
+Automaticky nasazen do `/usr/local/bin/shizuku`:
+
+```bash
+# Spuštění příkazu s vyššími právy
+shizuku -c "pm list packages"
+shizuku -c "settings put global airplane_mode 1"
+shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
+shizuku -c "svc wifi disable"
+shizuku -c "dumpsys battery set level 15"
+
+# Interaktivní shell
+shizuku
+```
+
+### Spuštění Shizuku serveru
+
+Aplikace automaticky zkouší:
+1. Existující Shizuku server (z nainstalované Shizuku app)
+2. `su -c "libshizuku.so --apk=/path/to/shizuku.apk"` (root)
+3. Raw `su -c` fallback pro příkazy
+4. ADB shell (pokud je dostupný)
+
+### Status indikátory
+
+- `●` zelená — služba běží
+- `○` šedá — služba zastavena
+- `su available` — root přes `su` k dispozici
+- `Shizuku APK ready` — Shizuku app je nainstalována
+
 ---
 *Dokument byl automaticky vygenerován NetHunter AI Operatorem.*
 """.trimIndent()

@@ -219,6 +219,100 @@ This release introduces the fully integrated **AI Brain Telemetry & Neural Class
 
 ---
 
+## ⚡ Shizuku Integration — Privilege Escalation Bridge
+
+Shizuku umožňuje spouštět příkazy s vyššími právy (root/shell UID) přímo
+z PRoot terminálu, bez nutnosti rootovat zařízení.
+
+### Jak to funguje
+
+1. **Shizuku server** běží na pozadí s root/shell UID
+2. **Rish shell** (`/usr/local/bin/shizuku`) uvnitř PRootu se k němu připojuje
+3. Příkazy jdou přes `app_process` → Shizuku Binder → system_server
+
+### Services Panel v Terminálu
+
+V terminálovém topBaru (vedle distro názvu jako `🐉 KALI`) je tlačítko `▼`,
+které rozbalí services panel:
+
+```┌─────────────────────────────────────────────────────────┐
+│ [☰] [🏠]         🐉 KALI ▼       [touch] [🐚CLI|🖥GUI] │
+├─────────────────────────────────────────────────────────┤
+│ ⚡SHIZU ●  [code] CODE ○  🔥 PHOENIX ○  [▶ ALL] [↻]  │
+├─────────────────────────────────────────────────────────┤
+```
+
+- **⚡ SHIZU** — Shizuku server status a ovládání
+- **[code] CODE** — code-server (VS Code v prohlížeči, :8443)
+- **🔥 PHOENIX** — Phoenix OTLP exportér
+- **▶ ALL** — spustí všechny služby
+- **↻** — refresh statusů (automaticky každých 5s)
+
+### Status indikátory
+
+| Indikátor | Význam |
+|-----------|--------|
+| `●` zelená | Služba běží |
+| `○` šedá | Služba zastavena |
+| `su available` | Root přes `su` k dispozici |
+| `Shizuku APK ready` | Shizuku app nainstalována v systému |
+
+### Detail panelu
+
+Kliknutím na službu se rozbalí detail s akčními tlačítky:
+
+```
+│ ⚡ SHIZUKU SERVER ●  pid:12345  self                    │
+│                                      [⏹ STOP]          │
+│ [code] CODE-SERVER ●  :8443                             │
+│                    [⏹ STOP]              [🌐 OPEN]      │
+```
+
+### Spuštění Shizuku serveru
+
+Automatická strategie `startServer()`:
+
+1. **Už běží?** → return true
+2. **`su` + Shizuku APK?** → `su -c "libshizuku.so --apk=<apk>"` → server běží jako **root**
+3. **`su` bez Shizuku APK?** → raw `su -c` fallback pro příkazy
+4. **ADB?** → pokus o start přes ADB shell
+5. **Nic?** → tlačítko **⚙ SETUP** otevře dialog s instrukcemi
+
+### CLI v PRootu
+
+Automaticky nasazeno do `/usr/local/bin/shizuku`:
+
+```bash
+# Spuštění příkazu s vyššími právy
+shizuku -c "pm list packages"
+shizuku -c "settings put global airplane_mode 1"
+shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
+shizuku -c "svc wifi disable"
+shizuku -c "dumpsys battery set level 15"
+
+# Interaktivní shell
+shizuku
+```
+
+### Architektura
+
+| Komponenta | Cesta | Popis |
+|---|---|---|
+| Server binárka | `assets/shizuku/libshizuku.so` | PIE executable (native starter) |
+| ADB knihovna | `assets/shizuku/libadb.so` | Native ADB klient |
+| Rish script | `assets/shizuku/rish.sh` | Rish wrapper pro PRoot |
+| Rish dex | `assets/shizuku/rish_shizuku.dex` | Rish Java třídy |
+| Manager | `ShizukuManager.kt` | Server lifecycle, status, exec |
+| ProotManager | `ProotManager.kt` | Nasazení rish do guestu |
+
+### Podmínky
+
+- **Shizuku app** nainstalovaná (Play Store / F-Droid) + spuštěný server (root nebo ADB)
+- **Nebo root** (Magisk, `su`)
+- **Nebo ADB** (wireless debugging)
+
+---
+
 ## 📈 Version 4.2 Changelog
 
 This release fixes critical TLS MITM proxy issues, adds Root CA management, and introduces diagnostic CLI tools:
@@ -283,7 +377,7 @@ This release implements secure peer-to-peer overlay capabilities, geo-proxy loop
 
 ## 📈 Version 4.3 Changelog
 
-This release replaces the complex SOCKS5 proxy rotation with a simple custom IP:Port tunnel, and adds various MITM stability fixes:
+This release adds Shizuku privilege escalation, the services dashboard, replaces SOCKS5 rotation with custom IP proxy, and adds various MITM stability fixes:
 
 ### 1. Custom IP Proxy (replaces SOCKS5 rotation)
 - **Removed:** 6 hardcoded SOCKS5 proxies, 3 rotation modes (Static/Random/Time-loop), interval timer, latency checker
@@ -292,7 +386,15 @@ This release replaces the complex SOCKS5 proxy rotation with a simple custom IP:
 - **Graceful Fallback:** If custom proxy connection fails, traffic automatically falls back to direct
 - **Cleaner UI:** Proxy settings reduced from 3 dropdowns + slider to a single text input
 
-### 2. MITM & Stability Fixes
+### 2. Shizuku + Services Dashboard
+- **Self-contained Shizuku server:** Bundled `libshizuku.so` native server binary + ADB pairing + rish shell
+- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku, code-server, and Phoenix
+- **`shizuku` CLI in PRoot:** Auto-deployed to `/usr/local/bin/shizuku` — `shizuku -c "pm list packages"`
+- **Start strategies:** Existing Shizuku server → `su -c` → ADB shell → interactive setup dialog
+- **ShizukuManager.kt:** New module for server lifecycle, status checks, and privileged `exec()`
+- **Permissions:** `moe.shizuku.manager.permission.API_V23` + `MANAGER` added to manifest
+
+### 3. MITM & Stability Fixes
 - (existing fixes from 4.2 — see below)
 
 ---
