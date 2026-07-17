@@ -217,6 +217,14 @@ def build():
             "Run init_keys first (or ensure app/release.jks is in source tree)."
         )
 
+    # ---- list source dir contents for diagnostics ----
+    print(f"[build] Contents of {src_dir}:")
+    for entry in sorted(os.listdir(src_dir)):
+        full = os.path.join(src_dir, entry)
+        sz = os.path.getsize(full) if os.path.isfile(full) else 0
+        print(f"  {'FILE' if os.path.isfile(full) else 'DIR '}  {entry}  ({sz:,} bytes)")
+    print(f"[build] gradlew exists: {os.path.isfile(os.path.join(src_dir, 'gradlew'))}")
+
     # ---- gradle wrapper ----
     gradlew = os.path.join(src_dir, "gradlew")
     os.chmod(gradlew, 0o755)
@@ -227,7 +235,7 @@ def build():
     # ---- build ----
     print("[build] Running: ./gradlew assembleDebug")
     result = subprocess.run(
-        ["./gradlew", "assembleDebug", "--no-daemon", "--stacktrace"],
+        [str(gradlew), "assembleDebug", "--no-daemon", "--stacktrace"],
         cwd=src_dir,
         capture_output=False,
         text=True,
