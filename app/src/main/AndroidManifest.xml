@@ -27,8 +27,6 @@
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="moe.shizuku.manager.permission.MANAGER" />
 
-    <permission android:name="moe.shizuku.manager.permission.API_V23" android:protectionLevel="signature" />
-
     <permission
         android:name="com.linux_core.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
         android:protectionLevel="signature" />
