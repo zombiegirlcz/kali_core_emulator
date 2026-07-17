@@ -48,6 +48,7 @@ data class DockerImageRef(
             require(!trimmed.startsWith(":")) { "Image reference cannot start with :" }
 
             val (namePart, tagPart, digestPart) = parseReference(trimmed)
+            require(!namePart.contains(':')) { "Invalid image reference format: multiple colons" }
 
             // Split namespace/repository
             val slashIndex = namePart.indexOf('/')

@@ -12,10 +12,10 @@ class MitmHttpParserTest {
         val messages = mutableListOf<ParsedHttpMessage>()
         val parser = Http1StreamParser { messages.add(it) }
         parser.feed(
-            "GET /api/v1/user HTTP/1.1\r\n" +
+            ("GET /api/v1/user HTTP/1.1\r\n" +
                 "Host: api.example.com\r\n" +
                 "Accept: application/json\r\n" +
-                "\r\n".toByteArray()
+                "\r\n").toByteArray()
         )
         assertEquals(1, messages.size)
         val msg = messages[0]
@@ -49,11 +49,11 @@ class MitmHttpParserTest {
         val messages = mutableListOf<ParsedHttpMessage>()
         val parser = Http1StreamParser { messages.add(it) }
         parser.feed(
-            "HTTP/1.1 200 OK\r\n" +
+            ("HTTP/1.1 200 OK\r\n" +
                 "Content-Type: application/json\r\n" +
-                "Content-Length: 13\r\n" +
+                "Content-Length: 11\r\n" +
                 "\r\n" +
-                "{\"ok\":true}".toByteArray()
+                "{\"ok\":true}").toByteArray()
         )
         assertEquals(1, messages.size)
         val msg = messages[0]

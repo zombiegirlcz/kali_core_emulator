@@ -87,6 +87,12 @@ android {
         abortOnError = false
     }
 
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
+
     // Validate certificate assets exist when MITM or Attestation is enabled
     tasks.register("validateCertAssets") {
         doLast {
