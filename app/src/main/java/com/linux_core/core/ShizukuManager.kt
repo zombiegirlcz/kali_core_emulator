@@ -207,7 +207,7 @@ object ShizukuManager {
                 val proc = pb.start()
                 val output = proc.inputStream.bufferedReader().readText()
                 val exitCode = proc.waitFor()
-                """{"stdout":${output.replace("\\", "\\\\").replace("\"", "\\\"")},"exit_code":$exitCode}"""
+                """{"stdout":"${output.escapeJson()}","exit_code":$exitCode}"""
             } catch (e: Exception) {
                 """{"error":"${e.message}","exit_code":-1}"""
             }
@@ -217,7 +217,7 @@ object ShizukuManager {
                 val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
                 val output = proc.inputStream.bufferedReader().readText()
                 val exitCode = proc.waitFor()
-                """{"stdout":${output.replace("\\", "\\\\").replace("\"", "\\\"")},"exit_code":$exitCode}"""
+                """{"stdout":"${output.escapeJson()}","exit_code":$exitCode}"""
             } catch (e: Exception) {
                 """{"error":"${e.message}","exit_code":-1}"""
             }
@@ -280,6 +280,9 @@ object ShizukuManager {
             Log.i(TAG, "Starting Shizuku server: su -c \"$cmd\"")
 
             val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+            // Drain stdout to avoid pipe deadlock if server produces output
+            @Suppress("BlockingMethodInNonBlockingContext")
+            val out = proc.inputStream.bufferedReader().readText()
             val exitCode = proc.waitFor()
 
             if (exitCode == 0) {
@@ -307,46 +310,12 @@ object ShizukuManager {
      * Start Shizuku server via ADB shell (wireless debugging).
      */
     private fun startWithAdb(context: Context, apkPath: String?): Boolean {
-        // For ADB mode, we need the ADB client binary or use shell escapades.
-        // If we have a shell with ADB UID (2000), /data/local/tmp is writable.
-        return try {
-            val serverBin = deployServer(context) ?: return false
-            val dexFile = deployDex(context) ?: return false
-            val apkArg = if (apkPath != null) " --apk=$apkPath" else ""
-
-            // Option A: If we're already in an ADB shell (/data/local/tmp writable)
-            val cmd = "RISH_APPLICATION_ID=${context.packageName} " +
-                    "/system/bin/app_process " +
-                    "-Djava.class.path=${dexFile.absolutePath} " +
-                    "/system/bin --nice-name=shizuku_daemon " +
-                    "rikka.shizuku.shell.ShizukuShellLoader --daemon"
-
-            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c",
-                "RISH_APPLICATION_ID=${context.packageName} " +
-                "/system/bin/app_process " +
-                "-Djava.class.path=${dexFile.absolutePath} " +
-                "/system/bin --nice-name=shizuku_daemon " +
-                "rikka.shizuku.shell.ShizukuShellLoader --daemon"))
-            val exitCode = proc.waitFor()
-
-            if (exitCode == 0) {
-                Thread.sleep(1000)
-                val newStatus = status(context)
-                if (newStatus.running) {
-                    if (newStatus.pid != null) {
-                        File(context.filesDir, PID_FILE).writeText(newStatus.pid.toString())
-                    }
-                    Log.i(TAG, "Shizuku started via ADB shell")
-                    return true
-                }
-            }
-
-            Log.w(TAG, "ADB shell start returned exit=$exitCode")
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "ADB start failed: ${e.message}")
-            false
-        }
+        // ADB pairing requires the full libadb.so protocol over TCP (wireless debugging).
+        // Not yet implemented — Shizuku app or su is the recommended path.
+        // TODO: implement ADB pairing via libadb.so for Android 11+ wireless debugging
+        Log.w(TAG, "ADB available but self-pairing not yet implemented — " +
+                "use Shizuku app or root for privileged access")
+        return false
     }
 
     /**
@@ -383,3 +352,13 @@ object ShizukuManager {
         return false
     }
 }
+
+/**
+ * Escape a string for safe inclusion in a JSON string value.
+ */
+private fun String.escapeJson(): String {
+    return this.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
