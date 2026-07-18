@@ -13,7 +13,8 @@ data class ShizukuStatus(
     val mode: String = "none",   // "existing" (Shizuku app), "self" (our server via su/adb), "none"
     val suAvailable: Boolean = false,
     val shizukuApkPath: String? = null,
-    val adbAvailable: Boolean = false
+    val adbAvailable: Boolean = false,
+    val adbWirelessPaired: Boolean = false
 )
 
 object ShizukuManager {
@@ -22,10 +23,12 @@ object ShizukuManager {
     // Asset paths
     private const val ASSET_SERVER = "shizuku/libshizuku.so"
     private const val ASSET_RISH_DEX = "shizuku/rish_shizuku.dex"
+    private const val ASSET_APK = "shizuku/shizuku.apk"
 
     // FilesDir paths
     private const val SERVER_BIN = "shizuku-server"
     private const val RISH_DEX = "rish_shizuku.dex"
+    private const val BUNDLED_APK = "shizuku.apk"
     private const val PID_FILE = "shizuku.pid"
 
     // Shizuku manager package
@@ -33,10 +36,21 @@ object ShizukuManager {
 
     /**
      * Deploy the native server binary from assets to filesDir.
+     * Safe to call multiple times — only deploys if missing, zero-length, or asset size changed.
      */
     private fun deployServer(context: Context): File? {
         val target = File(context.filesDir, SERVER_BIN)
-        if (target.exists() && target.length() > 0L) {
+        var shouldDeploy = !target.exists() || target.length() == 0L
+        if (!shouldDeploy) {
+            // Check if asset is newer (different size)
+            try {
+                val assetSize = context.assets.open(ASSET_SERVER).use { it.available().toLong() }
+                if (target.length() != assetSize) shouldDeploy = true
+            } catch (e: Exception) {
+                shouldDeploy = true
+            }
+        }
+        if (!shouldDeploy) {
             target.setExecutable(true, false)
             return target
         }
@@ -52,6 +66,15 @@ object ShizukuManager {
             Log.e(TAG, "Failed to deploy Shizuku server: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Ensure the Shizuku server binary is deployed (without starting it).
+     * Call early (e.g. from status() or app startup) so the binary is ready.
+     */
+    @JvmStatic
+    fun ensureServerDeployed(context: Context): Boolean {
+        return deployServer(context) != null
     }
 
     /**
@@ -114,6 +137,9 @@ object ShizukuManager {
      */
     @JvmStatic
     fun status(context: Context): ShizukuStatus {
+        // Ensure server binary is deployed on first status check
+        ensureServerDeployed(context)
+
         var running = false
         var pid: Int? = null
         var mode = "none"
@@ -164,13 +190,22 @@ object ShizukuManager {
             p.inputStream.bufferedReader().readText().trim() == "running"
         } catch (e: Exception) { false }
 
+        // 6. Check wireless debugging paired status (Android 11+)
+        val adbWirelessPaired = if (adbAvailable) {
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf("getprop", "service.adb.wireless.paired"))
+                p.inputStream.bufferedReader().readText().trim() == "true"
+            } catch (e: Exception) { false }
+        } else false
+
         return ShizukuStatus(
             running = running,
             pid = pid,
             mode = mode,
             suAvailable = suAvailable,
             shizukuApkPath = shizukuApkPath,
-            adbAvailable = adbAvailable
+            adbAvailable = adbAvailable,
+            adbWirelessPaired = adbWirelessPaired
         )
     }
 
@@ -271,6 +306,20 @@ object ShizukuManager {
      * The native PIE binary is started as root, pointing to the Shizuku APK
      * for Java server classes.
      */
+    /**
+     * Start Shizuku server via su on a background thread.
+     * Returns immediately; result is delivered via the callback.
+     */
+    @JvmStatic
+    fun startServerAsync(context: Context, callback: ((Boolean) -> Unit)? = null) {
+        Thread {
+            val result = startServer(context)
+            android.os.Handler(context.mainLooper).post {
+                callback?.invoke(result)
+            }
+        }.start()
+    }
+
     private fun startWithSu(context: Context, apkPath: String): Boolean {
         return try {
             val serverBin = deployServer(context) ?: return false
@@ -278,10 +327,17 @@ object ShizukuManager {
             Log.i(TAG, "Starting Shizuku server: su -c \"$cmd\"")
 
             val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-            // Drain stdout to avoid pipe deadlock if server produces output
-            @Suppress("BlockingMethodInNonBlockingContext")
-            val out = proc.inputStream.bufferedReader().readText()
+
+            // Drain stdout AND stderr to avoid pipe deadlock
+            val outReader = Thread { proc.inputStream.bufferedReader().readText() }.apply { start() }
+            val errReader = Thread {
+                val err = proc.errorStream.bufferedReader().readText()
+                if (err.isNotBlank()) Log.w(TAG, "Shizuku starter stderr: $err")
+            }.apply { start() }
+
             val exitCode = proc.waitFor()
+            outReader.join(2000)
+            errReader.join(2000)
 
             if (exitCode == 0) {
                 // Save PID for management
@@ -305,59 +361,127 @@ object ShizukuManager {
     }
 
     /**
-     * Start Shizuku server via app_process (limited, runs as app UID).
+     * Start Shizuku server via ADB (requires wireless debugging paired with a computer).
      *
-     * ADB daemon protocol requires RSA key exchange (Android 11+ wireless pairing).
-     * Since the app doesn't have the ADB private key, we can't authenticate
-     * with the ADB daemon. Instead, we start Shizuku via app_process which
-     * gives us basic functionality. For elevated commands, exec() falls back
-     * to su -c.
+     * This method:
+     * 1. Checks if adbd is running (wireless debugging enabled)
+     * 2. Shows the exact ADB command to run on the paired computer
+     * 3. Returns true if adbd is running (server CAN be started via ADB)
      *
-     * The user can also run this ADB command from their computer for full access:
-     *   adb shell /data/data/${context.packageName}/files/shizuku-server --apk=...
+     * Note: The app CANNOT execute ADB commands on the host computer.
+     * The user MUST run the shown command on their computer.
+     * If Termux with android-tools is installed, we could try that.
      */
     private fun startWithAdb(context: Context, apkPath: String?): Boolean {
-        return try {
-            val dexFile = deployDex(context) ?: return false
+        // Check if adbd is running
+        val adbRunning = try {
+            Runtime.getRuntime().exec(arrayOf("getprop", "init.svc.adbd"))
+                .inputStream.bufferedReader().readText().trim() == "running"
+        } catch (e: Exception) { false }
 
-            // Start server via app_process (runs as app UID)
-            Log.i(TAG, "Starting Shizuku server via app_process (app UID)...")
-            val pb = ProcessBuilder(
-                "/system/bin/app_process",
-                "-Djava.class.path=$dexFile",
-                "/system/bin",
-                "--nice-name=shizuku_daemon",
-                "rikka.shizuku.shell.ShizukuShellLoader",
-                "--daemon"
-            )
-            pb.environment()["RISH_APPLICATION_ID"] = context.packageName
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            Thread.sleep(1500)
+        if (!adbRunning) {
+            Log.w(TAG, "adbd not running — wireless debugging not enabled")
+            return false
+        }
 
+        // Deploy server binary and bundled APK
+        val serverBin = deployServer(context) ?: return false
+        val bundledApk = deployBundledApk(context) ?: return false
+
+        // Build the ADB command the user must run on their computer
+        val adbCmd = "adb shell ${serverBin.absolutePath} --apk=${bundledApk.absolutePath}"
+
+        Log.i(TAG, "adbd running. User must run on computer: $adbCmd")
+
+        // Try Termux if available (bonus: can run ADB locally)
+        if (tryTermuxAdbStart(context, adbCmd)) {
+            Thread.sleep(2000)
             val newStatus = status(context)
             if (newStatus.running) {
                 if (newStatus.pid != null) {
                     File(context.filesDir, PID_FILE).writeText(newStatus.pid.toString())
                 }
-                Log.i(TAG, "Shizuku server started via app_process" +
-                        " (pid=${newStatus.pid}, limited to app UID)")
+                Log.i(TAG, "Shizuku server started via Termux ADB")
                 return true
             }
+        }
 
-            Log.w(TAG, "app_process start failed — show ADB command to user")
-            false
+        // Show command to user (handled by UI)
+        return true // adbd is running, server CAN be started via ADB
+    }
+
+    /**
+     * Try to start via Termux ADB if available (bonus feature).
+     */
+    private fun tryTermuxAdbStart(context: Context, adbCmd: String): Boolean {
+        return try {
+            // Check if Termux with android-tools is installed
+            val termuxAdb = File("/data/data/com.termux/files/usr/bin/adb")
+            if (!termuxAdb.exists() || !termuxAdb.canExecute()) return false
+
+            // Run adb locally from Termux
+            val proc = Runtime.getRuntime().exec(arrayOf(termuxAdb.absolutePath, "shell", adbCmd.substringAfter("adb shell ")))
+            proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            proc.exitValue() == 0
         } catch (e: Exception) {
-            Log.e(TAG, "ADB start failed: ${e.message}")
             false
         }
     }
 
     /**
-     * Check if Shizuku app is installed and can be used for --apk.
+     * Deploy bundled Shizuku APK from assets to filesDir.
+     */
+    private fun deployBundledApk(context: Context): File? {
+        val target = File(context.filesDir, "shizuku.apk")
+        var shouldDeploy = !target.exists() || target.length() == 0L
+        if (!shouldDeploy) {
+            try {
+                val assetSize = context.assets.open("shizuku/shizuku.apk").use { it.available().toLong() }
+                if (target.length() != assetSize) shouldDeploy = true
+            } catch (e: Exception) {
+                shouldDeploy = true
+            }
+        }
+        if (!shouldDeploy) return target
+        return try {
+            context.assets.open("shizuku/shizuku.apk").use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            target.setReadable(true, false)
+            Log.i(TAG, "Deployed bundled Shizuku APK (${target.length()} bytes)")
+            target
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to deploy bundled APK: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Get the best available Shizuku APK path:
+     * 1. System-installed Shizuku app (if available)
+     * 2. Our bundled APK (deployed to filesDir)
      */
     @JvmStatic
     fun getShizukuApkPath(context: Context): String? {
+        // 1. Try system Shizuku app
+        val systemPath = try {
+            val ai = context.packageManager.getApplicationInfo(SHIZUKU_PKG, 0)
+            ai.sourceDir
+        } catch (e: PackageManager.NameNotFoundException) { null }
+        if (systemPath != null) return systemPath
+
+        // 2. Fallback to bundled APK
+        val bundled = deployBundledApk(context)
+        return bundled?.absolutePath
+    }
+
+    /**
+     * Check if Shizuku app is installed and can be used for --apk.
+     * @deprecated Use getShizukuApkPath() which includes bundled fallback
+     */
+    @JvmStatic
+    @Deprecated("Use getShizukuApkPath()")
+    fun getShizukuApkPathLegacy(context: Context): String? {
         return try {
             val ai = context.packageManager.getApplicationInfo(SHIZUKU_PKG, 0)
             ai.sourceDir

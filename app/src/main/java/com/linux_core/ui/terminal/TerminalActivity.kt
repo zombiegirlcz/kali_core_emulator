@@ -1334,6 +1334,8 @@ class TerminalActivity : ComponentActivity() {
             return
         }
         handleFileIntent(intent)
+        // singleTask: restartovat session pokud nový intent míří na jiný rootfs
+        setupAndStartSession()
     }
 
     private fun handleFileIntent(intent: Intent) {
@@ -2497,27 +2499,61 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "setupAndStartSession")
         val activeSessions = TerminalService.sessions
         if (activeSessions.isNotEmpty()) {
-            Log.i(TAG, "Attaching to existing active session")
-            val lastSession = activeSessions.last()
-            val sessionId = TerminalService.getSessionId(lastSession)
-            val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "kali-arm64" else "kali-arm64"
-            val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
-            lifecycleScope.launch(Dispatchers.IO) {
-                val cfg = try {
-                    val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
-                                   distroName.startsWith("docker-") ||
-                                   distroName.startsWith("oci-")
-                    ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Attach setup failed for $distroName", e)
-                    null
+            // singleTask: pokud nový intent míří na jiný rootfs, restartovat session
+            val newRootfsDirName = intent.getStringExtra("rootfsDirName")
+            if (newRootfsDirName != null) {
+                val lastSession = activeSessions.last()
+                val sessionId = TerminalService.getSessionId(lastSession)
+                val currentDistro = if (sessionId != null) TerminalService.sessionDistros[sessionId] else null
+                if (currentDistro != newRootfsDirName) {
+                    Log.i(TAG, "Rootfs changed from $currentDistro to $newRootfsDirName — restarting session")
+                    activeSessions.forEach { it.finishIfRunning() }
+                    TerminalService.sessions.clear()
+                    // Fall through to create new session below
+                } else {
+                    Log.i(TAG, "Attaching to existing active session (same rootfs: $currentDistro)")
+                    val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        val cfg = try {
+                            val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
+                                           currentDistro.startsWith("docker-") ||
+                                           currentDistro.startsWith("oci-")
+                            ProotManager.setupProotEnvironment(this@TerminalActivity, currentDistro, mountStorageSaved, null, false, isDocker)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Attach setup failed for $currentDistro", e)
+                            null
+                        }
+                        withContext(Dispatchers.Main) {
+                            config = cfg
+                            switchToSession(lastSession)
+                        }
+                    }
+                    return
                 }
-                withContext(Dispatchers.Main) {
-                    config = cfg
-                    switchToSession(lastSession)
+            } else {
+                // No new intent — attach to existing
+                Log.i(TAG, "Attaching to existing active session (no new intent)")
+                val lastSession = activeSessions.last()
+                val sessionId = TerminalService.getSessionId(lastSession)
+                val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "kali-arm64" else "kali-arm64"
+                val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val cfg = try {
+                        val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
+                                       distroName.startsWith("docker-") ||
+                                       distroName.startsWith("oci-")
+                        ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Attach setup failed for $distroName", e)
+                        null
+                    }
+                    withContext(Dispatchers.Main) {
+                        config = cfg
+                        switchToSession(lastSession)
+                    }
                 }
+                return
             }
-            return
         }
         val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
@@ -2885,7 +2921,8 @@ class TerminalActivity : ComponentActivity() {
                         st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
                         st.suAvailable -> "  su available"
                         st.shizukuApkPath != null -> "  Shizuku APK ready"
-                        st.adbAvailable -> "  ADB enabled"
+                        st.adbWirelessPaired -> "  ADB wireless paired"
+                        st.adbAvailable -> "  ADB enabled (USB)"
                         else -> ""
                     }
                     text = info
@@ -2916,7 +2953,7 @@ class TerminalActivity : ComponentActivity() {
                             updateAllServiceIndicators()
                         }
                     })
-                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable) {
+                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable || st.adbWirelessPaired) {
                     row.addView(Button(this).apply {
                         text = "\u25B6 START"
                         textSize = 9f
@@ -2929,7 +2966,7 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShizukuManager.startServer(applicationContext)
+                            startShizukuAsync()
                             updateAllServiceIndicators()
                         }
                     })
@@ -2951,64 +2988,63 @@ class TerminalActivity : ComponentActivity() {
                         }
                     })
                 }
-            }
-
-            // ADB hint when server not running but ADB is available
-            if (!st.running && st.adbAvailable) {
-                servicesDetailPanel.addView(LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { setMargins(0, 4, 0, 0) }
-
-                    val pkg = applicationContext.packageName
-                    val adbCmd = if (st.shizukuApkPath != null) {
-                        "adb shell /data/data/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
-                    } else {
-                        "adb shell /data/data/$pkg/files/shizuku-server"
-                    }
-
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = "ADB command (run on computer):"
-                        setTextColor(Color.parseColor("#FF6B35"))
-                        textSize = 9f
-                        setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    })
-
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = adbCmd
-                        setTextColor(Color.parseColor("#888888"))
-                        textSize = 8f
-                        typeface = Typeface.MONOSPACE
-                    })
-
-                    addView(Button(this@TerminalActivity).apply {
-                        text = "\uD83D\uDCCB COPY"
-                        textSize = 8f
-                        setTextColor(Color.parseColor("#00FF41"))
-                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
-                        setPadding(8, 2, 8, 2)
+                // ADB hint when server not running but ADB is available
+                if (!st.running && (st.adbAvailable || st.adbWirelessPaired)) {
+                    servicesDetailPanel.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
                         layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
-                            android.widget.Toast.makeText(this@TerminalActivity,
-                                "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
-                        }
-                    })
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { setMargins(0, 4, 0, 0) }
 
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = "After running, restart app or press \u21BB"
-                        setTextColor(Color.parseColor("#666666"))
-                        textSize = 8f
-                        typeface = Typeface.MONOSPACE
+                        val pkg = applicationContext.packageName
+                        val adbCmd = if (st.shizukuApkPath != null) {
+                            "adb shell /data/user/0/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
+                        } else {
+                            "adb shell /data/user/0/$pkg/files/shizuku-server"
+                        }
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = "ADB command (run on computer):"
+                            setTextColor(Color.parseColor("#FF6B35"))
+                            textSize = 9f
+                            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                        })
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = adbCmd
+                            setTextColor(Color.parseColor("#888888"))
+                            textSize = 8f
+                            typeface = Typeface.MONOSPACE
+                        })
+
+                        addView(Button(this@TerminalActivity).apply {
+                            text = "\uD83D\uDCCB COPY"
+                            textSize = 8f
+                            setTextColor(Color.parseColor("#00FF41"))
+                            background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
+                            setPadding(8, 2, 8, 2)
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
+                            )
+                            setOnClickListener {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
+                                android.widget.Toast.makeText(this@TerminalActivity,
+                                    "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        })
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = "After running, restart app or press \u21BB"
+                            setTextColor(Color.parseColor("#666666"))
+                            textSize = 8f
+                            typeface = Typeface.MONOSPACE
+                        })
                     })
-                })
+                }
             }
 
             "code" -> {
@@ -3147,7 +3183,8 @@ class TerminalActivity : ComponentActivity() {
                         st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
                         st.suAvailable -> "  su available"
                         st.shizukuApkPath != null -> "  Shizuku APK ready"
-                        st.adbAvailable -> "  ADB enabled"
+                        st.adbWirelessPaired -> "  ADB wireless paired"
+                        st.adbAvailable -> "  ADB enabled (USB)"
                         else -> ""
                     }
                     text = info
@@ -3178,7 +3215,7 @@ class TerminalActivity : ComponentActivity() {
                             updateAllServiceIndicators()
                         }
                     })
-                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable) {
+                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable || st.adbWirelessPaired) {
                     row.addView(Button(this).apply {
                         text = "\u25B6 START"
                         textSize = 9f
@@ -3191,7 +3228,7 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShizukuManager.startServer(applicationContext)
+                            startShizukuAsync()
                             updateAllServiceIndicators()
                         }
                     })
@@ -3213,64 +3250,63 @@ class TerminalActivity : ComponentActivity() {
                         }
                     })
                 }
-            }
-
-            // ADB hint when server not running but ADB is available
-            if (!st.running && st.adbAvailable) {
-                servicesDetailPanel.addView(LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { setMargins(0, 4, 0, 0) }
-
-                    val pkg = applicationContext.packageName
-                    val adbCmd = if (st.shizukuApkPath != null) {
-                        "adb shell /data/data/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
-                    } else {
-                        "adb shell /data/data/$pkg/files/shizuku-server"
-                    }
-
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = "ADB command (run on computer):"
-                        setTextColor(Color.parseColor("#FF6B35"))
-                        textSize = 9f
-                        setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    })
-
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = adbCmd
-                        setTextColor(Color.parseColor("#888888"))
-                        textSize = 8f
-                        typeface = Typeface.MONOSPACE
-                    })
-
-                    addView(Button(this@TerminalActivity).apply {
-                        text = "\uD83D\uDCCB COPY"
-                        textSize = 8f
-                        setTextColor(Color.parseColor("#00FF41"))
-                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
-                        setPadding(8, 2, 8, 2)
+                // ADB hint when server not running but ADB is available
+                if (!st.running && (st.adbAvailable || st.adbWirelessPaired)) {
+                    servicesDetailPanel.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
                         layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
-                            android.widget.Toast.makeText(this@TerminalActivity,
-                                "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
-                        }
-                    })
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { setMargins(0, 4, 0, 0) }
 
-                    addView(TextView(this@TerminalActivity).apply {
-                        text = "After running, restart app or press \u21BB"
-                        setTextColor(Color.parseColor("#666666"))
-                        textSize = 8f
-                        typeface = Typeface.MONOSPACE
+                        val pkg = applicationContext.packageName
+                        val adbCmd = if (st.shizukuApkPath != null) {
+                            "adb shell /data/user/0/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
+                        } else {
+                            "adb shell /data/user/0/$pkg/files/shizuku-server"
+                        }
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = "ADB command (run on computer):"
+                            setTextColor(Color.parseColor("#FF6B35"))
+                            textSize = 9f
+                            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                        })
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = adbCmd
+                            setTextColor(Color.parseColor("#888888"))
+                            textSize = 8f
+                            typeface = Typeface.MONOSPACE
+                        })
+
+                        addView(Button(this@TerminalActivity).apply {
+                            text = "\uD83D\uDCCB COPY"
+                            textSize = 8f
+                            setTextColor(Color.parseColor("#00FF41"))
+                            background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
+                            setPadding(8, 2, 8, 2)
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
+                            )
+                            setOnClickListener {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
+                                android.widget.Toast.makeText(this@TerminalActivity,
+                                    "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        })
+
+                        addView(TextView(this@TerminalActivity).apply {
+                            text = "After running, restart app or press \u21BB"
+                            setTextColor(Color.parseColor("#666666"))
+                            textSize = 8f
+                            typeface = Typeface.MONOSPACE
+                        })
                     })
-                })
+                }
             }
 
             "code" -> {
@@ -3452,7 +3488,7 @@ class TerminalActivity : ComponentActivity() {
         if (adbCmd != null) {
             sb.appendLine()
             sb.appendLine("ADB příkaz (spustit z počítače):")
-            sb.appendLine("adb shell /data/data/${applicationContext.packageName}/files/shizuku-server --apk=$adbCmd")
+            sb.appendLine("adb shell /data/user/0/${applicationContext.packageName}/files/shizuku-server --apk=$adbCmd")
         }
 
         android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
@@ -3483,10 +3519,28 @@ class TerminalActivity : ComponentActivity() {
             .show()
     }
 
+    /**
+     * Start Shizuku server on a background thread to avoid ANR.
+     */
+    private fun startShizukuAsync(callback: ((Boolean) -> Unit)? = null) {
+        Thread {
+            val ok = com.linux_core.core.ShizukuManager.startServer(applicationContext)
+            runOnUiThread {
+                callback?.invoke(ok)
+                updateAllServiceIndicators()
+                if (!ok) {
+                    android.widget.Toast.makeText(this@TerminalActivity,
+                        "Shizuku server start failed. Check logs.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     private fun startAllServices() {
-        com.linux_core.core.ShizukuManager.startServer(applicationContext)
-        runCodeServerCtl("start")
-        updateAllServiceIndicators()
+        startShizukuAsync {
+            runCodeServerCtl("start")
+            updateAllServiceIndicators()
+        }
     }
 }
 

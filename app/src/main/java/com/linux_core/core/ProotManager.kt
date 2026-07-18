@@ -294,7 +294,7 @@ object ProotManager {
             append("  fi").append(NL)
             append("fi").append(NL)
             append("echo '[*] Installing core packages...'").append(NL)
-            append("apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip 2>&1 || true").append(NL)
+            append("apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip dropbear dropbear-bin 2>&1 || true").append(NL)
             // Restore debconf confmodule (real Perl now installed, debconf should work)
 
             append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
@@ -396,6 +396,18 @@ object ProotManager {
             append("[ -d /home/kali ] && setup_user_zsh /home/kali kali").append(NL)
 
             append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
+            append("# Dropbear SSH server (fix for OpenSSH seccomp crash on Android kernel)").append(NL)
+            append("if command -v dropbear >/dev/null 2>&1; then").append(NL)
+            append("  if ! pidof dropbear >/dev/null 2>&1; then").append(NL)
+            append("    mkdir -p /etc/dropbear").append(NL)
+            append("    for keytype in rsa ecdsa ed25519; do").append(NL)
+            append("      KEYFILE=\"/etc/dropbear/dropbear_\${keytype}_host_key\"").append(NL)
+            append("      [ -f \"\$KEYFILE\" ] || dropbearkey -t \"\$keytype\" -f \"\$KEYFILE\" 2>&1 | tail -1").append(NL)
+            append("    done").append(NL)
+            append("    # Use port 2222 (non-privileged — PRoot can't bind to port 22)").append(NL)
+            append("    dropbear -p 2222 2>/dev/null && echo '[*] dropbear SSH server started on port 2222'").append(NL)
+            append("  fi").append(NL)
+            append("fi").append(NL)
             append("[ -f /etc/motd ] && cat /etc/motd").append(NL)
             append("echo '[*] Starting session...'").append(NL)
             append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
@@ -678,7 +690,17 @@ object ProotManager {
         val rishDex = File(binDir, "rish_shizuku.dex")
 
         var needsDeploy = false
-        if (!rishScript.exists() || rishScript.length() == 0L) needsDeploy = true
+        if (!rishScript.exists() || rishScript.length() == 0L) {
+            needsDeploy = true
+        } else {
+            // Force redeploy if asset size differs (updated script)
+            try {
+                val assetSize = context.assets.open("shizuku/rish.sh").use { it.available().toLong() }
+                if (rishScript.length() != assetSize) needsDeploy = true
+            } catch (e: Exception) {
+                needsDeploy = true
+            }
+        }
         if (!rishDex.exists() || rishDex.length() == 0L) needsDeploy = true
 
         if (!needsDeploy) {
