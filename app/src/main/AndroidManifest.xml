@@ -27,6 +27,11 @@
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="moe.shizuku.manager.permission.MANAGER" />
 
+    <!-- USB Host management permission (system-level) -->
+    <uses-permission android:name="android.permission.MANAGE_USB" />
+    <uses-permission android:name="android.permission.MANAGE_COMPANION_DEVICES" />
+    <uses-permission android:name="android.permission.ASSOCIATE_COMPANION_DEVICES" />
+
     <permission
         android:name="com.linux_core.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
         android:protectionLevel="signature" />
