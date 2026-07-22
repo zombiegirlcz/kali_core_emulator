@@ -79,6 +79,18 @@ object UsbFdExporter : Closeable {
             Log.w(TAG, "Already running")
             return
         }
+
+        // If already running but with a different path, restart with new path
+        if (running.get()) {
+            if (udsPath != path) {
+                Log.i(TAG, "Restarting UDS from $udsPath → $path")
+                stopInternal()
+            } else {
+                Log.w(TAG, "Already running at $path — no change needed")
+                return
+            }
+        }
+
         udsPath = path
         running.set(true)
 
@@ -176,6 +188,15 @@ object UsbFdExporter : Closeable {
     }
 
     // ── Close / shutdown ────────────────────────────────────────────────────
+
+    private fun stopInternal() {
+        thread?.interrupt()
+        thread = null
+        if (serverFd >= 0) {
+            nativeCloseSocket(serverFd)
+            serverFd = -1
+        }
+    }
 
     @Synchronized
     override fun close() {
