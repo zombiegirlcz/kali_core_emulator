@@ -32,7 +32,7 @@
  * Returns fd on success, negative errno on failure.
  */
 JNIEXPORT jint JNICALL
-Java_com_linux_core_core_UsbFdExporter_nativeCreateServerSocket(
+Java_com_linux_1core_core_UsbFdExporter_nativeCreateServerSocket(
     JNIEnv *env, jobject thiz, jstring path)
 {
     const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
@@ -85,7 +85,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeCreateServerSocket(
  * Returns client fd on success, negative errno on failure.
  */
 JNIEXPORT jint JNICALL
-Java_com_linux_core_core_UsbFdExporter_nativeAcceptAndSendFd(
+Java_com_linux_1core_core_UsbFdExporter_nativeAcceptAndSendFd(
     JNIEnv *env, jobject thiz, jint serverFd, jint usbFd)
 {
     int clientFd = accept(serverFd, NULL, NULL);
@@ -139,7 +139,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeAcceptAndSendFd(
  * Close a socket fd.
  */
 JNIEXPORT void JNICALL
-Java_com_linux_core_core_UsbFdExporter_nativeCloseSocket(
+Java_com_linux_1core_core_UsbFdExporter_nativeCloseSocket(
     JNIEnv *env, jobject thiz, jint fd)
 {
     if (fd >= 0) {
@@ -152,7 +152,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeCloseSocket(
  * Read raw bytes from client fd. Returns number of bytes read, or negative errno.
  */
 JNIEXPORT jint JNICALL
-Java_com_linux_core_core_UsbFdExporter_nativeReadClient(
+Java_com_linux_1core_core_UsbFdExporter_nativeReadClient(
     JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
@@ -169,7 +169,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeReadClient(
  * Write raw bytes to client fd.
  */
 JNIEXPORT jint JNICALL
-Java_com_linux_core_core_UsbFdExporter_nativeWriteClient(
+Java_com_linux_1core_core_UsbFdExporter_nativeWriteClient(
     JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
