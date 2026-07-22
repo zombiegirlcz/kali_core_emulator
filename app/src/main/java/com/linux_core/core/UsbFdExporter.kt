@@ -75,10 +75,6 @@ object UsbFdExporter : Closeable {
         if (!initialized) {
             throw RuntimeException("libusbfd_exporter.so not available — USB bridge disabled")
         }
-        if (running.get()) {
-            Log.w(TAG, "Already running")
-            return
-        }
 
         // If already running but with a different path, restart with new path
         if (running.get()) {
