@@ -33,7 +33,7 @@
  */
 JNIEXPORT jint JNICALL
 Java_com_linux_core_core_UsbFdExporter_nativeCreateServerSocket(
-    JNIEnv *env, jclass cls, jstring path)
+    JNIEnv *env, jobject thiz, jstring path)
 {
     const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (!cpath) return -EINVAL;
@@ -86,7 +86,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeCreateServerSocket(
  */
 JNIEXPORT jint JNICALL
 Java_com_linux_core_core_UsbFdExporter_nativeAcceptAndSendFd(
-    JNIEnv *env, jclass cls, jint serverFd, jint usbFd)
+    JNIEnv *env, jobject thiz, jint serverFd, jint usbFd)
 {
     int clientFd = accept(serverFd, NULL, NULL);
     if (clientFd < 0) {
@@ -140,7 +140,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeAcceptAndSendFd(
  */
 JNIEXPORT void JNICALL
 Java_com_linux_core_core_UsbFdExporter_nativeCloseSocket(
-    JNIEnv *env, jclass cls, jint fd)
+    JNIEnv *env, jobject thiz, jint fd)
 {
     if (fd >= 0) {
         LOGI("Closing socket fd=%d", fd);
@@ -153,7 +153,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeCloseSocket(
  */
 JNIEXPORT jint JNICALL
 Java_com_linux_core_core_UsbFdExporter_nativeReadClient(
-    JNIEnv *env, jclass cls, jint clientFd, jbyteArray buf, jint offset, jint len)
+    JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
     if (!cBuf) return -ENOMEM;
@@ -170,7 +170,7 @@ Java_com_linux_core_core_UsbFdExporter_nativeReadClient(
  */
 JNIEXPORT jint JNICALL
 Java_com_linux_core_core_UsbFdExporter_nativeWriteClient(
-    JNIEnv *env, jclass cls, jint clientFd, jbyteArray buf, jint offset, jint len)
+    JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
     if (!cBuf) return -ENOMEM;

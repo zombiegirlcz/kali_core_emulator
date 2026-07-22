@@ -193,18 +193,13 @@ object UsbFdExporter : Closeable {
 
     // ── JNI native methods ──────────────────────────────────────────────────
 
-    @JvmStatic
     private external fun nativeCreateServerSocket(path: String): Int
 
-    @JvmStatic
     private external fun nativeAcceptAndSendFd(serverFd: Int, usbFd: Int): Int
 
-    @JvmStatic
     private external fun nativeCloseSocket(fd: Int): Unit
 
-    @JvmStatic
     private external fun nativeReadClient(clientFd: Int, buf: ByteArray, offset: Int, len: Int): Int
 
-    @JvmStatic
     private external fun nativeWriteClient(clientFd: Int, buf: ByteArray, offset: Int, len: Int): Int
 }
