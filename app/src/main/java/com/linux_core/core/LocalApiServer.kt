@@ -76,6 +76,14 @@ object LocalApiServer {
         appContext = context.applicationContext
         CertificateManager.init(appContext!!)
         UsbHostManager.init(appContext!!)
+        // Start USB fd exporter for PRoot direct ioctl access
+        try {
+            UsbFdExporter.init()
+            UsbFdExporter.start()
+            Log.i(TAG, "UsbFdExporter started at ${UsbFdExporter.getUdsPath()}")
+        } catch (e: Exception) {
+            Log.w(TAG, "UsbFdExporter not available (JNI missing?): ${e.message}")
+        }
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
@@ -120,6 +128,11 @@ object LocalApiServer {
         tts = null
         ttsReady = false
         UsbHostManager.shutdown()
+        try {
+            UsbFdExporter.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing UsbFdExporter: ${e.message}")
+        }
     }
 
     private fun initTts(context: Context) {
@@ -251,10 +264,12 @@ object LocalApiServer {
 
     private fun handleConnection(context: Context, socket: Socket) {
         try {
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val rawIn = socket.getInputStream()
             val out = socket.getOutputStream()
 
-            val requestLine = reader.readLine() ?: return
+            // Read the request line byte-by-byte to preserve binary body
+            val requestLineBytes = readLineBytes(rawIn) ?: return
+            val requestLine = String(requestLineBytes, Charsets.UTF_8)
             Log.d(TAG, "Request: $requestLine")
             val parts = requestLine.split(" ")
             if (parts.size < 2) {
@@ -264,7 +279,55 @@ object LocalApiServer {
             val method = parts[0]
             val path = parts[1]
 
-            // Parse headers
+            // Check if this is a binary USB endpoint — needs raw body (no BufferedReader/String)
+            val isBinaryUsbEndpoint = path == "/usb/raw_transfer" || path == "/usb/stream"
+
+            if (isBinaryUsbEndpoint) {
+                // For binary USB endpoints, read headers from raw stream, then pass
+                // the remaining raw stream to the handler (don't use BufferedReader)
+                val rawHeaders = readRawHeaders(rawIn)
+                if (rawHeaders == null) {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid HTTP headers\"}")
+                    return
+                }
+                
+                // Parse Content-Length
+                val contentLength = rawHeaders["content-length"]?.toIntOrNull() ?: 0
+
+                // Authentication check
+                if (path.startsWith("/usb/")) {
+                    val isLocalConnection = try {
+                        val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
+                        val remoteAddr = socket.inetAddress?.hostAddress ?: ""
+                        remoteAddr == "127.0.0.1" || remoteAddr == "::1" || remoteAddr == localAddr
+                    } catch (e: Exception) { false }
+
+                    if (!isLocalConnection) {
+                        if (!isAuthenticated(rawHeaders)) {
+                            sendResponse(out, 401, "Unauthorized",
+                                "{\"error\":\"Authentication required\"}")
+                            return
+                        }
+                    }
+                }
+
+                when {
+                    path == "/usb/raw_transfer" -> {
+                        handleUsbRawTransfer(rawIn, out, socket, method, contentLength, rawHeaders)
+                    }
+                    path == "/usb/stream" -> {
+                        handleUsbStream(socket, context, rawIn, out, contentLength, rawHeaders)
+                        return  // streaming handler closes socket itself
+                    }
+                }
+                // raw_transfer continues — let normal flow close socket
+                return  // raw_transfer handles its own response
+            }
+
+            // ── Normal (non-binary) path ─────────────────────────────────
+            val reader = BufferedReader(InputStreamReader(rawIn))
+
+            // Parse headers (remaining headers if not already read)
             var contentLength = 0
             val headers = HashMap<String, String>()
             var line: String? = reader.readLine()
@@ -294,7 +357,7 @@ object LocalApiServer {
                 body = String(bodyChars, 0, totalRead)
             }
 
-            // Authentication check (exclude internal/loopback-only or non-sensitive endpoints)
+            // Authentication check
             val sensitiveEndpoints = listOf("/shell", "/clipboard", "/location", "/cellinfo",
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
@@ -313,7 +376,6 @@ object LocalApiServer {
                         "{\"error\":\"Authentication required\"}")
                     return
                 }
-                // When attestation is enabled, also require a fresh signed nonce.
                 val attOk = verifyAttestationHeaders(headers, body)
                 if (!attOk) {
                     sendResponse(out, 401, "Unauthorized",
@@ -328,6 +390,34 @@ object LocalApiServer {
         } finally {
             try { socket.close() } catch (e: Exception) {}
         }
+    }
+
+    /** Read bytes until newline (binary-safe line reading). */
+    private fun readLineBytes(rawIn: java.io.InputStream): ByteArray? {
+        val baos = java.io.ByteArrayOutputStream()
+        var b = rawIn.read()
+        while (b != -1 && b != '\n'.code) {
+            if (b != '\r'.code) baos.write(b)
+            b = rawIn.read()
+        }
+        return if (baos.size() == 0 && b == -1) null else baos.toByteArray()
+    }
+
+    /** Read HTTP headers from raw stream (binary-safe, returns lowercase keys). */
+    private fun readRawHeaders(rawIn: java.io.InputStream): Map<String, String>? {
+        val headers = HashMap<String, String>()
+        while (true) {
+            val lineBytes = readLineBytes(rawIn) ?: return null
+            if (lineBytes.isEmpty()) break  // end of headers
+            val line = String(lineBytes, Charsets.UTF_8)
+            val colonIdx = line.indexOf(':')
+            if (colonIdx != -1) {
+                val key = line.substring(0, colonIdx).trim().lowercase()
+                val value = line.substring(colonIdx + 1).trim()
+                headers[key] = value
+            }
+        }
+        return headers
     }
 
     private fun routeRequest(context: Context, method: String, path: String, body: String, out: OutputStream, isLocalConnection: Boolean = true) {
@@ -408,6 +498,10 @@ object LocalApiServer {
                 path == "/usb/bulk_transfer" && method == "POST" -> handleUsbBulkTransfer(body, out)
                 path == "/usb/control_transfer" && method == "POST" -> handleUsbControlTransfer(body, out)
                 path == "/usb/send" && method == "POST" -> handleUsbSendRaw(body, out)
+                path == "/usb/export_fd" && method == "POST" -> handleUsbExportFd(body, out)
+                path == "/usb/raw_transfer" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
+                path == "/usb/raw_transfer" && method == "GET" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
+                path == "/usb/stream" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -424,6 +518,22 @@ object LocalApiServer {
                 "Connection: close\r\n\r\n"
         out.write(headers.toByteArray(Charsets.UTF_8))
         out.write(rawResponse)
+        out.flush()
+    }
+
+    /**
+     * Send HTTP response with keep-alive (for USB endpoints where multiple
+     * transfers happen in rapid succession — critical for BROM timing).
+     */
+    private fun sendResponseKeepAlive(out: OutputStream, statusCode: Int, statusText: String, data: ByteArray, contentType: String = "application/octet-stream") {
+        val headers = "HTTP/1.1 $statusCode $statusText\r\n" +
+                "Content-Type: $contentType\r\n" +
+                "Content-Length: ${data.size}\r\n" +
+                "Connection: keep-alive\r\n" +
+                "Cache-Control: no-cache\r\n" +
+                "Pragma: no-cache\r\n\r\n"
+        out.write(headers.toByteArray(Charsets.UTF_8))
+        out.write(data)
         out.flush()
     }
 
@@ -2626,6 +2736,369 @@ object LocalApiServer {
             Log.e(TAG, "USB sendRaw error: ${e.message}", e)
             sendResponse(out, 500, "Internal Error",
                 JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  USB Raw Binary & Streaming endpoints (no Base64/JSON overhead)
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These endpoints eliminate HTTP/JSON/Base64 overhead for high-speed
+    // USB bulk transfers where timing is critical (e.g. BROM/EDL mode).
+    //
+    // ── /usb/endpoint_info ────────────────────────────────────────────
+    //   POST {"device_name":"...","endpoint":1}
+    //   Returns endpoint metadata for raw/stream usage.
+    //
+    // ── /usb/raw_transfer (GET/POST) ────────────────────────────────
+    //   POST with Content-Type: application/octet-stream
+    //   Query params: ?device=...&endpoint=N&timeout=1000
+    //   Body = raw bytes for OUT; empty for IN
+    //   Response = raw bytes (IN) or 4-byte big-endian count (OUT)
+    //   No JSON, no Base64 — pure binary.
+    //
+    // ── /usb/stream ───────────────────────────────────────────────────
+    //   POST with JSON config body, then switches to raw binary protocol.
+    //   After the HTTP response, the connection becomes a persistent
+    //   binary stream for back-to-back USB transfers.
+    //
+    //   Binary frame format (all multi-byte big-endian):
+    //     OUT (host→device):
+    //       Client → Server: [1B 0x01][3B reserved][4B len:payload][payload...]
+    //       Server → Client: [4B bytes_written]
+    //     IN (device→host):
+    //       Client → Server: [1B 0x02][3B reserved][4B max_read]
+    //       Server → Client: [4B bytes_read][payload...]
+    //     CLOSE:
+    //       Client → Server: [1B 0xFF] → server closes connection
+    //
+    //   Usage from PRoot guest:
+    //     exec 3<>/dev/tcp/127.0.0.1/1337
+    //     echo -e 'POST /usb/stream HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{"device_name":"/dev/bus/usb/...","endpoint_in":1,"endpoint_out":2}' >&3
+    //     head -1 <&3  # consume HTTP response
+    //     # Now raw binary frames:
+    //     # printf '\x01\x00\x00\x00\x00\x00\x10\x00' >&3  # OUT 4096 bytes
+    //     # dd if=/dev/zero bs=4096 count=1 >&3
+    //     # # read response
+    //     # dd bs=4 count=1 <&3 2>/dev/null | od -An -tu4
+
+    private fun handleUsbEndpointInfo(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val deviceName = j.optString("device_name", "")
+            val endpointAddress = j.optInt("endpoint", -1)
+            if (deviceName.isEmpty() || endpointAddress < 0) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name and endpoint are required") }.toString())
+                return
+            }
+            val info = UsbHostManager.getEndpointInfo(deviceName, endpointAddress)
+            if (info == null) {
+                sendResponse(out, 404, "Not Found",
+                    JSONObject().apply { put("error", "Endpoint not found") }.toString())
+                return
+            }
+            sendResponse(out, 200, "OK", info)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB endpoint_info error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    /**
+     * Export USB device file descriptor to PRoot via UDS + SCM_RIGHTS.
+     *
+     * POST /usb/export_fd
+     * Body: {"device_name": "/dev/bus/usb/001/002", "interface_id": 0}
+     *
+     * This queues the raw USB fd for the next PRoot client that connects
+     * to the UsbFdExporter's UDS socket. After calling this, run `usb_bridge`
+     * in PRoot to receive the fd and perform direct ioctl operations.
+     */
+    private fun handleUsbExportFd(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val deviceName = j.optString("device_name", "")
+            if (deviceName.isEmpty()) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name is required") }.toString())
+                return
+            }
+
+            // Auto-claim interface 0 if not already claimed
+            if (!UsbHostManager.hasOpenConnection(deviceName)) {
+                val ifaceId = j.optInt("interface_id", 0)
+                val claimObj = UsbHostManager.claimInterface(deviceName, ifaceId)
+                if (!claimObj.optBoolean("success", false) && !claimObj.optBoolean("already_claimed", false)) {
+                    sendResponse(out, 500, "USB Error",
+                        JSONObject().apply { put("error", "Failed to claim interface: ${claimObj.optString("error", "unknown")}") }.toString())
+                    return
+                }
+                Log.i(TAG, "Auto-claimed USB interface $ifaceId for $deviceName")
+            }
+
+            // Extract raw fd via reflection
+            val fd = UsbHostManager.getRawFileDescriptor(deviceName)
+            if (fd < 0) {
+                sendResponse(out, 500, "USB Error",
+                    JSONObject().apply { put("error", "Failed to extract USB fd. Is the device claimed?") }.toString())
+                return
+            }
+
+            // Queue fd for export
+            UsbFdExporter.exportFd(deviceName, fd)
+
+            val resp = JSONObject().apply {
+                put("success", true)
+                put("device_name", deviceName)
+                put("uds_path", UsbFdExporter.getUdsPath())
+                put("fd", fd)
+                put("message", "USB fd queued. Run 'usb_bridge ${UsbFdExporter.getUdsPath()} ...' in PRoot to use it.")
+            }
+            sendResponse(out, 200, "OK", resp.toString())
+            Log.i(TAG, "USB fd=$fd exported for $deviceName via ${UsbFdExporter.getUdsPath()}")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "USB export_fd error: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error",
+                JSONObject().apply { put("error", e.message) }.toString())
+        }
+    }
+
+    /**
+     * Raw binary USB bulk transfer — no JSON/Base64 overhead.
+     *
+     * Accepts raw binary POST body and returns raw binary response.
+     * Parameters passed via HTTP headers or query string:
+     *   X-USB-Device: device name
+     *   X-USB-Endpoint: endpoint number
+     *   X-USB-Timeout: timeout in ms (default 1000)
+     *
+     * For IN transfers: body = empty, response = raw data
+     * For OUT transfers: body = data to send, response = 4-byte big-endian count
+     *
+     * This endpoint uses keep-alive so multiple transfers can reuse the connection.
+     */
+    private fun handleUsbRawTransfer(
+        rawIn: java.io.InputStream,
+        out: OutputStream,
+        socket: Socket,
+        method: String,
+        contentLength: Int,
+        headers: Map<String, String>
+    ) {
+        Log.i(TAG, "USB raw_transfer: contentLength=$contentLength, method=$method")
+
+        try {
+            val deviceName = headers["x-usb-device"] ?: ""
+            val endpointAddress = headers["x-usb-endpoint"]?.toIntOrNull() ?: -1
+            val timeout = headers["x-usb-timeout"]?.toIntOrNull() ?: 1000
+            val direction = headers["x-usb-direction"] ?: ""
+
+            if (deviceName.isEmpty() || endpointAddress < 0) {
+                sendResponseKeepAlive(out, 400, "Bad Request",
+                    "{\"error\":\"X-USB-Device and X-USB-Endpoint headers required\"}".toByteArray(),
+                    "application/json")
+                return
+            }
+
+            // Read raw body bytes (binary safe, from raw stream)
+            val rawBody = if (contentLength > 0) {
+                val buf = ByteArray(contentLength)
+                var totalRead = 0
+                while (totalRead < contentLength) {
+                    val read = rawIn.read(buf, totalRead, contentLength - totalRead)
+                    if (read == -1) break
+                    totalRead += read
+                }
+                buf.copyOf(totalRead)
+            } else {
+                ByteArray(0)
+            }
+
+            val effectiveDirection = when {
+                direction.isNotEmpty() -> direction
+                contentLength > 0 -> "OUT"
+                else -> "IN"
+            }
+
+            if (effectiveDirection.equals("OUT", ignoreCase = true)) {
+                val result = UsbHostManager.rawBulkTransfer(deviceName, endpointAddress, rawBody, timeout)
+                if (!result.success) {
+                    sendResponseKeepAlive(out, 500, "Transfer Failed",
+                        JSONObject().apply { put("error", result.error) }.toString().toByteArray(),
+                        "application/json")
+                } else {
+                    // Return 4-byte big-endian transferred count
+                    val countBytes = java.nio.ByteBuffer.allocate(4).putInt(result.transferred).array()
+                    sendResponseKeepAlive(out, 200, "OK", countBytes)
+                }
+            } else {
+                val result = UsbHostManager.rawBulkTransfer(deviceName, endpointAddress, null, timeout)
+                if (!result.success) {
+                    sendResponseKeepAlive(out, 500, "Transfer Failed",
+                        JSONObject().apply { put("error", result.error) }.toString().toByteArray(),
+                        "application/json")
+                } else {
+                    // Return: 4B big-endian length + raw data
+                    val lenBytes = java.nio.ByteBuffer.allocate(4).putInt(result.transferred).array()
+                    val response = lenBytes + result.data
+                    sendResponseKeepAlive(out, 200, "OK", response)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "USB raw_transfer error: ${e.message}", e)
+            try {
+                sendResponseKeepAlive(out, 500, "Internal Error",
+                    JSONObject().apply { put("error", e.message) }.toString().toByteArray(),
+                    "application/json")
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * USB streaming endpoint for BROM/EDL and other time-critical protocols.
+     *
+     * After the HTTP handshake, switches to a raw binary frame protocol
+     * over the same TCP connection. No HTTP/JSON/Base64 overhead after startup.
+     */
+    private fun handleUsbStream(
+        socket: Socket,
+        context: Context,
+        rawIn: java.io.InputStream,
+        out: OutputStream,
+        contentLength: Int,
+        headers: Map<String, String>
+    ) {
+        Log.i(TAG, "USB stream connection established")
+
+        try {
+            // Read config from request body (binary-safe from raw stream)
+            val configBody = if (contentLength > 0) {
+                val buf = ByteArray(contentLength)
+                var totalRead = 0
+                while (totalRead < contentLength) {
+                    val n = rawIn.read(buf, totalRead, contentLength - totalRead)
+                    if (n == -1) break
+                    totalRead += n
+                }
+                String(buf, 0, totalRead, Charsets.UTF_8)
+            } else {
+                "{}"
+            }
+
+            val j = JSONObject(configBody)
+            val deviceName = j.optString("device_name", headers["x-usb-device"] ?: "")
+            val endpointIn = j.optInt("endpoint_in", headers["x-usb-endpoint-in"]?.toIntOrNull() ?: -1)
+            val endpointOut = j.optInt("endpoint_out", headers["x-usb-endpoint-out"]?.toIntOrNull() ?: -1)
+
+            if (deviceName.isEmpty() || (endpointIn < 0 && endpointOut < 0)) {
+                sendResponse(out, 400, "Bad Request",
+                    JSONObject().apply { put("error", "device_name and at least one endpoint required") }.toString())
+                socket.close()
+                return
+            }
+
+            // Send HTTP 200 and switch to raw binary mode
+            val okHeaders = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/octet-stream\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "X-USB-Stream: ready\r\n" +
+                    "Connection: close\r\n\r\n"
+            out.write(okHeaders.toByteArray(Charsets.UTF_8))
+            out.flush()
+
+            Log.i(TAG, "USB stream ready for $deviceName (IN=$endpointIn, OUT=$endpointOut)")
+
+            // ── Binary frame loop on the raw socket ───────────────────
+            val buffer = ByteArray(64 * 1024) // 64KB read buffer
+
+            // Compute effective endpoint for a given direction
+            fun endpointForDirection(isIn: Boolean): Int {
+                return if (isIn) {
+                    if (endpointIn >= 0) endpointIn else endpointOut
+                } else {
+                    if (endpointOut >= 0) endpointOut else endpointIn
+                }
+            }
+
+            while (socket.isConnected && !socket.isClosed) {
+                // Read frame header: [1B cmd][3B reserved][4B len] = 8 bytes
+                var headerRead = 0
+                val header = ByteArray(8)
+                while (headerRead < 8) {
+                    val n = rawIn.read(header, headerRead, 8 - headerRead)
+                    if (n == -1) throw java.io.IOException("Stream closed by client")
+                    headerRead += n
+                }
+
+                val cmd = header[0].toInt() and 0xFF
+                val len = ((header[4].toInt() and 0xFF) shl 24) or
+                        ((header[5].toInt() and 0xFF) shl 16) or
+                        ((header[6].toInt() and 0xFF) shl 8) or
+                        (header[7].toInt() and 0xFF)
+
+                when (cmd) {
+                    0x01 -> {
+                        // OUT: host → device
+                        if (len > 0) {
+                            var payloadRead = 0
+                            while (payloadRead < len) {
+                                val n = rawIn.read(buffer, payloadRead, len - payloadRead)
+                                if (n == -1) throw java.io.IOException("Stream closed during payload read")
+                                payloadRead += n
+                            }
+                            val payload = buffer.copyOf(payloadRead)
+                            val ep = endpointForDirection(false)
+                            val result = UsbHostManager.rawBulkTransfer(deviceName, ep, payload, 1000)
+                            val respLen = java.nio.ByteBuffer.allocate(4).putInt(result.transferred).array()
+                            try { out.write(respLen); out.flush() } catch (_: Exception) { break }
+                        } else {
+                            val respLen = java.nio.ByteBuffer.allocate(4).putInt(0).array()
+                            try { out.write(respLen); out.flush() } catch (_: Exception) { break }
+                        }
+                    }
+                    0x02 -> {
+                        // IN: device → host
+                        val readSize = if (len in 1..buffer.size) len else 65536
+                        val ep = endpointForDirection(true)
+                        val result = UsbHostManager.rawBulkTransfer(deviceName, ep, null, 1000)
+                        val actual = result.transferred
+                        val respHeader = java.nio.ByteBuffer.allocate(4).putInt(actual).array()
+                        try {
+                            out.write(respHeader)
+                            if (actual > 0) out.write(result.data, 0, actual)
+                            out.flush()
+                        } catch (_: Exception) { break }
+                    }
+                    0xFF -> {
+                        // CLOSE
+                        Log.i(TAG, "USB stream closed by client")
+                        socket.close()
+                        return
+                    }
+                    else -> {
+                        Log.w(TAG, "USB stream unknown command: $cmd")
+                        // Try to skip payload if any
+                        if (len > 0) {
+                            var skipped = 0
+                            while (skipped < len) {
+                                val n = rawIn.read(buffer, 0, minOf(len - skipped, buffer.size))
+                                if (n == -1) break
+                                skipped += n
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: java.io.IOException) {
+            Log.i(TAG, "USB stream ended: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "USB stream error: ${e.message}", e)
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
+            Log.i(TAG, "USB stream connection closed")
         }
     }
 }

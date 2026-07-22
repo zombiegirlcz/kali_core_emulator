@@ -657,7 +657,8 @@ object ProotManager {
             "bin/ifconfig" to "ifconfig",
             "code-server-ctl" to "code-server-ctl",
             "scripts/ai-agent.py" to "ai-agent.py",
-            "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py"
+            "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
+            "usb_bridge" to "usb_bridge"
         )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
@@ -674,6 +675,21 @@ object ProotManager {
             } catch (e: Exception) {
                 Log.e("ProotManager", "Failed to deploy P2P/AI asset script $targetName: ${e.message}")
             }
+        }
+
+        // Initialize USB bridge: create socket path INSIDE rootfs tmp
+        // so it's visible from PRoot as /tmp/usb_bridge.sock
+        val usbBridgeSocket = File(rootfsDir, "tmp/usb_bridge.sock")
+        try {
+            val parent = usbBridgeSocket.parentFile
+            if (parent != null && !parent.exists()) parent.mkdirs()
+            // Ensure the socket doesn't exist (bind will create it)
+            usbBridgeSocket.delete()
+            // Start the UDS server on this path (runs in app process)
+            UsbFdExporter.start(usbBridgeSocket.absolutePath)
+            Log.i(TAG, "USB bridge UDS configured at ${usbBridgeSocket.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "USB bridge UDS setup skipped: ${e.message}")
         }
     }
 
@@ -1050,6 +1066,53 @@ Připojená zařízení (např. druhá deska, USB flashdisk, sériový adaptér)
 | `nh usb send <device> <file>` | Pošle binární soubor přes první OUT bulk endpoint | `nh usb send /dev/bus/usb/001/002 exploit.bin` |
 | `nh usb bulk <device> <ep> [file]` | Bulk transfer na konkrétní endpoint (IN čte, OUT zapisuje) | `nh usb bulk /dev/bus/usb/001/002 2 data.bin` |
 | `nh usb control <device> [req] [val] [idx] [file]` | Control transfer na endpoint 0 | `nh usb control /dev/bus/usb/001/002 64 0 0 config.bin` |
+| `nh usb raw <device> <ep> <in\|out> [file]` | Raw binary bulk transfer (bez Base64/JSON, keep-alive) | `nh usb raw /dev/bus/usb/001/002 2 out exploit.bin` |
+| `nh usb stream <device> <in_ep> <out_ep>` | Persistentní BROM/EDL streaming session | `nh usb stream /dev/bus/usb/001/002 1 2` |
+
+### 🚀 USB BROM/EDL Optimalizace (v4.3+)
+
+Pro časově kritické USB protokoly (Qualcomm BROM/EDL, bootloader flashing) byly přidány dva optimalizované endpointy, které eliminují HTTP/JSON/Base64 režii:
+
+#### `/usb/raw_transfer` — Raw binary bulk transfer
+
+```bash
+# OUT: pošli data na zařízení
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 2' --data-binary @programmer.bin \
+     http://127.0.0.1:1337/usb/raw_transfer
+# Response: 4-byte big-endian transferred count
+
+# IN: přečti data ze zařízení (prázdné body)
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 1' -H 'X-USB-Direction: IN' \
+     http://127.0.0.1:1337/usb/raw_transfer -o response.bin
+```
+
+Parametry se předávají v HTTP hlavičkách. Response je čistě binární. Keep-alive pro vícenásobné transfery.
+
+#### `/usb/stream` — Persistentní BROM/EDL streaming
+
+Po HTTP handshake přepne na raw binární frame protokol:
+
+```
+0x01 OUT: [1B cmd][3B rezerva][4B délka][payload...] → [4B zapsáno]
+0x02 IN:  [1B cmd][3B rezerva][4B max_read]          → [4B přečteno][data...]
+0xFF CLOSE
+```
+
+```bash
+# Z PRoot guest (bash TCP socket)
+exec 3<>/dev/tcp/127.0.0.1/1337
+echo -e 'POST /usb/stream HTTP/1.1\r\nContent-Length: 50\r\n\r\n{"device_name":"/dev/bus/usb/001/002","endpoint_in":1,"endpoint_out":2}' >&3
+head -1 <&3
+# Raw binární frames:
+printf '\\x01\\x00\\x00\\x00\\x00\\x00\\x10\\x00' >&3
+dd if=/dev/zero bs=4096 count=1 >&3
+dd bs=4 count=1 <&3 2>/dev/null | od -An -tu4
+printf '\\xff' >&3; exec 3>&-
+```
+
+**64KB buffer:** IN transfery používají 64KB buffer (oproti původním 4KB).
 
 ### HTTP API (port 1337)
 
@@ -1061,6 +1124,9 @@ POST /usb/release                    → uvolnit rozhraní (JSON: device_name)
 POST /usb/bulk_transfer              → bulk transfer (JSON: device_name, endpoint, data_base64, timeout, direction)
 POST /usb/control_transfer           → control transfer (JSON: device_name, request_type, request, value, index, data_base64)
 POST /usb/send                       → raw send (JSON: device_name, data_base64)
+POST /usb/raw_transfer               → raw binary bulk transfer (hlavičky X-USB-*, raw body)
+POST /usb/stream                     → persistentní BROM/EDL streaming (binární frame protokol)
+POST /usb/endpoint_info              → endpoint metadata (JSON: device_name, endpoint)
 ```
 
 ### Příklad poslání exploitu

@@ -1678,8 +1678,9 @@ usb_dispatch() {
         send)           shift; usb_send "$@" ;;
         bulk)           shift; usb_bulk "$@" ;;
         control)        shift; usb_control "$@" ;;
+        bridge)         shift; usb_bridge "$@" ;;
         *)
-            echo "Usage: nh usb list|permission|claim|release|send|bulk|control"
+            echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge"
             exit 1 ;;
     esac
 }
@@ -1841,6 +1842,48 @@ try:
 except Exception as e:
     print(f"Parse error: {e}")
 '
+}
+
+# ─── USB Bridge (raw fd passthrough) ──────────────────────
+
+usb_bridge() {
+    local device="$1"
+    local iface="${2:-0}"
+    shift 2 2>/dev/null || true
+    local uds_path="${USB_BRIDGE_SOCK:-/tmp/usb_bridge.sock}"
+
+    if [ -z "$device" ] || [ $# -eq 0 ]; then
+        echo "Usage: nh usb bridge <device> [iface] <cmd> [args...]"
+        echo ""
+        echo "  Bridge commands (direct USB ioctl via fd passthrough):"
+        echo "    claim <iface>           Claim USB interface"
+        echo "    release <iface>         Release USB interface"
+        echo "    reset                    Reset USB device"
+        echo "    bulk <ep> in <len> [ms]  Read from endpoint (raw bytes to stdout)"
+        echo "    bulk <ep> out <hex> [ms] Write hex data to endpoint"
+        echo "    control <bmReq> <bReq> <wVal> <wIdx> <wLen> [ms]  Control IN transfer"
+        echo "    control-out <bmReq> <bReq> <wVal> <wIdx> <hex> [ms]  Control OUT transfer"
+        echo ""
+        echo "  Examples:"
+        echo "    nh usb bridge /dev/bus/usb/001/002 claim 0"
+        echo "    nh usb bridge /dev/bus/usb/001/002 bulk 0x81 in 4096 > dump.bin"
+        echo "    nh usb bridge /dev/bus/usb/001/002 control 0x80 0x06 0x0100 0x0000 18"
+        exit 1
+    fi
+
+    # First, trigger fd export via API (non-blocking — queues fd for next UDS client)
+    local export_result
+    export_result=$(api_post_json "/usb/export_fd" "{\"device_name\":\"$device\",\"interface_id\":$iface}" 2>/dev/null)
+
+    # Check if the UDS socket exists (created by the app's UsbFdExporter)
+    if [ ! -S "$uds_path" ]; then
+        echo "ERROR: USB bridge socket not found: $uds_path"
+        echo "  Make sure the NetHunter app is running and USB Host is active."
+        exit 1
+    fi
+
+    # Run the bridge binary — it connects to UDS, receives USB fd, does ioctl
+    exec usb_bridge "$uds_path" "$@"
 }
 
 # ─── MAIN ──────────────────────────────────────────────────

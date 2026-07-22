@@ -309,6 +309,54 @@ object UsbHostManager {
         }
     }
 
+    /**
+     * Extract the raw file descriptor from an open UsbDeviceConnection via Java reflection.
+     *
+     * Android's UsbDeviceConnection has a hidden getFileDescriptor() method that returns
+     * the native fd backing the USB device. This fd can be passed to PRoot processes via
+     * SCM_RIGHTS, enabling direct ioctl(2) access without Android's Java API overhead.
+     *
+     * @param deviceName device identifier (must have an open connection)
+     * @return raw file descriptor (>=0), or -1 on failure
+     */
+    fun getRawFileDescriptor(deviceName: String): Int {
+        val connection = openConnections[deviceName]
+            ?: run {
+                Log.w(TAG, "getRawFileDescriptor: no open connection for $deviceName")
+                return -1
+            }
+
+        return try {
+            val method = UsbDeviceConnection::class.java.getDeclaredMethod("getFileDescriptor")
+            method.isAccessible = true
+            val fdObj = method.invoke(connection)
+            when (fdObj) {
+                is Int -> fdObj
+                is java.io.FileDescriptor -> {
+                    // Fallback: extract int fd from FileDescriptor via reflection
+                    val fdField = java.io.FileDescriptor::class.java.getDeclaredField("fd")
+                    fdField.isAccessible = true
+                    fdField.getInt(fdObj)
+                }
+                else -> {
+                    Log.e(TAG, "getFileDescriptor returned unexpected type: ${fdObj?.javaClass?.name}")
+                    -1
+                }
+            }
+        } catch (e: NoSuchMethodException) {
+            Log.e(TAG, "getFileDescriptor() not found on this Android version: ${e.message}")
+            -1
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract raw USB fd for $deviceName: ${e.message}")
+            -1
+        }
+    }
+
+    /**
+     * Check if a device has an active open connection.
+     */
+    fun hasOpenConnection(deviceName: String): Boolean = openConnections.containsKey(deviceName)
+
     // ─── Data Transfer ───────────────────────────────────────────────
 
     /**
@@ -345,7 +393,8 @@ object UsbHostManager {
         return try {
             if (isIn) {
                 // IN: read from device
-                val bufSize = endpoint.maxPacketSize.coerceAtLeast(4096)
+                // Use 64KB buffer for bulk transfers (critical for BROM/EDL timing)
+                val bufSize = endpoint.maxPacketSize.coerceAtLeast(65536)
                 val buffer = ByteArray(bufSize)
                 val transferred = connection.bulkTransfer(endpoint, buffer, buffer.size, timeout)
                 if (transferred < 0) {
@@ -501,6 +550,100 @@ object UsbHostManager {
             }
         }
         return null
+    }
+
+    // ─── Raw Binary Transfer (no Base64/JSON, for BROM/EDL) ──────
+
+    /**
+     * Result of a raw bulk transfer.
+     */
+    data class RawBulkResult(
+        val success: Boolean,
+        val transferred: Int,
+        val data: ByteArray = ByteArray(0),
+        val error: String? = null
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is RawBulkResult) return false
+            return success == other.success && transferred == other.transferred &&
+                   data.contentEquals(other.data) && error == other.error
+        }
+        override fun hashCode(): Int {
+            var result = success.hashCode()
+            result = 31 * result + transferred
+            result = 31 * result + data.contentHashCode()
+            result = 31 * result + (error?.hashCode() ?: 0)
+            return result
+        }
+    }
+
+    /**
+     * Raw bulk transfer without Base64/JSON overhead.
+     * Critical for BROM (BootROM) mode where timing windows are tight.
+     *
+     * @param deviceName the device identifier
+     * @param endpointAddress endpoint number
+     * @param data payload for OUT or empty/null for IN
+     * @param timeout milliseconds (default 1000)
+     * @return [RawBulkResult] with raw bytes for IN transfers
+     */
+    fun rawBulkTransfer(
+        deviceName: String,
+        endpointAddress: Int,
+        data: ByteArray? = null,
+        timeout: Int = 1000
+    ): RawBulkResult {
+        val connection = openConnections[deviceName]
+            ?: return RawBulkResult(false, 0, error = "No open connection for $deviceName")
+
+        val endpoint = findEndpointOnClaimedInterfaces(deviceName, endpointAddress)
+            ?: return RawBulkResult(false, 0, error = "Endpoint $endpointAddress not found")
+
+        return try {
+            if (endpoint.direction == UsbConstants.USB_DIR_IN) {
+                // IN: read from device — use 64KB buffer for BROM transfers
+                val bufSize = endpoint.maxPacketSize.coerceAtLeast(65536)
+                val buffer = ByteArray(bufSize)
+                val transferred = connection.bulkTransfer(endpoint, buffer, buffer.size, timeout)
+                if (transferred < 0) {
+                    RawBulkResult(false, 0, error = "Bulk IN transfer failed (returned $transferred)")
+                } else {
+                    RawBulkResult(true, transferred, data = buffer.copyOf(transferred))
+                }
+            } else {
+                // OUT: write to device
+                val outData = data ?: ByteArray(0)
+                val transferred = connection.bulkTransfer(endpoint, outData, outData.size, timeout)
+                if (transferred < 0) {
+                    RawBulkResult(false, 0, error = "Bulk OUT transfer failed (returned $transferred)")
+                } else {
+                    RawBulkResult(true, transferred)
+                }
+            }
+        } catch (e: Exception) {
+            RawBulkResult(false, 0, error = "Bulk transfer error: ${e.message}")
+        }
+    }
+
+    /**
+     * Find an endpoint for raw streaming (no JSON/Base64).
+     * Returns endpoint address, type, direction and max packet size.
+     */
+    fun getEndpointInfo(deviceName: String, endpointAddress: Int): String? {
+        val endpoint = findEndpointOnClaimedInterfaces(deviceName, endpointAddress) ?: return null
+        return JSONObject().apply {
+            put("endpoint", endpoint.endpointNumber)
+            put("direction", if (endpoint.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT")
+            put("type", when (endpoint.type) {
+                UsbConstants.USB_ENDPOINT_XFER_BULK -> "BULK"
+                UsbConstants.USB_ENDPOINT_XFER_CONTROL -> "CONTROL"
+                UsbConstants.USB_ENDPOINT_XFER_INT -> "INTERRUPT"
+                UsbConstants.USB_ENDPOINT_XFER_ISOC -> "ISOCHRONOUS"
+                else -> "UNKNOWN"
+            })
+            put("max_packet_size", endpoint.maxPacketSize)
+        }.toString()
     }
 
     private fun errorObj(message: String): JSONObject = JSONObject().apply {

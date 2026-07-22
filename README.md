@@ -99,6 +99,61 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh usb claim <device> [iface]` | usb | Claim USB interface | `nh usb claim /dev/bus/usb/001/002 0` |
 | `nh usb release <device>` | usb | Release USB interface | `nh usb release /dev/bus/usb/001/002` |
 | `nh usb send <device> <file>` | usb | Send raw bulk data to USB device | `nh usb send /dev/bus/usb/001/002 exploit.bin` |
+| `nh usb raw <device> <endpoint> <in|out> [file]` | usb | Raw binary bulk transfer (no Base64/JSON) | `nh usb raw /dev/bus/usb/001/002 2 out exploit.bin` |
+| `nh usb stream <device> <in_ep> <out_ep>` | usb | Persistent BROM/EDL streaming session | `nh usb stream /dev/bus/usb/001/002 1 2` |
+
+### 🚀 USB BROM/EDL Optimization (v4.3+)
+
+Pro časově kritické USB protokoly (Qualcomm BROM/EDL, bootloader flashing) byly přidány dva optimalizované endpointy, které eliminují HTTP/JSON/Base64 režii:
+
+#### `/usb/raw_transfer` — Raw binary bulk transfer
+
+```bash
+# OUT: pošli data na zařízení
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 2' --data-binary @programmer.bin \
+     http://127.0.0.1:1337/usb/raw_transfer
+# Response: 4-byte big-endian transferred count
+
+# IN: přečti data ze zařízení (prázdné body)
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 1' -H 'X-USB-Direction: IN' \
+     http://127.0.0.1:1337/usb/raw_transfer -o response.bin
+```
+
+Parametry se předávají v HTTP hlavičkách (`X-USB-Device`, `X-USB-Endpoint`, `X-USB-Direction`, `X-USB-Timeout`). Response je čistě binární — žádné JSON/Baše64.
+
+**Keep-alive:** Endpoint používá `Connection: keep-alive` pro vícenásobné transfery na jednom TCP spojení.
+
+#### `/usb/stream` — Persistentní BROM/EDL streaming
+
+Po HTTP handshake přepne na raw binární frame protokol bez jakékoli HTTP/JSON/Base64 režie:
+
+**Binární frame formát (vše big-endian):**
+
+| CMD | Význam | Request | Response |
+|-----|--------|---------|----------|
+| `0x01` | OUT (host→device) | `[1B cmd][3B rezerva][4B délka][payload...]` | `[4B zapsáno]` |
+| `0x02` | IN (device→host) | `[1B cmd][3B rezerva][4B max_read]` | `[4B přečteno][data...]` |
+| `0xFF` | CLOSE | `[1B cmd]` | — |
+
+```bash
+# Příklad z PRoot guest (bash TCP socket)
+exec 3<>/dev/tcp/127.0.0.1/1337
+echo -e 'POST /usb/stream HTTP/1.1\r\nContent-Length: 50\r\n\r\n{"device_name":"/dev/bus/usb/001/002","endpoint_in":1,"endpoint_out":2}' >&3
+head -1 <&3  # HTTP 200 OK
+
+# Teď raw binární frames — žádná režie!
+printf '\x01\x00\x00\x00\x00\x00\x10\x00' >&3  # OUT 4096B
+dd if=/dev/zero bs=4096 count=1 >&3
+dd bs=4 count=1 <&3 2>/dev/null | od -An -tu4  # read transferred count
+
+# Uzavření
+printf '\xff' >&3
+exec 3>&-
+```
+
+**64KB buffer:** Všechny IN transfery používají 64KB buffer (oproti původním 4KB) pro minimální počet USB čtení.
 
 ---
 

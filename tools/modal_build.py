@@ -8,9 +8,14 @@ Volume layout after setup:
 
 Setup:
   1) modal secret create build-secrets RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)
-  2) modal run modal_build.py::init_keys
-  3) modal run modal_build.py::upload_src
-  4) modal run modal_build.py::build
+  2) modal run modal_build.py init     # store keystore
+  3) modal run modal_build.py upload   # upload source
+  4) modal run modal_build.py all      # compile native + build APK
+
+Individual steps:
+  modal run modal_build.py native      # NDK cross-compile C binaries
+  modal run modal_build.py build       # Gradle assembleDebug only
+  modal run modal_build.py list        # show Volume contents
 """
 
 # Force rebuild marker: 2026-07-07T02:00:00Z
@@ -41,7 +46,10 @@ def _ignore_path(p):
     return False
 
 
-# ── Image with Android SDK + JDK 21 ──────────────────────────────────────────
+# ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
+NDK_VERSION = "r28"
+NDK_DIR = f"/opt/android-ndk-{NDK_VERSION}"
+
 base_image = (
     modal.Image.from_registry("eclipse-temurin:21-jdk")
     .apt_install("unzip", "wget", "git", "file", "rsync", "python3", "python3-pip", "python-is-python3")
@@ -55,6 +63,11 @@ base_image = (
         "yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true",
         "/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --install"
         " 'platforms;android-36' 'build-tools;36.0.0'",
+        # Install NDK for C/C++ compilation
+        f"wget -q https://dl.google.com/android/repository/android-ndk-{NDK_VERSION}-linux.zip -O /tmp/ndk.zip",
+        f"unzip -q /tmp/ndk.zip -d /opt/",
+        "rm /tmp/ndk.zip",
+        f"ls {NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/*clang* | head -3",
     )
     .env({
         "ANDROID_HOME": ANDROID_SDK_ROOT,
@@ -138,6 +151,59 @@ def init_keys():
     os.chmod(key_path, 0o600)
     build_vol.commit()
     print(f"[init] Key stored at {key_path}")
+
+
+# ── Build native USB bridge binaries (NDK) ───────────────────────────────────
+@app.function(
+    image=base_image,
+    volumes={"/vol": build_vol},
+    timeout=600,
+    memory=4096,
+)
+def build_native():
+    """Cross-compile USB bridge C binaries for arm64 using NDK.
+
+    Outputs on Volume:
+      /vol/src/app/src/main/jniLibs/arm64-v8a/libusbfd_exporter.so
+      /vol/src/app/src/main/assets/usb_bridge
+    """
+    src_dir = "/vol/src"
+    cpp_dir = os.path.join(src_dir, "app/src/main/cpp")
+
+    # NDK toolchain
+    tc_bin = f"{NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    cc = f"{tc_bin}/aarch64-linux-android24-clang"
+
+    # Output paths
+    jnilibs_dir = os.path.join(src_dir, "app/src/main/jniLibs/arm64-v8a")
+    assets_dir = os.path.join(src_dir, "app/src/main/assets")
+    os.makedirs(jnilibs_dir, exist_ok=True)
+    os.makedirs(assets_dir, exist_ok=True)
+
+    so_path = os.path.join(jnilibs_dir, "libusbfd_exporter.so")
+    bin_path = os.path.join(assets_dir, "usb_bridge")
+
+    # ── 1. Build libusbfd_exporter.so (JNI shared library) ──────────────────
+    print("─" * 60)
+    print("[native] Building libusbfd_exporter.so ...")
+    jni_src = os.path.join(cpp_dir, "usbfd_jni.c")
+    cmd = [cc, "-shared", "-fPIC", "-o", so_path, jni_src, "-llog", "-landroid"]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(so_path):,} B)")
+
+    # ── 2. Build usb_bridge (static binary for PRoot) ────────────────────────
+    print("─" * 60)
+    print("[native] Building usb_bridge (static)...")
+    bridge_src = os.path.join(cpp_dir, "usb_bridge.c")
+    cmd = [cc, "-static", "-o", bin_path, bridge_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(bin_path):,} B)")
+
+    # Commit to Volume
+    build_vol.commit()
+    print(f"[native] Binaries committed to Volume.")
 
 
 # ── Build APK ────────────────────────────────────────────────────────────────
@@ -236,14 +302,19 @@ def list_volume():
 
 @app.local_entrypoint()
 def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "build"
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "init":
         init_keys.remote()
     elif cmd == "upload":
         upload_src.remote()
+    elif cmd == "native":
+        build_native.remote()
     elif cmd == "build":
+        build.remote()
+    elif cmd == "all":
+        build_native.remote()
         build.remote()
     elif cmd == "list":
         list_volume.remote()
     else:
-        print("Usage: modal run modal_build.py [init|upload|build|list]")
+        print("Usage: modal run modal_build.py [init|upload|native|build|all|list]")
