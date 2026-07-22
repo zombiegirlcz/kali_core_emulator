@@ -78,7 +78,7 @@ object LocalApiServer {
         UsbHostManager.init(appContext!!)
         // Start USB fd exporter for PRoot direct ioctl access
         try {
-            UsbFdExporter.init()
+            UsbFdExporter.ensureLoaded()
             UsbFdExporter.start()
             Log.i(TAG, "UsbFdExporter started at ${UsbFdExporter.getUdsPath()}")
         } catch (e: Exception) {

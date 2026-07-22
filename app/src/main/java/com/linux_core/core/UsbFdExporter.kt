@@ -37,12 +37,23 @@ object UsbFdExporter : Closeable {
 
     private var initialized = false
 
+    init {
+        try {
+            System.loadLibrary("usbfd_exporter")
+            initialized = true
+            Log.i(TAG, "JNI library loaded (init block)")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "libusbfd_exporter.so NOT found in APK: ${e.message}")
+            // Don't throw in init block — defer error to first start() call
+        }
+    }
+
     /**
      * Load the JNI library. Call once before start().
      * Safe to call multiple times — subsequent calls are no-ops.
      */
     @Synchronized
-    fun init() {
+    fun ensureLoaded() {
         if (initialized) return
         try {
             System.loadLibrary("usbfd_exporter")
@@ -60,7 +71,10 @@ object UsbFdExporter : Closeable {
      */
     @Synchronized
     fun start(path: String = udsPath) {
-        if (!initialized) init()
+        ensureLoaded()
+        if (!initialized) {
+            throw RuntimeException("libusbfd_exporter.so not available — USB bridge disabled")
+        }
         if (running.get()) {
             Log.w(TAG, "Already running")
             return
