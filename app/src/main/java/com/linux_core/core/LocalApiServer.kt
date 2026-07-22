@@ -76,11 +76,11 @@ object LocalApiServer {
         appContext = context.applicationContext
         CertificateManager.init(appContext!!)
         UsbHostManager.init(appContext!!)
-        // Start USB fd exporter for PRoot direct ioctl access
+        // Pre-load USB bridge JNI library (actual UDS is started by ProotManager
+        // with correct rootfs path when terminal opens)
         try {
             UsbFdExporter.ensureLoaded()
-            UsbFdExporter.start()
-            Log.i(TAG, "UsbFdExporter started at ${UsbFdExporter.getUdsPath()}")
+            Log.i(TAG, "UsbFdExporter JNI loaded (UDS starts later in ProotManager)")
         } catch (e: Exception) {
             Log.w(TAG, "UsbFdExporter not available (JNI missing?): ${e.message}")
         }
