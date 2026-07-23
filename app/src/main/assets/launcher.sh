@@ -59,7 +59,7 @@ echo "[$LOG_PREFIX] Starting $DISTRO_ID session ($ROOTFS_NAME, docker=$DOCKER_MO
 
 # ─── PRoot bind mounts ──────────────────────────────────
 BINDS="-b /dev -b /proc -b /sys"
-BINDS="$BINDS -b $FILES_DIR/tmp:$TMP_DIR"
+BINDS="$BINDS -b \"$FILES_DIR\"/tmp:\"$TMP_DIR\""
 BINDS="$BINDS $SDCARD_MOUNT"
 
 PROOT_FLAGS="-v 0 --kill-on-exit --link2symlink -0"

@@ -9,10 +9,10 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # připojíme je na konec (mají nižší prioritu).
 case ":$PATH:" in
   *:/usr/local/sbin:*|*:/usr/local/bin:*|*:/usr/sbin:*|*:/usr/bin:*|*:/sbin:*|*:/bin:*) ;;
-  *) export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ;;
+  *) if [ -n "$PATH" ]; then export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; else export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; fi ;;
 esac
 
-export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # ──────────────────────────────────────────────────────────
 
 setopt autocd              # change directory just by typing its name

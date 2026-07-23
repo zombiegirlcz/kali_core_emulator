@@ -2605,8 +2605,9 @@ class TerminalActivity : ComponentActivity() {
         // bin/sbin cesty do PATH — uživatel tak má přístup k distrib. toolům
         // (nh, nmap, python3, atd.) i v ashell (host) shellu.
         val distroPaths = mutableListOf<String>()
+        val listedDirs = try { filesDir.listFiles()?.toList() ?: emptyList() } catch (e: Exception) { emptyList() }
         val knownDirs = listOf("kali-arm64", "parrot-arm64") +
-            (filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("docker-") }?.map { it.name } ?: emptyList())
+            (listedDirs.filter { it.isDirectory && it.name.startsWith("docker-") }.map { it.name })
         for (dirName in knownDirs) {
             val rootfs = File(filesDir, dirName)
             if (!rootfs.isDirectory) continue

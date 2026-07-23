@@ -1,0 +1,1 @@
+All fixes applied. Here's the structured acceptance report.
