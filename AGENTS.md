@@ -468,10 +468,314 @@ Vždy spouštět: `modal run modal_build.py::upload_src && modal run modal_build
 | `formatAppName` | VpnSecurityTab.kt:82 | "External Android App" → "Unknown App", "" → "System" |
 | `getTopApps` filtr | VpnLogManager.kt:218 | Filtruje "External/Unknown/UID:" z výsledků |
 
-### Stav po opravě
+Kompletní mapa projektu — k 2026-07-23
 
-- VPN běží, internet jede (passthrough funguje)
-- `runEngineHandshake` handshake se nyní pokouší, ale `unwrap` končí s `SSLException` (další bug v chainu)
-- SNI parsování funguje správně
-- Logy ukazují `Unknown App` místo `External Android App` pro nové záznamy
-- DNS tab prázdný — moderní Android (9+) používá DoH přes TCP/443 nebo QUIC, ne klasické UDP/53. Vyžaduje samostatnou implementaci DoH parseru.
+ ### Identita
+
+ ┌──────────────────┬──────────────────────────────────────────┐
+ │ Atribut          │ Hodnota                                  │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Balíček          │ com.linux_core                           │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Název            │ NetHunter AI Operator                    │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Verze            │ 4.2-MITM-LOG-FIX (versionCode 8)         │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ minSdk/targetSdk │ 28 / 28                                  │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Java/Kotlin      │ JVM 17, Kotlin 2.2.10                    │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Gradle           │ AGP 9.2.1, Compose BOM 2026.05.01        │
+ ├──────────────────┼──────────────────────────────────────────┤
+ │ Keystore         │ app/release.jks (debug i release stejný) │
+ └──────────────────┴──────────────────────────────────────────┘
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### 🏗️ Architektonická mapa (vrstvy)
+
+ ```
+   ┌─────────────────────────────────────────────────────────────────┐
+   │                     MAIN ACTIVITY (MainActivity.kt)              │
+   │  Compose UI: stahování rootfs, spuštění terminálu, VPN centrum   │
+   ├─────────────────────────────────────────────────────────────────┤
+   │                                                                   │
+   │  ┌─────────────────────────────────────────────────────────┐     │
+   │  │                  ☰ HAMBURGER DRAWER                      │     │
+   │  │  ┌──────────────── ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │     │
+   │  │  │  🐉 KALI  │  🦜 PARROT  │  ALL  │  [VNC GUI]  │    │     │
+   │  │  │  ──────────────────────────────────────────────┤    │     │
+   │  │  │  RAM: 3.4 GB / 8.0 GB                          │    │     │
+   │  │  │  Session 1 (12.4 MB) ● [VPN IGNORED]      │    │     │
+   │  │  └─────────────────────────────────────────────────┘    │     │
+   │  │                    └── ProotManager.kt                  │     │
+   │  └─────────────────────────────────────────────────────────┘     │
+   │                                                                   │
+   │  ┌─────────────────────────────────────────────────────────┐     │
+   │  │              TERMINAL ACTIVITY (TerminalActivity.kt)      │     │
+   │  │  ┌─────────────────────────────────────────────────┐    │     │
+   │  │  │  [☰] [🏠] 🐉 KALI ▼  [touch] [CLI|GUI]       │    │     │
+   │  │  │  ═══════════════════════════════════════════════   │    │     │
+   │  │  │  ⚡ SHIZU ●  [code] CODE ○  🔥 PHOENIX ○  ▶↻  │    │     │
+   │  │  └─────────────────────────────────────────────────┘    │     │
+   │  │  │ Termux TerminalView + HackerKeyboard                 │     │
+   │  └─────────────────────────────────────────────────────────┘     │
+   │                                                                   │
+   │  ┌─────────────────────────────────────────────────────────┐     │
+   │  │               VPN CENTER (VpnCenterScreen.kt)            │     │
+   │  │  ┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐    │     │
+   │  │  │Panel ││Traffic││Security││ DNS ││ Mesh ││Nastav.│    │     │
+   │  │  └──────┘└──────┘└──────┘└──────┘└──────┘└──────┘    │     │
+   │  └─────────────────────────────────────────────────────────┘     │
+   │                                                                   │
+   └─────────────────────────────────────────────────────────────────┘
+                                 │
+             ┌───────────────────┼─────────────────────┐
+             ▼                   ▼                     ▼
+   ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────────┐
+   │ LOOPBACK API    │ │  VPN CAPTURE    │ │  PRoot KONTEJNER    │
+   │ 127.0.0.1:1337  │ │  SERVICE        │ │  (Kali / ParrotOS)  │
+   │ LocalApiServer  │ │  VpnCaptureSrvc │ │  ProotManager.kt    │
+   ├─────────────────┤ ├─────────────────┤ ├─────────────────────┤
+   │ nh CLI bridge   │ │ AdGuard C++ JNI │ │ launcher.sh         │
+   │ senzory, VPN    │ │ VpnNatEngine    │ │ bootstrap.sh        │
+   │ baterka, wifi   │ │ TlsMitmEngine   │ │ entrypoint.sh       │
+   │ GPS, clipboard  │ │ AIBrain (ONNX)  │ │ nh CLI nástroj      │
+   │ USB host        │ │ VpnLogManager   │ │ shizuku (root bridge)│
+   │                 │ │ VpnFirewallMgr  │ │ code-server (VSCode) │
+   └─────────────────┘ └─────────────────┘ └─────────────────────┘
+                                 │
+                       ┌─────────┴─────────┐
+                       ▼                   ▼
+             ┌─────────────────┐ ┌─────────────────────┐
+             │ AI AGENT DAEMON │ │  SECURITY MODULE     │
+             │ :13338           │ │  CertificateManager │
+             │ nethunter_agent │ │  RootCaInstaller    │
+             │ .py (ReAct LLM) │ │  AttestationVerifier │
+             │ analyze_network │ │  BiometricGate       │
+             │ nástroj         │ │  KeystoreManager     │
+             └─────────────────┘ └─────────────────────┘
+ ```
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### 📦 Souborová struktura
+
+ ```
+   kali_core_emulator/
+   ├── app/
+   │   ├── build.gradle.kts          ← Hlavní build konfigurace
+   │   ├── release.jks               ← Keystore (debug i release)
+   │   ├── proguard-rules.pro
+   │   └── src/
+   │       ├── main/
+   │       │   ├── AndroidManifest.xml    ← 31 permisí, 4 aktivity, 11 service, 3 receivery
+   │       │   ├── assets/                ← PRoot binárky, nh CLI, certs, AI model
+   │       │   │   ├── certs/             ← MITM CA, attestation root, internal P12
+   │       │   │   ├── shizuku/           ← Native server + ADB + rish shell
+   │       │   │   ├── proot-* / loader-* ← PRoot pro 4 architektury
+   │       │   │   ├── nh                 ← Unified CLI nástroj (74KB)
+   │       │   │   ├── nethunter_agent.py ← ReAct AI agent
+   │       │   │   └── vpn_brain_v7.onnx  ← ONNX model pro klasifikaci
+   │       │   ├── cpp/                   ← C JNI kód (USB fd exporter, USB bridge)
+   │       │   ├── jniLibs/              ← Nativní .so pro 4 architektury
+   │       │   │   ├── arm64-v8a/        ← AdGuard engine + PRoot
+   │       │   │   ├── armeabi-v7a/      ← PRoot only
+   │       │   │   ├── x86/              ← PRoot only
+   │       │   │   └── x86_64/           ← PRoot only
+   │       │   ├── java/com/linux_core/
+   │       │   │   ├── MainActivity.kt   ← (1577 lines) Entry point + Compose UI
+   │       │   │   ├── core/             ← (46 files) Hlavní logika
+   │       │   │   ├── security/         ← (10 files) Bezpečnostní modul
+   │       │   │   └── ui/               ← (8 files) UI komponenty
+   │       │   ├── java/com/adguard/     ← (53 files) AdGuard JNI wrappery
+   │       │   ├── res/                  ← Android resources, network config
+   │       │   └── res/xml/network_security_config.xml ← Cert pinning
+   │       ├── test/                     ← (8 souborů) Unit testy
+   │       └── androidTest/              ← Instrumentované testy
+   ├── tools/modal_build.py             ← Modal cloud build
+   ├── gradle/
+   │   └── libs.versions.toml           ← Version catalog
+   ├── docs/                            ← Dokumentace
+   ├── mbuild                           ← Build skript (Modal)
+   └── nethunter-store-data/            ← Git submodul
+ ```
+#### 1. PRoot Virtualizace (ProotManager.kt, RootfsManager.kt)
+
+ - Funkce: Spouští Kali/ParrotOS v uživatelském prostoru (bez rootu)
+ - Flow: Stažení rootfs (tar.xz) → extrakce → nasazení PRoot loaderů → generování launcher.sh → bootstrap OS
+ - Binární strategie: Dynamické PRoot (arm64) + statické záložní varianty pro ostatní architektury
+ - Deployuje do guestu: nh CLI, shizuku, helper skripty
+
+ #### 2. VPN Engine (VpnCaptureService.kt, VpnNatEngine.kt)
+
+ - Funkce: Android VPN service s AdGuard C++ stackem
+ - Komponenty:
+     - VpnCaptureService — lifecycle VPN, DNS konfigurace, health check
+     - VpnNatEngine — TCP/UDP NAT, packet forwarding, QUIC blokování
+     - VpnFirewallManager — IP blokování s validací
+     - VpnProxyManager — Custom IP proxy (volitelný, nově bez SOCKS5)
+     - VpnPeerManager — Mesh VPN (P2P, ECDH, STUN)
+ - Perzistence: Connection: keep-alive pro raw USB transfery
+
+ #### 3. TLS MITM Engine (TlsMitmEngine.kt, TlsClientHelloParser.kt)
+
+ - Funkce: HTTPS dešifrování pro bezpečnostní analýzu
+ - Tok: Detekce TLS ClientHello → SNI extrakce → server-side handshake → cert podpis → client-side handshake → proxy plaintext
+ - Status: Většina opravena (double-flip, passthrough), ale stále padá do passthrough kvůli SSLException v unwrapu
+ - Nastavení: vpn-cli mitm on/off, QUIC blokování jen při aktivním MITM
+
+ #### 4. AI Brain (AIBrain.kt, AIBrainWorker.kt, VerdictEngine.kt)
+
+ - Funkce: ONNX klasifikace síťových toků v reálném čase
+ - Model: vpn_brain_v7.onnx (LightGBM, 14 dimenzí)
+ - Kategorie: ALLOWED / VERBOSE / SUSPICIOUS / CRITICAL
+ - Integrace: TrafficAggregator → VerdictEngine → notifikace
+
+ #### 5. AI Agent Daemon (nethunter_agent.py v assets, port 13338)
+
+ - Funkce: ReAct LLM agent s nástrojem analyze_network
+ - CLI: nh agent start/stop/ask/chat
+ - Endpoint: Port 13338 (localhost)
+
+ #### 6. LocalApiServer (LocalApiServer.kt, port 1337)
+
+ - Funkce: HTTP REST most mezi hostitelem a guest OS
+ - Endpointy:
+     - /system/battery, /system/volume, /system/torch, /system/vibrate, /system/toast, /system/clipboard, /system/notification
+     - /network/wifi, /network/cell, /network/location, /network/map
+     - /vpn/start, /vpn/stop, /vpn/status, /vpn/mitm, /vpn/logs
+     - /usb/list, /usb/permission, /usb/claim, /usb/release, /usb/raw_transfer, /usb/stream
+     - /app/logs
+ - Bezpečnost: Bearer token auth, localhost detection, command blocklist
+
+ #### 7. Shizuku Bridge (ShizukuManager.kt)
+
+ - Funkce: Privilegované příkazy bez rootu (přes Shizuku server)
+ - Start strategie: Běžící server → su -c → ADB → setup dialog
+ - CLI: shizuku -c "pm list packages"
+
+ #### 8. Security modul (security/)
+
+ - Certifikáty: CertificateManager, RootCaInstaller, SslContextFactory
+ - Attestace: AttestationKeyManager, AttestationVerifier, BiometricGate
+ - Keystore: KeystoreManager (AES-GCM-256)
+ - MITM podpis: MitmCertSigner (BouncyCastle)
+
+ #### 9. USB Host (UsbHostManager.kt, usb_bridge.c, usbfd_jni.c)
+
+ - Funkce: Raw USB přístup z PRootu (pro mtkclient, flashing)
+ - JNI: libusbfd_exporter.so (C kód)
+ - API: /usb/raw_transfer (raw binary), /usb/stream (persistentní streaming)
+ - Stream protokol: Binární frames (0x01=OUT, 0x02=IN, 0xFF=CLOSE)
+
+ #### 10. UI Komponenty (ui/)
+
+ ┌──────────────────────────────┬────────────────────────────────────────┐
+ │ Soubor                       │ Účel                                   │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ TerminalActivity.kt (3643 l) │ Terminál + drawer + services panel     │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnSecurityTab.kt (1768 l)   │ Security dashboard, MITM logy, procesy │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnTrafficTab.kt             │ Traffic grafy (Canvas)                 │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnDashboardTab.kt           │ VPN status, proxy, AI staty            │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnDnsTab.kt                 │ DNS dotazy                             │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnMeshTab.kt                │ P2P Mesh VPN                           │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ VpnSettingsTab.kt            │ Nastavení MITM, proxy, firewall        │
+ ├──────────────────────────────┼────────────────────────────────────────┤
+ │ EditorTab.kt                 │ Nano editor integrace                  │
+ └──────────────────────────────┴────────────────────────────────────────┘
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### 🚀 Datové toky (key flows)
+
+ #### A. Klasický provoz (VPN ON, MITM OFF)
+
+ ```
+   App (Chrome)
+     → TUN fd (Android VpnService)
+     → VpnCaptureService.handlePacket()
+     → VpnNatEngine.handleTcpPacket()
+     → AIBrain klasifikace (ONNX)
+     → VpnProxyManager (direct / proxy)
+     → Socket k cílovému serveru
+ ```
+
+ #### B. MITM HTTPS dešifrování
+
+ ```
+   TLS Client Hello
+     → VpnNatEngine detekuje TLS
+     → TlsMitmEngine.onClientData()
+     → TlsClientHelloParser.extractSni()
+     → Server-side handshake (SSLEngine)
+     → RootCaInstaller signLeafForServer()
+     → Client-side handshake (forged cert)
+     → proxyLoop: decrypt → forward → encrypt
+ ```
+
+ #### C. USB BROM/EDL streaming (přes LocalApiServer)
+
+ ```
+   PRoot (mtkclient)
+     → TCP :1337 POST /usb/stream
+     → UsbHostManager openDevice()
+     → usbfd_jni.c (libusbfd_exporter)
+     → /dev/bus/usb/ via Android USB Host API
+     → binární frame protokol bez HTTP režie
+ ```
+
+ ────────────────────────────────────────────────────────────────────────────────
+### 🔒 Security postavení
+
+ ┌───────────────────┬───────────────────────────────────────────────────────────┐
+ │ Oblast            │ Stav                                                      │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Cert pinning      │ ✅ SHA-256 otisky pro Kali + Parrot domény                │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Token auth        │ ✅ Bearer token na LocalApiServer                         │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ AllowBackup       │ ✅ false                                                  │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Cleartext         │ ✅ false (s network_security_config)                      │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Command blocklist │ ✅ rm -rf, mkfs, reboot blokováno                         │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ MITM autentizace  │ ✅ OffensiveEngine notification (Allow/Deny, 30s)         │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Log sanitizace    │ ✅ hex dump odstraněn z CSV/JSON exportu                  │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ HTTPS enforcement │ ✅ TLS 1.2+, host whitelist v RootfsManager               │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Biometric gate    │ ✅ 30s okno pro citlivé operace                           │
+ ├───────────────────┼───────────────────────────────────────────────────────────┤
+ │ Zbývá             │ Test na reálném zařízení — MITM stále padá do passthrough │
+ └───────────────────┴───────────────────────────────────────────────────────────┘
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### 🔧 Známé technické dluhy / nedodělky
+
+ 1. MITM engine stále nefunkční — SSLException při unwrapu, padá do passthrough
+ 2. Widget — zakomentován v manifestu ("pro later")
+ 3. DNS tab prázdný — moderní Android používá DoH/TCP, ne UDP/53
+ 4. mitm-ca.p12 chybí v asset/certs — je jen .crt (build projde jen díky debug fallbacku)
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+ ### 📐 Celková statistika
+
+ - ~29 200 řádků Kotlin kódu (plus ~1700 AdGuard JNI wrapperů)
+ - 46 tříd v core/
+ - 10 tříd v security/
+ - 8 UI komponent (2 activity, 6 tab composables)
+ - 5 Service, 2 Activity, 3 Receiver v manifestu (plus widget pozastaven)
+ - 4 architektury (arm64, arm32, x86, x86_64)
+ - 3 jazyky: Kotlin (primární), C (JNI bridge), Python (AI agent)
+ - 8 unit testů — výrazně poddimenzované

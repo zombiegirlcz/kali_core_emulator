@@ -2594,17 +2594,42 @@ class TerminalActivity : ComponentActivity() {
     /**
      * ashell — spustí interaktivní host shell (bez PRoot, mimo guest).
      * Používá /system/bin/sh s HOME = filesDir. Slouží jako escape z prootu.
+     * Automaticky přidá do PATH cesty k binárkám z nainstalovaných distribucí
+     * (Kali, Parrot, Docker), aby byly dostupné i mimo PRoot container.
      */
     private fun startAshellSession() {
         Log.i(TAG, "startAshellSession: escape proot → host app shell")
         val cwd = filesDir
-        // TerminalSession spouští config.command[0] s config.command jako argv.
-        // Chceme prostě /system/bin/sh -i (interaktivní), cwd = filesDir.
+
+        // Prohledá filesDir na existující rootfs adresáře a přidá jejich
+        // bin/sbin cesty do PATH — uživatel tak má přístup k distrib. toolům
+        // (nh, nmap, python3, atd.) i v ashell (host) shellu.
+        val distroPaths = mutableListOf<String>()
+        val knownDirs = listOf("kali-arm64", "parrot-arm64") +
+            (filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("docker-") }?.map { it.name } ?: emptyList())
+        for (dirName in knownDirs) {
+            val rootfs = File(filesDir, dirName)
+            if (!rootfs.isDirectory) continue
+            for (sub in listOf("usr/local/bin", "usr/local/sbin", "usr/bin", "usr/sbin", "bin", "sbin")) {
+                val path = File(rootfs, sub)
+                if (path.isDirectory) {
+                    distroPaths.add(path.absolutePath)
+                }
+            }
+        }
+
+        // Sestav PATH: Android host cesty + distribuční cesty + filesDir (nh CLI)
+        val basePath = "/system/bin:/system/xbin:/vendor/bin"
+        val extraPaths = (distroPaths + filesDir.absolutePath).joinToString(":")
+        val fullPath = "$basePath:$extraPaths"
+
+        Log.i(TAG, "ashell PATH: $fullPath")
+
         val cmd = arrayOf("/system/bin/sh", "-i")
         val env = arrayOf(
             "HOME=${filesDir.absolutePath}",
             "USER=app",
-            "PATH=/system/bin:/system/xbin:/vendor/bin",
+            "PATH=$fullPath",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"
@@ -2614,7 +2639,7 @@ class TerminalActivity : ComponentActivity() {
             cwd = cwd.absolutePath,
             env = env,
             prootPath = "",
-            rootfsDir = "(host)"   // sentinel: Není rootfs, jsme v hostu
+            rootfsDir = "(host)"
         )
         config = cfg
         startTerminalSession(cfg)

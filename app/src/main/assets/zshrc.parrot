@@ -1,6 +1,20 @@
 # ~/.zshrc file for zsh interactive shells.
 # see /usr/share/doc/zsh/examples/zshrc for examples
 
+# ─── Distribuční PATH ─────────────────────────────────────
+# Při přepnutí na uživatele (su, login) zajistí, že jsou
+# k dispozici binárky z distribuce (Kali Linux / ParrotOS).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Pokud už PATH něco obsahuje (např. Android host cesty),
+# připojíme je na konec (mají nižší prioritu).
+case ":$PATH:" in
+  *:/usr/local/sbin:*|*:/usr/local/bin:*|*:/usr/sbin:*|*:/usr/bin:*|*:/sbin:*|*:/bin:*) ;;
+  *) export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ;;
+esac
+
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+# ──────────────────────────────────────────────────────────
+
 setopt autocd              # change directory just by typing its name
 setopt correct            # auto correct mistakes
 setopt interactivecomments # allow comments in interactive mode

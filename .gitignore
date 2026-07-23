@@ -97,6 +97,7 @@ window_dump.xml
 *.py
 *.zip
 *.sh
+!app/src/main/assets/launcher.sh
 *.bat
 *.ps1
 *.json

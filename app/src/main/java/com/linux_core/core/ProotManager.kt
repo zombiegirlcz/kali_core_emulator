@@ -85,13 +85,16 @@ object ProotManager {
         val standaloneProot = File(context.filesDir, "proot.standalone")
         val standaloneLoader = File(context.filesDir, "loader.standalone")
 
-        val launcherFile = File(rootDir, "launcher.sh")
-        // Šablona launcher.sh je v assets/launcher.sh – nasadí ji deployLauncherScript()
-        // a vyplní placeholdery (__PROOT_BIN__, __ROOTFS_DIR__ atd.). Žádné ruční
-        // StringBuilder.append peklo, žádná duplikace kódu mezi Docker a non-Docker.
+        // Generujeme distro-specifický launcher (launcher-kali.sh, launcher-parrot.sh,
+        // launcher-docker.sh) — každý s vlastním log prefixem. Pro Docker image
+        // se použije "docker" místo názvu distribuce, aby se správně logovalo.
+        val launcherDistroId = if (isDockerImage) "docker" else distroId
+        val distroLauncherName = "launcher-${launcherDistroId}.sh"
+        val launcherFile = File(rootDir, distroLauncherName)
         deployLauncherScript(
             context = context,
             launcherFile = launcherFile,
+            distroId = launcherDistroId,
             rootfsDir = rootfsDir,
             prootBin = prootBin,
             loaderBin = loaderBin,
@@ -1409,16 +1412,19 @@ Aplikace automaticky zkouší:
     }
 
     /**
-     * Nasadí launcher.sh z assets/ do filesDir (nebo rootDir) a vyplní
-     * placeholdery skutečnými cestami. Společné pro Docker i non-Docker –
-     * šablona assets/launcher.sh se větví přes __DOCKER_MODE__.
+     * Nasadí launcher.sh z assets/ do filesDir a vyplní
+     * placeholdery skutečnými cestami. Generuje distro-specifický launcher
+     * (launcher-kali.sh, launcher-parrot.sh, launcher-docker.sh) s vlastním
+     * log prefixem a záložní launcher.sh pro zpětnou kompatibilitu.
      *
-     * @param launcherFile   cílový soubor (typicky rootDir/launcher.sh)
+     * @param launcherFile   cílový soubor (např. rootDir/launcher-kali.sh)
+     * @param distroId       identifikátor distra ("kali", "parrot", "docker")
      * @param isDockerImage  true = Docker image, false = běžná distribuce
      */
     private fun deployLauncherScript(
         context: Context,
         launcherFile: File,
+        distroId: String,
         rootfsDir: File,
         prootBin: File,
         loaderBin: File,
@@ -1438,7 +1444,13 @@ Aplikace automaticky zkouší:
             return
         }.replace("\r\n", "\n").replace("\r", "\n")
 
-        val logPrefix = if (isDockerImage) "ProotDocker" else "ProotLauncher"
+        // Každá distribuce má vlastní log prefix pro snadnou identifikaci
+        val logPrefix = when (distroId) {
+            "kali" -> "KaliLauncher"
+            "parrot" -> "ParrotLauncher"
+            "docker" -> "DockerLauncher"
+            else -> if (isDockerImage) "DockerLauncher" else "${distroId.replaceFirstChar { it.uppercase() }}Launcher"
+        }
         val sdcardMount = if (mountStorage) " -b /sdcard" else ""
 
         val rendered = template
@@ -1454,9 +1466,10 @@ Aplikace automaticky zkouší:
             .replace("__SDCARD_MOUNT__", sdcardMount)
             .replace("__DOCKER_MODE__", if (isDockerImage) "1" else "0")
             .replace("__LOG_PREFIX__", logPrefix)
+            .replace("__DISTRO_ID__", distroId)
 
         // Ověř, že všechny placeholdery byly nahrazeny (jinak by se spustil
-        // skript s __PROOT_BIN__ v textu – tichá chyba).
+        // skript s nevyplněnou proměnnou – tichá chyba).
         val unfilled = Regex("__[A-Z_]+__").findAll(rendered).map { it.value }.toList()
         if (unfilled.isNotEmpty()) {
             Log.w(TAG, "launcher.sh has unfilled placeholders: $unfilled")
@@ -1469,9 +1482,53 @@ Aplikace automaticky zkouší:
                 launcherFile.setExecutable(true, false)
                 launcherFile.setReadable(true, false)
             }
-            Log.i(TAG, "Deployed launcher.sh (${launcherFile.length()} bytes, docker=$isDockerImage, log=$logPrefix)")
+            Log.i(TAG, "Deployed ${launcherFile.name} (${launcherFile.length()} bytes, distro=$distroId, docker=$isDockerImage, log=$logPrefix)")
+
+            // Pro zpětnou kompatibilitu zapíšeme i hlavní launcher.sh,
+            // který bude dispatchem na distro-specifický skript.
+            if (launcherFile.name != "launcher.sh") {
+                val compatLauncher = File(launcherFile.parentFile, "launcher.sh")
+                compatLauncher.writeText(renderCompatLauncher(context.filesDir, distroId))
+                compatLauncher.setExecutable(true, false)
+                compatLauncher.setReadable(true, false)
+                Log.i(TAG, "Updated compat launcher.sh -> ${launcherFile.name}")
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to write launcher.sh: ${e.message}")
+            Log.e(TAG, "Failed to write ${launcherFile.name}: ${e.message}")
         }
+    }
+
+    /**
+     * Vytvori wrapper launcher.sh, ktery deleguje na spravny distro-specificky launcher.
+     */
+    private fun renderCompatLauncher(filesDir: File, currentDistro: String): String {
+        return buildString {
+            appendLine("#!/system/bin/sh")
+            appendLine("# Backward-compat launcher.sh wrapper")
+            appendLine("# Delegates to the correct distro-specific launcher.")
+            appendLine("# Generated by ProotManager.deployLauncherScript().")
+            appendLine("FILES_DIR=\"${filesDir.absolutePath}\"")
+            appendLine("")
+            appendLine("# Try to detect distro from rootfs directory")
+            appendLine("for d in kali parrot docker; do")
+            appendLine("  if [ -d \"$FILES_DIR/\${d}-arm64\" ] || [ -d \"$FILES_DIR/\${d}\" ]; then")
+            appendLine("    DISTRO=\"\$d\"")
+            appendLine("    break")
+            appendLine("  fi")
+            appendLine("done")
+            appendLine("")
+            appendLine("# Fallback: use the distro that generated this wrapper")
+            appendLine("if [ -z \"$DISTRO\" ]; then")
+            appendLine("  DISTRO=\"$currentDistro\"")
+            appendLine("fi")
+            appendLine("")
+            appendLine("LAUNCHER=\"$FILES_DIR/launcher-\${DISTRO}.sh\"")
+            appendLine("if [ -x \"$LAUNCHER\" ]; then")
+            appendLine("  exec \"$LAUNCHER\" \"\$@\"")
+            appendLine("else")
+            appendLine("  echo \"[CompatLauncher] ERROR: \$LAUNCHER not found\" >&2")
+            appendLine("  exit 1")
+            appendLine("fi")
+        }.toString()
     }
 }
