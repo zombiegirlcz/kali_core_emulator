@@ -38,10 +38,7 @@ android {
             keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: ""
         }
         getByName("debug") {
-            storeFile = file("release.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: ""
-            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: ""
-            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: ""
+            // Use Android default debug keystore (works without CI env vars)
         }
     }
 

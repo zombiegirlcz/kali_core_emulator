@@ -62,7 +62,7 @@ BINDS="-b /dev -b /proc -b /sys"
 BINDS="$BINDS -b \"$FILES_DIR\"/tmp:\"$TMP_DIR\""
 BINDS="$BINDS $SDCARD_MOUNT"
 
-PROOT_FLAGS="-v 0 --kill-on-exit --link2symlink -0"
+PROOT_FLAGS="-v 0 --kill-on-exit -0"
 PROOT_CWD="/root"
 
 # ─── Build and execute PRoot command ────────────────────
