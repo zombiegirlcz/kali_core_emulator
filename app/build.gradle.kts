@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 11
-        versionName = "4.2-RESTORE-SAF-PICKER"
+        versionCode = 12
+        versionName = "4.2-ZSHRC-FIX"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
