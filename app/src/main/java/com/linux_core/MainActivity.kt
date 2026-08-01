@@ -10,6 +10,8 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -319,6 +321,36 @@ fun MainScreen() {
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var backupFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    val restorePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        downloadJob = scope.launch {
+            isDownloading = true
+            isMoreMenuExpanded = false
+            try {
+                statusText = "Restoring from selected file..."
+                downloadProgress = 0
+                isExtracted = false
+                RootfsManager.restoreRootfs(context, uri, selectedDistro).collect { (progress, status) ->
+                    downloadProgress = progress
+                    statusText = status
+                }
+                isExtracted = true
+                Toast.makeText(context, "Restore complete!", Toast.LENGTH_LONG).show()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                throw e
+            } catch (e: Exception) {
+                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                Toast.makeText(context, "Restore failed: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                isDownloading = false
+                statusText = ""
+                downloadProgress = 0
+            }
+        }
+    }
 
     // Docker Hub custom image support
     var customDockerImage by remember { mutableStateOf("") }
@@ -1201,12 +1233,7 @@ fun MainScreen() {
 
                                         Button(
                                             onClick = {
-                                                if (!hasStoragePermission) {
-                                                    requestAllFilesAccess(context)
-                                                } else {
-                                                    backupFiles = RootfsManager.getBackupFiles(selectedDistro)
-                                                    showRestoreDialog = true
-                                                }
+                                                restorePicker.launch(arrayOf("*/*"))
                                             },
                                             shape = RoundedCornerShape(6.dp),
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),

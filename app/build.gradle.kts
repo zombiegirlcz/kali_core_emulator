@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 10
-        versionName = "4.2-MITM-LOG-FIX-10-link2symlink"
+        versionCode = 11
+        versionName = "4.2-RESTORE-SAF-PICKER"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

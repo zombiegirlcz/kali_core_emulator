@@ -1,5 +1,7 @@
 package com.linux_core.core
 
+import android.net.Uri
+
 import android.content.Context
 import android.os.Build
 import android.os.Environment
@@ -8,6 +10,7 @@ import android.os.StatFs
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import com.linux_core.security.CertificateManager
@@ -635,6 +638,28 @@ object RootfsManager {
         } finally {
             try { wakeLock.release() } catch (_: Exception) {}
         }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Restore a rootfs from a URI picked via SAF (any *.tar.gz from any storage).
+     * Copies the picked file into the app cache and delegates to restoreRootfs(File).
+     */
+    fun restoreRootfs(context: Context, backupUri: Uri, distro: Distro): Flow<Pair<Int, String>> = flow {
+        val tempFile = File(context.cacheDir, "restore-${System.currentTimeMillis()}.tar.gz")
+        context.contentResolver.openInputStream(backupUri)?.use { input ->
+            FileOutputStream(tempFile).use { output ->
+                input.copyTo(output, bufferSize = 512 * 1024)
+            }
+        } ?: throw IOException("Cannot open selected file: $backupUri")
+
+        val name = backupUri.lastPathSegment ?: tempFile.name
+        val isTarGz = name.endsWith(".tar.gz", ignoreCase = true) || name.endsWith(".tgz", ignoreCase = true)
+        if (!isTarGz) {
+            throw IOException("Unsupported format: $name (expected .tar.gz or .tgz)")
+        }
+
+        emitAll(restoreRootfs(context, tempFile, distro))
+        tempFile.delete()
     }.flowOn(Dispatchers.IO)
 
     /**
