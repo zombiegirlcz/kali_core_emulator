@@ -145,3 +145,4 @@ app/build_old/
 models/
 format_raw_commands.py
 refactor_motd_table.py
+.worktrees/
