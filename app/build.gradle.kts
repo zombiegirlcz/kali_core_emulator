@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 8
-        versionName = "4.2-MITM-LOG-FIX"
+        versionCode = 10
+        versionName = "4.2-MITM-LOG-FIX-10-link2symlink"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -33,12 +33,16 @@ android {
         create("release") {
             storeFile = file("release.jks")
             // WARNING: Passwords should come from environment variables or a secure CI pipeline
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: ""
-            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: ""
-            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: ""
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: "password123"
+            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "releaseKey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
         }
         getByName("debug") {
-            // Use Android default debug keystore (works without CI env vars)
+            // Same keystore as release so adb install -r works across debug builds
+            storeFile = file("release.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: "password123"
+            keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "releaseKey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
         }
     }
 

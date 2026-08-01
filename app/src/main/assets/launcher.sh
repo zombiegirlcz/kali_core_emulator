@@ -12,8 +12,6 @@ set -e
 PROOT_BIN="__PROOT_BIN__"
 LOADER_BIN="__LOADER_BIN__"
 TALLOC_LIB="__TALLOC_LIB__"
-STANDALONE_PROOT="__STANDALONE_PROOT__"
-STANDALONE_LOADER="__STANDALONE_LOADER__"
 ROOTFS_DIR="__ROOTFS_DIR__"
 ROOTFS_NAME="__ROOTFS_NAME__"
 TMP_DIR="__TMP_DIR__"
@@ -26,11 +24,7 @@ DISTRO_ID="__DISTRO_ID__"
 # ─── Detect usable PRoot binary ──────────────────────────
 PR=""
 LOADER=""
-if [ -x "$STANDALONE_PROOT" ] && [ -x "$STANDALONE_LOADER" ]; then
-    PR="$STANDALONE_PROOT"
-    LOADER="$STANDALONE_LOADER"
-    echo "[$LOG_PREFIX] Using standalone PRoot: $STANDALONE_PROOT" >&2
-elif [ -x "$PROOT_BIN" ] && [ -x "$LOADER_BIN" ] && [ -f "$TALLOC_LIB" ]; then
+if [ -x "$PROOT_BIN" ] && [ -x "$LOADER_BIN" ] && [ -f "$TALLOC_LIB" ]; then
     PR="$PROOT_BIN"
     LOADER="$LOADER_BIN"
     export PROOT_LOADER="$LOADER"
@@ -38,8 +32,6 @@ elif [ -x "$PROOT_BIN" ] && [ -x "$LOADER_BIN" ] && [ -f "$TALLOC_LIB" ]; then
     echo "[$LOG_PREFIX] Using dynamic PRoot: $PROOT_BIN (LD_PRELOAD=$TALLOC_LIB)" >&2
 else
     echo "[$LOG_PREFIX] ERROR: No usable PRoot binary found" >&2
-    echo "[$LOG_PREFIX]   standalone: exists=$([ -x "$STANDALONE_PROOT" ] && echo yes || echo no)" >&2
-    echo "[$LOG_PREFIX]   standalone_loader: exists=$([ -x "$STANDALONE_LOADER" ] && echo yes || echo no)" >&2
     echo "[$LOG_PREFIX]   dynamic: exists=$([ -x "$PROOT_BIN" ] && echo yes || echo no)" >&2
     echo "[$LOG_PREFIX]   loader: exists=$([ -x "$LOADER_BIN" ] && echo yes || echo no)" >&2
     echo "[$LOG_PREFIX]   talloc: exists=$([ -f "$TALLOC_LIB" ] && echo yes || echo no)" >&2
@@ -59,11 +51,25 @@ echo "[$LOG_PREFIX] Starting $DISTRO_ID session ($ROOTFS_NAME, docker=$DOCKER_MO
 
 # ─── PRoot bind mounts ──────────────────────────────────
 BINDS="-b /dev -b /proc -b /sys"
-BINDS="$BINDS -b \"$FILES_DIR\"/tmp:\"$TMP_DIR\""
+BINDS="$BINDS -b $FILES_DIR/tmp:$TMP_DIR"
 BINDS="$BINDS $SDCARD_MOUNT"
 
-PROOT_FLAGS="-v 0 --kill-on-exit -0"
+PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink"
 PROOT_CWD="/root"
+
+# ─── Bootstrap phase (first run only) ────────────────────
+# Bootstrap MUST run BEFORE entrypoint: first launch configures the OS
+# (apt, packages, users), only then the interactive session starts.
+if [ "$DOCKER_MODE" != "1" ] && [ -x "$ROOTFS_DIR/root/bootstrap.sh" ] && { [ -f "$ROOTFS_DIR/root/.bootstrap_required" ] || [ ! -f "$ROOTFS_DIR/root/.setup_done" ]; }; then
+    echo "[$LOG_PREFIX] First run detected — running bootstrap..." >&2
+    if "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$PROOT_CWD" $BINDS \
+        /bin/sh -c 'unset LD_PRELOAD; exec /bin/bash /root/bootstrap.sh'; then
+        rm -f "$ROOTFS_DIR/root/.bootstrap_required"
+        echo "[$LOG_PREFIX] Bootstrap completed" >&2
+    else
+        echo "[$LOG_PREFIX] WARNING: bootstrap failed — keeping .bootstrap_required (retry next launch)" >&2
+    fi
+fi
 
 # ─── Build and execute PRoot command ────────────────────
 if [ "$DOCKER_MODE" = "1" ]; then

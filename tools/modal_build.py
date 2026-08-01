@@ -282,6 +282,27 @@ def build():
     print(f"[build] APK copied to Volume: {dest}")
 
 
+# ── Verify APK signature ─────────────────────────────────────────────────────
+@app.function(
+    image=base_image,
+    volumes={"/vol": build_vol},
+    timeout=300,
+)
+def verify_apk():
+    """Print the signer certificate of the built APK (must match release.jks)."""
+    apk = "/vol/builds/app-debug.apk"
+    if not os.path.exists(apk):
+        print("[verify] APK not found on Volume!")
+        sys.exit(1)
+    apksigner = f"{ANDROID_SDK_ROOT}/build-tools/36.0.0/apksigner"
+    print(f"[verify] {apk}")
+    subprocess.run(
+        [apksigner, "verify", "--print-certs", apk],
+        check=False,
+        text=True,
+    )
+
+
 # ── Utility ──────────────────────────────────────────────────────────────────
 @app.function(
     image=base_image,

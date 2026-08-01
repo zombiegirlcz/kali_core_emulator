@@ -51,18 +51,23 @@ object ProotManager {
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
 
         val setupDoneFile = File(homeDir, ".setup_done")
-        val bootstrapRequired = File(homeDir, ".bootstrap_required")
         val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
         
         deployZshrc(context, rootfsDir, distroId)
         
-        if (!setupDoneFile.exists() && !bootstrapRequired.exists()) {
+        // VZDY vytvorime .bootstrap_required pokud .setup_done neexistuje
+        // (stary .setup_done z nekompletniho bootstrapu nesmi blokovat dalsi pokus)
+        if (!setupDoneFile.exists()) {
+            val bootstrapRequired = File(homeDir, ".bootstrap_required")
             try {
-                bootstrapRequired.createNewFile()
-                Log.i(TAG, "Fresh install detected, created .bootstrap_required")
+                if (!bootstrapRequired.exists()) {
+                    bootstrapRequired.createNewFile()
+                    Log.i(TAG, "Fresh install detected, created .bootstrap_required")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create bootstrap sentinel: ${e.message}")
             }
+            setupDoneFile.delete()
         }
 
         createMasterScript(homeDir, distroId, hasRoot)
@@ -82,8 +87,6 @@ object ProotManager {
         val prootBin = File(context.filesDir, "proot")
         val loaderBin = File(context.filesDir, "loader")
         val tallocLib = File(context.filesDir, "libtalloc.so.2")
-        val standaloneProot = File(context.filesDir, "proot.standalone")
-        val standaloneLoader = File(context.filesDir, "loader.standalone")
 
         // Generujeme distro-specifický launcher (launcher-kali.sh, launcher-parrot.sh,
         // launcher-docker.sh) — každý s vlastním log prefixem. Pro Docker image
@@ -99,8 +102,6 @@ object ProotManager {
             prootBin = prootBin,
             loaderBin = loaderBin,
             tallocLib = tallocLib,
-            standaloneProot = standaloneProot,
-            standaloneLoader = standaloneLoader,
             tmpDir = tmpDir,
             mountStorage = mountStorage,
             isDockerImage = isDockerImage
@@ -111,7 +112,7 @@ object ProotManager {
             fullCommand.add(customCommand)
         }
 
-        val defaultProot = if (standaloneProot.exists() && standaloneProot.canExecute()) standaloneProot else prootBin
+        val defaultProot = prootBin
         return ProotConfig(
             command = fullCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
@@ -164,26 +165,6 @@ object ProotManager {
             Log.w(TAG, "TerminalMap binary not available: ${e.message}")
         }
 
-        // Deploy static fallback binaries
-        val staticSuffix = if (suffix == "aarch64") "static-aarch64" else "static-arm32"
-        val staticBinaries = listOf(
-            "proot.standalone" to "proot-$staticSuffix",
-            "loader.standalone" to "loader-$staticSuffix"
-        )
-        for ((name, asset) in staticBinaries) {
-            val file = File(context.filesDir, name)
-            if (file.exists() && file.length() > 0L) continue
-            try {
-                context.assets.open(asset).use { input ->
-                    file.outputStream().use { output -> input.copyTo(output) }
-                }
-                file.setExecutable(true, false)
-                file.setReadable(true, false)
-                Log.i(TAG, "Deployed static fallback binary $name (${file.length()} bytes)")
-            } catch (e: Exception) {
-                Log.w(TAG, "Static fallback $name not available: ${e.message}")
-            }
-        }
     }
 
     private fun updateResolvConf(context: Context, rootfsDir: File) {
@@ -233,10 +214,18 @@ object ProotManager {
         val masterFile = File(homeDir, "bootstrap.sh")
         val script = StringBuilder().apply {
             append("#!/bin/bash").append(NL)
+            append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
+            append("export TMPDIR=/tmp").append(NL)
             append("export DEBIAN_FRONTEND=noninteractive").append(NL)
             append("export DEBCONF_NOWARNINGS=yes").append(NL)
             append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
             append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
+            append("chmod 777 /var/cache/apt/archives/partial 2>/dev/null || true").append(NL)
+            append("# Self-heal dpkg stavu: po reinstalaci/chybe muze byt /var/lib/dpkg").append(NL)
+            append("# nepripsatelny (status-old: Permission denied). PRoot fake-root mapuje root->appUID,").append(NL)
+            append("# takze staci zajistit vlastnika + owner-write.").append(NL)
+            append("chown root:root /var/lib/dpkg /var/lib/dpkg/status /var/lib/dpkg/status-old /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true").append(NL)
+            append("chmod u+rw /var/lib/dpkg/status* /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true").append(NL)
             append("# DNS resolv.conf is dynamically managed by host app").append(NL)
             append("# Base ParrotOS /usr/bin/perl is a directory, breaking debconf Perl shebang.").append(NL)
             append("# Replace confmodule with dummy no-op shell functions during bootstrap.").append(NL)
@@ -297,7 +286,13 @@ object ProotManager {
             append("  fi").append(NL)
             append("fi").append(NL)
             append("echo '[*] Installing core packages...'").append(NL)
-            append("apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip dropbear dropbear-bin 2>&1 || true").append(NL)
+            append("BOOTSTRAP_CORE_OK=0").append(NL)
+            append("if apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip dropbear dropbear-bin 2>&1; then").append(NL)
+            append("  BOOTSTRAP_CORE_OK=1").append(NL)
+            append("  echo '[*] Core packages installed OK'").append(NL)
+            append("else").append(NL)
+            append("  echo '[!] WARNING: apt install failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
+            append("fi").append(NL)
             // Restore debconf confmodule (real Perl now installed, debconf should work)
 
             append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
@@ -305,7 +300,12 @@ object ProotManager {
             append("  echo '[*] Restored debconf confmodule'").append(NL)
             append("fi").append(NL)
             append("echo '[*] Fixing any half-configured packages...'").append(NL)
-            append("dpkg --configure -a 2>&1 || true").append(NL)
+            append("if dpkg --configure -a 2>&1; then").append(NL)
+            append("  BOOTSTRAP_CORE_OK=1").append(NL)
+            append("else").append(NL)
+            append("  BOOTSTRAP_CORE_OK=0").append(NL)
+            append("  echo '[!] WARNING: dpkg --configure -a failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
+            append("fi").append(NL)
             append("SHELL_BIN=/bin/bash").append(NL)
             append("if command -v zsh >/dev/null 2>&1; then SHELL_BIN=/usr/bin/zsh; echo '[*] zsh installed OK'; else echo '[!] WARNING: zsh install failed, using bash fallback'; fi").append(NL)
             append("echo '[*] Installing Python packages (requests, scapy)...'").append(NL)
@@ -330,6 +330,7 @@ object ProotManager {
             append("id -u ${defaultUser} &>/dev/null || useradd -m -s \"\$SHELL_BIN\" ${defaultUser} 2>/dev/null || true").append(NL)
             append("passwd -d ${defaultUser} 2>/dev/null && usermod -p \"\" ${defaultUser} 2>/dev/null || true").append(NL)
             append("usermod -aG sudo ${defaultUser} 2>/dev/null || true").append(NL)
+            append("mkdir -p /etc/sudoers.d").append(NL)
             append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
             append("chmod 0440 /etc/sudoers.d/${defaultUser}").append(NL)
 
@@ -340,8 +341,13 @@ object ProotManager {
             append("chown -R ${defaultUser}:${defaultUser} /home/${defaultUser}/.zshrc 2>/dev/null || true").append(NL)
 
             append("chsh -s \"\$SHELL_BIN\" root 2>/dev/null || true").append(NL)
-            append("touch /root/.setup_done").append(NL)
-            append("echo '[+] BOOTSTRAP COMPLETE'").append(NL)
+            append("if [ \"\$BOOTSTRAP_CORE_OK\" = 1 ]; then").append(NL)
+            append("  touch /root/.setup_done").append(NL)
+            append("  echo '[+] BOOTSTRAP COMPLETE'").append(NL)
+            append("else").append(NL)
+            append("  echo '[!] BOOTSTRAP FAILED — .setup_done NEVYTVOREN, bootstrap se zopakuje pri pristim startu'").append(NL)
+            append("  exit 1").append(NL)
+            append("fi").append(NL)
         }.toString()
         masterFile.writeText(script)
         masterFile.setExecutable(true, false)
@@ -351,19 +357,11 @@ object ProotManager {
         val entryFile = File(homeDir, "entrypoint.sh")
         val script = StringBuilder().apply {
             append("#!/bin/bash").append(NL)
+            append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
+            append("export TMPDIR=/tmp").append(NL)
             append("unset LD_PRELOAD").append(NL)
             append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
             append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
-            
-            append("if [ -f /root/.bootstrap_required ]; then").append(NL)
-            append("    if /bin/bash /root/bootstrap.sh; then").append(NL)
-            append("        rm -f /root/.bootstrap_required").append(NL)
-            append("    fi").append(NL)
-            append("    # Restore debconf confmodule if bootstrap left it disabled").append(NL)
-            append("    if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
-            append("        mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
-            append("    fi").append(NL)
-            append("fi").append(NL)
             
             append("# Restore passwd if it was previously diverted by mistake").append(NL)
             append("for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
@@ -1429,8 +1427,6 @@ Aplikace automaticky zkouší:
         prootBin: File,
         loaderBin: File,
         tallocLib: File,
-        standaloneProot: File,
-        standaloneLoader: File,
         tmpDir: File,
         mountStorage: Boolean,
         isDockerImage: Boolean
@@ -1457,8 +1453,6 @@ Aplikace automaticky zkouší:
             .replace("__PROOT_BIN__", prootBin.absolutePath)
             .replace("__LOADER_BIN__", loaderBin.absolutePath)
             .replace("__TALLOC_LIB__", tallocLib.absolutePath)
-            .replace("__STANDALONE_PROOT__", standaloneProot.absolutePath)
-            .replace("__STANDALONE_LOADER__", standaloneLoader.absolutePath)
             .replace("__ROOTFS_DIR__", rootfsDir.absolutePath)
             .replace("__ROOTFS_NAME__", rootfsDir.name)
             .replace("__TMP_DIR__", tmpDir.absolutePath)
@@ -1511,15 +1505,15 @@ Aplikace automaticky zkouší:
             appendLine("")
             appendLine("# Try to detect distro from rootfs directory")
             appendLine("for d in kali parrot; do")
-            appendLine("  if [ -d \"$FILES_DIR/\${d}-arm64\" ] || [ -d \"$FILES_DIR/\${d}\" ]; then")
+            appendLine("  if [ -d \"\$FILES_DIR/\${d}-arm64\" ] || [ -d \"\$FILES_DIR/\${d}\" ]; then")
             appendLine("    DISTRO=\"\$d\"")
             appendLine("    break")
             appendLine("  fi")
             appendLine("done")
             appendLine("# Docker images: match any docker-* directory")
-            appendLine("if [ -z \"$DISTRO\" ]; then")
-            appendLine("  for d in \"$FILES_DIR\"/docker-*; do")
-            appendLine("    if [ -d \"$d\" ]; then")
+            appendLine("if [ -z \"\$DISTRO\" ]; then")
+            appendLine("  for d in \"\$FILES_DIR\"/docker-*; do")
+            appendLine("    if [ -d \"\$d\" ]; then")
             appendLine("      DISTRO=\"docker\"")
             appendLine("      break")
             appendLine("    fi")
@@ -1527,13 +1521,13 @@ Aplikace automaticky zkouší:
             appendLine("fi")
             appendLine("")
             appendLine("# Fallback: use the distro that generated this wrapper")
-            appendLine("if [ -z \"$DISTRO\" ]; then")
+            appendLine("if [ -z \"\$DISTRO\" ]; then")
             appendLine("  DISTRO=\"$currentDistro\"")
             appendLine("fi")
             appendLine("")
-            appendLine("LAUNCHER=\"$FILES_DIR/launcher-\${DISTRO}.sh\"")
-            appendLine("if [ -x \"$LAUNCHER\" ]; then")
-            appendLine("  exec \"$LAUNCHER\" \"\$@\" || exit 1")
+            appendLine("LAUNCHER=\"\$FILES_DIR/launcher-\${DISTRO}.sh\"")
+            appendLine("if [ -x \"\$LAUNCHER\" ]; then")
+            appendLine("  exec \"\$LAUNCHER\" \"\$@\" || exit 1")
             appendLine("else")
             appendLine("  echo \"[CompatLauncher] ERROR: \$LAUNCHER not found\" >&2")
             appendLine("  exit 1")

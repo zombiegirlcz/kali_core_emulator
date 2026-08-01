@@ -62,8 +62,8 @@ Jednomodulová Android aplikace (`:app`), která spouští Kali/ParrotOS v neroo
 
 Assety v `app/src/main/assets/`:
 - **Dynamické (arm64):** `proot-aarch64` + `loader-aarch64` + `libtalloc-aarch64.so` (používá `PROOT_LOADER` + `LD_PRELOAD`)
-- **Statické (arm64 záložní):** `proot-static-aarch64` + `loader-static-aarch64`
-- **Ostatní architektury:** `proot_static` + `loader_static` / `loader-static-arm32`
+- **Ostatní architektury:** `proot-arm`/`proot-i686`/`proot-x86_64` + odpovídající `loader-*` + `libtalloc-*.so` (dynamické)
+- **Standalone/statické binárky (`proot_static`, `proot-static-*`, `loader_static`, `loader-static-*`) byly odstraněny 2026-08-01** — nefungovaly, launcher používá výhradně dynamický PRoot
 - Python skripty `extract_proot.py` / `extract_libtalloc.py` / `update_static_binaries.py` aktualizují tyto binárky
 
 ### jniLibs struktura
@@ -604,7 +604,7 @@ Kompletní mapa projektu — k 2026-07-23
 
  - Funkce: Spouští Kali/ParrotOS v uživatelském prostoru (bez rootu)
  - Flow: Stažení rootfs (tar.xz) → extrakce → nasazení PRoot loaderů → generování launcher.sh → bootstrap OS
- - Binární strategie: Dynamické PRoot (arm64) + statické záložní varianty pro ostatní architektury
+ - Binární strategie: Dynamické PRoot (arm64 + ostatní architektury); standalone/statické binárky odstraněny (2026-08-01, nefungovaly)
  - Deployuje do guestu: nh CLI, shizuku, helper skripty
 
  #### 2. VPN Engine (VpnCaptureService.kt, VpnNatEngine.kt)
