@@ -139,6 +139,9 @@ class TerminalService : Service() {
 
                 val newEnv = config.env.toMutableList().apply {
                     add("NETHUNTER_SESSION_ID=$sessionId")
+                    // Proot se startuje s prazdnym env — TERM musi byt nastaven rucne,
+                    // jinak nefunguji barvy (dircolors), terminfo klavesy ani prekreslovani
+                    add("TERM=xterm-256color")
                 }.toTypedArray()
 
                 val client = ViewHostSessionClient(view, onError)

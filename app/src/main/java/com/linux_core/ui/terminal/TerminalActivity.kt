@@ -447,6 +447,14 @@ class TerminalActivity : ComponentActivity() {
         }
 
         terminalView = TerminalView(this, null)
+        // Zapni mouse reporting v Termux TerminalView (stejne jako Termux:Preferences -> Mouse),
+        // aby nano s "set mouse" reagovalo na dotyk/tah (pohyb kurzoru) misto scrollovani.
+        try {
+            getSharedPreferences("termux_preferences", MODE_PRIVATE)
+                .edit().putBoolean("mouse_enabled", true).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to enable mouse pref: ${e.message}")
+        }
         terminalView.setBackgroundColor(Color.BLACK)
         terminalView.setTextSize(terminalFontSizeFloat.toInt())
         terminalView.setTerminalViewClient(viewClient)
