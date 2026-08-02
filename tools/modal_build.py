@@ -201,6 +201,26 @@ def build_native():
     subprocess.run(cmd, check=True)
     print(f"  OK  ({os.path.getsize(bin_path):,} B)")
 
+    # ── 3. Build su_daemon (host root daemon) ──────────────────────────────────
+    print("─" * 60)
+    print("[native] Building su_daemon...")
+    daemon_src = os.path.join(cpp_dir, "su_daemon.c")
+    daemon_bin_path = os.path.join(assets_dir, "su_daemon")
+    cmd = [cc, "-o", daemon_bin_path, daemon_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(daemon_bin_path):,} B)")
+
+    # ── 4. Build su_wrapper (static binary for PRoot) ─────────────────────────
+    print("─" * 60)
+    print("[native] Building su_wrapper (static)...")
+    wrapper_src = os.path.join(cpp_dir, "su_wrapper.c")
+    wrapper_bin_path = os.path.join(assets_dir, "su_wrapper")
+    cmd = [cc, "-static", "-o", wrapper_bin_path, wrapper_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(wrapper_bin_path):,} B)")
+
     # Commit to Volume
     build_vol.commit()
     print(f"[native] Binaries committed to Volume.")

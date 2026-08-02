@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Settings
@@ -498,7 +499,35 @@ fun MainScreen() {
                         Text(
                             text = "VPN GATEWAY",
                             color = if (isVpn) Color.White else Color.Gray,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                val isRootTab = (currentTab == "root")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isRootTab) Color(0xFF008F11) else Color.Transparent)
+                        .clickable { currentTab = "root" }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = "Root Bridge",
+                            tint = if (isRootTab) Color.White else Color.Gray,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "ROOT BRIDGE",
+                            color = if (isRootTab) Color.White else Color.Gray,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                         )
@@ -1451,6 +1480,8 @@ fun MainScreen() {
                 com.linux_core.ui.editor.EditorTab()
             } else if (currentTab == "vpn_center") {
                 VpnCenterScreen(modifier = Modifier.weight(1f))
+            } else if (currentTab == "root") {
+                com.linux_core.ui.RootBridgeTab(modifier = Modifier.weight(1f))
             }
         }
 

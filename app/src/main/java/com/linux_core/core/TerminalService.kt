@@ -419,7 +419,15 @@ class ViewHostSessionClient(
     override fun onCopyTextToClipboard(session: TerminalSession, text: String) {
         val context = currentView?.context ?: return
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        val clip = android.content.ClipData.newPlainText("terminal", text)
+        
+        // Clean the text copied from the terminal buffer:
+        // 1. Remove NUL/null bytes (\u0000) which cause truncation/strange characters
+        // 2. Split by newline, trim trailing spaces on each line, and join back
+        val cleanedText = text.replace("\u0000", "")
+            .split("\n")
+            .joinToString("\n") { it.trimEnd() }
+
+        val clip = android.content.ClipData.newPlainText("terminal", cleanedText)
         clipboard.setPrimaryClip(clip)
     }
     

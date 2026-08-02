@@ -132,7 +132,7 @@ object ShizukuManager {
     }
 
     /**
-     * Check the current Shizuku status — server running, su available,
+     * Check the current Shizuku status — server running,
      * Shizuku APK installed, ADB available.
      */
     @JvmStatic
@@ -171,12 +171,8 @@ object ShizukuManager {
             } catch (e: Exception) { /* ignore */ }
         }
 
-        // 3. Check su availability
-        val suAvailable = try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
-            val out = p.inputStream.bufferedReader().readText()
-            p.waitFor() == 0 && out.contains("uid=0")
-        } catch (e: Exception) { false }
+        // 3. su availability is disabled/removed completely
+        val suAvailable = false
 
         // 4. Check Shizuku APK
         val shizukuApkPath = try {
@@ -218,7 +214,6 @@ object ShizukuManager {
 
     /**
      * Execute a command through Shizuku (via rish shell).
-     * Falls back to plain su -c if Shizuku server is not running but su is available.
      */
     @JvmStatic
     fun exec(context: Context, command: String): String {
@@ -244,16 +239,6 @@ object ShizukuManager {
             } catch (e: Exception) {
                 """{"error":"${e.message}","exit_code":-1}"""
             }
-        } else if (st.suAvailable) {
-            // Fallback to su
-            return try {
-                val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-                val output = proc.inputStream.bufferedReader().readText()
-                val exitCode = proc.waitFor()
-                """{"stdout":"${output.escapeJson()}","exit_code":$exitCode}"""
-            } catch (e: Exception) {
-                """{"error":"${e.message}","exit_code":-1}"""
-            }
         }
         return """{"error":"No privileged execution method available","exit_code":-1}"""
     }
@@ -263,10 +248,8 @@ object ShizukuManager {
      *
      * Strategy (in order):
      * 1. Already running → return true
-     * 2. su available + Shizuku APK → start server via su with --apk
-     * 3. su available + no Shizuku APK → start via su (limited mode, use raw su for commands)
-     * 4. ADB available → start via ADB shell
-     * 5. Otherwise → return false (caller shows pairing UI)
+     * 2. ADB available → start via ADB shell
+     * 3. Otherwise → return false (caller shows pairing UI)
      */
     @JvmStatic
     fun startServer(context: Context): Boolean {
@@ -276,38 +259,18 @@ object ShizukuManager {
             return true
         }
 
-        // Strategy 2: su + Shizuku APK
-        if (st.suAvailable && st.shizukuApkPath != null) {
-            Log.i(TAG, "Attempting to start Shizuku server via su (with Shizuku APK)")
-            return startWithSu(context, st.shizukuApkPath)
-        }
-
-        // Strategy 3: su available, no Shizuku APK
-        // We can't start the full server without server classes.
-        // But su itself provides privilege escalation — return true to indicate
-        // commands can be run via su fallback in exec().
-        if (st.suAvailable) {
-            Log.i(TAG, "su available without Shizuku APK — commands will use su fallback")
-            return true
-        }
-
-        // Strategy 4: ADB
+        // Strategy 2: ADB
         if (st.adbAvailable) {
             Log.i(TAG, "Attempting to start Shizuku server via ADB")
             return startWithAdb(context, st.shizukuApkPath)
         }
 
-        Log.w(TAG, "No startup method available (no su, no Shizuku, no ADB)")
+        Log.w(TAG, "No startup method available (no Shizuku, no ADB)")
         return false
     }
 
     /**
-     * Start the Shizuku server via su.
-     * The native PIE binary is started as root, pointing to the Shizuku APK
-     * for Java server classes.
-     */
-    /**
-     * Start Shizuku server via su on a background thread.
+     * Start Shizuku server on a background thread.
      * Returns immediately; result is delivered via the callback.
      */
     @JvmStatic
@@ -320,45 +283,7 @@ object ShizukuManager {
         }.start()
     }
 
-    private fun startWithSu(context: Context, apkPath: String): Boolean {
-        return try {
-            val serverBin = deployServer(context) ?: return false
-            val cmd = "${serverBin.absolutePath} --apk=$apkPath"
-            Log.i(TAG, "Starting Shizuku server: su -c \"$cmd\"")
 
-            val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-
-            // Drain stdout AND stderr to avoid pipe deadlock
-            val outReader = Thread { proc.inputStream.bufferedReader().readText() }.apply { start() }
-            val errReader = Thread {
-                val err = proc.errorStream.bufferedReader().readText()
-                if (err.isNotBlank()) Log.w(TAG, "Shizuku starter stderr: $err")
-            }.apply { start() }
-
-            val exitCode = proc.waitFor()
-            outReader.join(2000)
-            errReader.join(2000)
-
-            if (exitCode == 0) {
-                // Save PID for management
-                Thread.sleep(1500)
-                val newStatus = status(context)
-                if (newStatus.running) {
-                    if (newStatus.pid != null) {
-                        File(context.filesDir, PID_FILE).writeText(newStatus.pid.toString())
-                    }
-                    Log.i(TAG, "Shizuku server started successfully via su")
-                    return true
-                }
-            }
-
-            Log.w(TAG, "Shizuku server start via su returned exit=$exitCode")
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start Shizuku server via su: ${e.message}")
-            false
-        }
-    }
 
     /**
      * Start Shizuku server via ADB (requires wireless debugging paired with a computer).

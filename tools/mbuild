@@ -17,16 +17,20 @@ case "$CMD" in
         echo "  → upload source"
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  → NDK compile"
-        modal run modal_build.py::build_native 2>&1
+        modal run modal_build.py::build_native > build.log | cat
         echo "  → Gradle build"
-        modal run modal_build.py::build 2>&1
+        modal run modal_build.py::build > build.log | cat
+	modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
         ;;
     native)
         modal run modal_build.py::upload_src 2>&1 | tail -3
-        modal run modal_build.py::build_native 2>&1
+        modal run modal_build.py::build_native > build.log | cat
+	modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
         ;;
     build)
-        modal run modal_build.py::build 2>&1
+	modal run modal_build.py::upload_src 2>&1 | tail -3
+        modal run modal_build.py::build > build.log | cat
+	modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
         ;;
     *)
         echo "Usage: zsh mbuild [all|native|build]"

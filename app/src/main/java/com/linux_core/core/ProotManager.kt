@@ -623,6 +623,9 @@ object ProotManager {
         // Deploy Shizuku rish shell into guest
         deployShizukuRish(context, rootfsDir)
 
+        // Deploy su/sudo UNIX socket IPC bridge
+        deploySuBridge(context, rootfsDir)
+
         // Create backward-compat symlinks pointing to nh
         val compatNames = listOf(
             // nethunter-* compatibility
@@ -747,6 +750,62 @@ object ProotManager {
             Log.i(TAG, "Deployed rish dex to guest (${rishDex.length()} bytes)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to deploy rish dex: ${e.message}")
+        }
+    }
+
+    /**
+     * Deploy su_daemon host binary and su_wrapper guest binary for UNIX-socket privilege escalation.
+     */
+    private fun deploySuBridge(context: Context, rootfsDir: File) {
+        val binDir = File(rootfsDir, "usr/local/bin")
+        if (!binDir.exists()) binDir.mkdirs()
+
+        // 1. Deploy su_wrapper to guest /usr/local/bin/su_wrapper
+        try {
+            val wrapperTarget = File(binDir, "su_wrapper")
+            var shouldDeploy = !wrapperTarget.exists() || wrapperTarget.length() == 0L
+            if (!shouldDeploy) {
+                try {
+                    val assetSize = context.assets.open("su_wrapper").use { it.available().toLong() }
+                    if (wrapperTarget.length() != assetSize) shouldDeploy = true
+                } catch (e: Exception) {
+                    shouldDeploy = true
+                }
+            }
+            if (shouldDeploy) {
+                context.assets.open("su_wrapper").use { input ->
+                    wrapperTarget.outputStream().use { output -> input.copyTo(output) }
+                }
+                wrapperTarget.setExecutable(true, false)
+                wrapperTarget.setReadable(true, false)
+                Log.i(TAG, "Deployed su_wrapper binary (${wrapperTarget.length()} bytes)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "su_wrapper asset not available: ${e.message}")
+        }
+
+        // 2. Deploy su_daemon to host filesDir
+        try {
+            val daemonTarget = File(context.filesDir, "su_daemon")
+            var shouldDeploy = !daemonTarget.exists() || daemonTarget.length() == 0L
+            if (!shouldDeploy) {
+                try {
+                    val assetSize = context.assets.open("su_daemon").use { it.available().toLong() }
+                    if (daemonTarget.length() != assetSize) shouldDeploy = true
+                } catch (e: Exception) {
+                    shouldDeploy = true
+                }
+            }
+            if (shouldDeploy) {
+                context.assets.open("su_daemon").use { input ->
+                    daemonTarget.outputStream().use { output -> input.copyTo(output) }
+                }
+                daemonTarget.setExecutable(true, false)
+                daemonTarget.setReadable(true, false)
+                Log.i(TAG, "Deployed su_daemon binary to host (${daemonTarget.length()} bytes)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "su_daemon asset not available: ${e.message}")
         }
     }
 
@@ -1449,6 +1508,14 @@ Aplikace automaticky zkouší:
         }
         val sdcardMount = if (mountStorage) " -b /sdcard" else ""
 
+        val rootPrefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        val extraMounts = buildString {
+            if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
+            if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
+            if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
+            if (rootPrefs.getBoolean("bind_usb", true)) append(" -b /dev/bus/usb:/mnt/usb")
+        }
+
         val rendered = template
             .replace("__PROOT_BIN__", prootBin.absolutePath)
             .replace("__LOADER_BIN__", loaderBin.absolutePath)
@@ -1458,6 +1525,7 @@ Aplikace automaticky zkouší:
             .replace("__TMP_DIR__", tmpDir.absolutePath)
             .replace("__FILES_DIR__", context.filesDir.absolutePath)
             .replace("__SDCARD_MOUNT__", sdcardMount)
+            .replace("__EXTRA_ROOT_MOUNTS__", extraMounts)
             .replace("__DOCKER_MODE__", if (isDockerImage) "1" else "0")
             .replace("__LOG_PREFIX__", logPrefix)
             .replace("__DISTRO_ID__", distroId)
