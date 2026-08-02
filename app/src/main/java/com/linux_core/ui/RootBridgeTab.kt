@@ -73,6 +73,10 @@ object RootBridgeManager {
                 pidFile.delete()
             }
         }
+        // Socket exists = daemon is (or was) listening
+        if (File(context.filesDir, SOCKET_FILE).exists()) {
+            return Pair(true, null)
+        }
         // Check ps
         return try {
             val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ps -ef 2>/dev/null | grep '[s]u_daemon'"))
@@ -98,6 +102,9 @@ object RootBridgeManager {
     fun startDaemon(context: Context, callback: (Boolean) -> Unit) {
         Thread {
             try {
+                val (suOk, suPath) = checkSuAvailable()
+                val suBin = if (suOk && suPath != null) suPath else "su"
+
                 val ipcDir = File(context.filesDir, "ipc")
                 if (!ipcDir.exists()) ipcDir.mkdirs()
 
@@ -111,16 +118,37 @@ object RootBridgeManager {
                 }
 
                 val sockFile = File(ipcDir, "magisk_daemon.sock")
-                val cmd = "su -c '${daemonBin.absolutePath} ${sockFile.absolutePath} > /dev/null 2>&1 &'"
-                Log.i(TAG, "Starting su_daemon via su: $cmd")
-                
+                val logFile = File(ipcDir, "su_daemon.log")
+                val pidFile = File(context.filesDir, PID_FILE)
+
+                // Kill stale daemon instances first (previous runs may linger)
+                try {
+                    Runtime.getRuntime().exec(
+                        arrayOf("sh", "-c", "$suBin -c 'pkill -f su_daemon' 2>/dev/null; true")
+                    ).waitFor()
+                } catch (e: Exception) { /* ignore */ }
+
+                // Remove stale socket & pid files so the new daemon binds fresh
+                sockFile.delete()
+                pidFile.delete()
+
+                // Start daemon via su (redirect stderr to log file for debugging)
+                val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath} > ${logFile.absolutePath} 2>&1 &'"
+                Log.i(TAG, "Starting su_daemon via $suBin: $cmd")
+
                 val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
                 proc.waitFor()
-                Thread.sleep(800)
+                Thread.sleep(1200)
 
                 val (running, pid) = isDaemonRunning(context)
                 if (running && pid != null) {
-                    File(context.filesDir, PID_FILE).writeText(pid.toString())
+                    pidFile.writeText(pid.toString())
+                }
+
+                Log.i(TAG, "startDaemon result: running=$running pid=$pid")
+                if (!running) {
+                    val log = if (logFile.exists()) logFile.readText().take(2000) else "(no log)"
+                    Log.e(TAG, "su_daemon log: $log")
                 }
 
                 android.os.Handler(context.mainLooper).post { callback(running) }
@@ -133,12 +161,12 @@ object RootBridgeManager {
 
     fun stopDaemon(context: Context): Boolean {
         return try {
-            val (running, pid) = isDaemonRunning(context)
-            if (running && pid != null) {
-                Runtime.getRuntime().exec(arrayOf("sh", "-c", "su -c 'kill -9 $pid' 2>/dev/null || kill -9 $pid"))
-            } else {
-                Runtime.getRuntime().exec(arrayOf("sh", "-c", "su -c 'pkill su_daemon' 2>/dev/null || pkill su_daemon"))
-            }
+            val (suOk, suPath) = checkSuAvailable()
+            val suBin = if (suOk && suPath != null) suPath else "su"
+            // Kill ALL su_daemon instances (not just the recorded pid)
+            Runtime.getRuntime().exec(
+                arrayOf("sh", "-c", "$suBin -c 'pkill -f su_daemon' 2>/dev/null; true")
+            ).waitFor()
             File(context.filesDir, PID_FILE).delete()
             File(context.filesDir, SOCKET_FILE).delete()
             true

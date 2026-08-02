@@ -738,6 +738,20 @@ object LocalApiServer {
                     put("bssid", info.bssid)
                     put("rssi", info.rssi)
                     put("link_speed_mbps", info.linkSpeed)
+                    // IP + MAC z DHCP/WifiInfo, aby `ifconfig` mohl zobrazit inet/ether
+                    @Suppress("DEPRECATION")
+                    val dhcp = wifiManager.dhcpInfo
+                    if (dhcp != null && dhcp.ipAddress != 0) {
+                        put("ip", formatIpv4(dhcp.ipAddress))
+                        put("netmask", formatIpv4(dhcp.netmask))
+                        put("gateway", formatIpv4(dhcp.gateway))
+                        put("dns1", formatIpv4(dhcp.dns1))
+                    } else {
+                        put("ip", "")
+                    }
+                    @Suppress("DEPRECATION")
+                    val mac = try { info.macAddress } catch (e: Exception) { null }
+                    put("mac", mac ?: "")
                 } else {
                     put("error", "No connection info available")
                 }
@@ -746,6 +760,10 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
+    }
+
+    private fun formatIpv4(value: Int): String {
+        return "${value and 0xFF}.${(value shr 8) and 0xFF}.${(value shr 16) and 0xFF}.${(value shr 24) and 0xFF}"
     }
 
     private fun handleLocation(context: Context, out: OutputStream) {

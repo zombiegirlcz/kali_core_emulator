@@ -436,30 +436,42 @@ except Exception as e:
     fi
 
     local wifi vpn
-    wifi=$(nh network wifi 2>/dev/null)
+    # RAW JSON z API (ne `nh network wifi`, který vrací text s emoji a nejde parsovat)
+    wifi=$(api_get "/wifi" 2>/dev/null)
     vpn=$(api_get "/vpn" 2>/dev/null)
     printf "${YELLOW}${BOLD}=== Custom NetHunter Net-Bridge ===${RST}\n\n"
     if [ -n "$wifi" ]; then
-        local ip mac ssid
-        ip=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ip','N/A'))" 2>/dev/null)
-        mac=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mac','N/A'))" 2>/dev/null)
-        ssid=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssid','N/A'))" 2>/dev/null)
+        local ip mac ssid netmask gw
+        ip=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ip',''))" 2>/dev/null)
+        mac=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mac',''))" 2>/dev/null)
+        ssid=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssid',''))" 2>/dev/null)
+        netmask=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('netmask','255.255.255.0'))" 2>/dev/null)
+        gw=$(echo "$wifi" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('gateway',''))" 2>/dev/null)
         printf "${CYAN}wlan0${RST}: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n"
-        printf "        inet ${GREEN}%s${RST}  netmask 255.255.255.0\n" "$ip"
-        printf "        ether ${DIM}%s${RST}  txqueuelen 3000  (Wi-Fi Network: ${YELLOW}%s${RST})\n" "$mac" "$ssid"
+        printf "        inet ${GREEN}%s${RST}  netmask %s\n" "${ip:-N/A}" "${netmask:-255.255.255.0}"
+        printf "        ether ${DIM}%s${RST}  txqueuelen 3000  (Wi-Fi Network: ${YELLOW}%s${RST})\n" "${mac:-N/A}" "${ssid:-N/A}"
+        if [ -n "$gw" ]; then
+            printf "        default via ${GREEN}%s${RST}\n" "$gw"
+        fi
         printf "\n"
     fi
     if [ -n "$vpn" ]; then
         local vpn_status vpn_ip
         vpn_status=$(echo "$vpn" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('running',False))" 2>/dev/null)
-        vpn_ip=$(echo "$vpn" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('vpn_ip','N/A'))" 2>/dev/null)
+        vpn_ip=$(echo "$vpn" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('vpn_ip',''))" 2>/dev/null)
+        # tun0 zobrazit i když VPN je jen nakonfigurovaná (STOPPED) — vrací IP konfiguraci
         if [ "$vpn_status" = "True" ] || [ "$vpn_status" = "true" ]; then
             printf "${CYAN}tun0${RST}: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1500\n"
-            printf "        inet ${GREEN}%s${RST}  netmask 255.255.255.0\n" "$vpn_ip"
+            printf "        inet ${GREEN}%s${RST}  netmask 255.255.255.0\n" "${vpn_ip:-N/A}"
             printf "        status: ${GREEN}RUNNING${RST}\n"
             printf "        options: AdGuard VPN Firewall Active\n"
-            printf "\n"
+        elif [ -n "$vpn_ip" ]; then
+            printf "${CYAN}tun0${RST}: flags=4243<UP,POINTOPOINT,NOARP,MULTICAST>  mtu 1500\n"
+            printf "        inet ${GREEN}%s${RST}  netmask 255.255.255.0\n" "${vpn_ip:-N/A}"
+            printf "        status: ${RED}STOPPED${RST}\n"
+            printf "        options: VPN nakonfigurována, ale neběží (nh vpn start)\n"
         fi
+        printf "\n"
     fi
 }
 

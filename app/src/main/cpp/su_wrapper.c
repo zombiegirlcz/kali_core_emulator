@@ -1,7 +1,8 @@
 /*
  * su_wrapper.c — Guest PRoot su/sudo Wrapper for NetHunter Host Root Escalation
  *
- * Deployed in PRoot guest as /usr/local/bin/su and /usr/local/bin/sudo.
+ * Deployed in PRoot guest as /usr/local/bin/su and /usr/local/bin/sudo
+ * (shadowing the original binaries, which get renamed to .orig for fallback).
  * Connects to /run/host_ipc/magisk_daemon.sock, passes STDIN/STDOUT/STDERR
  * via SCM_RIGHTS, and forwards execution to the host daemon.
  * Reads exit status code from daemon and returns it to the caller.
@@ -21,6 +22,13 @@
 #define PRIMARY_SOCKET "/run/host_ipc/magisk_daemon.sock"
 #define SECONDARY_SOCKET "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
 #define BUFFER_SIZE 8192
+#define MAX_ARGS 128
+
+/* Returns basename of argv[0] (e.g. "su", "sudo", "su_wrapper"). */
+static const char *invoked_name(const char *arg0) {
+    const char *slash = strrchr(arg0, '/');
+    return slash ? slash + 1 : arg0;
+}
 
 static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
                                 uint32_t target_uid, uint32_t target_gid,
@@ -44,7 +52,7 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
     size_t cwd_len = strlen(cwd);
     memcpy(ptr, cwd, cwd_len + 1); ptr += cwd_len + 1;
 
-    // ARGV
+    // ARGV (the real command — wrapper name already stripped by caller)
     for (int i = 0; i < argc; i++) {
         size_t arg_len = strlen(argv[i]);
         if ((ptr + arg_len + 1) - (unsigned char *)payload_buf >= BUFFER_SIZE) break;
@@ -70,35 +78,72 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
 }
 
 static void try_fallback(int argc, char **argv) {
-    // Check if su.orig or sudo.orig exists
-    const char *orig = strstr(argv[0], "sudo") ? "/usr/bin/sudo.orig" : "/usr/bin/su.orig";
-    if (access(orig, X_OK) == 0) {
-        argv[0] = (char *)orig;
-        execvp(orig, argv);
-    }
-    
-    // Secondary fallback
-    const char *fallback_bin = strstr(argv[0], "sudo") ? "/usr/bin/sudo" : "/bin/su";
-    if (access(fallback_bin, X_OK) == 0 && strcmp(argv[0], fallback_bin) != 0) {
-        execvp(fallback_bin, argv);
+    const char *name = invoked_name(argv[0]);
+    int is_sudo = (strcmp(name, "sudo") == 0);
+    int is_su = (strcmp(name, "su") == 0);
+
+    if (is_sudo) {
+        const char *orig = "/usr/bin/sudo.orig";
+        if (access(orig, X_OK) == 0) {
+            argv[0] = (char *)orig;
+            execvp(orig, argv);
+        }
+    } else if (is_su) {
+        const char *orig = "/usr/bin/su.orig";
+        if (access(orig, X_OK) != 0) orig = "/bin/su.orig";
+        if (access(orig, X_OK) == 0) {
+            argv[0] = (char *)orig;
+            execvp(orig, argv);
+        }
     }
 
-    // Direct shell fallback
+    // Generic wrapper invocation: su_wrapper <cmd> [args...] — run cmd directly
     if (argc > 1) {
         execvp(argv[1], &argv[1]);
-    } else {
-        char *shell_args[] = {"/bin/bash", NULL};
-        execvp("/bin/bash", shell_args);
     }
+
+    // Last resort shell
+    char *shell_args[] = {"/bin/sh", NULL};
+    execvp("/bin/sh", shell_args);
+    _exit(127);
 }
 
 int main(int argc, char **argv) {
+    if (argc < 1) return 127;
+
+    const char *name = invoked_name(argv[0]);
+    int is_su = (strcmp(name, "su") == 0);
+    int is_sudo = (strcmp(name, "sudo") == 0);
+
+    // ── Build the command to forward to the host daemon (strip wrapper name) ──
+    char *cmd_argv[MAX_ARGS];
+    memset(cmd_argv, 0, sizeof(cmd_argv));
+    int cmd_argc = 0;
+
+    if (is_su && argc > 1 && strcmp(argv[1], "-c") == 0 && argc > 2) {
+        // su -c 'command' → run via host shell
+        cmd_argv[0] = "/system/bin/sh";
+        cmd_argv[1] = "-c";
+        cmd_argv[2] = argv[2];
+        cmd_argc = 3;
+    } else if (argc > 1) {
+        // sudo <cmd> [args...] or su <cmd> [args...] or su_wrapper <cmd> [args...]
+        for (int i = 1; i < argc && cmd_argc < MAX_ARGS - 1; i++) {
+            cmd_argv[cmd_argc++] = argv[i];
+        }
+    } else {
+        // Bare su/sudo → root shell on the host
+        cmd_argv[0] = "/system/bin/sh";
+        cmd_argc = 1;
+    }
+    cmd_argv[cmd_argc] = NULL;
+
+    // ── Connect to host daemon ──
     const char *sock_path = PRIMARY_SOCKET;
     if (access(sock_path, F_OK) != 0) {
         sock_path = SECONDARY_SOCKET;
     }
 
-    // Attempt to connect to host daemon
     int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd < 0) {
         try_fallback(argc, argv);
@@ -111,7 +156,6 @@ int main(int argc, char **argv) {
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
 
     if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        // Host daemon socket not listening or not reachable
         close(sock_fd);
         try_fallback(argc, argv);
         return 1;
@@ -127,7 +171,7 @@ int main(int argc, char **argv) {
     uint32_t target_uid = 0; // Default root
     uint32_t target_gid = 0;
 
-    if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, argc, argv) < 0) {
+    if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv) < 0) {
         close(sock_fd);
         try_fallback(argc, argv);
         return 1;

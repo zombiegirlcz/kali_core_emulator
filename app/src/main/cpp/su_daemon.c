@@ -156,6 +156,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Write PID file (<socket_dir>/su_daemon.pid) so the app can track us
+    {
+        char pid_path[1100];
+        strncpy(pid_path, socket_path, sizeof(pid_path) - 1);
+        pid_path[sizeof(pid_path) - 1] = '\0';
+        char *ls = strrchr(pid_path, '/');
+        if (ls) {
+            strncpy(ls + 1, "su_daemon.pid", sizeof(pid_path) - (size_t)(ls + 1 - pid_path) - 1);
+            pid_path[sizeof(pid_path) - 1] = '\0';
+        } else {
+            strncpy(pid_path, "su_daemon.pid", sizeof(pid_path) - 1);
+        }
+        int pidfd = open(pid_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (pidfd >= 0) {
+            char pids[32];
+            int plen = snprintf(pids, sizeof(pids), "%d\n", (int)getpid());
+            (void)!write(pidfd, pids, (size_t)plen);
+            close(pidfd);
+            printf("[su_daemon] PID file: %s\n", pid_path);
+            fflush(stdout);
+        }
+    }
+
     printf("[su_daemon] Listening on UNIX socket: %s (PID=%d)\n", socket_path, getpid());
     fflush(stdout);
 
@@ -242,5 +265,16 @@ int main(int argc, char **argv) {
 
     close(listen_fd);
     unlink(socket_path);
+    {
+        char pid_path[1100];
+        strncpy(pid_path, socket_path, sizeof(pid_path) - 1);
+        pid_path[sizeof(pid_path) - 1] = '\0';
+        char *ls = strrchr(pid_path, '/');
+        if (ls) {
+            strncpy(ls + 1, "su_daemon.pid", sizeof(pid_path) - (size_t)(ls + 1 - pid_path) - 1);
+            pid_path[sizeof(pid_path) - 1] = '\0';
+        }
+        unlink(pid_path);
+    }
     return 0;
 }

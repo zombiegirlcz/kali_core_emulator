@@ -757,34 +757,104 @@ object ProotManager {
      * Deploy su_daemon host binary and su_wrapper guest binary for UNIX-socket privilege escalation.
      */
     private fun deploySuBridge(context: Context, rootfsDir: File) {
+        // 0. Host ipc dir MUST exist BEFORE the PRoot container starts —
+        //    launcher.sh binds $FILES_DIR/ipc to /run/host_ipc. If the dir is
+        //    created only later (in startDaemon), the bind is a dead mountpoint
+        //    and the guest never sees the daemon socket.
+        try {
+            val hostIpcDir = File(context.filesDir, "ipc")
+            if (!hostIpcDir.exists()) hostIpcDir.mkdirs()
+            Log.i(TAG, "Ensured host ipc dir: ${hostIpcDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to create host ipc dir: ${e.message}")
+        }
+
         val binDir = File(rootfsDir, "usr/local/bin")
         if (!binDir.exists()) binDir.mkdirs()
 
         // 1. Deploy su_wrapper to guest /usr/local/bin/su_wrapper
+        var wrapperTarget: File? = null
         try {
-            val wrapperTarget = File(binDir, "su_wrapper")
-            var shouldDeploy = !wrapperTarget.exists() || wrapperTarget.length() == 0L
+            val wrapperTargetLocal = File(binDir, "su_wrapper")
+            var shouldDeploy = !wrapperTargetLocal.exists() || wrapperTargetLocal.length() == 0L
             if (!shouldDeploy) {
                 try {
                     val assetSize = context.assets.open("su_wrapper").use { it.available().toLong() }
-                    if (wrapperTarget.length() != assetSize) shouldDeploy = true
+                    if (wrapperTargetLocal.length() != assetSize) shouldDeploy = true
                 } catch (e: Exception) {
                     shouldDeploy = true
                 }
             }
             if (shouldDeploy) {
                 context.assets.open("su_wrapper").use { input ->
-                    wrapperTarget.outputStream().use { output -> input.copyTo(output) }
+                    wrapperTargetLocal.outputStream().use { output -> input.copyTo(output) }
                 }
-                wrapperTarget.setExecutable(true, false)
-                wrapperTarget.setReadable(true, false)
-                Log.i(TAG, "Deployed su_wrapper binary (${wrapperTarget.length()} bytes)")
+                wrapperTargetLocal.setExecutable(true, false)
+                wrapperTargetLocal.setReadable(true, false)
+                Log.i(TAG, "Deployed su_wrapper binary (${wrapperTargetLocal.length()} bytes)")
             }
+            wrapperTarget = wrapperTargetLocal
         } catch (e: Exception) {
             Log.w(TAG, "su_wrapper asset not available: ${e.message}")
         }
 
-        // 2. Deploy su_daemon to host filesDir
+        // 2. Install wrapper as /usr/local/bin/su and /usr/local/bin/sudo
+        //    (symlinks to su_wrapper) so that 'sudo' / 'su' in the guest go
+        //    through the daemon. Rename the original binaries to .orig so the
+        //    wrapper can fall back when the daemon socket is unreachable.
+        if (wrapperTarget != null && wrapperTarget!!.exists()) {
+            val usrBin = File(rootfsDir, "usr/bin")
+            for (name in listOf("su", "sudo")) {
+                // 2a. Rename original if present (and not already renamed)
+                val origBin = File(usrBin, name)
+                val origBackup = File(usrBin, "$name.orig")
+                if (origBin.exists() && !origBackup.exists()) {
+                    try {
+                        val ok = origBin.renameTo(origBackup)
+                        Log.i(TAG, "Renamed /usr/bin/$name -> /usr/bin/$name.orig (ok=$ok)")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to rename /usr/bin/$name: ${e.message}")
+                    }
+                }
+                // Also handle /bin/su (Kali keeps su in /bin too)
+                val binSu = File(rootfsDir, "bin/$name")
+                val binSuBackup = File(rootfsDir, "bin/$name.orig")
+                if (binSu.exists() && !binSuBackup.exists()) {
+                    try {
+                        val ok = binSu.renameTo(binSuBackup)
+                        Log.i(TAG, "Renamed /bin/$name -> /bin/$name.orig (ok=$ok)")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to rename /bin/$name: ${e.message}")
+                    }
+                }
+
+                // 2b. Symlink wrapper into /usr/local/bin/$name
+                val wrapperLink = File(binDir, name)
+                try {
+                    if (wrapperLink.exists()) wrapperLink.delete()
+                    // Create symlink relative: su_wrapper
+                    val created = Runtime.getRuntime().exec(
+                        arrayOf(
+                            "/system/bin/ln", "-s",
+                            File(binDir, "su_wrapper").absolutePath,
+                            wrapperLink.absolutePath
+                        )
+                    ).waitFor() == 0
+                    if (created) {
+                        Log.i(TAG, "Symlinked /usr/local/bin/$name -> su_wrapper")
+                    } else {
+                        // Fallback: copy the binary
+                        wrapperTarget!!.copyTo(wrapperLink, overwrite = true)
+                        wrapperLink.setExecutable(true, false)
+                        Log.i(TAG, "Copied wrapper as /usr/local/bin/$name")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to install /usr/local/bin/$name: ${e.message}")
+                }
+            }
+        }
+
+        // 3. Deploy su_daemon to host filesDir
         try {
             val daemonTarget = File(context.filesDir, "su_daemon")
             var shouldDeploy = !daemonTarget.exists() || daemonTarget.length() == 0L

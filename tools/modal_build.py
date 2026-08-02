@@ -32,7 +32,7 @@ ANDROID_SDK_ROOT = "/opt/android-sdk"
 
 build_vol = modal.Volume.from_name("kali-build-data", create_if_missing=True)
 
-_IGNORE_PARTS = frozenset({".git", ".gradle", "__pycache__", "node_modules", "logcat.log", "build.log"})
+_IGNORE_PARTS = frozenset({".git", ".gradle", "__pycache__", "node_modules", "logcat.log", "build.log", "top.log"})
 
 
 def _ignore_path(p):
