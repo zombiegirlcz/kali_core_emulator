@@ -75,6 +75,28 @@ class DockerImageRefTest {
     }
 
     @Test
+    fun `rejects web URL in docker reference`() {
+        // Web URLs jsou detekovány v UI (MainActivity) před DockerImageRef.parse;
+        // parser sám musí URL odmítnout (nelze ji chápat jako image ref).
+        try {
+            DockerImageRef.parse("https://images.kali.org/rootfs.tar.xz")
+            assertTrue("Should throw for web URL", false)
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun `rejects http URL in docker reference`() {
+        try {
+            DockerImageRef.parse("http://example.com/rootfs.tar.gz")
+            assertTrue("Should throw for http URL", false)
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+
+    @Test
     fun `generates correct registry host`() {
         val ref = DockerImageRef.parse("kali/security")
         assertEquals("registry-1.docker.io", ref.registryHost)

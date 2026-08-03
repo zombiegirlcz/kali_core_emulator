@@ -770,7 +770,7 @@ fun MainScreen() {
                             }
 
                             Text(
-                                text = "Enter a Docker Hub image reference (e.g. kali/security, myuser/app:v1.0)",
+                                text = "Enter a Docker Hub image reference (e.g. kali/security, myuser/app:v1.0, alpine@sha256:digest) or an https:// URL to a rootfs archive (.tar.gz / .tar.xz)",
                                 fontSize = 10.sp,
                                 color = Color.Gray,
                                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -783,7 +783,7 @@ fun MainScreen() {
                                 OutlinedTextField(
                                     value = customDockerImage,
                                     onValueChange = { customDockerImage = it },
-                                    placeholder = { Text("kali/security:latest", color = Color.DarkGray, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
+                                    placeholder = { Text("kali/security:latest | https://…rootfs.tar.xz", color = Color.DarkGray, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
                                     singleLine = true,
                                     textStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
                                     colors = OutlinedTextFieldDefaults.colors(
@@ -808,21 +808,37 @@ fun MainScreen() {
                                         downloadJob = scope.launch {
                                             isPullingDocker = true
                                             dockerPullProgress = 0
-                                            dockerPullStatus = "Parsing image reference…"
+                                            val rawInput = customDockerImage.trim()
+                                            val isWebUrl = rawInput.startsWith("http://") || rawInput.startsWith("https://")
+                                            dockerPullStatus = if (isWebUrl) "Parsing URL…" else "Parsing image reference…"
                                             try {
-                                                val ref = DockerImageRef.parse(customDockerImage.trim())
-                                                dockerImageRef = ref
-                                                dockerPullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
-                                                RootfsManager.pullDockerImage(context, ref).collect { (progress, status) ->
-                                                    dockerPullProgress = progress
-                                                    dockerPullStatus = status
-                                                    if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                        selectedDockerDir = File(status).name
+                                                if (isWebUrl) {
+                                                    // Web URL: stáhnout+extrahovat rootfs archive (HTTPS + whitelist)
+                                                    dockerPullStatus = "Pulling rootfs from URL…"
+                                                    RootfsManager.pullRootfsFromUrl(context, rawInput).collect { (progress, status) ->
+                                                        dockerPullProgress = progress
+                                                        dockerPullStatus = status
+                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                            selectedDockerDir = File(status).name
+                                                        }
                                                     }
+                                                    Toast.makeText(context, "Rootfs pulled from URL successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                } else {
+                                                    // Docker Hub image reference (image[:tag] or image@sha256:digest)
+                                                    val ref = DockerImageRef.parse(rawInput)
+                                                    dockerImageRef = ref
+                                                    dockerPullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
+                                                    RootfsManager.pullDockerImage(context, ref).collect { (progress, status) ->
+                                                        dockerPullProgress = progress
+                                                        dockerPullStatus = status
+                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                            selectedDockerDir = File(status).name
+                                                        }
+                                                    }
+                                                    Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
                                                 }
                                                 isDockerMode = true
                                                 customDockerImage = ""
-                                                Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
                                             } catch (e: kotlinx.coroutines.CancellationException) {
                                                 dockerPullProgress = 0
                                                 dockerPullStatus = ""
@@ -830,7 +846,7 @@ fun MainScreen() {
                                             } catch (e: Exception) {
                                                 dockerPullProgress = 0
                                                 dockerPullStatus = ""
-                                                Toast.makeText(context, "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, if (isWebUrl) "URL pull failed: ${e.message}" else "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
                                             } finally {
                                                 isPullingDocker = false
                                             }

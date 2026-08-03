@@ -34,6 +34,19 @@ build_vol = modal.Volume.from_name("kali-build-data", create_if_missing=True)
 
 _IGNORE_PARTS = frozenset({".git", ".gradle", "__pycache__", "node_modules", "logcat.log", "build.log", "top.log"})
 
+# Cross-compiled native binaries that MUST NOT be deleted by upload_src's
+# rsync --delete (they are NOT present in the baked image; they only exist
+# on the Volume after build_native compiles them). Without these excludes,
+# `mbuild build` (upload → build, no native step) would wipe them and the
+# APK would ship without su_daemon/su_wrapper/usb_bridge.
+# Keep in sync with build_native outputs and the NATIVE_BINARIES list in
+# the mbuild script. AGENTS.md „Native build pipeline“.
+_NATIVE_ASSET_EXCLUDES = [
+    "assets/su_daemon",
+    "assets/su_wrapper",
+    "assets/usb_bridge",
+]
+
 
 def _ignore_path(p):
     """Return True for paths that should be EXCLUDED (ignore=True = skip)."""
@@ -98,10 +111,10 @@ def upload_src():  # force rebuild marker 2026-07-07
 
     if os.path.isdir(dest):
         print(f"[upload] Source already exists at {dest}.  Updating with rsync...")
-        subprocess.run(
-            ["rsync", "-a", "--delete", "/src-baked/", dest],
-            check=True,
-        )
+        cmd = ["rsync", "-a", "--delete", "/src-baked/", dest]
+        for excl in _NATIVE_ASSET_EXCLUDES:
+            cmd += ["--exclude", excl]
+        subprocess.run(cmd, check=True)
     else:
         print(f"[upload] Copying source tree to {dest} ...")
         shutil.copytree("/src-baked", dest, symlinks=True)

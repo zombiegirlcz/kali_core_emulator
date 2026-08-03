@@ -764,6 +764,160 @@ object RootfsManager {
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Pulls a rootfs archive directly from a web URL (https://...tar.gz|tar.xz)
+     * and extracts it as a rootfs directory.
+     *
+     * Security: HTTPS only + host whitelist (same policy as downloadRootfs).
+     * Emits progress 0..100 (Pair<Int, String> status text like pullDockerImage).
+     */
+    suspend fun pullRootfsFromUrl(
+        context: Context,
+        url: String,
+        client: OkHttpClient = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    ): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Resolving URL: $url")
+
+        // ── Validate URL (HTTPS only + host whitelist) ──
+        val parsedUrl = try {
+            java.net.URL(url)
+        } catch (e: java.net.MalformedURLException) {
+            throw IOException("Invalid download URL: $url")
+        }
+        if (parsedUrl.protocol != "https") {
+            throw IOException("Only HTTPS downloads are allowed (URL: $url)")
+        }
+        val allowedHosts = listOf(
+            "images.kali.org", "kali.download", "raw.githubusercontent.com", "github.com",
+            "deb.parrot.sh", "archive.parrotsec.org", "downloads.kali.org"
+        )
+        val host = parsedUrl.host.lowercase()
+        if (allowedHosts.none { host == it || host.endsWith(".$it") }) {
+            throw IOException("Download from untrusted host blocked: $host")
+        }
+
+        // Rootfs dir name: docker-<host>-<filebase> so it appears in UI scan + launcher
+        val fileBase = parsedUrl.path.substringAfterLast('/').ifEmpty { "rootfs" }
+            .substringBeforeLast('.') // strip .tar / .gz / .xz
+        val safeName = Regex("[^A-Za-z0-9._-]").replace(fileBase, "-")
+        val rootfsName = "docker-${host.replace('.', '-')}-$safeName"
+        val rootfsDir = File(context.filesDir, rootfsName)
+        rootfsDir.mkdirs()
+
+        val cacheDir = File(context.filesDir, "web-pull")
+        cacheDir.mkdirs()
+        val tempFile = File(cacheDir, "$safeName.tmp")
+        if (tempFile.exists()) tempFile.delete()
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:pullUrl")
+        wakeLock.acquire(2 * 60 * 60 * 1000L) // 2 hours max
+
+        try {
+            // ── Download to temp file with progress ──
+            emit(5 to "Downloading $url …")
+            val request = okhttp3.Request.Builder().url(url).build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for $url")
+                val responseBody = response.body ?: throw IOException("Response body is null")
+                val totalLength = responseBody.contentLength()
+                val inputStream = responseBody.byteStream()
+                var bytesCopied: Long = 0
+                java.io.FileOutputStream(tempFile).use { outputStream ->
+                    val buffer = ByteArray(8 * 1024)
+                    var bytes = inputStream.read(buffer)
+                    while (bytes >= 0) {
+                        outputStream.write(buffer, 0, bytes)
+                        bytesCopied += bytes
+                        if (totalLength > 0) {
+                            val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
+                            emit(pct.coerceIn(5, 85) to "Downloading… $pct%")
+                        }
+                        bytes = inputStream.read(buffer)
+                    }
+                }
+                if (totalLength > 0 && bytesCopied != totalLength) {
+                    throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+                }
+            }
+
+            // ── Extract (tar.gz or tar.xz) ──
+            emit(88 to "Extracting rootfs…")
+            val isXz = url.lowercase().contains(".tar.xz") || url.lowercase().endsWith(".txz")
+            if (isXz) {
+                extractTarXz(tempFile, rootfsDir)
+            } else {
+                extractTarGzip(tempFile, rootfsDir)
+            }
+
+            // ── Markers (same convention as docker pull) ──
+            try {
+                File(rootfsDir, ".docker_image").writeText(
+                    "image=$url\n" +
+                    "pulled_at=${System.currentTimeMillis()}\n" +
+                    "source=web-url\n" +
+                    "url=$url\n"
+                )
+                File(rootfsDir, "etc/hostname").writeText("$safeName-docker\n")
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to write web-pull markers: ${e.message}")
+            }
+
+            emit(100 to rootfsDir.absolutePath)
+            Log.i("RootfsManager", "Web rootfs pull complete: ${rootfsDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "Web pull failed: ${e.message}", e)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+            if (tempFile.exists()) tempFile.delete()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /** Extract a .tar.xz archive into targetDir (streaming, progress-free variant used by pull). */
+    private fun extractTarXz(source: File, targetDir: File) {
+        java.io.FileInputStream(source).use { fis ->
+            BufferedInputStream(fis, 512 * 1024).use { bis ->
+                XZCompressorInputStream(bis).use { xzIn ->
+                    TarArchiveInputStream(xzIn).use { tarIn ->
+                        val canonicalBase = targetDir.canonicalPath
+                        var entry: ArchiveEntry? = tarIn.nextEntry
+                        while (entry != null) {
+                            val entryFile = File(targetDir, entry.name)
+                            val canonicalDest = entryFile.canonicalPath
+                            if (!canonicalDest.startsWith(canonicalBase + java.io.File.separator) && canonicalDest != canonicalBase) {
+                                entry = tarIn.nextEntry
+                                continue
+                            }
+                            val tarEntry = entry as? TarArchiveEntry
+                            when {
+                                tarEntry?.isSymbolicLink == true -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    try {
+                                        android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+                                    } catch (_: Exception) {}
+                                }
+                                tarEntry?.isDirectory == true -> entryFile.mkdirs()
+                                else -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    java.io.FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
+                                        entryFile.setExecutable(true, false)
+                                    }
+                                    entryFile.setReadable(true, false)
+                                }
+                            }
+                            entry = tarIn.nextEntry
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun extractTarGzip(source: File, targetDir: File) {
         java.io.FileInputStream(source).use { fis ->
             BufferedInputStream(fis, 512 * 1024).use { bis ->

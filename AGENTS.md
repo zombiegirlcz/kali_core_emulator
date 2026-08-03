@@ -66,6 +66,19 @@ Assety v `app/src/main/assets/`:
 - **Standalone/statické binárky (`proot_static`, `proot-static-*`, `loader_static`, `loader-static-*`) byly odstraněny 2026-08-01** — nefungovaly, launcher používá výhradně dynamický PRoot
 - Python skripty `extract_proot.py` / `extract_libtalloc.py` / `update_static_binaries.py` aktualizují tyto binárky
 
+### Native build pipeline (C moduly → assets) ⚠️ PRAVIDLO
+
+Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modal cloudu do `app/src/main/assets/` a `jniLibs/` a **musí být vždy v APK**. Postup při jakékoli změně/addici native modulu:
+
+1. **Přidej kompilační krok do `build_native()` v `tools/modal_build.py`** — NDK cross-compile výstupu do `assets/` (např. `su_daemon`, `su_wrapper`, `usb_bridge`) nebo `jniLibs/arm64-v8a/` (`.so`).
+2. **Přidej název výstupu do `NATIVE_BINARIES` v `mbuild`** — skript pak binárku vždy stáhne z Volume do lokálního `app/src/main/assets/` před uploadem+buildem.
+3. **Přidej výstup do `_NATIVE_ASSET_EXCLUDES` v `tools/modal_build.py`** — `upload_src` používá `rsync -a --delete` a bez exclude by binárku smazal z Volume (není v baked image) → APK by byl bez ní.
+4. **Stáhni binárky do assets** (z Volume): `modal volume get --force kali-build-data src/app/src/main/assets/<bin> app/src/main/assets/<bin>` nebo spusť `zsh mbuild native` (dělá upload → build_native → pull do lokálních assets).
+
+**Pořadí buildu se nesmí měnit:** nejdřív `pull_binaries()` (binárky → lokální assets), pak `upload_src`, pak `build`. `zsh mbuild build` to dělá automaticky.
+
+**Známý bug (opraven 2026-08-02):** `mbuild build` spouštěl upload → build BEZ `build_native`; rsync `--delete` smazal binárky z Volume → APK 128 MB bez `su_daemon`/`su_wrapper` (detekováno přes chybějící `assets/` v zipfile a `execvp failed` v su_wrapper). Fix: pull_binaries + rsync excludes + `NATIVE_BINARIES` list.
+
 ### jniLibs struktura
 
 `app/src/main/jniLibs/arm64-v8a/` obsahuje AdGuard nativní knihovny. **Na pořadí načítání záleží:**

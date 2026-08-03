@@ -49,6 +49,7 @@ import com.linux_core.security.CertificateManager
 import com.linux_core.security.KeystoreManager
 import com.linux_core.security.VpnSettings
 import com.linux_core.BuildConfig
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -361,6 +362,7 @@ object LocalApiServer {
             val sensitiveEndpoints = listOf("/shell", "/clipboard", "/location", "/cellinfo",
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
+                "/distro/kill", "/distro/remove",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/editor/", "/usb/",
                 "/vpn/ai/", "/vpn/mitm/selective")
@@ -465,6 +467,10 @@ object LocalApiServer {
                 path == "/accessibility/global" && method == "POST" -> handleAccessibilityGlobal(body, out)
                 path == "/battery/optimize" && method == "GET" -> handleBatteryOptimizeGet(context, out)
                 path == "/battery/optimize" && method == "POST" -> handleBatteryOptimizePost(context, out)
+                path == "/distro/list" && method == "GET" -> handleDistroList(context, out)
+                path == "/distro/ps" && method == "GET" -> handleDistroPs(context, out)
+                path == "/distro/kill" && method == "POST" -> handleDistroKill(context, body, out)
+                path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
@@ -1915,6 +1921,99 @@ object LocalApiServer {
             } else {
                 sendResponse(out, 200, "OK", "{\"error\":\"Device admin not active\",\"needs_activation\":\"/device/admin\"}")
             }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    // ─── nh distro endpointy (proot-distro-like wrapper) ───────────────────
+
+    private fun handleDistroList(context: Context, out: OutputStream) {
+        try {
+            val arr = JSONArray()
+            for (d in RootfsManager.DISTROS) {
+                val installed = RootfsManager.isRootfsExtracted(context, d)
+                val obj = JSONObject().apply {
+                    put("id", d.id)
+                    put("name", d.name)
+                    put("rootfs_dir", d.rootfsDirName)
+                    put("installed", installed)
+                }
+                arr.put(obj)
+            }
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("distros", arr)
+                put("sessions", TerminalService.getActiveSessionCount())
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDistroPs(context: Context, out: OutputStream) {
+        try {
+            val arr = JSONArray()
+            for (session in TerminalService.sessions) {
+                val id = TerminalService.getSessionId(session) ?: "unknown"
+                val obj = JSONObject().apply {
+                    put("session_id", id)
+                    put("distro", TerminalService.getSessionDistro(session))
+                    put("name", TerminalService.getSessionName(session) ?: "")
+                    put("vpn_ignored", TerminalService.isSessionVpnIgnoredById(id))
+                }
+                arr.put(obj)
+            }
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("sessions", arr)
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDistroKill(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val sessionId = json.optString("session_id", "")
+            val force = json.optBoolean("force", false)
+            if (sessionId.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"session_id parameter is required\"}")
+                return
+            }
+            if (!force) {
+                sendResponse(out, 409, "Confirmation Required",
+                    "{\"error\":\"confirmation_required\",\"hint\":\"pass force=true\"}")
+                return
+            }
+            val session = TerminalService.idToSession[sessionId]
+            if (session == null) {
+                sendResponse(out, 404, "Not Found", "{\"error\":\"Session not found: $sessionId\"}")
+                return
+            }
+            TerminalService.removeSession(session)
+            sendResponse(out, 200, "OK", "{\"status\":\"killed\",\"session\":\"$sessionId\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleDistroRemove(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val distroId = json.optString("id", "")
+            val force = json.optBoolean("force", false)
+            val distro = RootfsManager.DISTROS.find { it.id == distroId }
+            if (distro == null) {
+                sendResponse(out, 404, "Not Found", "{\"error\":\"Unknown distro: $distroId (kali|parrot)\"}")
+                return
+            }
+            if (!force) {
+                sendResponse(out, 409, "Confirmation Required",
+                    "{\"error\":\"confirmation_required\",\"hint\":\"pass force=true\"}")
+                return
+            }
+            val deleted = RootfsManager.deleteRootfs(context, distro)
+            sendResponse(out, 200, "OK", "{\"status\":\"removed\",\"distro\":\"$distroId\",\"deleted\":$deleted}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

@@ -1423,7 +1423,7 @@ except Exception as e:
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|ashell)
+        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell)
             "help_$topic"
             ;;
         *)
@@ -1446,6 +1446,7 @@ help_dispatch() {
             printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
             printf "  ${CYAN}apps${RST}       usage\n"
             printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
+            printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
             printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
             echo ""
             separator
@@ -1568,6 +1569,31 @@ help_ashell() {
     echo ""
 }
 
+help_distro() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DISTRO${RST}  ${DIM}– proot-distro-like správa kontejnerů${RST}"
+    separator
+    echo "  ${GREEN}list${RST}                    Seznam distro (kali, parrot) + stav"
+    echo "  ${GREEN}status${RST}                 Alias pro list"
+    echo "  ${GREEN}ps${RST}                     Aktivní session (ID, distro, vpn-ignored)"
+    echo "  ${GREEN}kill <session_id>${RST}      Ukončí session (potvrzení --force)"
+    echo "  ${GREEN}remove <id>${RST}            Smaže rootfs (kali|parrot, --force)"
+    echo "  ${GREEN}backup [id] [-o file]${RST}  Záloha rootfs do tar.gz (výchozí kali, Downloads)"
+    echo "  ${GREEN}restore <file>${RST}         Obnova rootfs ze souboru v Downloads (--force)"
+    echo ""
+    echo "  ${YELLOW}Příklad:${RST}"
+    echo "    nh distro list"
+    echo "    nh distro ps"
+    echo "    nh distro kill sess_123 --force"
+    echo "    nh distro remove parrot --force"
+    echo "    nh distro backup kali"
+    echo ""
+    echo "  ${DIM}  Volá LocalApiServer (127.0.0.1:1337). Z hostitele bez rootu:"
+    echo "  curl http://127.0.0.1:1337/distro/ps (localhost bez auth).${RST}"
+    echo ""
+}
+
 list_cmds() {
     banner
     echo ""
@@ -1589,6 +1615,7 @@ list_cmds() {
         "fix pkg" "fix auto" \
         "apps usage" \
         "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
+        "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \
         "ashell"; do
         printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
     done
@@ -1695,6 +1722,192 @@ usb_dispatch() {
             echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge"
             exit 1 ;;
     esac
+}
+
+distro_dispatch() {
+    case "$1" in
+        list|status)    distro_list "$@" ;;
+        ps)             distro_ps ;;
+        kill)           shift; distro_kill "$@" ;;
+        remove|rm)      shift; distro_remove "$@" ;;
+        backup)         shift; distro_backup "$@" ;;
+        restore)        shift; distro_restore "$@" ;;
+        help|--help|-h) help_distro ;;
+        *)
+            echo "Usage: nh distro list|status|ps|kill|remove|backup|restore"
+            echo "       nh distro help"
+            exit 1 ;;
+    esac
+}
+
+# ─── nh distro implementace ────────────────────────────────────
+
+distro_list() {
+    api_get "/distro/list" | fmt '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    distros = data.get("distros", [])
+    if not distros:
+        print("  Žádná distro nenalezena")
+    for d in distros:
+        name = d.get("name", "?")
+        did = d.get("id", "?")
+        rootfs = d.get("rootfs_dir", "?")
+        inst = d.get("installed", False)
+        mark = "\u2713 INSTALLED" if inst else "\u2717 not installed"
+        print(f"  {name} ({did})")
+        print(f"    rootfs:  {rootfs}")
+        print(f"    stav:    {mark}")
+    scnt = data.get("sessions", 0)
+    print(f"  Celkem session: {scnt}")
+    print()
+    print("  Pro instalaci: nh distro install <id>   (fáze 2)")
+    print("  Pro shell:     nh distro login <id>     (fáze 2)")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
+distro_ps() {
+    api_get "/distro/ps" | fmt '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    sessions = data.get("sessions", [])
+    if not sessions:
+        print("  Žádné aktivní session.")
+        print("  Spusť terminál: TerminalActivity / hamburger / BOOT UP")
+        sys.exit(0)
+    print(f"  Aktivní session ({len(sessions)}):")
+    for s in sessions:
+        sid = s.get("session_id", "?")
+        distro = s.get("distro", "?")
+        name = s.get("name") or ""
+        vpni = "\u2713" if s.get("vpn_ignored") else "\u2717"
+        print(f"  {sid}  distro={distro}  name={name}  vpn-ignored={vpni}")
+    print()
+    print("  Zabití: nh distro kill <session_id> --force")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
+distro_kill() {
+    FORCE="false"
+    SESSION_ID=""
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f) FORCE="true" ;;
+            *) SESSION_ID="$arg" ;;
+        esac
+    done
+    [ -z "$SESSION_ID" ] && { echo "[-] Usage: nh distro kill <session_id> [--force]" >&2; exit 1; }
+    if [ "$FORCE" = "false" ]; then
+        echo "[!] Potvrzení vyžadováno: přidej --force"
+        echo "    nh distro kill $SESSION_ID --force"
+        exit 1
+    fi
+    api_post "/distro/kill" "{\"session_id\":\"$SESSION_ID\",\"force\":true}" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if "error" in d:
+        sys.stderr.write("[-] " + d["error"] + chr(10))
+        sys.exit(1)
+    sid = d.get("session", "?")
+    print(f"[+] Session {sid} killed")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
+distro_remove() {
+    FORCE="false"
+    DISTRO_ID=""
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f) FORCE="true" ;;
+            *) DISTRO_ID="$arg" ;;
+        esac
+    done
+    [ -z "$DISTRO_ID" ] && { echo "[-] Usage: nh distro remove <id> [--force]" >&2; exit 1; }
+    if [ "$FORCE" = "false" ]; then
+        echo "[!] Potvrzení vyžadováno: přidej --force"
+        echo "    nh distro remove $DISTRO_ID --force"
+        exit 1
+    fi
+    api_post "/distro/remove" "{\"id\":\"$DISTRO_ID\",\"force\":true}" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if "error" in d:
+        sys.stderr.write("[-] " + d["error"] + chr(10))
+        sys.exit(1)
+    did = d.get("distro", "?")
+    dele = d.get("deleted", "?")
+    print(f"[+] Rootfs {did} smazán (deleted={dele})")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
+distro_backup() {
+    DISTRO_ID="kali"
+    for arg in "$@"; do
+        case "$arg" in
+            -o|--output|-o*) : ;; # endpoint nepodporuje custom soubor (default Downloads)
+            *) DISTRO_ID="$arg" ;;
+        esac
+    done
+    echo "[i] Zálohuji rootfs '$DISTRO_ID' do Downloads (bude chvíli trvat)..." >&2
+    api_post "/rootfs/backup" "{\"id\":\"$DISTRO_ID\"}" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if "error" in d:
+        sys.stderr.write("[-] " + d["error"] + chr(10))
+        sys.exit(1)
+    pth = d.get("path", "?")
+    print(f"[+] Backup uložen: {pth}")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
+distro_restore() {
+    FORCE="false"
+    FILE_NAME=""
+    for arg in "$@"; do
+        case "$arg" in
+            --force|-f) FORCE="true" ;;
+            *) FILE_NAME="$arg" ;;
+        esac
+    done
+    [ -z "$FILE_NAME" ] && { echo "[-] Usage: nh distro restore <backup.tar.gz> [--force]" >&2; exit 1; }
+    if [ "$FORCE" = "false" ]; then
+        echo "[!] Potvrzení vyžadováno: přidej --force"
+        echo "    nh distro restore $FILE_NAME --force"
+        exit 1
+    fi
+    api_post "/rootfs/restore" "{\"file\":\"$FILE_NAME\",\"force\":true}" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if "error" in d:
+        sys.stderr.write("[-] " + d["error"] + chr(10))
+        sys.exit(1)
+    pth = d.get("path", "?")
+    print(f"[+] Rootfs obnoven: {pth}")
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
 }
 
 usb_list() {
@@ -1936,6 +2149,7 @@ case "$CMD" in
     fix)        fix_dispatch "$@" ;;
     apps)       apps_dispatch "$@" ;;
     usb)        usb_dispatch "$@" ;;
+    distro)     distro_dispatch "$@" ;;
     ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
     help|--help|-h) help_dispatch "$@" ;;
     list)       list_cmds ;;

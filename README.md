@@ -227,6 +227,103 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 
 ---
 
+## 🔑 Root Bridge — `sudo` / `su` přes host Magisk daemon
+
+Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `sudo` a `su` uvnitř hostovaného OS (Kali/Parrot) nevolají PRoot fake-root (`-0`), ale komunikují s **hostitelským Magisk/root daemonem** a spouští příkazy jako skutečný root na hostiteli.
+
+### Architektura
+
+| Komponenta | Cesta | Popis |
+|---|---|---|
+| Daemon | `assets/su_daemon` | Hostitelský root daemon (poslouchá na Unix socketu, spouští příkazy jako root) |
+| Wrapper | `assets/su_wrapper` | Statická binárka v guestu; `sudo`/`su` symlinky na ni |
+| Socket | `/run/host_ipc/magisk_daemon.sock` | Bind z `filesDir/ipc` do guestu (živý bind vytvořen PŘED startem kontejneru) |
+| PID | `filesDir/ipc/su_daemon.pid` | PID soubor daemona (zapisuje a čistí `su_daemon.c`) |
+| UI | `RootBridgeTab.kt` + `RootBridgeManager.kt` | Master switch, status, bind toggles |
+| Log | `filesDir/ipc/su_daemon.log` | Daemon log (místo `/dev/null`) |
+
+### Jak to funguje
+
+1. `ProotManager.deploySuBridge` symlinkuje `/usr/local/bin/su` a `/usr/local/bin/sudo` → `su_wrapper` (fallback: kopie; `ln` → `/system/bin/ln`) a přejmenuje původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` na `.orig` zálohy.
+2. `su_wrapper` detekuje invoked name (`sudo`/`su`/`su_wrapper`), odešle skutečné argumenty (nikdy svůj argv[0]) přes Unix socket daemonovi.
+3. Daemon spustí příkaz jako **root na hostiteli** (host-root sémantika — Kali binárky jako `ifconfig` se na hostu neresolvují; wrapper fallback: `execvp(argv[1], &argv[1])`).
+4. `startDaemon` nejdřív dělá `pkill -f su_daemon` (vyčištění stale instancí), smaže staré socket/pid soubory a loguje do `ipc/su_daemon.log`; `stopDaemon` dělá `pkill -f su_daemon`.
+
+### CLI
+
+```bash
+sudo id                        # uid=0(root) na hostiteli
+su -c 'whoami'                 # root shell / příkaz
+su                             # hostitelský root shell
+```
+
+### Bezpečnost
+
+- Wrapper posílá jen reálné argumenty, nikdy vlastní argv[0].
+- Socket bind je živý (vytvořen před startem kontejneru) — eliminuje mrtvý `/run/host_ipc`.
+- Vše zůstává v rozsahu app sandboxu; SELinux a limited permissions zachovány.
+
+---
+
+## 💻 ashell s `-c <prikaz>` (host execution)
+
+Terminálový helper `ashell` kromě otevření host `TerminalActivity` podporuje vykonání příkazu na hostu s vrácením výstupu do terminálu:
+
+```bash
+ashell -c 'id'                 # vykoná na hostu, vrátí stdout/stderr + exit code
+ashell --cmd 'ls /'            # totéž
+```
+
+Technicky POSTuje na `http://127.0.0.1:1337/shell` (bearer token), chráněno allowlistem + blokem destruktivních vzorů (žádné nové nechráněné endpointy).
+
+## 📡 ifconfig bez su (wlan0 + tun0)
+
+Síťová rozhraní hostitelského Androidu získáte i bez zapnutého root daemonu:
+
+```bash
+ifconfig            # wlan0 (IP/netmask/gateway/mac) + tun0 (VPN IP, i při STOPPED)
+nh network ifconfig # totéž
+```
+
+`network_ifconfig` v `nh` čte raw JSON `api_get "/wifi"` + `api_get "/vpn"` (ne textový emoji výstup) a `tun0` zobrazuje i když je VPN STOPPED (IP config + `nh vpn start` hint).
+
+## 🔌 USB Attach bez přerušení terminálu
+
+Připojení USB zařízení už **nepřeruší** běžící terminálovou relaci:
+
+- **Bug:** `MainActivity` měla intent-filter na `android.hardware.usb.action.USB_DEVICE_ATTACHED` + `device_filter` → Android při připojení USB spustil MainActivity na popředí a přerušil `TerminalActivity` (singleTask) → session skončila.
+- **Fix:** Dedikovaný `UsbAttachReceiver` (manifest-deklarovaný BroadcastReceiver) zpracovává attach/detach **na pozadí** — žádná aktivita se nespouští, terminál zůstává, ale `device_filter` garantuje automatický USB permission grant (`has_permission: true`) a `UsbHostManager.onDeviceAttached/Detached` udržují runtime cache.
+
+---
+
+## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+
+Wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
+
+```bash
+nh distro list                          # seznam distro + stav
+nh distro status                        # alias list
+nh distro ps                            # aktivní session (ID, distro, vpn-ignored)
+nh distro kill <session_id> [--force]   # ukončit session
+nh distro remove <id> [--force]         # smazat rootfs (kali|parrot)
+nh distro backup [id]                   # záloha rootfs do Downloads (default kali)
+nh distro restore <soubor> [--force]    # obnova rootfs ze souboru v Downloads
+nh distro help                          # nápověda
+```
+
+**Bezpečnostní pojistka:** `kill`, `remove`, `restore` vyžadují `--force` (jinak 409 `confirmation_required`).
+
+**Z hostitele bez rootu:**
+```bash
+curl http://127.0.0.1:1337/distro/ps
+curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
+```
+
+**Endpoints** (`LocalApiServer.kt`): `GET /distro/list`, `GET /distro/ps`, `POST /distro/kill` (`session_id`+`force`), `POST /distro/remove` (`id`+`force`); `backup`/`restore` sdílejí existující `/rootfs/*`. Citlivé ops (`/distro/kill`, `/distro/remove`) jsou v `sensitiveEndpoints` — auth jen pro vzdálené.
+
+> **Fáze 2:** `install`, `progress`, `reset`, `login` (download+extract s progresem, spuštění shellu z hostitele).
+
+---
 
 ## ⌨️ Premium Hacker Keyboard
 
@@ -365,6 +462,35 @@ shizuku
 - **Shizuku app** nainstalovaná (Play Store / F-Droid) + spuštěný server (root nebo ADB)
 - **Nebo root** (Magisk, `su`)
 - **Nebo ADB** (wireless debugging)
+
+---
+
+## 📈 Root Bridge Update Changelog (4.2-MITM-LOG-FIX, post-4.3)
+
+Tento update přidává **root bridge** (host Magisk su), opravuje USB attach, vyčišťuje build pipeline a přesouvá dokumentaci do assets:
+
+### 1. Root Bridge (`sudo`/`su` → host Magisk daemon)
+- `/usr/local/bin/su` + `/usr/local/bin/sudo` jsou symlinky na `su_wrapper` (původní Kali binary přejmenovány na `.orig`).
+- `su_wrapper.c` kompletně přepsán: detekuje invoked name, odebírá wrapper argv[0], řeší `su -c 'cmd'` i bare `sudo`/`su` → host root shell, fallback `execvp(argv[1], ...)`.
+- `su_daemon.c` spisuje PID soubor a čistí ho; `startDaemon` dělá `pkill -f su_daemon` proti stale instancím, loguje do `su_daemon.log`.
+- **Dead bind fix:** `filesDir/ipc/` se vytvoří PŘED startem kontejneru → `-b $FILES_DIR/ipc:/run/host_ipc` je živý.
+
+### 2. ifconfig bez su (wlan0 + tun0)
+- `handleWifi` vrací i `ip`/`netmask`/`gateway`/`mac`; `network_ifconfig` v `nh` čte raw JSON `/wifi` + `/vpn` a zobrazuje `tun0` i při VPN STOPPED.
+
+### 3. ashell `-c <prikaz>`
+- POST na `http://127.0.0.1:1337/shell` (bearer token, allowlist, destruktivní vzory), vrací stdout/stderr + exit code.
+
+### 4. USB attach bez přerušení terminálu
+- Odstraněn intent-filter `USB_DEVICE_ATTACHED` z `MainActivity` (spouštěl ji na popredí a ubil session); dedikovaný `UsbAttachReceiver` zpracovává attach/detach na pozadí s `device_filter` (permission grant zůstává).
+
+### 5. Native build pipeline fix (binárky vždy v APK)
+- `mbuild build` spouštěl upload→build bez `build_native` → rsync `--delete` binárky sma zal → APK bez `su_daemon`/`su_wrapper`.
+- Fix: `pull_binaries()` v `mbuild` (binárky → lokální assets), rsync excludes v `modal_build.py` (`_NATIVE_ASSET_EXCLUDES`), `NATIVE_BINARIES` list. Postup pro nové native moduly je v AGENTS.md „Native build pipeline“.
+
+### 6. Dokumentace přesunuta do assets
+- `nethunter_docs.md` se generuje z `assets/nethunter_docs.md` (obnovovat asset + restart kontejneru místo rekompilace Kotlin zdroje).
+- MOTD + welcome profil dostávý sekce ROOT BRIDGE s `sudo id`, `su -c`, `ifconfig`.
 
 ---
 
