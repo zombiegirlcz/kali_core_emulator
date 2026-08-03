@@ -91,6 +91,33 @@ object UsbHostManager {
     // ─── Device Enumeration ──────────────────────────────────────────
 
     /**
+     * Called by [UsbAttachReceiver] when a USB device is plugged in.
+     * Caches the device name so [listDevices] reflects it immediately.
+     */
+    fun onDeviceAttached(device: android.hardware.usb.UsbDevice) {
+        try {
+            if (usbManager?.hasPermission(device) == true) {
+                permittedDeviceNames.add(device.deviceName)
+            }
+            Log.i(TAG, "Device attached: ${device.deviceName} (vid=0x${device.vendorId.toString(16)} pid=0x${device.productId.toString(16)})")
+        } catch (e: Exception) {
+            Log.w(TAG, "onDeviceAttached error: ${e.message}")
+        }
+    }
+
+    /**
+     * Called by [UsbAttachReceiver] when a USB device is unplugged.
+     */
+    fun onDeviceDetached(device: android.hardware.usb.UsbDevice) {
+        try {
+            permittedDeviceNames.remove(device.deviceName)
+            Log.i(TAG, "Device detached: ${device.deviceName}")
+        } catch (e: Exception) {
+            Log.w(TAG, "onDeviceDetached error: ${e.message}")
+        }
+    }
+
+    /**
      * Returns a JSON array of all currently attached USB host devices.
      */
     fun listDevices(): String {
