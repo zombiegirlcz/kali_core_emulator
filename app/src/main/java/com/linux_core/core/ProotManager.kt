@@ -394,7 +394,7 @@ object ProotManager {
 
             val defaultUser = distroId
             append("id -u ${defaultUser} &>/dev/null || useradd -m -s \"\$SHELL_BIN\" ${defaultUser} 2>/dev/null || true").append(NL)
-            append(buildPasswordFix("root $defaultUser")).append(NL)
+            append(buildPasswordFix(null)).append(NL)
             append("usermod -aG sudo ${defaultUser} 2>/dev/null || true").append(NL)
             append("mkdir -p /etc/sudoers.d").append(NL)
             append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
