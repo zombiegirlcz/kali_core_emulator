@@ -792,3 +792,30 @@ Kompletní mapa projektu — k 2026-07-23
  - 4 architektury (arm64, arm32, x86, x86_64)
  - 3 jazyky: Kotlin (primární), C (JNI bridge), Python (AI agent)
  - 8 unit testů — výrazně poddimenzované
+
+## Session 2026-08-04 — Clipboard paste fix (UTF-8 breakage & control char injection)
+
+Bug report (bug.log → PDF `bug_report_terminal_paste.md`): pasting multi-line text with Czech diacritics (ě, š, č, ž, í) into nano produced `??` replacement chars and control-character injection (`^K`, `^M`, `<ffffffff>` dumps).
+
+### Root cause (verified against termux-app v0.118.0 source)
+
+- `TerminalSession.write(String)` (z `TerminalOutput.write`) už zapisuje celý řetězec jako UTF-8 bytes do PTY — to NEBYL problém (fix č.3 z reportu byl v knihovně už splněn).
+- **Skutečný bug:** oba vlastní paste handlery aplikace volaly `session.write(text)` přímo a obešly oficiální `TerminalEmulator.paste()` (bracketed paste). Termux TerminalView sám používá `mEmulator.paste()` pro context-menu paste.
+- `TerminalEmulator.paste()` (public, v terminal-emulator v0.118.0): odstraní ESC + C1 control znaky, normalizuje `\r?\n` → `\r` a obalí do `\e[200~`/`\e[201~` **POUZE když běžící aplikace aktivovala DECSET 2004** (emulátor to sleduje interně) — takže mimo bracketed-paste aplikace jde text RAW a nikde neprotečou `200~` literály.
+- Locale: user zkusil `cs_UTF-8` a nepomohlo (rootfs ho nemá / bash login přebije). Správné místo je env spawnu PTY childa.
+
+### Fixy (versionCode 13, `4.2-PASTE-FIX`)
+
+| Soubor | Změna |
+|--------|-------|
+| `TerminalService.kt` (`createSession`) | env sessionu + `LANG=C.UTF-8` + `LC_CTYPE=C.UTF-8` (C.UTF-8 je vestavěné v glibc, funguje bez ohledu na jazyk) |
+| `TerminalService.kt` (`ViewHostSessionClient.onPasteTextFromClipboard`) | `session.write(text)` → `session.getEmulator()?.paste(text) ?: session.write(text)` |
+| `TerminalActivity.kt` (Hacker Keyboard `KeyType.PASTE`) | `sendKey(text)` → nový helper `pasteToCurrentSession()` (emulator.paste s fallbackem) |
+
+### Ověření
+
+- Build: **BUILD SUCCESSFUL** (Modal, 1m 23s, 39 tasks)
+- Dex check APK: `pasteToCurrentSession`, `getEmulator`, `200~`, `201~`, `C.UTF-8` přítomny
+- APK: `/root/Download/app-debug.apk` (123.3 MB)
+
+⚠️ `C.UTF-8` vyžaduje glibc ≥ 2.35 — Kali/Parrot (sid/bookworm+) mají OK. Pokud by nějaký rootfs failoval na locale, spadne to jen na POSIX fallback (stejné jako dřív), nic se nerozbije.

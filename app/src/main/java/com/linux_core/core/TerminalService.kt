@@ -142,6 +142,12 @@ class TerminalService : Service() {
                     // Proot se startuje s prazdnym env — TERM musi byt nastaven rucne,
                     // jinak nefunguji barvy (dircolors), terminfo klavesy ani prekreslovani
                     add("TERM=xterm-256color")
+                    // Vynutit UTF-8 locale na potomku PTY, aby nano/shell/editory
+                    // interpretovaly multibyte diakritiku (ě, š, č, ž, í) správně
+                    // místo fallbacku na LC_CTYPE=POSIX, který mangluje vložený UTF-8 text.
+                    // C.UTF-8 je vestavěné v glibc a funguje bez ohledu na jazyk.
+                    add("LANG=C.UTF-8")
+                    add("LC_CTYPE=C.UTF-8")
                 }.toTypedArray()
 
                 val client = ViewHostSessionClient(view, onError)
@@ -437,7 +443,17 @@ class ViewHostSessionClient(
         val clipData = clipboard.primaryClip
         if (clipData != null && clipData.itemCount > 0) {
             val text = clipData.getItemAt(0).coerceToText(context).toString()
-            session.write(text)
+            // Použít oficiální Termux bracketed-paste přes TerminalEmulator.paste():
+            //  1) odstraní ESC a C1 control znaky, 2) normalizuje \n/\r\n na \r,
+            //  3) zabalí do \e[200~/\e[201~ POUZE když běžící aplikace (např. nano)
+            //     aktivovala bracketed paste (DECSET 2004) — jinak se sekvence
+            //     nepoužijí a text jde RAW, čímž neunikne ovládacím zkratkám (^K, ^M…).
+            val emulator = session.getEmulator()
+            if (emulator != null) {
+                emulator.paste(text)
+            } else {
+                session.write(text)
+            }
         }
     }
     override fun onBell(session: TerminalSession) {}

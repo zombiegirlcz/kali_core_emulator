@@ -2335,7 +2335,7 @@ class TerminalActivity : ComponentActivity() {
                 if (clipData != null && clipData.itemCount > 0) {
                     val text = clipData.getItemAt(0).text?.toString()
                     if (!text.isNullOrEmpty()) {
-                        sendKey(text)
+                        pasteToCurrentSession(text)
                     }
                 }
                 return
@@ -2417,6 +2417,28 @@ class TerminalActivity : ComponentActivity() {
 
     private fun sendKey(sequence: String) {
         currentSession?.write(sequence)
+        terminalView.requestFocus()
+    }
+
+    /**
+     * Vloží text ze schránky přes bracketed-paste (Termux TerminalEmulator.paste()).
+     * Fix BUG (clipboard paste): místo raw session.write()/sendKey() se použije
+     * emulátorová paste(), která:
+     *  1) odstraní ESC + C1 control znaky z vkládaného textu,
+     *  2) normalizuje nové řádky (\r\n/\n → \r),
+     *  3) obalí payload do \e[200~ … \e[201~ když aplikace uvnitř (nano, bash…)
+     *     aktivovala bracketed paste (DECSET 2004) — vložené nové řádky a control
+     *     sekvence se tak NIKDY nevykonají jako interaktivní zkratky (^K, ^M,
+     *     <ffffffff> v nano) a UTF-8 diakritika projde jako jeden raw buffer.
+     */
+    private fun pasteToCurrentSession(text: String) {
+        val session = currentSession ?: return
+        val emulator = session.getEmulator()
+        if (emulator != null) {
+            emulator.paste(text)
+        } else {
+            session.write(text)
+        }
         terminalView.requestFocus()
     }
 
