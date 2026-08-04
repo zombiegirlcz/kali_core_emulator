@@ -79,6 +79,14 @@ class TerminalActivity : ComponentActivity() {
     private val currentCommand = StringBuilder()
     private lateinit var suggestionBar: HorizontalScrollView
     private lateinit var suggestionContainer: LinearLayout
+    // Debounce handler pro návrhový bar. Vytváření Buttonů na main threadu
+    // PŘI každém code pointu (uvnitř IME commitText → inputCodePoint) MIUI
+    // vyhodnotí jako jank a zkompenzuje to re-komitováním znaku → „multi input“
+    // (každé písmeno se vloží 2–5×). Srazíme záplavu keystroke na jednu
+    // aktualizaci a bar přestavíme JEN když se sada návrhů skutečně změnila.
+    private val suggestionHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val rebuildSuggestionsRunnable = Runnable { rebuildSuggestions() }
+    private var lastSuggestedList: List<String>? = null
 
     // Drawer-based Session Management
     private lateinit var drawerLayout: androidx.drawerlayout.widget.DrawerLayout
@@ -1473,38 +1481,46 @@ class TerminalActivity : ComponentActivity() {
     }
 
     fun updateSuggestions() {
-        runOnUiThread {
-            val input = currentCommand.toString()
-            val suggestions = historyManager.getSuggestions(input)
+        // Debounce: zpracujeme jen poslední stav (neměnící se návrhy se
+        // nepřestavují), abychom neblokovali IME commitText main vlaknem.
+        suggestionHandler.removeCallbacks(rebuildSuggestionsRunnable)
+        suggestionHandler.post(rebuildSuggestionsRunnable)
+    }
 
-            if (suggestions.isEmpty()) {
-                suggestionBar.visibility = View.GONE
-            } else {
-                suggestionBar.visibility = View.VISIBLE
-                suggestionContainer.removeAllViews()
-                for (sug in suggestions) {
-                    val btn = Button(this).apply {
-                        text = sug
-                        textSize = 10f
-                        isAllCaps = false
-                        typeface = Typeface.MONOSPACE
-                        setTextColor(Color.parseColor("#a9b1d6"))
-                        setBackgroundColor(Color.parseColor("#24283b"))
-                        val params = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                                TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-                        ).apply {
-                            setMargins(4, 2, 4, 2)
-                        }
-                        layoutParams = params
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            applySuggestion(sug)
-                        }
-                    }
-                    suggestionContainer.addView(btn)
+    // Beží na main threadu (postováno přes suggestionHandler).
+    private fun rebuildSuggestions() {
+        val input = currentCommand.toString()
+        val suggestions = historyManager.getSuggestions(input)
+        if (suggestions == lastSuggestedList) return
+        lastSuggestedList = suggestions
+
+        if (suggestions.isEmpty()) {
+            suggestionBar.visibility = View.GONE
+            return
+        }
+        suggestionBar.visibility = View.VISIBLE
+        suggestionContainer.removeAllViews()
+        for (sug in suggestions) {
+            val btn = Button(this).apply {
+                text = sug
+                textSize = 10f
+                isAllCaps = false
+                typeface = Typeface.MONOSPACE
+                setTextColor(Color.parseColor("#a9b1d6"))
+                setBackgroundColor(Color.parseColor("#24283b"))
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
+                        TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
+                ).apply {
+                    setMargins(4, 2, 4, 2)
+                }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    applySuggestion(sug)
                 }
             }
+            suggestionContainer.addView(btn)
         }
     }
 

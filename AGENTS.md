@@ -819,3 +819,25 @@ Bug report (bug.log → PDF `bug_report_terminal_paste.md`): pasting multi-line 
 - APK: `/root/Download/app-debug.apk` (123.3 MB)
 
 ⚠️ `C.UTF-8` vyžaduje glibc ≥ 2.35 — Kali/Parrot (sid/bookworm+) mají OK. Pokud by nějaký rootfs failoval na locale, spadne to jen na POSIX fallback (stejné jako dřív), nic se nerozbije.
+
+## Session 2026-08-04 — MIUI multi-input duplication (#multi-input)
+
+**Bug:** na MIUI zařízenì každý znak napsaný jednou se vložil 2–5× (kompoundace: `ssee`, `bbbbbx`) přímo v terminálu.
+
+**Diagnostika (nh.log = logcat):**
+- Jediný relevantní app event je MIUI **APP_SCOUT_WARNING** (Thread:main, PID = app):
+  `onCodePoint → onTerminalInput → updateSuggestions → new Button()` — aplikace vytvářela Button view synchronně na main threadu **při každém keystroke**, uvnitř IME `commitText → inputCodePoint`.
+- `FileUtils: err write to mi_exception_log` = MIUI neuloží ten scout report (není to FATAL; v logu není ANR ani `FATAL EXCEPTION`).
+- Vstup dorazí do TerminalView přesně 1× na znak (`onCodePoint` jednou) → duplikace NENÍ dvojitý zápis v aplikaci.
+
+**NENÍ to viník** (ověřeno: clean one-shot, FD-passing, žádný input relay/echo loop):
+- `su_daemon`/`su_wrapper` (C) — SCM_RIGHTS fd + fork/exec root, bez read→write-back.
+- `LocalApiServer.handleShell` — `sh -c` s allowlistem, vrací output, žádný PTY relay.
+- `handleAshell` — otevírá novou TerminalActivity/session, separátní PTY.
+
+**Root cause:** main-thread jank uvnitř IME commitText → MIUI překomituje znak (multi-input).
+
+**Fix (TerminalActivity.kt):** nahrazen synchronní `updateSuggestions()` za **debounce + přeskočení beze změny**:
+- pole `suggestionHandler` (main looper), `rebuildSuggestionsRunnable`, `lastSuggestedList`;
+- `updateSuggestions()` = `removeCallbacks + post(rebuild…)` (thread-safe z IME/terminal vlákna);
+- `rebuildSuggestions()` vrátí early, když `getSuggestions(...) == lastSuggestedList`, jinak teprve přebuduje tlačítka.

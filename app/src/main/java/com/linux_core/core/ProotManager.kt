@@ -268,7 +268,7 @@ object ProotManager {
         appendLine("if [ ! -f /etc/.nethunter_password_reset_done ]; then")
         appendLine("    for u in ${users ?: "root kali parrot"}; do")
         appendLine("        if id \"\$u\" >/dev/null 2>&1; then")
-        appendLine("            sed -i \"s/^\(\$u\):[^:]*:/\1::/\" /etc/shadow 2>/dev/null || true")
+        appendLine("            sed -i \"s/^\\(\$u\\):[^:]*:/\\1::/\" /etc/shadow 2>/dev/null || true")
         appendLine("        fi")
         appendLine("    done")
         appendLine("    touch /etc/.nethunter_password_reset_done 2>/dev/null || true")
@@ -456,7 +456,7 @@ object ProotManager {
             append("    # Clean old fragments").append(NL)
             append("    sed -i '/NetHunter AI Operator/d' \"\$zrc\" 2>/dev/null || true").append(NL)
             append("    sed -i '/FORCE_ZSH_/d' \"\$zrc\" 2>/dev/null || true").append(NL)
-            append("    sed -i '/source \\/etc\\/nethunter.zshrc/d' \"\$zrc\" 2>/dev/null || true").append(NL)
+            append("    sed -i '/source /etc/nethunter.zshrc/d' \"\$zrc\" 2>/dev/null || true").append(NL)
             append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$zrc\" 2>/dev/null || true").append(NL)
             append("}").append(NL)
 
