@@ -210,6 +210,71 @@ object ProotManager {
         }
     }
 
+    /**
+     * Shell snippet: UTF-8 locale self-heal (generate if missing + set for all
+     * login shells). Idempotent — locale GEN bezi jen jednou (sentinel), zatímco
+     * /etc/default/locale + /etc/profile.d/nethunter-locale.sh se dotáhnou vždy,
+     * aby bash/zsh login shell dostaly LANG/LC_CTYPE=C.UTF-8 (POSIX fallback pryč).
+     */
+    private fun buildLocaleFix(): String = buildString {
+        appendLine("# === [NetHunter] UTF-8 locale fix ===")
+        appendLine("mkdir -p /etc /etc/profile.d")
+        appendLine("if [ ! -f /etc/.nethunter_locale_done ]; then")
+        appendLine("    if [ -f /etc/locale.gen ]; then")
+        appendLine("        grep -q 'C.UTF-8' /etc/locale.gen 2>/dev/null || printf 'C.UTF-8 UTF-8\\n' >> /etc/locale.gen")
+        appendLine("        grep -q 'en_US.UTF-8' /etc/locale.gen 2>/dev/null || printf 'en_US.UTF-8 UTF-8\\n' >> /etc/locale.gen")
+        appendLine("    else")
+        appendLine("        printf 'C.UTF-8 UTF-8\\nen_US.UTF-8 UTF-8\\n' > /etc/locale.gen 2>/dev/null || true")
+        appendLine("    fi")
+        appendLine("    if command -v locale-gen >/dev/null 2>&1; then")
+        appendLine("        locale-gen C.UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
+        appendLine("    elif command -v localedef >/dev/null 2>&1; then")
+        appendLine("        localedef -i C -f UTF-8 C.UTF-8 >/dev/null 2>&1 || true")
+        appendLine("        localedef -i en_US -f UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
+        appendLine("    fi")
+        appendLine("    touch /etc/.nethunter_locale_done 2>/dev/null || true")
+        appendLine("fi")
+        appendLine("# /etc/default/locale doplnit jen pokud chybi/je prazdne (neresetujem uzivatelovo nastaveni)")
+        appendLine("if [ ! -s /etc/default/locale ] || ! grep -q '^LANG=' /etc/default/locale 2>/dev/null; then")
+        appendLine("    if command -v update-locale >/dev/null 2>&1; then")
+        appendLine("        update-locale LANG=C.UTF-8 LC_CTYPE=C.UTF-8 >/dev/null 2>&1 || true")
+        appendLine("    else")
+        appendLine("        printf 'LANG=C.UTF-8\\nLC_CTYPE=C.UTF-8\\n' > /etc/default/locale 2>/dev/null || true")
+        appendLine("    fi")
+        appendLine("fi")
+        appendLine("cat > /etc/profile.d/nethunter-locale.sh << 'NLOC_EOF'")
+        appendLine("# NetHunter: UTF-8 locale pro vsechny login shelly (bash/zsh/sh)")
+        appendLine("export LANG=C.UTF-8")
+        appendLine("export LC_CTYPE=C.UTF-8")
+        appendLine("NLOC_EOF")
+        appendLine("chmod 644 /etc/profile.d/nethunter-locale.sh 2>/dev/null || true")
+        appendLine("export LANG=C.UTF-8")
+        appendLine("export LC_CTYPE=C.UTF-8")
+    }
+
+    /**
+     * Shell snippet: smaze automaticky nastavene (uzivateli nezname) hesla
+     * (root + distro user) a zajisti zapisovatelny /etc/shadow, aby `passwd`
+     * slo nastavit nove heslo. Deletion bezi JEN jednou (sentinel), aby se
+     * uzivatelovo pozdeji zvolene heslo pri kazde session nesmazalo.
+     * Misto setuid `passwd` (PRoot/fake-root ho rozbiji -> "System error")
+     * se password hash vymaze primo pres sed do /etc/shadow.
+     * @param users prostorkem oddeleny seznam uzivatelu (null = root kali parrot)
+     */
+    private fun buildPasswordFix(users: String?): String = buildString {
+        appendLine("# === [NetHunter] Password fix: smazat auto-hesla + zapisovatelny /etc/shadow ===")
+        appendLine("chmod 600 /etc/shadow /etc/gshadow 2>/dev/null || true")
+        appendLine("chmod 644 /etc/passwd /etc/group 2>/dev/null || true")
+        appendLine("if [ ! -f /etc/.nethunter_password_reset_done ]; then")
+        appendLine("    for u in ${users ?: "root kali parrot"}; do")
+        appendLine("        if id \"\$u\" >/dev/null 2>&1; then")
+        appendLine("            sed -i \"s/^\(\$u\):[^:]*:/\1::/\" /etc/shadow 2>/dev/null || true")
+        appendLine("        fi")
+        appendLine("    done")
+        appendLine("    touch /etc/.nethunter_password_reset_done 2>/dev/null || true")
+        appendLine("fi")
+    }
+
     private fun createMasterScript(homeDir: File, distroId: String, hasRoot: Boolean) {
         val masterFile = File(homeDir, "bootstrap.sh")
         val script = StringBuilder().apply {
@@ -218,6 +283,7 @@ object ProotManager {
             append("export TMPDIR=/tmp").append(NL)
             append("export DEBIAN_FRONTEND=noninteractive").append(NL)
             append("export DEBCONF_NOWARNINGS=yes").append(NL)
+            append(buildLocaleFix()).append(NL)
             append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
             append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
             append("chmod 777 /var/cache/apt/archives/partial 2>/dev/null || true").append(NL)
@@ -328,7 +394,7 @@ object ProotManager {
 
             val defaultUser = distroId
             append("id -u ${defaultUser} &>/dev/null || useradd -m -s \"\$SHELL_BIN\" ${defaultUser} 2>/dev/null || true").append(NL)
-            append("passwd -d ${defaultUser} 2>/dev/null && usermod -p \"\" ${defaultUser} 2>/dev/null || true").append(NL)
+            append(buildPasswordFix("root $defaultUser")).append(NL)
             append("usermod -aG sudo ${defaultUser} 2>/dev/null || true").append(NL)
             append("mkdir -p /etc/sudoers.d").append(NL)
             append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
@@ -360,6 +426,8 @@ object ProotManager {
             append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
             append("export TMPDIR=/tmp").append(NL)
             append("unset LD_PRELOAD").append(NL)
+            append(buildLocaleFix()).append(NL)
+            append(buildPasswordFix(null)).append(NL)
             append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
             append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
             
