@@ -113,10 +113,110 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
     return 0;
 }
 
+/* ── Safety guard: deny destructive / host-global commands ─────────────────── */
+static const char *cmd_basename(const char *p) {
+    const char *slash = strrchr(p, '/');
+    return slash ? slash + 1 : p;
+}
+
+static int cmd_has_recursive_flag(char **argv) {
+    for (int i = 1; argv[i]; i++) {
+        if (argv[i][0] != '-' || argv[i][1] == '\0') continue;
+        if (strcmp(argv[i], "--") == 0) break;
+        for (const char *p = argv[i] + 1; *p; p++)
+            if (*p == 'r' || *p == 'R') return 1;
+    }
+    return 0;
+}
+
+/* Tokenize-scan a shell "-c" payload for classic whole-root destructive ops. */
+static int deny_shell_payload(const char *s) {
+    if (!s) return 0;
+    char buf[BUFFER_SIZE];
+    strncpy(buf, s, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *tokens[64];
+    int nt = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, " \t\n;|&", &save); tok && nt < 64; tok = strtok_r(NULL, " \t\n;|&", &save)) {
+        tokens[nt++] = tok;
+    }
+    int has_danger = 0, has_rec = 0, hits_root = 0;
+    for (int i = 0; i < nt; i++) {
+        const char *b = cmd_basename(tokens[i]);
+        if (strcmp(b, "chmod") == 0 || strcmp(b, "chown") == 0 || strcmp(b, "chgrp") == 0 ||
+            strcmp(b, "rm") == 0 || strcmp(b, "rmdir") == 0)
+            has_danger = 1;
+        if (tokens[i][0] == '-' && (strchr(tokens[i], 'r') || strchr(tokens[i], 'R')))
+            has_rec = 1;
+        if (strcmp(tokens[i], "/") == 0 || strcmp(tokens[i], "/*") == 0)
+            hits_root = 1;
+    }
+    return (has_danger && has_rec && hits_root) ? 1 : 0;
+}
+
+/* Deny a command: returns 1 when it must be blocked (exit code 126 to caller). */
+static int deny_command(char **argv) {
+    if (argv[0] == NULL) return 0;
+    const char *base = cmd_basename(argv[0]);
+
+    /* 1) Raw host-global / block-device / power-control binaries — always deny. */
+    static const char *banned[] = {
+        "dd", "mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.f2fs",
+        "mkfs.vfat", "mkfs.xfs", "mkfs.btrfs", "mkfs.ntfs", "mkfs.minix",
+        "mkfs.cramfs", "mkfs.erofs", "mke2fs", "fsck", "fsck.ext2", "fsck.ext4",
+        "e2fsck", "tune2fs", "resize2fs", "fdisk", "parted", "sfdisk", "cfdisk",
+        "gdisk", "sgdisk", "losetup", "mount", "umount", "swapon", "swapoff",
+        "cryptsetup", "pvcreate", "vgcreate", "lvcreate", "vgremove", "lvremove",
+        "raw", "blockdev", "reboot", "poweroff", "halt", "shutdown", "init", "telinit",
+        NULL
+    };
+    for (int i = 0; banned[i]; i++)
+        if (strcmp(base, banned[i]) == 0) return 1;
+    if (strncmp(base, "mkfs.", 5) == 0) return 1;
+
+    /* Shell "-c" payloads (su -c / sh -c forms) — scan for classic root-wipe. */
+    for (int i = 1; argv[i]; i++) {
+        if (strcmp(argv[i], "-c") == 0 && argv[i + 1] != NULL) {
+            if (deny_shell_payload(argv[i + 1])) return 1;
+        }
+    }
+
+    int recursive = cmd_has_recursive_flag(argv);
+
+    /* 2) Recursive chmod/chown/chgrp touching the root — deny. */
+    if (strcmp(base, "chmod") == 0 || strcmp(base, "chown") == 0 || strcmp(base, "chgrp") == 0) {
+        const char *target = NULL;
+        for (int i = 1; argv[i]; i++) {
+            if (argv[i][0] == '-' && argv[i][1] != '\0' && argv[i][1] != '-') continue;
+            if (argv[i][0] == '-') continue;
+            target = argv[i]; /* last non-option = first file operand */
+        }
+        if (recursive && (target == NULL || strcmp(target, "/") == 0)) return 1;
+        return 0;
+    }
+
+    /* 3) rm/rmdir on "/" or broad wildcard at root — deny. */
+    if (strcmp(base, "rm") == 0 || strcmp(base, "rmdir") == 0) {
+        for (int i = 1; argv[i]; i++) {
+            if (argv[i][0] == '-') continue;
+            if (strcmp(argv[i], "/") == 0) return 1;
+            if (recursive && (strcmp(argv[i], "*") == 0 || strcmp(argv[i], "/*") == 0)) return 1;
+        }
+        return 0;
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
+    char confine_root[1024] = {0};
     if (argc > 1) {
         socket_path = argv[1];
+    }
+    if (argc > 2 && argv[2][0] != '\0') {
+        strncpy(confine_root, argv[2], sizeof(confine_root) - 1);
     }
 
     // Ensure socket parent directory exists
@@ -200,6 +300,14 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (deny_command(cmd_argv)) {
+            int deny_code = 126; /* 126 = command not permitted */
+            write(client_fd, &deny_code, sizeof(deny_code));
+            close(client_fd);
+            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+            continue;
+        }
+
         pid_t pid = fork();
         if (pid < 0) {
             perror("[su_daemon] fork");
@@ -220,6 +328,25 @@ int main(int argc, char **argv) {
             dup2(fds[2], STDERR_FILENO);
 
             close(fds[0]); close(fds[1]); close(fds[2]);
+
+            /* Confine to the guest rootfs when provided — prevents guest commands
+             * from touching the HOST filesystem through real root. After this the
+             * requested (guest) cwd is valid again inside the chroot. */
+            if (confine_root[0] != '\0') {
+                if (chroot(confine_root) != 0) {
+                    perror("[su_daemon] chroot");
+                    _exit(127);
+                }
+                if (chdir("/") != 0) {
+                    perror("[su_daemon] chdir /");
+                    _exit(127);
+                }
+                setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+                /* The wrapper sends the host shell path; use the guest shell. */
+                if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
+                    cmd_argv[0] = (char *)"/bin/sh";
+                }
+            }
 
             if (cwd[0] != '\0') {
                 chdir(cwd);

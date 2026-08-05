@@ -42,6 +42,21 @@ object RootBridgeManager {
         "/sbin/su"
     )
 
+    /**
+     * Find the PRoot guest rootfs inside the app files dir (for chroot
+     * confinement of the su daemon children). A rootfs has etc/passwd and
+     * usr/bin; prefer the most recently modified candidate.
+     */
+    fun detectGuestRootfs(context: Context): String? {
+        val filesDir = context.filesDir
+        val candidates = filesDir.listFiles()?.filter { it.isDirectory } ?: return null
+        val rootfs = candidates.filter { dir ->
+            dir.name.endsWith("-arm64") ||
+                (File(dir, "etc/passwd").exists() && File(dir, "usr/bin").isDirectory)
+        }
+        return rootfs.maxByOrNull { it.lastModified() }?.absolutePath
+    }
+
     fun checkSuAvailable(): Pair<Boolean, String?> {
         for (path in SU_PATHS) {
             val file = File(path)
@@ -132,9 +147,13 @@ object RootBridgeManager {
                 sockFile.delete()
                 pidFile.delete()
 
-                // Start daemon via su (redirect stderr to log file for debugging)
-                val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath} > ${logFile.absolutePath} 2>&1 &'"
-                Log.i(TAG, "Starting su_daemon via $suBin: $cmd")
+                // Start daemon via su (redirect stderr to log file for debugging).
+                // Pass the guest rootfs as argv[2] so daemon children are chroot-confined
+                // into the guest filesystem (prevents host-wide damage).
+                val guestRootfs = detectGuestRootfs(context)
+                val rootfsArg = guestRootfs?.let { " '$it'" } ?: ""
+                val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath}$rootfsArg > ${logFile.absolutePath} 2>&1 &'"
+                Log.i(TAG, "Starting su_daemon via $suBin (rootfs=$guestRootfs): $cmd")
 
                 val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
                 proc.waitFor()
