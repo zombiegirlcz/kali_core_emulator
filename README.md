@@ -93,6 +93,7 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh desktop start\|stop\|status` | desktop | Control noVNC XFCE4 desktop | `nh desktop start` |
 | `nh fix pkg <name>` | fix | Fix a stuck post-install script | `nh fix pkg libc6` |
 | `nh fix auto` | fix | Auto-fix all broken packages | `nh fix auto` |
+| `nh fix permission <path>` | fix | Fix file ownership after real-root (su_daemon) commands | `nh fix permission /root/dir` |
 | `nh apps usage` | apps | App usage statistics (24h) | `nh apps usage` |
 | `nh usb list` | usb | List USB devices | `nh usb list` |
 | `nh usb permission <device>` | usb | Request USB device permission | `nh usb permission /dev/bus/usb/001/002` |
@@ -219,7 +220,7 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh device` | `admin`, `battery-optimize`, `accessibility`, `tap`, `click`, `longclick`, `swipe`, `text`, `scroll`, `global` |
 | `nh api` | `share on/off/status` |
 | `nh desktop` | `start`, `stop`, `status` |
-| `nh fix` | `pkg <name>`, `auto` |
+| `nh fix` | `pkg <name>`, `auto`, `permission <path>` |
 | `nh apps` | `usage` |
 | `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control` |
 
@@ -229,7 +230,7 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 
 ## 🔑 Root Bridge — `sudo` / `su` přes host Magisk daemon
 
-Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `sudo` a `su` uvnitř hostovaného OS (Kali/Parrot) nevolají PRoot fake-root (`-0`), ale komunikují s **hostitelským Magisk/root daemonem** a spouští příkazy jako skutečný root na hostiteli.
+Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `sudo` a `su` uvnitř hostovaného OS (Kali/Parrot) nevolají PRoot fake-root (`-0`), ale komunikují s **hostitelským Magisk/root daemonem**, který je spouští jako skutečný root **uvnitř PRoot sandboxu** (2026-08-14: bezpečnostní re-entry model — nikdy přímo na hostu).
 
 ### Architektura
 
@@ -246,15 +247,16 @@ Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `
 
 1. `ProotManager.deploySuBridge` symlinkuje `/usr/local/bin/su` a `/usr/local/bin/sudo` → `su_wrapper` (fallback: kopie; `ln` → `/system/bin/ln`) a přejmenuje původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` na `.orig` zálohy.
 2. `su_wrapper` detekuje invoked name (`sudo`/`su`/`su_wrapper`), odešle skutečné argumenty (nikdy svůj argv[0]) přes Unix socket daemonovi.
-3. Daemon spustí příkaz jako **root na hostiteli** (host-root sémantika — Kali binárky jako `ifconfig` se na hostu neresolvují; wrapper fallback: `execvp(argv[1], &argv[1])`).
+3. **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli** (dříve `chroot` + `setresuid` + `execvp` — při chybějícím rootfs běžel bez confinementu, což mohlo zasáhnout host). Místo toho **znovu vstupuje do PRoot sandboxu jako skutečný root** přes `launcher.sh -- <příkaz>` (raw-exec režim; tokeny předané verbatim, žádný shell re-quoting). Bez launcheru → **fail-closed** (exit 126). `deny_command` blocklist zůstává.
 4. `startDaemon` nejdřív dělá `pkill -f su_daemon` (vyčištění stale instancí), smaže staré socket/pid soubory a loguje do `ipc/su_daemon.log`; `stopDaemon` dělá `pkill -f su_daemon`.
 
 ### CLI
 
 ```bash
-sudo id                        # uid=0(root) na hostiteli
+sudo id                        # uid=0(root) — real root uvnitř PRoot guestu
 su -c 'whoami'                 # root shell / příkaz
-su                             # hostitelský root shell
+su                             # interaktivní root login shell
+nh fix permission /root/dir    # oprava vlastnictví po real-root příkazech
 ```
 
 ### Bezpečnost
@@ -262,6 +264,33 @@ su                             # hostitelský root shell
 - Wrapper posílá jen reálné argumenty, nikdy vlastní argv[0].
 - Socket bind je živý (vytvořen před startem kontejneru) — eliminuje mrtvý `/run/host_ipc`.
 - Vše zůstává v rozsahu app sandboxu; SELinux a limited permissions zachovány.
+- **Fail-closed:** bez launcheru daemon exit 126 — příkaz se nikdy nespustí na hostu.
+- **Oprava vlastnictví (2 vrstvy):** soubory vytvořené pod real rootem mají UID 0, který app nemůže číst. Po každém příkazu běží **auto-fix** (`nftw` + `lchown`, přeskakuje bind dirs `dev proc sys run sdcard mnt system vendor product apex storage data`, default ON — vypínatelný v Root Bridge UI), a manuálně přes `nh fix permission <cesta>` (payload `@FIX`, `realpath` containment proti symlink escape). Obě vrstvy běží **mimo proot** — uvnitř prootu jsou bindy, rekurzivní chown by zasáhl /sdcard.
+
+---
+
+## ⏰ Background Auto-Start & Cron (2026-08-14)
+
+Aplikace se umí **sama spustit na pozadí po restartu zařízení** kvůli **cron automatizaci** uvnitř PRoot guestu. (Permise `RECEIVE_BOOT_COMPLETED` dříve v manifestu chyběla — nyní je přidaná i s receiverem, který ji volá.)
+
+### Jak to funguje
+
+- **`RECEIVE_BOOT_COMPLETED`** + manifest receiver `.core.BootReceiver` (`BOOT_COMPLETED` + `MY_PACKAGE_REPLACED`).
+- `BootReceiver` → `BackgroundBoot` → **headless proot session** (`TerminalView = null`) s `root/.nh_boot.sh` — spustí cron daemon (`cron`/`crond`) a drží kontejner naživu (`while true sleep 60`).
+- `TerminalService` běží jako **foreground service** se `START_STICKY` — systém app nezabije; i kdyby ji zabil, po restartu se cron session automaticky obnoví.
+- Po aktualizaci APK (`MY_PACKAGE_REPLACED`) se cron restartuje taky.
+
+### Ovládání
+
+- Přepínač **„Auto-start po restartu“** v MainActivity (pref `boot_autostart`, default ON).
+- Spolehlivost v úsporném režimu: `nh device battery-optimize request`.
+- Log bootu: `/var/log/nethunter-boot.log` v guestu.
+- Rootfs je na credential-encrypted storage → auto-start běží až po odemčení (záměrně bez `LOCKED_BOOT_COMPLETED`).
+
+```bash
+crontab -e                      # upravit úlohy (uvnitř guestu)
+0 * * * * /root/backup.sh       # příklad: záloha každou hodinu
+```
 
 ---
 
@@ -471,7 +500,7 @@ Tento update přidává **root bridge** (host Magisk su), opravuje USB attach, v
 
 ### 1. Root Bridge (`sudo`/`su` → host Magisk daemon)
 - `/usr/local/bin/su` + `/usr/local/bin/sudo` jsou symlinky na `su_wrapper` (původní Kali binary přejmenovány na `.orig`).
-- `su_wrapper.c` kompletně přepsán: detekuje invoked name, odebírá wrapper argv[0], řeší `su -c 'cmd'` i bare `sudo`/`su` → host root shell, fallback `execvp(argv[1], ...)`.
+- `su_wrapper.c` kompletně přepsán: detekuje invoked name, odebírá wrapper argv[0], řeší `su -c 'cmd'` i bare `sudo`/`su` → root shell, fallback `execvp(argv[1], ...)`.
 - `su_daemon.c` spisuje PID soubor a čistí ho; `startDaemon` dělá `pkill -f su_daemon` proti stale instancím, loguje do `su_daemon.log`.
 - **Dead bind fix:** `filesDir/ipc/` se vytvoří PŘED startem kontejneru → `-b $FILES_DIR/ipc:/run/host_ipc` je živý.
 

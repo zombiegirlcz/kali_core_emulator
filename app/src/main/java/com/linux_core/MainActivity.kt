@@ -317,6 +317,7 @@ fun MainScreen() {
     var statusText by remember { mutableStateOf("") }
     var downloadJob by remember { mutableStateOf<Job?>(null) }
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
+    var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
     val scope = rememberCoroutineScope()
 
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
@@ -978,6 +979,78 @@ fun MainScreen() {
                                 }
                                 mountStorage = checked
                                 sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
+                            },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00FF41),
+                                checkedTrackColor = Color(0x6600FF41),
+                                uncheckedThumbColor = Color.Gray,
+                                uncheckedTrackColor = Color(0xFF1E2026)
+                            )
+                        )
+                    }
+                }
+
+                // Background boot — cron automation (auto-start after reboot)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val nextState = !bootAutostart
+                            bootAutostart = nextState
+                            sharedPrefs.edit().putBoolean("boot_autostart", nextState).apply()
+                        }
+                        .padding(0.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF333333)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color(0x1A00FF41), CircleShape)
+                                    .border(1.dp, Color(0x3300FF41), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Boot",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Auto-start po restartu",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                Text(
+                                    text = "Spustí proot na pozadí (cron) po bootu zařízení",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = bootAutostart,
+                            onCheckedChange = { checked ->
+                                bootAutostart = checked
+                                sharedPrefs.edit().putBoolean("boot_autostart", checked).apply()
                             },
                             colors = androidx.compose.material3.SwitchDefaults.colors(
                                 checkedThumbColor = Color(0xFF00FF41),

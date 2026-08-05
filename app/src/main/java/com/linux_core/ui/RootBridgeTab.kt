@@ -43,9 +43,23 @@ object RootBridgeManager {
     )
 
     /**
-     * Find the PRoot guest rootfs inside the app files dir (for chroot
-     * confinement of the su daemon children). A rootfs has etc/passwd and
-     * usr/bin; prefer the most recently modified candidate.
+     * Locate the active PRoot distro launcher script (launcher-<distro>.sh).
+     * su_daemon RE-ENTERS this launcher under real root so every sudo/su
+     * command stays confined to the guest rootfs by PRoot.
+     */
+    fun detectActiveLauncher(context: Context): String? {
+        val filesDir = context.filesDir ?: return null
+        val candidates = filesDir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("launcher-") && it.name.endsWith(".sh")
+        } ?: return null
+        // Prefer the most recently generated launcher (matches the active rootfs).
+        return candidates.maxByOrNull { it.lastModified() }?.absolutePath
+    }
+
+    /**
+     * Find the PRoot guest rootfs inside the app files dir. A rootfs has
+     * etc/passwd and usr/bin; prefer the most recently modified candidate.
+     * Passed to su_daemon so the automatic ownership fix knows where to chown.
      */
     fun detectGuestRootfs(context: Context): String? {
         val filesDir = context.filesDir
@@ -117,6 +131,7 @@ object RootBridgeManager {
     fun startDaemon(context: Context, callback: (Boolean) -> Unit) {
         Thread {
             try {
+                val prefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
                 val (suOk, suPath) = checkSuAvailable()
                 val suBin = if (suOk && suPath != null) suPath else "su"
 
@@ -147,13 +162,24 @@ object RootBridgeManager {
                 sockFile.delete()
                 pidFile.delete()
 
-                // Start daemon via su (redirect stderr to log file for debugging).
-                // Pass the guest rootfs as argv[2] so daemon children are chroot-confined
-                // into the guest filesystem (prevents host-wide damage).
-                val guestRootfs = detectGuestRootfs(context)
-                val rootfsArg = guestRootfs?.let { " '$it'" } ?: ""
-                val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath}$rootfsArg > ${logFile.absolutePath} 2>&1 &'"
-                Log.i(TAG, "Starting su_daemon via $suBin (rootfs=$guestRootfs): $cmd")
+                // Start daemon via su.
+                // argv[2] = guest PRoot launcher path (su_daemon RE-ENTERS this
+                // launcher under real root so commands run INSIDE the guest sandbox)
+                // argv[3] = guest rootfs dir (host path) for the ownership fix
+                // argv[4]/[5] = app uid/gid — real-root commands create root-owned
+                //   files; the auto-fix rewrites them back to this uid/gid
+                // argv[6] = auto-fix on/off
+                val launcherPath = detectActiveLauncher(context)
+                if (launcherPath == null) {
+                    Log.e(TAG, "No launcher-*.sh found — su_daemon will refuse to run (fail closed)")
+                }
+                val launcherArg = launcherPath?.let { " '$it'" } ?: ""
+                val rootfs = detectGuestRootfs(context)
+                val rootfsArg = rootfs?.let { " '$it'" } ?: ""
+                val appUid = android.os.Process.myUid()
+                val autoFix = if (prefs.getBoolean("auto_fix_permissions", true)) "1" else "0"
+                val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath}$launcherArg$rootfsArg $appUid $appUid $autoFix > ${logFile.absolutePath} 2>&1 &'"
+                Log.i(TAG, "Starting su_daemon via $suBin (launcher=$launcherPath, rootfs=$rootfs, uid=$appUid, autoFix=$autoFix): $cmd")
 
                 val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
                 proc.waitFor()
@@ -212,6 +238,9 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindVendor by remember { mutableStateOf(prefs.getBoolean("bind_vendor", false)) }
     var bindTmp by remember { mutableStateOf(prefs.getBoolean("bind_tmp", false)) }
     var bindUsb by remember { mutableStateOf(prefs.getBoolean("bind_usb", true)) }
+
+    // Auto-fix ownership after sudo commands (layer 1)
+    var autoFixPermissions by remember { mutableStateOf(prefs.getBoolean("auto_fix_permissions", true)) }
 
     fun refreshStatus() {
         val (suOk, path) = RootBridgeManager.checkSuAvailable()
@@ -362,6 +391,47 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                 RootBridgeManager.stopDaemon(context)
                                 refreshStatus()
                             }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = Color(0xFF00FF41),
+                            uncheckedThumbColor = Color.Gray,
+                            uncheckedTrackColor = Color(0xFF222222)
+                        )
+                    )
+                }
+
+                // Auto-fix permissions toggle (layer 1): po každém příkazu spuštěném
+                // přes daemon se vlastnictví rootem vytvořených souborů přepíše zpět
+                // na UID aplikace (host-side, mimo PRoot — bindy se přeskočí).
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color(0xFF2A2A2A))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-fix vlastnictví",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = "Po sudo příkazu přepíše root-owned soubory zpět na UID aplikace\nManuálně: nh fix permission <cesta>",
+                            color = Color.Gray,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Switch(
+                        checked = autoFixPermissions,
+                        enabled = true,
+                        onCheckedChange = { checked ->
+                            autoFixPermissions = checked
+                            prefs.edit().putBoolean("auto_fix_permissions", checked).apply()
+                            // Projeví se při příštím startu daemona.
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.Black,

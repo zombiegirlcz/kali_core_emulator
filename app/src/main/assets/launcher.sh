@@ -59,6 +59,39 @@ BINDS="$BINDS __EXTRA_ROOT_MOUNTS__"
 PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink"
 PROOT_CWD="/root"
 
+# ─── su_daemon raw-exec mode: launcher.sh -- <guest-program> [args...] ──────
+# Used by the host su_daemon for real root escalation. Instead of running the
+# requested command on the bare host (which could damage the device), we
+# RE-ENTER this PRoot sandbox as real root. PRoot then confines every path
+# access to the guest rootfs, so `sudo chmod -R / ...` can never touch the
+# host filesystem. Every token after `--` is forwarded verbatim to proot so
+# no shell re-quoting loss occurs.
+#
+#   launcher.sh --           -> interactive root login shell (bare `su`)
+#   launcher.sh -- cmd a b   -> exec cmd(a,b) inside proot
+#   launcher.sh -- /bin/sh -c '<cmd>' -> shell command string (su -c)
+if [ "$1" = "--" ]; then
+    shift
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    export HOME=/root
+    WDIR="$PROOT_CWD"
+    if [ -n "$NH_CWD" ] && [ -d "$ROOTFS_DIR/${NH_CWD#/}" ]; then
+        WDIR="$NH_CWD"
+    fi
+    printf '%s\n' "[$LOG_PREFIX] su_daemon exec: $*" >&2
+    if [ $# -gt 0 ]; then
+        # Route through guest /bin/sh only to strip the host LD_PRELOAD, then
+        # exec the exact args verbatim (no shell re-quoting). PRoot confines
+        # every path access to the guest rootfs.
+        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+            /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"' -- "$@"
+    else
+        # Bare `su` -> interactive root login shell inside proot.
+        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+            /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; if command -v zsh >/dev/null 2>&1; then exec zsh --login; else exec bash --login; fi'
+    fi
+fi
+
 # ─── Bootstrap phase (first run only) ────────────────────
 # Bootstrap MUST run BEFORE entrypoint: first launch configures the OS
 # (apt, packages, users), only then the interactive session starts.

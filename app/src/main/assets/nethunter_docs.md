@@ -21,6 +21,30 @@ V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
 - **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
 - **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, `dcheck` pro diagnostiku, `vpn-bypass` pro obcházení VPN filtru (port 13339) a sjednocený CLI nástroj `nh` aliasy starších příkazů (zpětná kompatibilita).
 
+## ⏰ Background auto-start (cron automatizace)
+
+Od verze 2026-08-14 se aplikace umí **sama spustit na pozadí po restartu zařízení** — hlavní použití je **cron automatizace** uvnitř PRoot guestu. (Permise `RECEIVE_BOOT_COMPLETED` dříve v manifestu chyběla; nyní je přidaná i s receiverem, který ji volá.)
+
+### Jak to funguje
+- **Manifest:** `RECEIVE_BOOT_COMPLETED` + receiver `BootReceiver` (`BOOT_COMPLETED` + `MY_PACKAGE_REPLACED`).
+- `BootReceiver` → `BackgroundBoot` → **headless proot session** (`TerminalView = null`) s `root/.nh_boot.sh`.
+- `nh_boot.sh` spustí cron daemon (`cron`/`crond`) a drží kontejner naživu (`while true sleep 60`).
+- `TerminalService` běží jako foreground service se `START_STICKY` — systém app nezabije; i kdyby ji zabil, po restartu se cron session **automaticky obnoví** (onStartCommand s null intentem).
+- Po aktualizaci APK (`MY_PACKAGE_REPLACED`) se cron restartuje taky.
+
+### Ovládání
+- Přepínač **„Auto-start po restartu“** v MainActivity (pref `boot_autostart`, default ON).
+- Pro spolehlivost v úsporném režimu: `nh device battery-optimize request` (výjimka z battery optimization).
+- Log bootu: `/var/log/nethunter-boot.log` uvnitř guestu.
+- Pozor: rootfs je na credential-encrypted storage → auto-start běží **až po odemčení zařízení** (záměrně, bez `LOCKED_BOOT_COMPLETED`/`directBootAware`).
+
+### Cron příklady
+```bash
+crontab -e                      # upravit úlohy (uvnitř guestu)
+# příklad: záloha každou hodinu
+0 * * * * /root/backup.sh
+```
+
 ## 🆕 Sjednocený CLI příkaz `nh`
 
 Od verze 4.2 jsou všechny dřívější `nethunter-*`, `vpn-*` a `vpn-cli` příkazy sjednoceny do jednoho CLI:
@@ -71,19 +95,20 @@ curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
 
 ## 🔑 Root Bridge (`sudo` / `su`)
 
-Od verze 4.2-MITM-LOG-FIX je implementován **root bridge** přes hostitelský Magisk/roo daemon (`su_daemon`). Příkazy `sudo` a `su` v hostovaném OS jsou wrappery, které posílají příkazy na HOST a spouští je tam s root právy.
+Od verze 4.2-MITM-LOG-FIX je implementován **root bridge** přes hostitelský Magisk/root daemon (`su_daemon`). Příkazy `sudo` a `su` v hostovaném OS jsou wrappery, které posílají příkazy hostitelskému daemonu — ten je spouští jako skutečný root **znovu uvnitř PRoot sandboxu** (nikdy přímo na hostu).
 
 ### Jak to funguje
 - `/usr/local/bin/su` a `/usr/local/bin/sudo` jsou symlinky (nebo kopie) na `su_wrapper`.
 - `su_wrapper` komunikuje přes Unix socket s `su_daemon` (běží na hostu jako root v `filesDir/ipc/magisk_daemon.sock`, s bind do `/run/host_ipc`).
 - Původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` jsou přejmenovány na `.orig` zálohy.
-- Daemon spustí příkaz jako **root na hostiteli** (host-root sémantika — Kali binárky jako `ifconfig` se na hostu neresolvují).
+- **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli**. Místo toho znovu vstupuje do PRoot sandboxu jako skutečný root: `launcher.sh -- <příkaz>` (raw-exec režim, tokeny předané verbatim) → příkaz běží uvnitř guestu s UID 0. Pokud daemon nemá launcher path → **fail-closed** (exit 126), nikdy se nic nespustí na hostu.
+- Po dokončení příkazu daemon automaticky opraví vlastnictví vytvořených souborů (viz níže).
 
 ### CLI
 ```bash
-sudo id                        # GID/UID root na hostiteli
+sudo id                        # uid=0(root) — real root uvnitř PRoot guestu
 su -c 'whoami'                # root shell / příkaz
-su                            # hostitelský root shell
+su                            # interaktivní root login shell uvnitř PRoot guestu
 ```
 
 ### Ovládání daemona (ROOT BRIDGE tab / RootBridgeManager)
@@ -92,6 +117,18 @@ su                            # hostitelský root shell
 - `stopDaemon` dělá `pkill -f su_daemon`.
 - PID: `ipc/su_daemon.pid`, socket: `ipc/magisk_daemon.sock`.
 - Daemon zapisuje PID soubor a čistí ho při ukončení.
+
+### 🔒 Oprava vlastnictví souborů (2 vrstvy)
+Soubory vytvořené pod **real rootem** mají UID 0 — app (a běžný uživatel v guestu) je nemůže číst. Daemon řeší vlastnictví dvěma vrstvami; obě běží **mimo proot na hostiteli** (uvnitř prootu jsou bindy → rekurzivní chown by zasáhl reálná uživatelská data; mimo proot jsou bind targety prázdné složky a vidí se skutečný vlastník):
+
+1. **Auto-fix (default ON):** po každém příkazu projde daemon rootfs (`nftw` + `lchown`, `FTW_PHYS` — nikdy nesleduje symlinky) a vrátí vlastnictví na UID aplikace. Přeskočí bind dirs na úrovni 1: `dev proc sys run sdcard mnt system vendor product apex storage data`. Vypíná se v UI (Root Bridge → „Auto-fix vlastnictví“, pref `auto_fix_permissions`; projeví se při příštím startu daemona). Log: `auto-fix: chowned ... in N ms`.
+2. **Manuální fix:** `nh fix permission <cesta>` → payload `@FIX` daemonovi → stejná logika na konkrétní cestu, validovaná `realpath` containmentem (blokuje symlink escape na /sdcard).
+
+```bash
+nh fix permission /root/muj-adresar
+```
+
+Bind / host-mapped cesty daemon odmítne (exit 126): `/`, `/dev/*`, `/proc/*`, `/sys/*`, `/run/*`, `/sdcard/*`, `/mnt/*`, `/system/*`, `/vendor/*`, `/product/*`, `/apex/*`, `/storage/*`, `/data/*`.
 
 ## 💻 ashell (-c)
 

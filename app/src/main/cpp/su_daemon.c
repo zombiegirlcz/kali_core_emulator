@@ -5,9 +5,15 @@
  * 1. Receives standard FDs (stdin, stdout, stderr) via SCM_RIGHTS.
  * 2. Receives target UID/GID, CWD, and command arguments.
  * 3. Forks a child process.
- * 4. In child: switches UID/GID, duplicates FDs to 0,1,2, changes directory, and execs command.
- * 5. In parent: waits for child, receives exit code, and returns exit code to client wrapper.
+ * 4. In child: duplicates FDs to 0,1,2 and RE-ENTERS the PRoot guest sandbox
+ *    (launcher.sh -- <command...>) under real root. The command therefore runs
+ *    INSIDE the guest rootfs and can never touch the host filesystem directly.
+ *    If no PRoot launcher is configured the request is refused (FAIL CLOSED).
+ * 5. In parent: waits for child (proot --kill-on-exit reaps guest children), and
+ *    returns the exit code to client wrapper.
  */
+
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +28,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <limits.h>
+#include <ftw.h>
+#include <sys/time.h>
 
 #define DEFAULT_SOCKET_PATH "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
 #define MAX_ARGS 128
@@ -129,6 +138,14 @@ static int cmd_has_recursive_flag(char **argv) {
     return 0;
 }
 
+/* Strip leading/trailing shell quote chars so 'rm -rf "/"' == 'rm -rf /'
+ * (blocks quote-evasion of the whole-root wipe guard). Never follows content. */
+static void strip_shell_quotes(char *t) {
+    size_t n = strlen(t);
+    while (n > 0 && (t[0] == '\'' || t[0] == '"')) { t++; n--; }
+    while (n > 0 && (t[n-1] == '\'' || t[n-1] == '"')) { t[--n] = '\0'; }
+}
+
 /* Tokenize-scan a shell "-c" payload for classic whole-root destructive ops. */
 static int deny_shell_payload(const char *s) {
     if (!s) return 0;
@@ -139,6 +156,7 @@ static int deny_shell_payload(const char *s) {
     int nt = 0;
     char *save = NULL;
     for (char *tok = strtok_r(buf, " \t\n;|&", &save); tok && nt < 64; tok = strtok_r(NULL, " \t\n;|&", &save)) {
+        strip_shell_quotes(tok);
         tokens[nt++] = tok;
     }
     int has_danger = 0, has_rec = 0, hits_root = 0;
@@ -209,15 +227,160 @@ static int deny_command(char **argv) {
     return 0;
 }
 
+/* ── Permission fix (host-side, OUTSIDE PRoot) ──────────────────────────────
+ *
+ * Commands run under real root create files owned by uid/gid 0 inside the
+ * guest rootfs, which hides them from the app process (its own UID can no
+ * longer read/modify them). This fix rewrites ownership back to the app UID.
+ *
+ * It MUST run on the HOST (not inside PRoot): inside PRoot, the rootfs shows
+ * bind mounts (/sdcard, /dev, /proc, /sys, /run/host_ipc, ...) and a recursive
+ * chown would wipe access to real user data -> catastrophe. On the host the
+ * bind targets are just (empty) dirs under the rootfs, so we see the REAL
+ * owner and can safely fix only the guest filesystem. */
+
+/* Top-level bind / host-mapped dirs we never descend into, even on the host. */
+static int is_bind_dir(const char *base) {
+    static const char *skip[] = {
+        "dev", "proc", "sys", "run", "sdcard", "mnt",
+        "system", "vendor", "product", "apex", "storage", "data", NULL
+    };
+    for (int i = 0; skip[i]; i++)
+        if (strcmp(base, skip[i]) == 0) return 1;
+    return 0;
+}
+
+static uid_t fix_uid = (uid_t)-1;
+static gid_t fix_gid = (gid_t)-1;
+static int  fix_skip_top = 0;
+
+static int fix_cb(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftw) {
+    (void)fpath;
+    if (fix_skip_top && ftw->level == 1) {
+        const char *base = strrchr(fpath, '/');
+        base = base ? base + 1 : fpath;
+        if (is_bind_dir(base)) return FTW_SKIP_SUBTREE;
+    }
+    if (tflag == FTW_DNR || tflag == FTW_NS) return 0; /* cannot stat — keep going */
+    if (sb->st_uid != fix_uid || sb->st_gid != fix_gid) {
+        /* lchown so we never follow into a symlink outside the scope. */
+        if (lchown(fpath, fix_uid, fix_gid) != 0 && errno != ENOENT) {
+            /* EPERM / others: silent (permissions being fixed vary). */
+        }
+    }
+    return 0;
+}
+
+/* Recursively rewrite ownership of a host path to the app uid/gid. */
+static void fix_permissions(const char *scope, uid_t uid, gid_t gid, int skip_top) {
+    fix_uid = uid;
+    fix_gid = gid;
+    fix_skip_top = skip_top;
+    nftw(scope, fix_cb, 64, FTW_PHYS);
+}
+
+/* Handle `nh fix permission <path>`: @FIX payload from su_wrapper. */
+static int handle_fix_request(int client_fd, int *fds, char **argv,
+                              const char *rootfs, uid_t uid, gid_t gid) {
+    if (rootfs == NULL || rootfs[0] == '\0') {
+        dprintf(fds[2], "[su_daemon] FATAL: no rootfs configured for fix.\n");
+        write(client_fd, &(int){126}, sizeof(int));
+        return 126;
+    }
+    const char *path = argv[1];
+    if (path == NULL || path[0] != '/') {
+        dprintf(fds[2], "[su_daemon] fix: absolutní cesta vyžadována (např. /root/cil/dir).\n");
+        write(client_fd, &(int){126}, sizeof(int));
+        return 126;
+    }
+    if (strcmp(path, "/") == 0) {
+        dprintf(fds[2], "[su_daemon] fix: příliš široký cíl '/'; použij konkrétní složku/soubor.\n");
+        write(client_fd, &(int){126}, sizeof(int));
+        return 126;
+    }
+
+    /* Reject any bind / host-mapped root (the user's core concern). */
+    const char *first = path + 1;
+    size_t flen = strcspn(first, "/");
+    char comp[128];
+    if (flen < sizeof(comp)) {
+        memcpy(comp, first, flen);
+        comp[flen] = '\0';
+        if (is_bind_dir(comp)) {
+            dprintf(fds[2], "[su_daemon] fix: odmítnuto — %s je bind/host mount (mimo guest rootfs).\n", path);
+            write(client_fd, &(int){126}, sizeof(int));
+            return 126;
+        }
+    }
+
+    /* Host path = rootfs + guest path. Trim a trailing rootfs slash. */
+    char host[PATH_MAX];
+    size_t rl0 = strlen(rootfs);
+    while (rl0 > 1 && rootfs[rl0 - 1] == '/') rl0--;
+    snprintf(host, sizeof(host), "%.*s%s", (int)rl0, rootfs, path);
+
+    /* Verify the resolved path stays within the rootfs (blocks symlink escape
+     * to /sdcard or other host dirs). If it does not exist yet: nothing to fix. */
+    char *rroot = realpath(rootfs, NULL);
+    char *rtarget = realpath(host, NULL);
+    if (!rroot) {
+        free(rtarget);
+        write(client_fd, &(int){126}, sizeof(int));
+        return 126;
+    }
+    if (!rtarget) {
+        free(rroot);
+        write(client_fd, &(int){0}, sizeof(int)); /* nothing exists — OK */
+        return 0;
+    }
+    size_t rrl = strlen(rroot);
+    int contained = strncmp(rtarget, rroot, rrl) == 0 &&
+                    (rtarget[rrl] == '\0' || rtarget[rrl] == '/');
+    free(rroot);
+    if (!contained) {
+        free(rtarget);
+        dprintf(fds[2], "[su_daemon] fix: cesta uniká z rootfs (symlink?) — odmítnuto.\n");
+        write(client_fd, &(int){126}, sizeof(int));
+        return 126;
+    }
+
+    fix_permissions(rtarget, uid, gid, 0);
+    free(rtarget);
+    write(client_fd, &(int){0}, sizeof(int));
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
-    char confine_root[1024] = {0};
+    char launcher_path[1024] = {0};
+    char rootfs_path[1024] = {0};
+    uid_t app_uid = (uid_t)-1;
+    gid_t app_gid = (gid_t)-1;
+    int auto_fix = 1; /* rewrite root-owned files back to the app uid after each command */
+
     if (argc > 1) {
         socket_path = argv[1];
     }
+    /* argv[2] = path of the guest PRoot launcher script (e.g. launcher-kali.sh).
+     * Commands are NEVER run on the bare host: we re-enter PRoot through this
+     * launcher so real root stays confined to the guest rootfs. If it is not
+     * configured the daemon refuses to run (FAIL CLOSED). */
     if (argc > 2 && argv[2][0] != '\0') {
-        strncpy(confine_root, argv[2], sizeof(confine_root) - 1);
+        strncpy(launcher_path, argv[2], sizeof(launcher_path) - 1);
     }
+    /* argv[3] = guest rootfs dir (host path) — needed for the ownership fix. */
+    if (argc > 3 && argv[3][0] != '\0') {
+        strncpy(rootfs_path, argv[3], sizeof(rootfs_path) - 1);
+    }
+    /* argv[4]/[5] = app uid/gid: after a real-root command, files the command
+     * created are owned by root; the fix rewrites them back to this uid/gid. */
+    if (argc > 4 && argv[4][0] != '\0') app_uid = (uid_t)strtoul(argv[4], NULL, 10);
+    if (argc > 5 && argv[5][0] != '\0') app_gid = (gid_t)strtoul(argv[5], NULL, 10);
+    /* argv[6] = auto-fix on/off ("1"/"0"). */
+    if (argc > 6 && argv[6][0] != '\0') auto_fix = atoi(argv[6]);
+
+    if (app_uid == (uid_t)-1) app_uid = 0;   /* safe fallback: no-op chown to root */
+    if (app_gid == (gid_t)-1) app_gid = 0;
 
     // Ensure socket parent directory exists
     char dir_buf[1024];
@@ -296,6 +459,7 @@ int main(int argc, char **argv) {
         char *cmd_argv[MAX_ARGS] = {NULL};
 
         if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
+            close(fds[0]); close(fds[1]); close(fds[2]);
             close(client_fd);
             continue;
         }
@@ -303,6 +467,17 @@ int main(int argc, char **argv) {
         if (deny_command(cmd_argv)) {
             int deny_code = 126; /* 126 = command not permitted */
             write(client_fd, &deny_code, sizeof(deny_code));
+            close(fds[0]); close(fds[1]); close(fds[2]);
+            close(client_fd);
+            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+            continue;
+        }
+
+        /* Manual fix request from `nh fix permission <path>` (su_wrapper --fix).
+         * Not a command to run — rewrite ownership of a specific path on the host. */
+        if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "@FIX") == 0) {
+            handle_fix_request(client_fd, fds, cmd_argv, rootfs_path, app_uid, app_gid);
+            close(fds[0]); close(fds[1]); close(fds[2]);
             close(client_fd);
             for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
             continue;
@@ -329,41 +504,56 @@ int main(int argc, char **argv) {
 
             close(fds[0]); close(fds[1]); close(fds[2]);
 
-            /* Confine to the guest rootfs when provided — prevents guest commands
-             * from touching the HOST filesystem through real root. After this the
-             * requested (guest) cwd is valid again inside the chroot. */
-            if (confine_root[0] != '\0') {
-                if (chroot(confine_root) != 0) {
-                    perror("[su_daemon] chroot");
-                    _exit(127);
-                }
-                if (chdir("/") != 0) {
-                    perror("[su_daemon] chdir /");
-                    _exit(127);
-                }
-                setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
-                /* The wrapper sends the host shell path; use the guest shell. */
-                if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
-                    cmd_argv[0] = (char *)"/bin/sh";
-                }
+            /* SAFETY: never exec the requested command on the bare host. Convert
+             * it into a RE-ENTRY of the PRoot guest so that even a host-global
+             * command (e.g. `chmod -R / ...`) is confined to the guest rootfs by
+             * PRoot. If no launcher is configured we REFUSE (fail closed). */
+            if (launcher_path[0] == '\0' || access(launcher_path, X_OK) != 0) {
+                dprintf(STDERR_FILENO,
+                        "[su_daemon] FATAL: no PRoot launcher configured; "
+                        "refusing to run command on host.\n");
+                _exit(126);
             }
 
+            /* Build: launcher_path -- <guest-program> [args...]
+             * Everything after `--` is forwarded verbatim to proot (token
+             * faithful, no shell re-quoting loss). Bare `su`/`sudo` (only a
+             * shell in args) passes no guest program — the launcher then
+             * spawns an interactive root login shell. */
+            char *launcher_argv[MAX_ARGS + 4];
+            int li = 0;
+            launcher_argv[li++] = (char *)launcher_path;
+            launcher_argv[li++] = (char *)"--";
+
+            /* The wrapper sends "/system/bin/sh" for `su -c` and bare `su`;
+             * inside the guest that must be the guest shell. */
+            if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
+                cmd_argv[0] = (char *)"/bin/sh";
+            }
+
+            int guest_args = 0;
+            for (int i = 0; cmd_argv[i] != NULL; i++) guest_args = i + 1;
+
+            int bare_su = (guest_args == 1) &&
+                (strcmp(cmd_argv[0], "sh") == 0 || strcmp(cmd_argv[0], "/bin/sh") == 0 ||
+                 strcmp(cmd_argv[0], "bash") == 0 || strcmp(cmd_argv[0], "/bin/bash") == 0);
+
+            if (!bare_su) {
+                for (int i = 0; cmd_argv[i] != NULL && li < MAX_ARGS + 3; i++) {
+                    launcher_argv[li++] = cmd_argv[i];
+                }
+            }
+            launcher_argv[li] = NULL;
+
+            /* Pass the guest working directory so proot can start there. */
             if (cwd[0] != '\0') {
-                chdir(cwd);
+                setenv("NH_CWD", cwd, 1);
             }
 
-            // Switch GID & UID
-            if (setresgid(target_gid, target_gid, target_gid) < 0) {
-                perror("[su_daemon] setresgid");
-            }
-            if (setresuid(target_uid, target_uid, target_uid) < 0) {
-                perror("[su_daemon] setresuid");
-            }
-
-            if (cmd_argv[0] != NULL) {
-                execvp(cmd_argv[0], cmd_argv);
-                perror("[su_daemon] execvp failed");
-            }
+            /* Stay as real root (Magisk su). PRoot confines the filesystem. */
+            execv(launcher_path, launcher_argv);
+            dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
+                    launcher_path, strerror(errno));
             _exit(127);
         }
 
@@ -378,6 +568,22 @@ int main(int argc, char **argv) {
             } else if (WIFSIGNALED(status)) {
                 exit_code = 128 + WTERMSIG(status);
             }
+        }
+
+        /* Layer 1 — automatic ownership fix (host side, OUTSIDE PRoot).
+         * The real-root command may have created/changed files now owned by
+         * root; rewrite them back to the app uid/gid so the app can access
+         * them again. Only runs for real commands (not for @FIX which was
+         * already handled above). Skipping bind targets (dev/proc/sys/run/...)
+         * keeps this away from host data even on the host. */
+        if (auto_fix && exit_code != 126 && rootfs_path[0] != '\0') {
+            struct timeval tv0, tv1;
+            gettimeofday(&tv0, NULL);
+            fix_permissions(rootfs_path, app_uid, app_gid, 1);
+            gettimeofday(&tv1, NULL);
+            long ms = (tv1.tv_sec - tv0.tv_sec) * 1000L + (tv1.tv_usec - tv0.tv_usec) / 1000L;
+            dprintf(STDERR_FILENO, "[su_daemon] auto-fix: chowned root-owned files to %d:%d in %ld ms\n",
+                    (int)app_uid, (int)app_gid, ms);
         }
 
         // Send exit code back to client wrapper

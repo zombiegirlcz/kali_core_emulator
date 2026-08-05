@@ -120,7 +120,14 @@ int main(int argc, char **argv) {
     memset(cmd_argv, 0, sizeof(cmd_argv));
     int cmd_argc = 0;
 
-    if (is_su && argc > 1 && strcmp(argv[1], "-c") == 0 && argc > 2) {
+    /* nh fix permission <path> → su_wrapper --fix <path>
+     * Sends a @FIX marker + path to the daemon, which rewrites ownership of
+     * that guest path back to the app uid (host-side, confined to rootfs). */
+    if (argc >= 3 && strcmp(argv[1], "--fix") == 0) {
+        cmd_argv[0] = "@FIX";
+        cmd_argv[1] = argv[2];
+        cmd_argc = 2;
+    } else if (is_su && argc > 1 && strcmp(argv[1], "-c") == 0 && argc > 2) {
         // su -c 'command' → run via host shell
         cmd_argv[0] = "/system/bin/sh";
         cmd_argv[1] = "-c";

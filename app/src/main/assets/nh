@@ -1351,8 +1351,36 @@ fix_dispatch() {
     case "$1" in
         pkg) fix_pkg "$2" ;;
         auto) fix_auto ;;
-        *) echo "Usage: nh fix pkg <name>|auto"; exit 1 ;;
+        permission|perms) shift; fix_permission "$@" ;;
+        *) echo "Usage: nh fix pkg <name>|auto|permission <path>"; exit 1 ;;
     esac
+}
+
+fix_permission() {
+    local path="$1"
+    [ -z "$path" ] && { echo "Usage: nh fix permission <path>"; exit 1; }
+
+    # Bind / host-mapped cesty se NIKDY neopravuji (guest rootfs je mimo).
+    case "$path" in
+        /|/dev/*|/proc/*|/sys/*|/run/*|/sdcard/*|/mnt/*|/system/*|/vendor/*|/product/*|/apex/*|/storage/*|/data/*)
+            echo "[-] Odmítnuto: '$path' je bind/host mount nebo příliš široký cíl — fix běží jen v guest rootfs" >&2
+            exit 126 ;;
+    esac
+
+    echo "[*] Oprava vlastnictví: $path -> uid aplikace (přes magisk daemon) ..."
+    if [ -x /usr/local/bin/su_wrapper ]; then
+        /usr/local/bin/su_wrapper --fix "$path"
+        rc=$?
+    else
+        echo "[-] su_wrapper nenalezen — magisk daemon nedostupný" >&2
+        exit 1
+    fi
+    if [ $rc -eq 0 ]; then
+        echo "[+] Hotovo: $path"
+    else
+        echo "[-] Fix selhal (rc=$rc) — daemon běží? (Root Bridge zapnutý?)" >&2
+    fi
+    exit $rc
 }
 
 fix_pkg() {
@@ -1443,7 +1471,7 @@ help_dispatch() {
             printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility, tap, click, longclick, swipe, text, scroll, global\n"
             printf "  ${CYAN}api${RST}        share on/off/status\n"
             printf "  ${CYAN}desktop${RST}    start, stop, status\n"
-            printf "  ${CYAN}fix${RST}        pkg <name>, auto\n"
+            printf "  ${CYAN}fix${RST}        pkg <name>, auto, permission <path>\n"
             printf "  ${CYAN}apps${RST}       usage\n"
             printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
             printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
@@ -1550,6 +1578,25 @@ help_usb() {
     echo ""
 }
 
+help_fix() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}FIX${RST}  ${DIM}– oprava balíčků a vlastnictví souborů${RST}"
+    separator
+    echo "  ${GREEN}pkg <name>${RST}        Mockne zaseklý postinst skript balíčku"
+    echo "                         (/bin/true), odblokuje dpkg --configure -a"
+    echo "  ${GREEN}auto${RST}              Opraví všechny rozbité balíčky"
+    echo "  ${GREEN}permission <path>${RST} Vrátí vlastnictví cesty na UID aplikace"
+    echo "                         (přes magisk daemon, běží mimo proot) — pro"
+    echo "                         soubory vytvořené pod real rootem."
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh fix pkg libc6"
+    echo "    nh fix auto"
+    echo "    nh fix permission /root/muj-adresar"
+    echo ""
+}
+
 help_ashell() {
     banner
     echo ""
@@ -1612,7 +1659,7 @@ list_cmds() {
         "device text" "device scroll" "device global" \
         "api share" \
         "desktop start" "desktop stop" "desktop status" \
-        "fix pkg" "fix auto" \
+        "fix pkg" "fix auto" "fix permission" \
         "apps usage" \
         "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
         "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \

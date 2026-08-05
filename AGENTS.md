@@ -793,6 +793,67 @@ Kompletní mapa projektu — k 2026-07-23
  - 3 jazyky: Kotlin (primární), C (JNI bridge), Python (AI agent)
  - 8 unit testů — výrazně poddimenzované
 
+## Session 2026-08-14 — Background auto-start (cron automation)
+
+**Požadavek:** app se má sama spustit na pozadí po restartu kvůli cron automatizaci. Permise RECEIVE_BOOT_COMPLETED **v manifestu nebyla** (jen FOREGROUND_SERVICE) — uživatel předpokládal, že je, ale nikdo ji nevolal.
+
+| Soubor | Změna |
+|--------|-------|
+| `AndroidManifest.xml` | + `RECEIVE_BOOT_COMPLETED`; + receiver `.core.BootReceiver` (BOOT_COMPLETED + MY_PACKAGE_REPLACED, `exported=true`; LOCKED_BOOT_COMPLETED NEPOUŽITO — directBootAware by běžel před odemčením, filesDir je credential-encrypted) |
+| `core/BootReceiver.kt` (nový) | čte pref `boot_autostart` (default true, v `vpn_settings`), volá `BackgroundBoot.start()` |
+| `core/BackgroundBoot.kt` (nový) | najde aktivní rootfs, deployne `/root/.nh_boot.sh` (start cron/crond + `while true sleep 60` keep-alive), `setupProotEnvironment` + `TerminalService.createSession(view=null)` — headless proot session |
+| `core/TerminalService.kt` | START_STICKY restart (intent==null): když `boot_autostart` && žádné session → `BackgroundBoot.start()` — cron se vrátí i po zabití app systémem |
+| `MainActivity.kt` | toggle „Auto-start po restartu“ (karta vedle Mount Shared Storage, pref `boot_autostart`) |
+
+Chování: BOOT → BootReceiver → headless proot session s cronem (FGS + START_STICKY = app běží na pozadí). Killed → START_STICKY restart → cron session se obnoví. Aktualizace APK → MY_PACKAGE_REPLACED → restart. Pro spolehlivost v úsporném režimu: `nh device battery-optimize request` (infrastruktura už existuje).
+
+**Adversarial review (3 paralelní revieweři) — aplikované fixy:**
+- **Build-breaker:** duplicitní `detectGuestRootfs()` v `RootBridgeTab.kt` (Conflicting overloads) — odstraněn.
+- **Dedup cronu (MED-2):** `BackgroundBoot` gate `launching` + `TerminalService.backgroundBootSessionId` (registrovaný přes `sessionIds[created]`) — `MY_PACKAGE_REPLACED` za běhu / race se START_STICKY nespustí 2. cron.
+- **Relaunch po čistém stmrnou (MED-3):** `removeSession` — když padne background session a `boot_autostart`, restart s backoffem (max 3 pokusy, 20s); `backgroundBootReloads` reset po úspěšném startu; `stopAll()` resetuje obě pole.
+- **Bezpečnost (deny blocklist):** `deny_shell_payload` odstraňuje uvozovky (`rm -rf "/"` == `/`) — uzavírá evazní cestu k celosystemovému wipe-guardu su_daemon.
+- **FD leak:** deny path + `recv_fds_and_payload` chyba nyní zavírají `fds[0..2]` (close(-1) no-op).
+- **Docs:** stale řádky „na HOST / hostitelský root shell / roo typo“ v `assets/nethunter_docs.md` a README changelogu opraveny; `nh` self-help (`help_fix`, banner, `nh list` + `fix permission`).
+
+## Session 2026-08-14 — su_daemon PRoot re-entry safety fix (real-root confinement)
+
+**Bug (near-brick):** su_daemon executed the requested command **directly on the HOST** under real root (via an optional/incomplete `chroot`) instead of re-entering PRoot. When the launcher/rootfs arg was missing, no confinement at all applied, so `sudo chmod 777 -R /...` hit the host filesystem.
+
+**Target flow (implemented):**
+```
+proot $ sudo chmod 777 -R /root/cil/dir
+  -> su_wrapper (guest) -> magisk_daemon (real root, UNIX socket)
+  -> exec launcher-{distro}.sh -- chmod 777 -R /root/cil/dir
+  -> launcher re-enters PRoot -> command runs INSIDE guest rootfs
+  -> stdout/stderr stream back to the proot terminal (FDs 0,1,2)
+  -> proot --kill-on-exit reaps guest children; daemon child exits
+```
+
+| File | Change |
+|------|--------|
+| `assets/launcher.sh` | New `--` raw-exec mode: `launcher.sh -- <args...>` re-enters PRoot as real root, exports guest `PATH`/`HOME`, honours `NH_CWD` (from wrapper getcwd), routes through guest `/bin/sh` only to strip host `LD_PRELOAD`/`PROOT_LOADER`, then `exec "$@"` token-faithfully. Bare `--` = interactive root login shell. Uses existing `-0 --kill-on-exit`. |
+| `cpp/su_daemon.c` | Replaced chroot+setresuid+execvp with PRoot re-entry `execv(launcher, {"--", <args>})`. **Fail closed**: no launcher configured → `_exit(126)` (never runs on host). Stays real root. Passes `NH_CWD`. Keep `deny_command` blocklist. |
+| `ui/RootBridgeTab.kt` | `startDaemon` passes launcher-`* .sh` as argv[2]; added `detectActiveLauncher()`; removed dead `detectGuestRootfs()`. |
+
+Guarantee: even a host-global command is confined to the **guest rootfs** because it runs under PRoot with real root. `launcher.sh` template is redeployed on next container start; RootBridge fail-closes until then.
+
+### 2. Ownership fix (2 vrstvy) — root-owned files se přepíšou zpět na UID aplikace
+
+**Problém:** příkazy spuštěné pod real rootem vytvoří soubory owned by UID 0 → app (jiný UID) je pak nemůže číst/modifikovat.
+
+**Chytré pravidlo:** fix běží **na HOSTITELI mimo PRoot** — uvnitř prootu jsou bindy (/sdcard, /dev, /proc, /sys, /run/host_ipc...), rekurzivní chown by zasáhl reálná uživatelská data (= katastrofa). Mimo proot jsou bind targety jen (prázdné) složky v rootfs a vidí se **skutečný vlastník**.
+
+**Vrstva 1 — automatická (po každém příkazu daemona):** `fix_permissions(rootfs)` — `nftw` + `lchown` (nikdy nesleduje symlink mimo scope), přepisuje uid/gid != app na app uid/gid. Top-level bind dirs (`dev proc sys run sdcard mnt system vendor product apex storage data`) se **nikdy** nedescendují. Vypínatelné přepínačem v Root Bridge UI (`auto_fix_permissions`, default `true`), předává se daemonu jako argv[6].
+
+**Vrstva 2 — manuální:** `nh fix permission <cesta>` (alias `perms`) → `su_wrapper --fix <cesta>` → payload `@FIX` + cesta → daemon `handle_fix_request()`: odmítá bind/host rooty a `/` (exit 126), `realpath` kontrola že cíl zůstává v rootfs (blokuje symlink escape na /sdcard), pak `fix_permissions(scope)`.
+
+| Soubor | Změna |
+|--------|-------|
+| `cpp/su_daemon.c` | argv[3]=rootfs, argv[4]/[5]=app uid/gid, argv[6]=auto-fix; `handle_fix_request()` pro `@FIX`; auto-fix po `waitpid` (log `auto-fix: chowned ... in N ms`); `_GNU_SOURCE` + `<ftw.h>`/`<sys/time.h>` |
+| `cpp/su_wrapper.c` | nový režim `--fix <path>` → `@FIX` payload |
+| `assets/nh` | `nh fix permission <path>` v `fix_dispatch` (guest-side bind check + volá su_wrapper) |
+| `ui/RootBridgeTab.kt` | daemon start předává launcher+rootfs+uid+gid+autoFix; UI switch „Auto-fix vlastnictví“; vrácen `detectGuestRootfs()` |
+
 ## Session 2026-08-04 — Clipboard paste fix (UTF-8 breakage & control char injection)
 
 Bug report (bug.log → PDF `bug_report_terminal_paste.md`): pasting multi-line text with Czech diacritics (ě, š, č, ž, í) into nano produced `??` replacement chars and control-character injection (`^K`, `^M`, `<ffffffff>` dumps).

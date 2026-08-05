@@ -18,6 +18,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.linux_core.MainActivity
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.jvm.Volatile
 
 class TerminalService : Service() {
     companion object {
@@ -37,6 +38,12 @@ class TerminalService : Service() {
         val ignoredSessionIds = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
         val sessionNames = java.util.concurrent.ConcurrentHashMap<String, String>()
         val sessionDistros = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /** Session ID of the headless background (cron) boot, if one is active.
+         *  Guards against duplicate cron sessions (MED-2) and drives auto-
+         *  relaunch after a clean death (MED-3). */
+        @Volatile var backgroundBootSessionId: String? = null
+        @Volatile var backgroundBootReloads = 0
 
         // BUG 5 FIX: Atomic monotonicky rostoucí counter, který se kombinuje
         // s nanoTime pro 100% unikátní session ID i při paralelních createSession
@@ -187,6 +194,8 @@ class TerminalService : Service() {
             
             // Clean up session ID mappings
             val id = sessionIds.remove(session)
+            val wasBackground = (id != null && id == backgroundBootSessionId)
+            if (wasBackground) backgroundBootSessionId = null
             if (id != null) {
                 idToSession.remove(id)
                 ignoredSessionIds.remove(id)
@@ -198,6 +207,24 @@ class TerminalService : Service() {
             instance?.let { WidgetProvider.triggerUpdate(it) }
             Log.i(TAG, "Session removed. Remaining: ${sessions.size}")
             if (sessions.isEmpty()) {
+                // Background (cron) session died on its own (guest crash / proot
+                // error). If autostart is on, relaunch it (bounded) instead of
+                // silently stopping the service so cron keeps running.
+                val reload = wasBackground &&
+                    instance?.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+                        ?.getBoolean("boot_autostart", true) == true &&
+                    backgroundBootReloads < 3
+                if (reload) {
+                    backgroundBootReloads++
+                    Log.i(TAG, "Background cron session ended — relaunching (attempt $backgroundBootReloads)")
+                    val app = instance?.applicationContext
+                    if (app != null) {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (TerminalService.backgroundBootSessionId == null) BackgroundBoot.start(app)
+                        }, 20_000L)
+                    }
+                    return
+                }
                 instance?.stopForeground(STOP_FOREGROUND_REMOVE)
                 instance?.stopSelf()
             }
@@ -303,6 +330,16 @@ class TerminalService : Service() {
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        // START_STICKY restart: the system killed the app — bring the background
+        // cron session back so cron automation keeps running.
+        if (intent == null) {
+            val prefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("boot_autostart", true) && sessions.isEmpty()) {
+                Log.i(TAG, "Restart after kill — resuming background boot (cron)")
+                BackgroundBoot.start(applicationContext)
+            }
+        }
         return START_STICKY
     }
 
@@ -325,6 +362,8 @@ class TerminalService : Service() {
         }
         sessions.clear()
         sessionClients.clear()
+        backgroundBootSessionId = null
+        backgroundBootReloads = 0
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
