@@ -30,6 +30,17 @@ object ProotManager {
         val homeDir = File(rootfsDir, "root")
         val tmpDir = File(rootDir, "tmp")
 
+        // Host-side nástroje (mimo proot) pro kontext com.linux_core: adresáře
+        // files/usr/{bin,lib} musí existovat PŘED deployem binárek z assets
+        // (aplikace sem nasadí host nástroje). Vytváříme je zde (fáze deploy,
+        // spouští se při každém startu kontejneru) — idempotentně.
+        val hostPrefixBinDir = File(rootDir, "usr/bin")
+        val hostPrefixLibDir = File(rootDir, "usr/lib")
+        hostPrefixBinDir.mkdirs()
+        hostPrefixLibDir.mkdirs()
+        deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true)
+        deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false)
+
         val criticalDirs = listOf(
             "system", "dev", "proc", "sys", "tmp", "root", "sdcard",
             "bin", "usr/bin", "usr/sbin", "sbin", "lib", "lib64", "usr/lib", "etc",
@@ -120,6 +131,28 @@ object ProotManager {
             prootPath = defaultProot.absolutePath,
             rootfsDir = rootfsDir.absolutePath
         )
+    }
+
+    private fun deployDir(context: Context, assetDir: String, targetDir: File, executable: Boolean) {
+        val names = try { context.assets.list(assetDir) ?: return } catch (e: Exception) { return }
+        for (name in names) {
+            val target = File(targetDir, name)
+            // Už existuje (deploynuto nebo ručně umístěno) — přeskoč, nepřepisuj.
+            if (target.exists() && target.length() > 0L) {
+                if (executable) target.setExecutable(true, false)
+                continue
+            }
+            try {
+                context.assets.open("$assetDir/$name").use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (executable) target.setExecutable(true, false)
+                target.setReadable(true, false)
+                Log.i(TAG, "Deployed host tool $assetDir/$name (${target.length()} B)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to deploy host tool $assetDir/$name: ${e.message}")
+            }
+        }
     }
 
     private fun deployBinaries(context: Context, suffix: String) {

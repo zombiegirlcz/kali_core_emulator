@@ -44,6 +44,9 @@ if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
         exit 1
     fi
 
+    # DEBUG: ukaž raw odpověď
+    echo "[ASHELL_DEBUG] RESPONSE[${#RESPONSE}]: $(echo "$RESPONSE" | cat -v | head -c 500)" >&2
+
     # Vytisknout stdout + stderr a vrátit exit code
     echo "$RESPONSE" | python3 -c "
 import sys, json

@@ -29,7 +29,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <limits.h>
-#include <ftw.h>
+#include <dirent.h>
 #include <sys/time.h>
 
 #define DEFAULT_SOCKET_PATH "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
@@ -254,20 +254,34 @@ static uid_t fix_uid = (uid_t)-1;
 static gid_t fix_gid = (gid_t)-1;
 static int  fix_skip_top = 0;
 
-static int fix_cb(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftw) {
-    (void)fpath;
-    if (fix_skip_top && ftw->level == 1) {
-        const char *base = strrchr(fpath, '/');
-        base = base ? base + 1 : fpath;
-        if (is_bind_dir(base)) return FTW_SKIP_SUBTREE;
+static int fix_walk(const char *path, int depth) {
+    /* Top-level bind / host-mapped dirs: skip the whole subtree entirely
+     * (don't even chown the dir — that would hit the host dir target). */
+    if (fix_skip_top && depth == 1) {
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if (is_bind_dir(base)) return 0;
     }
-    if (tflag == FTW_DNR || tflag == FTW_NS) return 0; /* cannot stat — keep going */
-    if (sb->st_uid != fix_uid || sb->st_gid != fix_gid) {
-        /* lchown so we never follow into a symlink outside the scope. */
-        if (lchown(fpath, fix_uid, fix_gid) != 0 && errno != ENOENT) {
-            /* EPERM / others: silent (permissions being fixed vary). */
-        }
+    struct stat st;
+    if (lstat(path, &st) != 0) return 0; /* missing/ENOENT/EACCES — keep going */
+    if (st.st_uid != fix_uid || st.st_gid != fix_gid) {
+        /* lchown: nikdy nenásleduje symlink mimo scope. */
+        lchown(path, fix_uid, fix_gid);
     }
+    /* Rekurze jen do skutečných adresářů. Symlinky nejsou S_ISDIR -> nikdy
+     * se nenásledují => žádný escape ani symlink-loop. */
+    if (!S_ISDIR(st.st_mode)) return 0;
+    DIR *d = opendir(path);
+    if (!d) return 0; /* nečitelný adresář — přeskoč tiše */
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char child[PATH_MAX];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) continue; /* moc smugl — preskoc */
+        fix_walk(child, depth + 1);
+    }
+    closedir(d);
     return 0;
 }
 
@@ -276,7 +290,11 @@ static void fix_permissions(const char *scope, uid_t uid, gid_t gid, int skip_to
     fix_uid = uid;
     fix_gid = gid;
     fix_skip_top = skip_top;
-    nftw(scope, fix_cb, 64, FTW_PHYS);
+    if (scope == NULL || scope[0] == '\0') return;
+    if (strlen(scope) >= PATH_MAX) return;
+    char root[PATH_MAX];
+    snprintf(root, sizeof(root), "%s", scope);
+    fix_walk(root, 0);
 }
 
 /* Handle `nh fix permission <path>`: @FIX payload from su_wrapper. */

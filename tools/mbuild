@@ -1,15 +1,16 @@
 #!/bin/zsh
 # mbuild — NetHunter full build pipeline
-# Usage: zsh mbuild [all|native|build]
-#   all      = upload + native compile + APK build (complete flow)
-#   native   = NDK-only compile (no APK rebuild)
-#   build    = pull binaries → upload → APK build
+# Usage: zsh mbuild [all|native|build|usrtools]
+#   all       = upload + native compile + APK build (complete flow)
+#   native    = native-only compile (no APK rebuild)
+#   build     = pull binaries -> upload -> APK build
+#   usrtools  = jen nano/rsync/sed/rg + glibc libs (assets/usr)
 #
-# ⚠️ PRAVIDLO (AGENTS.md): Nativní binárky se VŽDY nejdřív stáhnou
-#    z Volume do lokálního app/src/main/assets/, pak teprve proběhne
-#    upload_src a APK build. Bez pull by rsync --delete v upload_src
-#    smazal binárky z Volume (nejsou v baked image) → APK by byl bez
-#    su_daemon/su_wrapper/usb_bridge. Viz AGENTS.md „Native build pipeline“.
+# PRAVIDLO (AGENTS.md): Nativni binarky se VZDY nejdriv stahnou
+# z Volume do lokalniho app/src/main/assets/, pak teprve probehne
+# upload_src a APK build. Bez pull by rsync --delete v upload_src
+# smazal binarky z Volume (nejsou v baked image) -> APK by byl bez
+# su_daemon/su_wrapper/usb_bridge. Viz AGENTS.md "Native build pipeline".
 set -e
 
 SRC="${KALI_PROJECT_DIR:-.}"
@@ -17,51 +18,104 @@ CMD="${1:-all}"
 
 cd "$SRC"
 
-# Nativní binárky, které musí být vždy v app/src/main/assets/ před upload+build.
-# Při přidání nového native modulu: přidej jeho výstup sem A do build_native.
+# Nativni binarky, ktere musi byt vzdy v app/src/main/assets/ pred upload+build.
+# Pri pridani noveho native modulu: pridej jeho vystup sem A do build_native.
 NATIVE_BINARIES=(su_daemon su_wrapper usb_bridge)
 
 pull_binaries() {
-    echo "  → pull native binaries from Volume to assets"
+    echo "  -> pull native binaries from Volume to assets"
     for bin in $NATIVE_BINARIES; do
         if modal volume get --force kali-build-data "src/app/src/main/assets/$bin" "app/src/main/assets/$bin" >/dev/null 2>&1; then
-            echo "    ✓ $bin ($(stat -c%s "app/src/main/assets/$bin" 2>/dev/null || echo '?') B)"
+            echo "    [OK] $bin ($(stat -c%s "app/src/main/assets/$bin" 2>/dev/null || echo '?') B)"
         else
-            echo "    ⚠ $bin nenalezen na Volume — zkompiluje ho build_native"
+            echo "    [WARN] $bin nenalezen na Volume — zkompluje ho build_native"
         fi
     done
+}
+
+# Usr tools (nano/rsync/sed/rg + glibc libs). build_native je generuje na Volume
+# do src/app/src/main/assets/usr/. Tato fce je stahne ihned po build_native pres
+# primy modal volume get do lokalniho app/src/main/assets/usr/.
+USRTOOLS_FILES=(
+  usr/bin/sed
+  usr/bin/rsync
+  usr/bin/nano
+  usr/bin/rg
+  usr/lib/ld-linux-aarch64.so.1
+  usr/lib/libc.so.6
+  usr/lib/libm.so.6
+  usr/lib/libpthread.so.0
+  usr/lib/libncursesw.so.6
+  usr/lib/libtinfow.so.6
+)
+pm_usrtools() {
+    echo "  -> pull usrtools assets (modal volume get) -> local app/src/main/assets/usr"
+    local pulled=0
+    for f in $USRTOOLS_FILES; do
+        if modal volume get --force kali-build-data "src/app/src/main/assets/$f" "app/src/main/assets/$f" >/dev/null 2>&1; then
+            pulled=1
+            echo "    [OK] $f ($(stat -c%s "app/src/main/assets/$f" 2>/dev/null || echo '?') B)"
+        else
+            echo "    [WARN] $f nenalezen na Volume (build asi jeste nebehl)"
+        fi
+    done
+    if [ "$pulled" = "0" ]; then
+        echo "    [WARN] zadne usrtools soubory na Volume - postavi je build_native"
+    fi
 }
 
 case "$CMD" in
     all)
         echo "=== FULL BUILD ==="
-        echo "  → upload source"
+        echo "  -> upload source"
         modal run modal_build.py::upload_src 2>&1 | tail -3
-        echo "  → NDK compile"
+        echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  → Gradle build"
+        echo "  -> pull usrtools assets ihned po build_native"
+        pm_usrtools
+        echo "  -> Gradle build"
         modal run modal_build.py::build > build.log | cat
         modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
+        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1
         ;;
     native)
+        echo "=== NATIVE BUILD ==="
+        echo "  -> upload source"
         modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  → pull binaries to local assets (aby APK build je měl)"
+        echo "  -> pull native binaries ihned po build_native"
         pull_binaries
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
+        echo "  -> pull usrtools assets ihned po build_native"
+        pm_usrtools
+        echo "  -> pull tarball"
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
+        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1 || true
         ;;
     build)
         echo "=== APK BUILD ==="
-        echo "  1) pull native binaries → assets"
+        echo "  1) pull native binaries -> assets"
         pull_binaries
+        pm_usrtools
         echo "  2) upload source"
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  3) Gradle build"
         modal run modal_build.py::build > build.log | cat
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
+        ;;
+    usrtools)
+        echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
+        echo "  -> upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> native build (usrtools)"
+        modal run modal_build.py::build_native > build.log | cat
+        echo "  -> pull usrtools assets ihned po build_native"
+        pm_usrtools
+        echo "  -> pull tarball"
+        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1 || true
         ;;
     *)
-        echo "Usage: zsh mbuild [all|native|build]"
+        echo "Usage: zsh mbuild [all|native|build|usrtools]"
         exit 1
         ;;
 esac

@@ -172,6 +172,21 @@ class MainActivity : ComponentActivity() {
 
         com.linux_core.core.ShortcutHelper.registerShortcuts(this)
         com.linux_core.core.VpnLogManager.initialize(applicationContext)
+
+        // Resume the background cron session whenever the app is opened.
+        // After a force-stop / system kill, Android won't redeliver
+        // BOOT_COMPLETED or a START_STICKY restart until the user manually
+        // launches the app — so on open we bring the headless cron (PRoot)
+        // session back here too. BackgroundBoot deduplicates internally
+        // (launching flag + backgroundBootSessionId), so a parallel
+        // BOOT_COMPLETED / START_STICKY race can't spawn a duplicate.
+        val prefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("boot_autostart", true) &&
+            com.linux_core.core.TerminalService.backgroundBootSessionId == null
+        ) {
+            com.linux_core.core.BackgroundBoot.start(applicationContext)
+        }
+
         setContent {
             NethunteraioperatorTheme {
                 Surface(

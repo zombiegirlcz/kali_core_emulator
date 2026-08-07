@@ -592,6 +592,7 @@ object LocalApiServer {
             put("plugged", plugged)
         }.toString()
 
+        Log.i(TAG, "Battery EXECUTED: level=${percentage}% status=${status} temp=${temperature}C plugged=${plugged}")
         sendResponse(out, 200, "OK", json)
     }
 
@@ -609,6 +610,7 @@ object LocalApiServer {
             @Suppress("DEPRECATION")
             vibrator.vibrate(durationMs)
         }
+        Log.i(TAG, "Vibrate EXECUTED: ${durationMs}ms")
         sendResponse(out, 200, "OK", "{\"status\":\"vibrated\",\"duration\":$durationMs}")
     }
 
@@ -617,6 +619,7 @@ object LocalApiServer {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
+        Log.i(TAG, "Toast EXECUTED: \"$message\"")
         sendResponse(out, 200, "OK", "{\"status\":\"toasted\"}")
     }
 
@@ -636,6 +639,7 @@ object LocalApiServer {
             @Suppress("DEPRECATION")
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
         }
+        Log.i(TAG, "TTS EXECUTED: \"${text.take(60)}\"")
         sendResponse(out, 200, "OK", "{\"status\":\"spoken\"}")
     }
 
@@ -670,6 +674,7 @@ object LocalApiServer {
                 sendResponse(out, 500, "Internal Error", JSONObject().put("error", errorMsg).toString())
                 return
             }
+            Log.i(TAG, "Clipboard READ EXECUTED: ${clipboardText.take(40)}")
             sendResponse(out, 200, "OK", JSONObject().put("text", clipboardText).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -702,6 +707,7 @@ object LocalApiServer {
                 sendResponse(out, 500, "Internal Error", JSONObject().put("error", errorMsg).toString())
                 return
             }
+            Log.i(TAG, "Clipboard WRITE EXECUTED: ${body.take(40)}")
             sendResponse(out, 200, "OK", "{\"status\":\"updated\"}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -727,6 +733,7 @@ object LocalApiServer {
                 .build()
 
             manager.notify(System.currentTimeMillis().toInt(), notification)
+            Log.i(TAG, "Notification POSTED: title=\"$title\" | $content")
             sendResponse(out, 200, "OK", "{\"status\":\"notified\"}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -934,6 +941,7 @@ object LocalApiServer {
                 put("volume", current)
                 put("max_volume", max)
             }.toString()
+            Log.i(TAG, "Volume READ EXECUTED: music=$current/$max")
             sendResponse(out, 200, "OK", json)
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -951,6 +959,7 @@ object LocalApiServer {
             val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             val target = volume.coerceIn(0, max)
             am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            Log.i(TAG, "Volume SET EXECUTED: music=$target (max=$max)")
             sendResponse(out, 200, "OK", "{\"status\":\"volume_set\",\"volume\":$target}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -971,6 +980,7 @@ object LocalApiServer {
             }
             val enable = body.trim().equals("on", ignoreCase = true)
             cm.setTorchMode(firstCamera, enable)
+            Log.i(TAG, "Torch EXECUTED: ${if (enable) "on" else "off"} (camera=$firstCamera)")
             sendResponse(out, 200, "OK", "{\"status\":\"torch_updated\",\"state\":\"${if (enable) "on" else "off"}\"}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1073,11 +1083,15 @@ object LocalApiServer {
             val error = process.errorStream.bufferedReader().readText()
             val exitCode = process.waitFor()
 
-            val json = JSONObject().apply {
-                put("exit_code", exitCode)
-                put("stdout", output)
-                put("stderr", error)
-            }.toString()
+            // Use explicit quoting to avoid org.json toString() escaping bugs
+            // on some Android builds (raw control chars inside JSON strings).
+            val json = buildString {
+                append("{")
+                append("\"exit_code\":").append(exitCode).append(",")
+                append("\"stdout\":").append(JSONObject.quote(output)).append(",")
+                append("\"stderr\":").append(JSONObject.quote(error))
+                append("}")
+            }
             sendResponse(out, 200, "OK", json)
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1460,8 +1474,10 @@ object LocalApiServer {
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         if (!matches.isNullOrEmpty()) {
                             resultText = matches[0]
+                            Log.i(TAG, "Voice EXECUTED recognized: \"${resultText.take(60)}\"")
                         } else {
                             errorMsg = "No speech detected"
+                            Log.w(TAG, "Voice EXECUTED: no speech detected")
                         }
                         recognizer.destroy()
                         latch.countDown()
@@ -1589,6 +1605,7 @@ object LocalApiServer {
             }
 
             val hierarchy = NetHunterAccessibilityService.getScreenHierarchy()
+            Log.i(TAG, "Accessibility hierarchy dump EXECUTED (${hierarchy.length}B)")
             sendResponse(out, 200, "OK", hierarchy)
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1597,11 +1614,13 @@ object LocalApiServer {
 
     private fun handleAccessibilityStatus(out: OutputStream) {
         val enabled = NetHunterAccessibilityService.isServiceRunning()
+        Log.i(TAG, "Accessibility status EXECUTED enabled=$enabled")
         sendResponse(out, 200, "OK", JSONObject().put("enabled", enabled).toString())
     }
 
     private fun requireServiceOrError(out: OutputStream): Boolean {
         if (!NetHunterAccessibilityService.isServiceRunning()) {
+            Log.w(TAG, "Accessibility service NOT running — action SKIPPED (jen HTTP)")
             sendResponse(out, 200, "OK", JSONObject().apply {
                 put("error", "Accessibility Service not enabled")
                 put("needs_permission", "android.settings.ACCESSIBILITY_SETTINGS")
@@ -1620,6 +1639,7 @@ object LocalApiServer {
                 return
             }
             val ok = NetHunterAccessibilityService.tap(j.optInt("x", 0), j.optInt("y", 0))
+            Log.i(TAG, "Accessibility tap(${j.optInt("x", 0)},${j.optInt("y", 0)}) EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1640,6 +1660,7 @@ object LocalApiServer {
                 }
                 NetHunterAccessibilityService.tap(j.optInt("x", 0), j.optInt("y", 0))
             }
+            Log.i(TAG, "Accessibility click EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1660,6 +1681,7 @@ object LocalApiServer {
                 }
                 NetHunterAccessibilityService.longTap(j.optInt("x", 0), j.optInt("y", 0))
             }
+            Log.i(TAG, "Accessibility longclick EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1678,6 +1700,7 @@ object LocalApiServer {
                 j.optInt("x1", 0), j.optInt("y1", 0), j.optInt("x2", 0), j.optInt("y2", 0),
                 j.optLong("duration_ms", 300L)
             )
+            Log.i(TAG, "Accessibility swipe EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1695,6 +1718,7 @@ object LocalApiServer {
             val text = j.getString("text")
             val targetText = if (j.has("target_text")) j.getString("target_text") else null
             val ok = NetHunterAccessibilityService.setText(text, targetText)
+            Log.i(TAG, "Accessibility text-input EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1708,6 +1732,7 @@ object LocalApiServer {
             val forward = j.optString("direction", "forward") == "forward"
             val targetText = if (j.has("text")) j.getString("text") else null
             val ok = NetHunterAccessibilityService.scroll(forward, targetText)
+            Log.i(TAG, "Accessibility scroll EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1723,6 +1748,7 @@ object LocalApiServer {
                 return
             }
             val ok = NetHunterAccessibilityService.globalAction(j.optString("action", ""))
+            Log.i(TAG, "Accessibility global(${j.optString("action", "")}) EXECUTED ok=$ok")
             sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1737,6 +1763,7 @@ object LocalApiServer {
             } else {
                 true
             }
+            Log.i(TAG, "Battery-optimize READ EXECUTED ignored=$isIgnoring")
             sendResponse(out, 200, "OK", "{\"ignored\":$isIgnoring}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1749,6 +1776,7 @@ object LocalApiServer {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
                 if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
                     try {
+                        Log.i(TAG, "Battery-optimize EXECUTED: launching exemption request activity")
                         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                             data = Uri.parse("package:${context.packageName}")
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1890,6 +1918,7 @@ object LocalApiServer {
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
             val active = dpm.isAdminActive(adminComponent)
+            Log.i(TAG, "DeviceAdmin status EXECUTED active=$active")
             sendResponse(out, 200, "OK", "{\"active\":$active}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1899,6 +1928,7 @@ object LocalApiServer {
     private fun handleDeviceAdminRequest(context: Context, out: OutputStream) {
         try {
             val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
+            Log.i(TAG, "DeviceAdmin request EXECUTED: launching ADD_DEVICE_ADMIN activity")
             val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                 putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
                 putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Requesting Device Admin privileges for NetHunter Operator.")
@@ -1917,6 +1947,7 @@ object LocalApiServer {
             val adminComponent = ComponentName(context, NetHunterDeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(adminComponent)) {
                 dpm.lockNow()
+                Log.i(TAG, "Device LOCK EXECUTED (lockNow triggered)")
                 sendResponse(out, 200, "OK", "{\"status\":\"locked\"}")
             } else {
                 sendResponse(out, 200, "OK", "{\"error\":\"Device admin not active\",\"needs_activation\":\"/device/admin\"}")

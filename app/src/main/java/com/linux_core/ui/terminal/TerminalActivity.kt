@@ -2665,18 +2665,33 @@ class TerminalActivity : ComponentActivity() {
             }
         }
 
-        // Sestav PATH: Android host cesty + distribuční cesty + filesDir (nh CLI)
+        // Host-side nástroje (mimo proot) pro kontext com.linux_core.
+        // Uživatel sem skládá binárky/skripty do files/usr/bin (+ lib) a spouští
+        // je přímo z host (ashell) shellu — proto zajistíme, že PREFIX prostor
+        // existuje a cesty jsou přidané do PATH/LD_LIBRARY_PATH.
+        // Host-side nástroje (mimo proot) pro kontext com.linux_core.
+        // Adresáře files/usr/{bin,lib} vytvoří a binárky z assets sem nasadí
+        // ProotManager.setupProotEnvironment (fáze deploy) — zde jen vystavíme
+        // cesty host (ashell) shellu, abych je mohl používat mimo proot.
+        val hostPrefix = File(filesDir, "usr")
+        val hostPrefixBin = File(hostPrefix, "bin")
+        val hostPrefixLib = File(hostPrefix, "lib")
+
+        // Sestav PATH: Android host cesty + distrib. cesty + filesDir (nh CLI) + host PREFIX/bin
         val basePath = "/system/bin:/system/xbin:/vendor/bin"
-        val extraPaths = (distroPaths + filesDir.absolutePath).joinToString(":")
+        val extraPaths = (distroPaths + filesDir.absolutePath + hostPrefixBin.absolutePath).joinToString(":")
         val fullPath = "$basePath:$extraPaths"
 
         Log.i(TAG, "ashell PATH: $fullPath")
+        Log.i(TAG, "ashell PREFIX=${hostPrefix.absolutePath} (bin/lib ready)")
 
         val cmd = arrayOf("/system/bin/sh", "-i")
         val env = arrayOf(
             "HOME=${filesDir.absolutePath}",
             "USER=app",
             "PATH=$fullPath",
+            "PREFIX=${hostPrefix.absolutePath}",
+            "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"
