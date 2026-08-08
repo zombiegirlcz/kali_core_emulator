@@ -48,21 +48,29 @@ if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
     echo "[ASHELL_DEBUG] RESPONSE[${#RESPONSE}]: $(echo "$RESPONSE" | cat -v | head -c 500)" >&2
 
     # Vytisknout stdout + stderr a vrátit exit code
-    echo "$RESPONSE" | python3 -c "
+    cat > /tmp/.ashell_parse_$$.py <<'PYEOF'
 import sys, json
+data = sys.stdin.read()
 try:
-    d = json.load(sys.stdin)
-    out = d.get('stdout',''); err = d.get('stderr','')
-    rc = d.get('exit_code', 0)
-    if out: sys.stdout.write(out)
-    if err: sys.stderr.write(err)
-    if not out and not err and 'error' in d:
-        sys.stderr.write(d['error'] + chr(10))
-    sys.exit(0 if rc == 0 else 1)
+    d = json.loads(data)
 except Exception as e:
-    sys.stderr.write('Chyba parsování odpovědi: %s' % e + chr(10))
-    sys.exit(1)
-" 2>&1
+    try:
+        fix = str.maketrans({10: '\\n', 13: '\\r', 9: '\\t'})
+        d = json.loads(data.translate(fix))
+    except Exception:
+        sys.stderr.write('Chyba parsování odpovědi: %s\n' % e)
+        sys.stderr.write('Raw: %s\n' % data[:400])
+        sys.exit(1)
+out = d.get('stdout',''); err = d.get('stderr','')
+rc = d.get('exit_code', 0)
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+if not out and not err and 'error' in d:
+    sys.stderr.write(d['error'] + '\n')
+sys.exit(0 if rc == 0 else 1)
+PYEOF
+    printf '%s' "$RESPONSE" | python3 /tmp/.ashell_parse_$$.py
+    rm -f /tmp/.ashell_parse_$$.py
     exit $?
 fi
 

@@ -432,6 +432,8 @@ object LocalApiServer {
                 path == "/clipboard" && method == "GET" -> handleClipboardGet(context, out)
                 path == "/clipboard" && method == "POST" -> handleClipboardSet(context, body, out)
                 path == "/notification" && method == "POST" -> handleNotification(context, body, out)
+                path == "/git-agent/notify" && method == "POST" -> handleGitAgentNotify(context, body, out)
+                path == "/git-agent/action" && method == "POST" -> handleGitAgentAction(context, body, out)
                 path == "/wifi" && method == "GET" -> handleWifi(context, out)
                 path == "/wifi" && method == "POST" -> handleWifiControl(context, body, out)
                 path == "/device/admin" && method == "GET" -> handleDeviceAdminStatus(context, out)
@@ -735,6 +737,64 @@ object LocalApiServer {
             manager.notify(System.currentTimeMillis().toInt(), notification)
             Log.i(TAG, "Notification POSTED: title=\"$title\" | $content")
             sendResponse(out, 200, "OK", "{\"status\":\"notified\"}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    // ─── Git Agent Interactive Notifications ─────────────────────────────────
+
+    private fun handleGitAgentNotify(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val repoId = json.optString("repo_id", "")
+            val repoPath = json.optString("repo_path", "")
+            val branch = json.optString("branch", "main")
+            val commitMsg = json.optString("commit_msg", "auto-commit")
+
+            if (repoId.isEmpty() || repoPath.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"repo_id and repo_path are required\"}")
+                return
+            }
+
+            val notificationId = repoId.hashCode() + 1000
+            GitAgentNotifier.showInteractiveNotification(
+                context = context,
+                repoId = repoId,
+                repoPath = repoPath,
+                branch = branch,
+                commitMsg = commitMsg,
+                notificationId = notificationId
+            )
+
+            sendResponse(out, 200, "OK", "{\"status\":\"notified\",\"repo_id\":\"$repoId\",\"notification_id\":$notificationId}")
+            Log.i(TAG, "GitAgent interactive notification posted: repo=$repoPath id=$notificationId")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleGitAgentAction(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val repoId = json.optString("repo_id", "")
+            val action = json.optString("action", "none")
+            val repoPath = json.optString("repo_path", "")
+            val branch = json.optString("branch", "main")
+
+            // Write action file for PRoot git-agent to process
+            val actionDir = java.io.File("/sdcard/.git-agent/actions")
+            actionDir.mkdirs()
+
+            val timestamp = android.text.format.DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis())
+            val repoHash = repoPath.hashCode().toString().replace("-", "")
+            val actionFile = java.io.File(actionDir, "${timestamp}-${repoHash}.json")
+
+            val actionJson = "{\"repo\":\"$repoPath\",\"branch\":\"$branch\",\"action\":\"$action\",\"repo_id\":\"$repoId\",\"ts\":\"$timestamp\",\"status\":\"pending\"}"
+            actionFile.writeText(actionJson)
+
+            Log.i(TAG, "GitAgent action received: repo=$repoPath action=$action file=${actionFile.absolutePath}")
+            sendResponse(out, 200, "OK", "{\"status\":\"queued\",\"action\":\"$action\",\"repo\":\"$repoPath\"}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
