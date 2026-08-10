@@ -21,6 +21,12 @@ DOCKER_MODE="__DOCKER_MODE__"
 LOG_PREFIX="__LOG_PREFIX__"
 DISTRO_ID="__DISTRO_ID__"
 
+# ─── Verbose session messages ────────────────────────────
+# Běžně tichý launcher: proot/session/su_daemon debug patří do stderr,
+# který u su_daemon re-entry proteče přímo do terminálu uživatele. Debug
+# se zapíná až při NH_LAUNCHER_DEBUG=1 (ladění launcheru/su_daemon).
+log() { [ -n "$NH_LAUNCHER_DEBUG" ] && echo "[$LOG_PREFIX] $*" >&2 || true; }
+
 # ─── Detect usable PRoot binary ──────────────────────────
 PR=""
 LOADER=""
@@ -29,7 +35,7 @@ if [ -x "$PROOT_BIN" ] && [ -x "$LOADER_BIN" ] && [ -f "$TALLOC_LIB" ]; then
     LOADER="$LOADER_BIN"
     export PROOT_LOADER="$LOADER"
     export LD_PRELOAD="$TALLOC_LIB"
-    echo "[$LOG_PREFIX] Using dynamic PRoot: $PROOT_BIN (LD_PRELOAD=$TALLOC_LIB)" >&2
+    log "Using dynamic PRoot: $PROOT_BIN (LD_PRELOAD=$TALLOC_LIB)"
 else
     echo "[$LOG_PREFIX] ERROR: No usable PRoot binary found" >&2
     echo "[$LOG_PREFIX]   dynamic: exists=$([ -x "$PROOT_BIN" ] && echo yes || echo no)" >&2
@@ -47,7 +53,7 @@ if [ ! -d "$ROOTFS_DIR" ]; then
     exit 1
 fi
 
-echo "[$LOG_PREFIX] Starting $DISTRO_ID session ($ROOTFS_NAME, docker=$DOCKER_MODE)" >&2
+log "Starting $DISTRO_ID session ($ROOTFS_NAME, docker=$DOCKER_MODE)"
 
 # ─── PRoot bind mounts ──────────────────────────────────
 BINDS="-b /dev -b /proc -b /sys"
@@ -56,6 +62,11 @@ BINDS="$BINDS -b $FILES_DIR/ipc:/run/host_ipc"
 BINDS="$BINDS $SDCARD_MOUNT"
 BINDS="$BINDS __EXTRA_ROOT_MOUNTS__"
 
+# -E LD_PRELOAD / -E PROOT_LOADER: proot sám načte talloc (má je v environ),
+# ale tyto host cesty se NESMÍ předat guest procesům — jinak guest ld.so hlásí
+# "ERROR: 
+#  ld.so: object '/data/.../libtalloc.so.2' from LD_PRELOAD cannot be
+#  preloaded ... ignored." u každého /bin/sh pod prootem.
 PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink"
 PROOT_CWD="/root"
 
@@ -78,16 +89,16 @@ if [ "$1" = "--" ]; then
     if [ -n "$NH_CWD" ] && [ -d "$ROOTFS_DIR/${NH_CWD#/}" ]; then
         WDIR="$NH_CWD"
     fi
-    printf '%s\n' "[$LOG_PREFIX] su_daemon exec: $*" >&2
+    log "su_daemon exec: $*"
     if [ $# -gt 0 ]; then
         # Route through guest /bin/sh only to strip the host LD_PRELOAD, then
         # exec the exact args verbatim (no shell re-quoting). PRoot confines
         # every path access to the guest rootfs.
-        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+        exec "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
             /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"' -- "$@"
     else
         # Bare `su` -> interactive root login shell inside proot.
-        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+        exec "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
             /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; if command -v zsh >/dev/null 2>&1; then exec zsh --login; else exec bash --login; fi'
     fi
 fi
@@ -97,10 +108,10 @@ fi
 # (apt, packages, users), only then the interactive session starts.
 if [ "$DOCKER_MODE" != "1" ] && [ -x "$ROOTFS_DIR/root/bootstrap.sh" ] && { [ -f "$ROOTFS_DIR/root/.bootstrap_required" ] || [ ! -f "$ROOTFS_DIR/root/.setup_done" ]; }; then
     echo "[$LOG_PREFIX] First run detected — running bootstrap..." >&2
-    if "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$PROOT_CWD" $BINDS \
+    if "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$PROOT_CWD" $BINDS \
         /bin/sh -c 'unset LD_PRELOAD; exec /bin/bash /root/bootstrap.sh'; then
         rm -f "$ROOTFS_DIR/root/.bootstrap_required"
-        echo "[$LOG_PREFIX] Bootstrap completed" >&2
+        log "Bootstrap completed"
     else
         echo "[$LOG_PREFIX] WARNING: bootstrap failed — keeping .bootstrap_required (retry next launch)" >&2
     fi
@@ -108,24 +119,24 @@ fi
 
 # ─── Build and execute PRoot command ────────────────────
 if [ "$DOCKER_MODE" = "1" ]; then
-    set -- "$PR" $PROOT_FLAGS \
+    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
         /bin/sh -c 'cd /root && exec /bin/bash --login "$@"' -- "$@"
 elif [ -f "$ROOTFS_DIR/root/entrypoint.sh" ]; then
-    set -- "$PR" $PROOT_FLAGS \
+    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
         /bin/sh /root/entrypoint.sh "$@"
 else
-    set -- "$PR" $PROOT_FLAGS \
+    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
         /bin/sh -c 'cd /root && exec /bin/bash --login "$@"' -- "$@"
 fi
 
-echo "[$LOG_PREFIX] exec: $@" >&2
+log "exec: $@"
 exec "$@"

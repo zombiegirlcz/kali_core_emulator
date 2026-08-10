@@ -109,7 +109,7 @@ static int try_fallback(int argc, char **argv) {
 
     /* Daemon down and nothing safe to exec → fail loudly, exit 1. */
     fprintf(stderr,
-        "[su_wrapper] CHYBA: magisk daemon nedostupný (socket %s/%s/%s)\n"
+        "[su_wrapper] CHYBA: magisk daemon nedostupný (socket %s, %s, %s)\n"
         "            Pro `nh fix permission` / `su` je potřeba spuštěný Root Bridge:\n"
         "            v aplikaci otevřete záložku Root Bridge a zapněte Start.\n"
         "            FALLBACK BLOKOVÁN (bezpečnost): žádný lokální su/shell.",

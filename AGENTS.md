@@ -902,3 +902,44 @@ Bug report (bug.log → PDF `bug_report_terminal_paste.md`): pasting multi-line 
 - pole `suggestionHandler` (main looper), `rebuildSuggestionsRunnable`, `lastSuggestedList`;
 - `updateSuggestions()` = `removeCallbacks + post(rebuild…)` (thread-safe z IME/terminal vlákna);
 - `rebuildSuggestions()` vrátí early, když `getSuggestions(...) == lastSuggestedList`, jinak teprve přebuduje tlačítka.
+
+## Session 2026-08-10 — su_daemon test suite zelená (PASS=7 FAIL=0)
+
+### Nález: daemon běžel celou dobu — falešná detekce mrtvého procesu
+
+`socketAlive` vs `ps` diagnostika na zařízení:
+- `ps -A` z ashell (uid u0_a333) **NEVIDÍ root-owned procesy** → daemon vypadal mrtvý, ale `su -c "ps -A -o pid,cmd | grep su_daemon"` (root) ho viděl.
+- `test -d /proc/<pid>` z app (uid u0_a333) na root proces vrací EACCES → `isProcessAlive()` vrací false → **app smazala pid file** (`pidFile.delete()`) a UI hlásila falešné "aktivní" přes stale socket.
+- Fix v `RootBridgeTab.kt`: přidán `socketAlive()` — **UNIX socket connect test** (LocalSocket + LocalSocketAddress.Namespace.FILESYSTEM); connect selže na stale socketu (ECONNREFUSED), uspěje jen na živém daemonu. Fallback přes `su -c ps`. `isDaemonRunning()` teď: socket connect → pip file + fallback ps.
+
+### Nález: pkill -f sebevražda
+
+- `pkill -f su_daemon` matchuje i vlastní ashell command line (obsahuje "su_daemon") → zabil ashell → RESPONSE přerušen, daemon zůstal mrtvý.
+- Fix: **`pkill -x su_daemon`** (exact comm match) v `tools/su_daemon_test.sh` T5 i `tools/su_daemon_ctl.sh` stop.
+
+### Test suite finální stav
+
+| Test | Výsledek |
+|------|----------|
+| T1 daemon stav | PASS (PID + socket; živost přes `su -c test -d /proc`) |
+| T2 root re-entry | PASS `uid=0` uvnitř rootfs (su_wrapper `id` raw output — launcher debug jde mimo RESPONSE JSON) |
+| T3 fix permission | PASS 0 → 10333 |
+| T4 fail-closed | PASS daemon žije + launcher na zařízení |
+| T5 fail-hard | PASS daemon mrtvý → rc=1 + FALLBACK BLOKOVÁN + **daemon restartován** |
+
+`tools/su_daemon_test.sh` — vylepšení:
+- T2/T4: output su_wrapperu čten RAW (launcher debug `Using dynamic PRoot...` s bare \n rozseká RESPONSE JSON; `jget` na to nestačí)
+- T5: realný kill-test (pkill -x) → fail-hard ověření → restart daemonu na konci (test nesmí nechat zařízení bez root bridge)
+- T1: živost PID přes `su -c "test -d /proc/$pid"` (root vidí root proces)
+
+### APK build
+
+- `zsh mbuild all` → BUILD SUCCESSFUL (1m 30s), APK `/root/Download/app-debug.apk` (133.8 MB)
+- V APK potvrzeno: nový `su_wrapper` (md5 `2781cdb1`, mezera fix `(socket %s, %s, %s)`) + `su_daemon` (`3f340a1b`)
+- Lokální `app/src/main/assets/*` zůstaly staré (pull_binaries stáhl Volume verzi) — APK je cílový artefakt a je správný
+- C fix: `su_wrapper.c` chybová hláška `(socket %s/%s/%s)` → `(socket %s, %s, %s)` (dvojité lomítko)
+
+### Stav na zařízení (test po běhu)
+
+- Daemon běží (PID 7581 po T5 restartu), socket živý, confinement funguje (`su top` = jen proot procesy)
+- Nevyřešeno: Root Bridge UI nová verze (socket-test) — čeká na `adb install -r` + toggle

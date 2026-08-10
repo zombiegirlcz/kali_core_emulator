@@ -1,6 +1,8 @@
 package com.linux_core.ui
 
 import android.content.Context
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -93,22 +95,29 @@ object RootBridgeManager {
     }
 
     fun isDaemonRunning(context: Context): Pair<Boolean, Int?> {
+        // 1) Unix socket connect test — jediné spolehlivé ověření "daemon teď naslouchá".
+        //    File.exists() nestačí (stale socket bez listeneru projde), /proc/PID selhává,
+        //    protože root-owned proces je pro app (uid u0_a333) neviditelný.
+        val sock = socketAlive(File(context.filesDir, SOCKET_FILE))
+        if (sock) {
+            // PID z pid file (čistě informativně; může chybět, pokud ho UI dřív smazalo)
+            val pid = try {
+                File(context.filesDir, PID_FILE).readText().trim().toIntOrNull()
+            } catch (e: Exception) { null }
+            return Pair(true, pid)
+        }
+        // 2) Fallback: pid file + ps přes su (root vidí root procesy)
         val pidFile = File(context.filesDir, PID_FILE)
         if (pidFile.exists()) {
-            val pid = try { pidFile.readText().trim().toInt() } catch (e: Exception) { null }
+            val pid = try { pidFile.readText().trim().toIntOrNull() } catch (e: Exception) { null }
             if (pid != null && isProcessAlive(pid)) {
                 return Pair(true, pid)
             } else {
                 pidFile.delete()
             }
         }
-        // Socket exists = daemon is (or was) listening
-        if (File(context.filesDir, SOCKET_FILE).exists()) {
-            return Pair(true, null)
-        }
-        // Check ps
         return try {
-            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", "ps -ef 2>/dev/null | grep '[s]u_daemon'"))
+            val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", "ps -A -o pid,cmd 2>/dev/null | grep '[s]u_daemon'"))
             val out = proc.inputStream.bufferedReader().readText()
             if (out.isNotBlank()) {
                 val m = Regex("""\b(\d+)\b""").find(out)
@@ -119,6 +128,20 @@ object RootBridgeManager {
             }
         } catch (e: Exception) {
             Pair(false, null)
+        }
+    }
+
+    /** Connect test na UNIX socket — connect selže na stale socketu (ECONNREFUSED),
+     *  uspěje jen na živém naslouchajícím daemonu. */
+    private fun socketAlive(socketFile: File): Boolean {
+        if (!socketFile.exists()) return false
+        return try {
+            val s = LocalSocket()
+            s.connect(LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
+            s.close()
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -152,9 +175,11 @@ object RootBridgeManager {
                 val pidFile = File(context.filesDir, PID_FILE)
 
                 // Kill stale daemon instances first (previous runs may linger)
+                // NOTE: pkill -x (exact comm match), NOT -f — -f matchuje command
+                // line a tento su-shell sám obsahuje "su_daemon" → self-kill.
                 try {
                     Runtime.getRuntime().exec(
-                        arrayOf("sh", "-c", "$suBin -c 'pkill -f su_daemon' 2>/dev/null; true")
+                        arrayOf("sh", "-c", "$suBin -c 'pkill -x su_daemon' 2>/dev/null; true")
                     ).waitFor()
                 } catch (e: Exception) { /* ignore */ }
 
@@ -176,6 +201,12 @@ object RootBridgeManager {
                 val launcherArg = launcherPath?.let { " '$it'" } ?: ""
                 val rootfs = detectGuestRootfs(context)
                 val rootfsArg = rootfs?.let { " '$it'" } ?: ""
+                Log.i(TAG, "startDaemon: launcher=$launcherPath rootfs=$rootfs")
+                if (launcherPath == null || rootfs == null) {
+                    Log.e(TAG, "startDaemon aborted: launcher/rootfs missing (fail-closed) — toggle OFF a znovu ON nebo zkontroluj rootfs")
+                    android.os.Handler(context.mainLooper).post { callback(false) }
+                    return@Thread
+                }
                 val appUid = android.os.Process.myUid()
                 val autoFix = if (prefs.getBoolean("auto_fix_permissions", true)) "1" else "0"
                 val cmd = "$suBin -c '${daemonBin.absolutePath} ${sockFile.absolutePath}$launcherArg$rootfsArg $appUid $appUid $autoFix > ${logFile.absolutePath} 2>&1 &'"
@@ -209,8 +240,9 @@ object RootBridgeManager {
             val (suOk, suPath) = checkSuAvailable()
             val suBin = if (suOk && suPath != null) suPath else "su"
             // Kill ALL su_daemon instances (not just the recorded pid)
+            // NOTE: pkill -x (exact comm), NOT -f — -f by zabil i vlastní su-shell.
             Runtime.getRuntime().exec(
-                arrayOf("sh", "-c", "$suBin -c 'pkill -f su_daemon' 2>/dev/null; true")
+                arrayOf("sh", "-c", "$suBin -c 'pkill -x su_daemon' 2>/dev/null; true")
             ).waitFor()
             File(context.filesDir, PID_FILE).delete()
             File(context.filesDir, SOCKET_FILE).delete()
