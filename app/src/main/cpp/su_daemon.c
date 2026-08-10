@@ -32,7 +32,7 @@
 #include <dirent.h>
 #include <sys/time.h>
 
-#define DEFAULT_SOCKET_PATH "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
+#define DEFAULT_SOCKET_PATH "/data/user/0/com.linux_core/files/ipc/magisk_daemon.sock"
 #define MAX_ARGS 128
 #define BUFFER_SIZE 8192
 
@@ -399,6 +399,30 @@ int main(int argc, char **argv) {
 
     if (app_uid == (uid_t)-1) app_uid = 0;   /* safe fallback: no-op chown to root */
     if (app_gid == (gid_t)-1) app_gid = 0;
+
+    /* ── Self-daemonize ────────────────────────────────────────────────────
+     * When started from a shell (`su -c '... '` with &) the daemon dies with
+     * SIGHUP the moment the launching shell exits. Detach into our own
+     * session so the process survives: fork → parent exits → child calls
+     * setsid() and keeps stdin on /dev/null. stdout/stderr stay attached
+     * (the caller redirects them to su_daemon.log).
+     * Debug escape: `NH_DAEMON_FG=1` běží v popředí bez fork/daemonizace. */
+    if (getenv("NH_DAEMON_FG") == NULL) {
+        pid_t dfork = fork();
+        if (dfork < 0) {
+            perror("[su_daemon] fork (daemonize)");
+            return 1;
+        }
+        if (dfork > 0) _exit(0);   /* rodič končí — shell se vrací ihned */
+        /* child: nová session, osamostatněný */
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            /* stdout/stderr zůstávají na logu, který přesměroval volající shell */
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+    }
 
     // Ensure socket parent directory exists
     char dir_buf[1024];

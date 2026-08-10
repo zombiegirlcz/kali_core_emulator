@@ -45,45 +45,18 @@ object GitAgentNotifier {
     ) {
         init(context)
 
-        // PUSH action
-        val pushIntent = Intent(context, GitAgentActionReceiver::class.java).apply {
-            putExtra("repo_id", repoId)
-            putExtra("action", "push")
-            putExtra("repo_path", repoPath)
-            putExtra("branch", branch)
+        // Otevře aplikaci na tap — žádný git-agent exekuce (receiver byl smazán
+        // 2026-08-09: interaktivní notifikace = jen informace + otevření app).
+        val appIntent = Intent(context, com.linux_core.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("git_repo", repoPath)
+            putExtra("git_branch", branch)
+            putExtra("git_commit", commitMsg)
         }
-        val pushPendingIntent = PendingIntent.getBroadcast(
+        val contentIntent = PendingIntent.getActivity(
             context,
-            repoId.hashCode() + 1,
-            pushIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        // MERGE action
-        val mergeIntent = Intent(context, GitAgentActionReceiver::class.java).apply {
-            putExtra("repo_id", repoId)
-            putExtra("action", "merge")
-            putExtra("repo_path", repoPath)
-            putExtra("branch", branch)
-        }
-        val mergePendingIntent = PendingIntent.getBroadcast(
-            context,
-            repoId.hashCode() + 2,
-            mergeIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        // NONE action
-        val noneIntent = Intent(context, GitAgentActionReceiver::class.java).apply {
-            putExtra("repo_id", repoId)
-            putExtra("action", "none")
-            putExtra("repo_path", repoPath)
-            putExtra("branch", branch)
-        }
-        val nonePendingIntent = PendingIntent.getBroadcast(
-            context,
-            repoId.hashCode() + 3,
-            noneIntent,
+            repoId.hashCode(),
+            appIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -92,21 +65,19 @@ object GitAgentNotifier {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("✅ Git: ${repoPath.split("/").last()}")
-            .setContentText("$shortMsg — tap action below")
+            .setContentText("$shortMsg — tap to open")
+            .setContentIntent(contentIntent)
             .setStyle(NotificationCompat.BigTextStyle()
-                .bigText("$shortMsg\n\nRepo: $repoPath\nBranch: $branch\n\nChoose action:"))
+                .bigText("$shortMsg\n\nRepo: $repoPath\nBranch: $branch"))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
             .setVibrate(longArrayOf(0, 250, 100, 250))
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "NONE", nonePendingIntent)
-            .addAction(android.R.drawable.ic_menu_compass, "MERGE", mergePendingIntent)
-            .addAction(android.R.drawable.ic_menu_save, "PUSH", pushPendingIntent)
             .build()
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(CHANNEL_ID, notificationId, notification)
-        Log.i(TAG, "Interactive notification posted: repo=$repoPath action=$notificationId")
+        Log.i(TAG, "Git notification posted: repo=$repoPath id=$notificationId")
     }
 
     fun cancel(context: Context, notificationId: Int) {

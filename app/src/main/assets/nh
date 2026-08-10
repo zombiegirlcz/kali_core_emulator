@@ -1378,7 +1378,7 @@ fix_permission() {
     if [ $rc -eq 0 ]; then
         echo "[+] Hotovo: $path"
     else
-        echo "[-] Fix selhal (rc=$rc) — daemon běží? (Root Bridge zapnutý?)" >&2
+        echo "[-] Fix selhal (rc=$rc) — daemon běží? Zapněte Root Bridge v záložce Root Bridge (host root)." >&2
     fi
     exit $rc
 }

@@ -21,6 +21,7 @@
 
 #define PRIMARY_SOCKET "/run/host_ipc/magisk_daemon.sock"
 #define SECONDARY_SOCKET "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
+#define TERTIARY_SOCKET "/data/user/0/com.linux_core/files/ipc/magisk_daemon.sock"
 #define BUFFER_SIZE 8192
 #define MAX_ARGS 128
 
@@ -77,35 +78,43 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
     return sendmsg(socket_fd, &msg, 0) >= 0 ? 0 : -1;
 }
 
-static void try_fallback(int argc, char **argv) {
+/* ── SECURITY-CRITICAL fallback policy ──────────────────────────────────────
+ *
+ * When the host daemon is unreachable we must NEVER:
+ *   - exec an interactive shell (that is how `nh fix permission` "switched to
+ *     ashell" — the wrapper exec'd /bin/sh and the user got a stray shell),
+ *   - exec an arbitrary argv[1] as a binary, nor
+ *   - fall back to a HOST su/sudo (on a magisk/rooted device the .orig could
+ *     be the real system su → REAL ROOT OUTSIDE PRoot confinement).
+ *
+ * The ONLY safe fallback is the in-rootfs .orig (guest-limited) when it is
+ * actually present; everything else fails loudly with a message + exit 1.
+ */
+static int try_fallback(int argc, char **argv) {
     const char *name = invoked_name(argv[0]);
     int is_sudo = (strcmp(name, "sudo") == 0);
     int is_su = (strcmp(name, "su") == 0);
 
-    if (is_sudo) {
-        const char *orig = "/usr/bin/sudo.orig";
+    /* In-guest .orig (if present) runs INSIDE PRoot → still confined.
+     * Exec it directly as the invoke binary (su/sudo only). */
+    if (is_sudo || is_su) {
+        const char *orig = is_sudo ? "/usr/bin/sudo.orig" : "/usr/bin/su.orig";
+        if (access(orig, X_OK) != 0 && is_su) orig = "/bin/su.orig";
         if (access(orig, X_OK) == 0) {
             argv[0] = (char *)orig;
             execvp(orig, argv);
-        }
-    } else if (is_su) {
-        const char *orig = "/usr/bin/su.orig";
-        if (access(orig, X_OK) != 0) orig = "/bin/su.orig";
-        if (access(orig, X_OK) == 0) {
-            argv[0] = (char *)orig;
-            execvp(orig, argv);
+            _exit(127);
         }
     }
 
-    // Generic wrapper invocation: su_wrapper <cmd> [args...] — run cmd directly
-    if (argc > 1) {
-        execvp(argv[1], &argv[1]);
-    }
-
-    // Last resort shell
-    char *shell_args[] = {"/bin/sh", NULL};
-    execvp("/bin/sh", shell_args);
-    _exit(127);
+    /* Daemon down and nothing safe to exec → fail loudly, exit 1. */
+    fprintf(stderr,
+        "[su_wrapper] CHYBA: magisk daemon nedostupný (socket %s/%s/%s)\n"
+        "            Pro `nh fix permission` / `su` je potřeba spuštěný Root Bridge:\n"
+        "            v aplikaci otevřete záložku Root Bridge a zapněte Start.\n"
+        "            FALLBACK BLOKOVÁN (bezpečnost): žádný lokální su/shell.",
+        PRIMARY_SOCKET, SECONDARY_SOCKET, TERTIARY_SOCKET);
+    return 1;
 }
 
 int main(int argc, char **argv) {
@@ -113,7 +122,6 @@ int main(int argc, char **argv) {
 
     const char *name = invoked_name(argv[0]);
     int is_su = (strcmp(name, "su") == 0);
-    int is_sudo = (strcmp(name, "sudo") == 0);
 
     // ── Build the command to forward to the host daemon (strip wrapper name) ──
     char *cmd_argv[MAX_ARGS];
@@ -145,27 +153,36 @@ int main(int argc, char **argv) {
     }
     cmd_argv[cmd_argc] = NULL;
 
-    // ── Connect to host daemon ──
-    const char *sock_path = PRIMARY_SOCKET;
-    if (access(sock_path, F_OK) != 0) {
-        sock_path = SECONDARY_SOCKET;
+    // ── Connect to host daemon (try each known socket path) ──
+    // (1) /run/host_ipc/...  — guest view (PRoot bind of $FILES_DIR/ipc)
+    // (2) /data/data/...      — classic app data path
+    // (3) /data/user/0/...    — some devices resolve app data here
+    // NOTE: access(F_OK) is NOT enough — a stale socket file (0 bytes from a
+    // dead daemon) passes access() but connect() fails. So try connect() on
+    // every candidate in order.
+    const char *sock_candidates[] = {
+        PRIMARY_SOCKET,
+        SECONDARY_SOCKET,
+        TERTIARY_SOCKET,
+    };
+    int sock_fd = -1;
+    for (unsigned int i = 0; i < sizeof(sock_candidates) / sizeof(sock_candidates[0]); i++) {
+        const char *cand = sock_candidates[i];
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) continue;
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, cand, sizeof(addr.sun_path) - 1);
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            sock_fd = fd;
+            break;
+        }
+        close(fd);
     }
 
-    int sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd < 0) {
-        try_fallback(argc, argv);
-        return 1;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
-
-    if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock_fd);
-        try_fallback(argc, argv);
-        return 1;
+        return try_fallback(argc, argv);
     }
 
     // Get current working directory
@@ -180,8 +197,7 @@ int main(int argc, char **argv) {
 
     if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv) < 0) {
         close(sock_fd);
-        try_fallback(argc, argv);
-        return 1;
+        return try_fallback(argc, argv);
     }
 
     // Read exit status code from host daemon

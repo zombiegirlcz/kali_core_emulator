@@ -231,9 +231,6 @@
             android:name=".core.OffensiveActionReceiver"
             android:exported="false" />
         <receiver
-            android:name=".core.GitAgentActionReceiver"
-            android:exported="false" />
-        <receiver
             android:name=".core.VerdictReceiver"
             android:exported="false" />
         <receiver
