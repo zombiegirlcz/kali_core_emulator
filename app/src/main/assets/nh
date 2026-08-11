@@ -1628,6 +1628,9 @@ help_distro() {
     echo "  ${GREEN}remove <id>${RST}            Smaže rootfs (kali|parrot, --force)"
     echo "  ${GREEN}backup [id] [-o file]${RST}  Záloha rootfs do tar.gz (výchozí kali, Downloads)"
     echo "  ${GREEN}restore <file>${RST}         Obnova rootfs ze souboru v Downloads (--force)"
+    echo "  ${GREEN}login <distro> [--bind src:dst ...]${RST}"
+    echo "                           Vstoupí do distro z host ashellu (proot-distro-like)."
+    echo "                           --bind připojí host cestu do guestu (absolutní src i dst)."
     echo ""
     echo "  ${YELLOW}Příklad:${RST}"
     echo "    nh distro list"
@@ -1635,6 +1638,8 @@ help_distro() {
     echo "    nh distro kill sess_123 --force"
     echo "    nh distro remove parrot --force"
     echo "    nh distro backup kali"
+    echo "    nh distro login parrot-arm64 --bind /sdcard/cil:/cil"
+    echo "    nh distro login kali --bind /data/user/0/com.linux_core/files/cil:/cil"
     echo ""
     echo "  ${DIM}  Volá LocalApiServer (127.0.0.1:1337). Z hostitele bez rootu:"
     echo "  curl http://127.0.0.1:1337/distro/ps (localhost bez auth).${RST}"
@@ -1779,9 +1784,10 @@ distro_dispatch() {
         remove|rm)      shift; distro_remove "$@" ;;
         backup)         shift; distro_backup "$@" ;;
         restore)        shift; distro_restore "$@" ;;
+        login|enter)    shift; distro_login "$@" ;;
         help|--help|-h) help_distro ;;
         *)
-            echo "Usage: nh distro list|status|ps|kill|remove|backup|restore"
+            echo "Usage: nh distro list|status|ps|kill|remove|backup|restore|login"
             echo "       nh distro help"
             exit 1 ;;
     esac
@@ -1955,6 +1961,83 @@ except Exception as e:
     sys.stderr.write("Chyba: %s" % e + chr(10))
     sys.exit(1)
 '
+}
+
+# ─── nh distro login: vstup do distro z host ashellu ────────────────────
+# proot-distro-like: spustí launcher-<distro>.sh přímo (sdílí stdin/stdout),
+# takže se z ashellu (host shell) dostaneme do PRoot kontejneru. Extra bindy
+# se předávají launcheru přes NH_EXTRA_BINDS env (launcher.sh je přidá do BINDS).
+distro_login() {
+    [ $# -lt 1 ] && { echo "[-] Usage: nh distro login <distro> [--bind src:dst ...]" >&2; exit 1; }
+    local DISTRO="$1"; shift
+    local EXTRA_BINDS=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bind|-b)
+                [ $# -lt 2 ] && { echo "[-] --bind vyžaduje argument src:dst" >&2; exit 1; }
+                EXTRA_BINDS="$EXTRA_BINDS -b $2"
+                shift 2 ;;
+            -h|--help)
+                echo "Usage: nh distro login <distro> [--bind src:dst ...]"
+                echo "  --bind src:dst   host cesta -> guest cesta (absolutní, vícekrát)"
+                exit 0 ;;
+            *)
+                echo "[-] Neznámý argument: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    # Rootfs adresář: přesná shoda, jinak hledej prefix (kali → kali-arm64, ...)
+    local FILES_DIR="/data/user/0/com.linux_core/files"
+    local ROOTFS="$FILES_DIR/$DISTRO"
+    local DISTRO_LAUNCHER="$FILES_DIR/launcher-$DISTRO.sh"
+    if [ ! -d "$ROOTFS" ]; then
+        # zkus prefix shodu: kali → kali-arm64
+        local cand=""
+        for cand in "$FILES_DIR"/*; do
+            [ -d "$cand" ] || continue
+            case "$(basename "$cand")" in
+                "$DISTRO"-*)
+                    ROOTFS="$cand"
+                    DISTRO_LAUNCHER="$FILES_DIR/launcher-$(basename "$cand").sh"
+                    DISTRO="$(basename "$cand")"
+                    break ;;
+            esac
+        done
+    fi
+    if [ ! -d "$ROOTFS" ]; then
+        echo "[-] Distro '$DISTRO' nenalezeno v $FILES_DIR" >&2
+        echo "    Dostupná: $(ls -d "$FILES_DIR"/*-arm64 "$FILES_DIR"/docker-* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
+        exit 1
+    fi
+
+    # Launcher: preferuj distro-specifický, jinak generický launcher.sh (má placeholder
+    # __ROOTFS_DIR__ jen v šabloně — na zařízení je launcher.sh fallback, ale bez cesty
+    # k rootfs; proto je potřeba distro launcher, který ProotManager vygeneroval).
+    if [ ! -x "$DISTRO_LAUNCHER" ]; then
+        # generický launcher.sh je fallback — zkusit, ale varovat
+        if [ -x "$FILES_DIR/launcher.sh" ]; then
+            echo "[!] Varování: distro launcher $DISTRO_LAUNCHER neexistuje, používám generický launcher.sh (rootfs musí být ve filesDir)" >&2
+            DISTRO_LAUNCHER="$FILES_DIR/launcher.sh"
+        else
+            echo "[-] Launcher nenalezen (žádný kontejner ještě neběžel?) — otevři terminál se "$DISTRO" v aplikaci a zkus znovu" >&2
+            exit 1
+        fi
+    fi
+
+    # Zajisti, že extra bind cesty existují (proot na to nebude stěžovat)
+    for b in $EXTRA_BINDS; do
+        [ "$b" = "-b" ] && continue
+        local src="${b%%:*}"
+        if [ "$src" != "$b" ] && [ ! -e "$src" ]; then
+            echo "[!] Varování: bind zdroj '$src' neexistuje — proot ho vytvoří jako prázdný" >&2
+        fi
+    done
+
+    echo "[*] Vstup do $DISTRO (rootfs=$ROOTFS)"
+    [ -n "$EXTRA_BINDS" ] && echo "[*] Extra bindy: $EXTRA_BINDS"
+    echo "[*] Ukončení: exit / Ctrl+D"
+    echo ""
+    NH_EXTRA_BINDS="$EXTRA_BINDS" exec "$DISTRO_LAUNCHER"
 }
 
 usb_list() {

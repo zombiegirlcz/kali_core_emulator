@@ -3,14 +3,17 @@
 # Usage: zsh mbuild [all|native|build|usrtools]
 #   all       = upload + native compile + APK build (complete flow)
 #   native    = native-only compile (no APK rebuild)
-#   build     = pull binaries -> upload -> APK build
+#   build     = pull assets -> upload -> APK build
 #   usrtools  = jen nano/rsync/sed/rg + glibc libs (assets/usr)
 #
-# PRAVIDLO (AGENTS.md): Nativni binarky se VZDY nejdriv stahnou
-# z Volume do lokalniho app/src/main/assets/, pak teprve probehne
-# upload_src a APK build. Bez pull by rsync --delete v upload_src
-# smazal binarky z Volume (nejsou v baked image) -> APK by byl bez
-# su_daemon/su_wrapper/usb_bridge. Viz AGENTS.md "Native build pipeline".
+# PRAVIDLO (AGENTS.md): Zdroj pravdy pro native binárky + usr tools je VOLUME
+# (build_native je tam kompiluje). Lokální app/src/main/assets/ se po každém
+# buildu SYNCHRONIZUJE z Volume — stáhne se CELÝ assets adresář rekurzivně
+# (su_daemon, su_wrapper, usb_bridge, usr/, certs, launcher.sh, nh, ...) a
+# přepíše lokální verze. Žádný tar.gz — celý asset tak jak je.
+#
+# Pořadí v `all`: upload_src → build_native → pull_full_assets (ihned po
+# native kompilaci) → gradle build → pull APK do ~/Download.
 set -e
 
 SRC="${KALI_PROJECT_DIR:-.}"
@@ -18,49 +21,19 @@ CMD="${1:-all}"
 
 cd "$SRC"
 
-# Nativni binarky, ktere musi byt vzdy v app/src/main/assets/ pred upload+build.
-# Pri pridani noveho native modulu: pridej jeho vystup sem A do build_native.
-NATIVE_BINARIES=(su_daemon su_wrapper usb_bridge)
-
-pull_binaries() {
-    echo "  -> pull native binaries from Volume to assets"
-    for bin in $NATIVE_BINARIES; do
-        if modal volume get --force kali-build-data "src/app/src/main/assets/$bin" "app/src/main/assets/$bin" >/dev/null 2>&1; then
-            echo "    [OK] $bin ($(stat -c%s "app/src/main/assets/$bin" 2>/dev/null || echo '?') B)"
-        else
-            echo "    [WARN] $bin nenalezen na Volume — zkompluje ho build_native"
-        fi
-    done
-}
-
-# Usr tools (nano/rsync/sed/rg + glibc libs). build_native je generuje na Volume
-# do src/app/src/main/assets/usr/. Tato fce je stahne ihned po build_native pres
-# primy modal volume get do lokalniho app/src/main/assets/usr/.
-USRTOOLS_FILES=(
-  usr/bin/sed
-  usr/bin/rsync
-  usr/bin/nano
-  usr/bin/rg
-  usr/lib/ld-linux-aarch64.so.1
-  usr/lib/libc.so.6
-  usr/lib/libm.so.6
-  usr/lib/libpthread.so.0
-  usr/lib/libncursesw.so.6
-  usr/lib/libtinfow.so.6
-)
-pm_usrtools() {
-    echo "  -> pull usrtools assets (modal volume get) -> local app/src/main/assets/usr"
-    local pulled=0
-    for f in $USRTOOLS_FILES; do
-        if modal volume get --force kali-build-data "src/app/src/main/assets/$f" "app/src/main/assets/$f" >/dev/null 2>&1; then
-            pulled=1
-            echo "    [OK] $f ($(stat -c%s "app/src/main/assets/$f" 2>/dev/null || echo '?') B)"
-        else
-            echo "    [WARN] $f nenalezen na Volume (build asi jeste nebehl)"
-        fi
-    done
-    if [ "$pulled" = "0" ]; then
-        echo "    [WARN] zadne usrtools soubory na Volume - postavi je build_native"
+# ── Synchronizace celého assets z Volume do lokálního app/src/main/assets ──
+# modal volume get stahuje složky rekurzivně; cíl je app/src/main/ a remote
+# src/app/src/main/assets, takže výsledek je app/src/main/assets/ ... (přepisuje
+# existující soubory, vytváří chybějící adresáře).
+pull_full_assets() {
+    echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
+    if modal volume get --force kali-build-data "src/app/src/main/assets" "app/src/main/" >/dev/null 2>&1; then
+        echo "    [OK] assets/ ($(du -sh app/src/main/assets 2>/dev/null | cut -f1))"
+        echo "    [OK] su_daemon ($(stat -c%s app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
+        echo "    [OK] su_wrapper ($(stat -c%s app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
+        echo "    [OK] usb_bridge ($(stat -c%s app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
+    else
+        echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi
 }
 
@@ -71,12 +44,11 @@ case "$CMD" in
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  -> pull usrtools assets ihned po build_native"
-        pm_usrtools
+        echo "  -> pull CELÝ assets ihned po build_native"
+        pull_full_assets
         echo "  -> Gradle build"
         modal run modal_build.py::build > build.log | cat
         modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
-        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1
         ;;
     native)
         echo "=== NATIVE BUILD ==="
@@ -84,19 +56,13 @@ case "$CMD" in
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  -> pull native binaries ihned po build_native"
-        pull_binaries
-        echo "  -> pull usrtools assets ihned po build_native"
-        pm_usrtools
-        echo "  -> pull tarball"
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
-        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1 || true
+        echo "  -> pull CELÝ assets ihned po build_native"
+        pull_full_assets
         ;;
     build)
         echo "=== APK BUILD ==="
-        echo "  1) pull native binaries -> assets"
-        pull_binaries
-        pm_usrtools
+        echo "  1) pull CELÝ assets z Volume (před uploadem — rsync --delete by je jinak smazal)"
+        pull_full_assets
         echo "  2) upload source"
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  3) Gradle build"
@@ -109,10 +75,8 @@ case "$CMD" in
         modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> native build (usrtools)"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  -> pull usrtools assets ihned po build_native"
-        pm_usrtools
-        echo "  -> pull tarball"
-        modal volume get --force kali-build-data builds/usrtools.tar.gz ~/Download 2>&1 || true
+        echo "  -> pull CELÝ assets (usr/ je v něm)"
+        pull_full_assets
         ;;
     *)
         echo "Usage: zsh mbuild [all|native|build|usrtools]"

@@ -52,6 +52,7 @@ import com.linux_core.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.InetAddress
@@ -1102,6 +1103,34 @@ object LocalApiServer {
         "cat /dev/sda", "cat /dev/sdb", "cat /dev/mem"
     )
 
+    /**
+     * Host shell environment pro `sh -c` (ashell -c, /shell API).
+     * App process dědí výchozí PATH (/system/bin:/system/xbin...) a NEMÁ
+     * cesty k host-side nástrojům (files/usr/bin) ani LD_LIBRARY_PATH na
+     * glibc (files/usr/lib). Bez toho ashell -c vidí jen toybox binárky a
+     * GNU sed/nano/rsync z usertools nejdou spustit. Sestavujeme env ve
+     * stejném vzoru jako startAshellSession() v TerminalActivity.
+     */
+    private fun hostShellEnv(): Array<String> {
+        val ctx = appContext ?: return emptyArray()
+        val filesDir = ctx.filesDir
+        val hostPrefixBin = File(filesDir, "usr/bin").absolutePath
+        val hostPrefixLib = File(filesDir, "usr/lib").absolutePath
+        val basePath = "/system/bin:/system/xbin:/vendor/bin"
+        // usr/bin na začátku: GNU sed/nano/rsync/rg přebíjejí toybox
+        val fullPath = "$hostPrefixBin:$basePath:${filesDir.absolutePath}"
+        return arrayOf(
+            "HOME=${filesDir.absolutePath}",
+            "USER=app",
+            "PATH=$fullPath",
+            "PREFIX=${File(filesDir, "usr").absolutePath}",
+            "LD_LIBRARY_PATH=$hostPrefixLib",
+            "TERM=xterm-256color",
+            "ANDROID_DATA=/data",
+            "ANDROID_ROOT=/system"
+        )
+    }
+
     private fun handleShell(body: String, out: OutputStream) {
         try {
             val command = body.trim()
@@ -1138,7 +1167,7 @@ object LocalApiServer {
                 }
             }
 
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command), hostShellEnv())
             val output = process.inputStream.bufferedReader().readText()
             val error = process.errorStream.bufferedReader().readText()
             val exitCode = process.waitFor()

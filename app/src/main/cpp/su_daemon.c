@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <dirent.h>
 #include <sys/time.h>
+#include <poll.h>
 
 #define DEFAULT_SOCKET_PATH "/data/user/0/com.linux_core/files/ipc/magisk_daemon.sock"
 #define MAX_ARGS 128
@@ -254,6 +255,14 @@ static uid_t fix_uid = (uid_t)-1;
 static gid_t fix_gid = (gid_t)-1;
 static int  fix_skip_top = 0;
 
+/* File-scope copies of main()'s config — potřebné ve worker procesech
+ * (fork-per-connection), které běží mimo stack main(). */
+static char g_launcher_path[1024] = {0};
+static char g_rootfs_path[1024] = {0};
+static uid_t g_app_uid = (uid_t)-1;
+static gid_t g_app_gid = (gid_t)-1;
+static int g_auto_fix = 1;
+
 static int fix_walk(const char *path, int depth) {
     /* Top-level bind / host-mapped dirs: skip the whole subtree entirely
      * (don't even chown the dir — that would hit the host dir target). */
@@ -300,6 +309,7 @@ static void fix_permissions(const char *scope, uid_t uid, gid_t gid, int skip_to
 /* Handle `nh fix permission <path>`: @FIX payload from su_wrapper. */
 static int handle_fix_request(int client_fd, int *fds, char **argv,
                               const char *rootfs, uid_t uid, gid_t gid) {
+
     if (rootfs == NULL || rootfs[0] == '\0') {
         dprintf(fds[2], "[su_daemon] FATAL: no rootfs configured for fix.\n");
         write(client_fd, &(int){126}, sizeof(int));
@@ -368,6 +378,9 @@ static int handle_fix_request(int client_fd, int *fds, char **argv,
     return 0;
 }
 
+/* forward decl — definice je za main() (fork-per-connection worker) */
+static void handle_client(int client_fd);
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     char launcher_path[1024] = {0};
@@ -399,6 +412,16 @@ int main(int argc, char **argv) {
 
     if (app_uid == (uid_t)-1) app_uid = 0;   /* safe fallback: no-op chown to root */
     if (app_gid == (gid_t)-1) app_gid = 0;
+
+    /* Propis config do file-scope globálů — worker (fork-per-connection) běží
+     * mimo stack main(), nemá přístup k lokálním proměnným. */
+    strncpy(g_launcher_path, launcher_path, sizeof(g_launcher_path) - 1);
+    g_launcher_path[sizeof(g_launcher_path) - 1] = '\0';
+    strncpy(g_rootfs_path, rootfs_path, sizeof(g_rootfs_path) - 1);
+    g_rootfs_path[sizeof(g_rootfs_path) - 1] = '\0';
+    g_app_uid = app_uid;
+    g_app_gid = app_gid;
+    g_auto_fix = auto_fix;
 
     /* ── Self-daemonize ────────────────────────────────────────────────────
      * When started from a shell (`su -c '... '` with &) the daemon dies with
@@ -487,6 +510,21 @@ int main(int argc, char **argv) {
     printf("[su_daemon] Listening on UNIX socket: %s (PID=%d)\n", socket_path, getpid());
     fflush(stdout);
 
+    fflush(stdout);
+
+    /* ── Fork-per-connection ──────────────────────────────────────────────
+     * Daemon je single-threaded. Kdyby celý request (recv → waitpid → 25 s
+     * auto-fix → exit code) běžel v hlavní smyčce, každý pomalejší příkaz
+     * (wifi scan, interactive shell, ...) by zablokoval accept() a VŠECHNA
+     * nová `su`/`sudo` spojení by visela v backlogu — projev: „příkaz zůstal
+     * stát“, nedá se provést ani pkill přes su (šel by přes zablokovaný daemon).
+     * Řešení: každé spojení obslouží forknutý worker; parent se okamžitě vrací
+     * k accept, takže daemon přijímá další požadavky i během běhu/návratu
+     * libovolného příkazu. Worker navíc hlídá client socket (POLLHUP): když
+     * su_wrapper zemře (ctrl+c), command child dostane SIGKILL a daemon se
+     * uvolní okamžitě, ne až po waitpid nekonečného příkazu. */
+    signal(SIGPIPE, SIG_IGN);
+
     while (1) {
         int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
@@ -495,147 +533,20 @@ int main(int argc, char **argv) {
             break;
         }
 
-        int fds[3] = {-1, -1, -1};
-        uint32_t target_uid = 0, target_gid = 0;
-        char cwd[BUFFER_SIZE] = {0};
-        char *cmd_argv[MAX_ARGS] = {NULL};
-
-        if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
-            close(fds[0]); close(fds[1]); close(fds[2]);
+        pid_t worker = fork();
+        if (worker < 0) {
+            perror("[su_daemon] fork worker");
             close(client_fd);
             continue;
         }
-
-        if (deny_command(cmd_argv)) {
-            int deny_code = 126; /* 126 = command not permitted */
-            write(client_fd, &deny_code, sizeof(deny_code));
-            close(fds[0]); close(fds[1]); close(fds[2]);
-            close(client_fd);
-            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
-            continue;
-        }
-
-        /* Manual fix request from `nh fix permission <path>` (su_wrapper --fix).
-         * Not a command to run — rewrite ownership of a specific path on the host. */
-        if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "@FIX") == 0) {
-            handle_fix_request(client_fd, fds, cmd_argv, rootfs_path, app_uid, app_gid);
-            close(fds[0]); close(fds[1]); close(fds[2]);
-            close(client_fd);
-            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
-            continue;
-        }
-
-        pid_t pid = fork();
-        if (pid < 0) {
-            perror("[su_daemon] fork");
-            close(fds[0]); close(fds[1]); close(fds[2]);
-            int err_code = 1;
-            write(client_fd, &err_code, sizeof(err_code));
-            close(client_fd);
-            continue;
-        }
-
-        if (pid == 0) {
-            // Child process
+        if (worker == 0) {
+            /* worker: obslouží právě toto spojení, pak končí */
             close(listen_fd);
-
-            // Redirect STDIN, STDOUT, STDERR
-            dup2(fds[0], STDIN_FILENO);
-            dup2(fds[1], STDOUT_FILENO);
-            dup2(fds[2], STDERR_FILENO);
-
-            close(fds[0]); close(fds[1]); close(fds[2]);
-
-            /* SAFETY: never exec the requested command on the bare host. Convert
-             * it into a RE-ENTRY of the PRoot guest so that even a host-global
-             * command (e.g. `chmod -R / ...`) is confined to the guest rootfs by
-             * PRoot. If no launcher is configured we REFUSE (fail closed). */
-            if (launcher_path[0] == '\0' || access(launcher_path, X_OK) != 0) {
-                dprintf(STDERR_FILENO,
-                        "[su_daemon] FATAL: no PRoot launcher configured; "
-                        "refusing to run command on host.\n");
-                _exit(126);
-            }
-
-            /* Build: launcher_path -- <guest-program> [args...]
-             * Everything after `--` is forwarded verbatim to proot (token
-             * faithful, no shell re-quoting loss). Bare `su`/`sudo` (only a
-             * shell in args) passes no guest program — the launcher then
-             * spawns an interactive root login shell. */
-            char *launcher_argv[MAX_ARGS + 4];
-            int li = 0;
-            launcher_argv[li++] = (char *)launcher_path;
-            launcher_argv[li++] = (char *)"--";
-
-            /* The wrapper sends "/system/bin/sh" for `su -c` and bare `su`;
-             * inside the guest that must be the guest shell. */
-            if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
-                cmd_argv[0] = (char *)"/bin/sh";
-            }
-
-            int guest_args = 0;
-            for (int i = 0; cmd_argv[i] != NULL; i++) guest_args = i + 1;
-
-            int bare_su = (guest_args == 1) &&
-                (strcmp(cmd_argv[0], "sh") == 0 || strcmp(cmd_argv[0], "/bin/sh") == 0 ||
-                 strcmp(cmd_argv[0], "bash") == 0 || strcmp(cmd_argv[0], "/bin/bash") == 0);
-
-            if (!bare_su) {
-                for (int i = 0; cmd_argv[i] != NULL && li < MAX_ARGS + 3; i++) {
-                    launcher_argv[li++] = cmd_argv[i];
-                }
-            }
-            launcher_argv[li] = NULL;
-
-            /* Pass the guest working directory so proot can start there. */
-            if (cwd[0] != '\0') {
-                setenv("NH_CWD", cwd, 1);
-            }
-
-            /* Stay as real root (Magisk su). PRoot confines the filesystem. */
-            execv(launcher_path, launcher_argv);
-            dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
-                    launcher_path, strerror(errno));
-            _exit(127);
+            handle_client(client_fd);
+            _exit(0);
         }
-
-        // Parent process: wait for child to finish so we can return exit code
-        close(fds[0]); close(fds[1]); close(fds[2]);
-
-        int status = 0;
-        int exit_code = 0;
-        if (waitpid(pid, &status, 0) > 0) {
-            if (WIFEXITED(status)) {
-                exit_code = WEXITSTATUS(status);
-            } else if (WIFSIGNALED(status)) {
-                exit_code = 128 + WTERMSIG(status);
-            }
-        }
-
-        /* Layer 1 — automatic ownership fix (host side, OUTSIDE PRoot).
-         * The real-root command may have created/changed files now owned by
-         * root; rewrite them back to the app uid/gid so the app can access
-         * them again. Only runs for real commands (not for @FIX which was
-         * already handled above). Skipping bind targets (dev/proc/sys/run/...)
-         * keeps this away from host data even on the host. */
-        if (auto_fix && exit_code != 126 && rootfs_path[0] != '\0') {
-            struct timeval tv0, tv1;
-            gettimeofday(&tv0, NULL);
-            fix_permissions(rootfs_path, app_uid, app_gid, 1);
-            gettimeofday(&tv1, NULL);
-            long ms = (tv1.tv_sec - tv0.tv_sec) * 1000L + (tv1.tv_usec - tv0.tv_usec) / 1000L;
-            dprintf(STDERR_FILENO, "[su_daemon] auto-fix: chowned root-owned files to %d:%d in %ld ms\n",
-                    (int)app_uid, (int)app_gid, ms);
-        }
-
-        // Send exit code back to client wrapper
-        write(client_fd, &exit_code, sizeof(exit_code));
+        /* parent: vlastní kopii client_fd zavře, jde zase na accept */
         close(client_fd);
-
-        // Free cmd_argv strings
-        for (int i = 0; cmd_argv[i] != NULL; i++) {
-            free(cmd_argv[i]);
-        }
     }
 
     close(listen_fd);
@@ -652,4 +563,174 @@ int main(int argc, char **argv) {
         unlink(pid_path);
     }
     return 0;
+}
+
+/* ── Obsluha jednoho spojení (worker proces) ──────────────────────────────
+ * Volá se z forknutého workera: čte payload + fds od su_wrapperu, vyřeší
+ * deny/@FIX, spustí command jako child (launcher re-entry) a vrátí exit code.
+ * POLLHUP na client_fd = klient zmizel → child dostane SIGKILL, worker skončí
+ * (bez auto-fix a bez psaní exit kódu na mrtvý socket). */
+static void handle_client(int client_fd) {
+    int fds[3] = {-1, -1, -1};
+    uint32_t target_uid = 0, target_gid = 0;
+    char cwd[BUFFER_SIZE] = {0};
+    char *cmd_argv[MAX_ARGS] = {NULL};
+
+    if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
+        close(fds[0]); close(fds[1]); close(fds[2]);
+        close(client_fd);
+        for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+        return;
+    }
+
+    if (deny_command(cmd_argv)) {
+        int deny_code = 126; /* 126 = command not permitted */
+        write(client_fd, &deny_code, sizeof(deny_code));
+        close(fds[0]); close(fds[1]); close(fds[2]);
+        close(client_fd);
+        for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+        return;
+    }
+
+    /* Manual fix request from `nh fix permission <path>` (su_wrapper --fix). */
+    if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "@FIX") == 0) {
+        handle_fix_request(client_fd, fds, cmd_argv, g_rootfs_path, g_app_uid, g_app_gid);
+        close(fds[0]); close(fds[1]); close(fds[2]);
+        close(client_fd);
+        for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("[su_daemon] fork");
+        close(fds[0]); close(fds[1]); close(fds[2]);
+        int err_code = 1;
+        write(client_fd, &err_code, sizeof(err_code));
+        close(client_fd);
+        for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+        return;
+    }
+
+    if (pid == 0) {
+        // Command child
+        close(client_fd);
+
+        // Redirect STDIN, STDOUT, STDERR
+        dup2(fds[0], STDIN_FILENO);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[2], STDERR_FILENO);
+
+        close(fds[0]); close(fds[1]); close(fds[2]);
+
+        /* SAFETY: never exec the requested command on the bare host. Convert
+         * it into a RE-ENTRY of the PRoot guest so that even a host-global
+         * command (e.g. `chmod -R / ...`) is confined to the guest rootfs by
+         * PRoot. If no launcher is configured we REFUSE (fail closed). */
+        if (g_launcher_path[0] == '\0' || access(g_launcher_path, X_OK) != 0) {
+            dprintf(STDERR_FILENO,
+                    "[su_daemon] FATAL: no PRoot launcher configured; "
+                    "refusing to run command on host.\n");
+            _exit(126);
+        }
+
+        /* Build: launcher_path -- <guest-program> [args...] */
+        char *launcher_argv[MAX_ARGS + 4];
+        int li = 0;
+        launcher_argv[li++] = (char *)g_launcher_path;
+        launcher_argv[li++] = (char *)"--";
+
+        /* The wrapper sends "/system/bin/sh" for `su -c` and bare `su`;
+         * inside the guest that must be the guest shell. */
+        if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
+            cmd_argv[0] = (char *)"/bin/sh";
+        }
+
+        int guest_args = 0;
+        for (int i = 0; cmd_argv[i] != NULL; i++) guest_args = i + 1;
+
+        int bare_su = (guest_args == 1) &&
+            (strcmp(cmd_argv[0], "sh") == 0 || strcmp(cmd_argv[0], "/bin/sh") == 0 ||
+             strcmp(cmd_argv[0], "bash") == 0 || strcmp(cmd_argv[0], "/bin/bash") == 0);
+
+        if (!bare_su) {
+            for (int i = 0; cmd_argv[i] != NULL && li < MAX_ARGS + 3; i++) {
+                launcher_argv[li++] = cmd_argv[i];
+            }
+        }
+        launcher_argv[li] = NULL;
+
+        /* Pass the guest working directory so proot can start there. */
+        if (cwd[0] != '\0') {
+            setenv("NH_CWD", cwd, 1);
+        }
+
+        /* Stay as real root (Magisk su). PRoot confines the filesystem. */
+        execv(g_launcher_path, launcher_argv);
+        dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
+                g_launcher_path, strerror(errno));
+        _exit(127);
+    }
+
+    // Worker: wait for child; abort if client dies (POLLHUP on client_fd).
+    close(fds[0]); close(fds[1]); close(fds[2]);
+
+    int status = 0;
+    int exit_code = 0;
+    int command_done = 0;
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = client_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int pr = poll(&pfd, 1, 500);
+        if (pr > 0 && (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+            /* klient (su_wrapper) skončil — ctrl+c / crash: ukonči command */
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            command_done = 1;
+            exit_code = 130;
+            break;
+        }
+        pid_t wr = waitpid(pid, &status, WNOHANG);
+        if (wr == pid) {
+            if (WIFEXITED(status)) {
+                exit_code = WEXITSTATUS(status);
+            } else if (WIFSIGNALED(status)) {
+                exit_code = 128 + WTERMSIG(status);
+            }
+            command_done = 1;
+            break;
+        }
+        if (wr < 0 && errno != EINTR) {
+            command_done = 1;
+            exit_code = 1;
+            break;
+        }
+    }
+
+    if (command_done && exit_code != 130) {
+        /* Layer 1 — automatic ownership fix (host side, OUTSIDE PRoot). */
+        if (g_auto_fix && exit_code != 126 && g_rootfs_path[0] != '\0') {
+            struct timeval tv0, tv1;
+            gettimeofday(&tv0, NULL);
+            fix_permissions(g_rootfs_path, g_app_uid, g_app_gid, 1);
+            gettimeofday(&tv1, NULL);
+            long ms = (tv1.tv_sec - tv0.tv_sec) * 1000L + (tv1.tv_usec - tv0.tv_usec) / 1000L;
+            dprintf(STDERR_FILENO, "[su_daemon] auto-fix: chowned root-owned files to %d:%d in %ld ms\n",
+                    (int)g_app_uid, (int)g_app_gid, ms);
+        }
+
+        // Send exit code back to client wrapper
+        write(client_fd, &exit_code, sizeof(exit_code));
+    } else if (exit_code == 130) {
+        /* pošli 130 i tak — su_wrapper to už nečte, ale neškodí */
+        (void)!write(client_fd, &exit_code, sizeof(exit_code));
+    }
+    close(client_fd);
+
+    // Free cmd_argv strings
+    for (int i = 0; cmd_argv[i] != NULL; i++) {
+        free(cmd_argv[i]);
+    }
 }

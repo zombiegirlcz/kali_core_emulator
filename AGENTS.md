@@ -71,13 +71,14 @@ Assety v `app/src/main/assets/`:
 Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modal cloudu do `app/src/main/assets/` a `jniLibs/` a **musí být vždy v APK**. Postup při jakékoli změně/addici native modulu:
 
 1. **Přidej kompilační krok do `build_native()` v `tools/modal_build.py`** — NDK cross-compile výstupu do `assets/` (např. `su_daemon`, `su_wrapper`, `usb_bridge`) nebo `jniLibs/arm64-v8a/` (`.so`).
-2. **Přidej název výstupu do `NATIVE_BINARIES` v `mbuild`** — skript pak binárku vždy stáhne z Volume do lokálního `app/src/main/assets/` před uploadem+buildem.
-3. **Přidej výstup do `_NATIVE_ASSET_EXCLUDES` v `tools/modal_build.py`** — `upload_src` používá `rsync -a --delete` a bez exclude by binárku smazal z Volume (není v baked image) → APK by byl bez ní.
-4. **Stáhni binárky do assets** (z Volume): `modal volume get --force kali-build-data src/app/src/main/assets/<bin> app/src/main/assets/<bin>` nebo spusť `zsh mbuild native` (dělá upload → build_native → pull do lokálních assets).
+2. **Přidej název výstupu do `_NATIVE_ASSET_EXCLUDES` v `tools/modal_build.py`** — `upload_src` používá `rsync -a --delete` a bez exclude by binárku smazal z Volume (není v baked image) → APK by byl bez ní.
+3. **Stáhni celý assets z Volume** — `zsh mbuild native` nebo `zsh mbuild all` po `build_native` spouští `pull_full_assets()` v `mbuild`, který stáhne **CELÝ `app/src/main/assets/` adresář rekurzivně** z Volume (su_daemon, su_wrapper, usb_bridge, usr/ s nano/rsync/sed/rg + glibc knihovnami, certs, launcher.sh, ...) a přepíše lokální verze. Žádný tar.gz.
 
-**Pořadí buildu se nesmí měnit:** nejdřív `pull_binaries()` (binárky → lokální assets), pak `upload_src`, pak `build`. `zsh mbuild build` to dělá automaticky.
+**Pořadí buildu se nesmí měnit:** `all` = `upload_src` → `build_native` → `pull_full_assets` (ihned po native kompilaci) → gradle `build` → pull APK. `build` sám = `pull_full_assets` (před uploadem, jinak rsync --delete smaže binárky z Volume) → `upload_src` → `build`.
 
-**Známý bug (opraven 2026-08-02):** `mbuild build` spouštěl upload → build BEZ `build_native`; rsync `--delete` smazal binárky z Volume → APK 128 MB bez `su_daemon`/`su_wrapper` (detekováno přes chybějící `assets/` v zipfile a `execvp failed` v su_wrapper). Fix: pull_binaries + rsync excludes + `NATIVE_BINARIES` list.
+**Známý bug (opraven 2026-08-02):** `mbuild build` spouštěl upload → build BEZ `build_native`; rsync `--delete` smazal binárky z Volume → APK 128 MB bez `su_daemon`/`su_wrapper` (detekováno přes chybějící `assets/` v zipfile a `execvp failed` v su_wrapper). Fix: pull_full_assets + rsync excludes + `_NATIVE_ASSET_EXCLUDES` list.
+
+**Známý bug (opraven 2026-08-11):** starý mbuild stahoval jen `usrtools.tar.gz` + vybrané binárky po souborech — lokální assets zůstávaly zastaralé (APK byl cílový artefakt, ale repo diverzifikoval od skutečného obsahu). Fix: `pull_full_assets()` — celý assets adresář rekurzivně přes `modal volume get <vol> src/app/src/main/assets app/src/main/`.
 
 ### jniLibs struktura
 
@@ -943,3 +944,32 @@ Bug report (bug.log → PDF `bug_report_terminal_paste.md`): pasting multi-line 
 
 - Daemon běží (PID 7581 po T5 restartu), socket živý, confinement funguje (`su top` = jen proot procesy)
 - Nevyřešeno: Root Bridge UI nová verze (socket-test) — čeká na `adb install -r` + toggle
+
+## Session 2026-08-11 — su_daemon fork-per-connection + launcher -E fix + mbuild assets sync
+
+### Problém: daemon zablokoval nová sudo spojení
+
+Wifi scan / `ip address` přes `sudo` běžel dlouho → daemon (single-threaded) čekal `waitpid` + 25 s auto-fix → **všechna nová `su`/`sudo` spojení visela v backlogu** (projev: „příkaz zůstal stát", nejde ani `pkill` přes su — šel by přes zablokovaný daemon). ctrl+c zabil jen klienta (su_wrapper), daemon je oddemonizovaný (setsid) → běžel dál.
+
+### Fixy (APK 23:57, su_daemon `ff551c88`)
+
+| Fix | Soubor | Popis |
+|-----|--------|-------|
+| **Fork-per-connection** | `su_daemon.c` | Celý request obslouží `fork()`-nutý worker (`handle_client()`); parent se okamžitě vrací k `accept()`. Daemon přijímá nová spojení i během běhu/návratu libovolného příkazu a i během auto-fixu. |
+| **POLLHUP detekce** | `su_daemon.c` | Worker hlídá client socket (`poll` + POLLHUP/POLLERR/POLLNVAL): klient zemře (ctrl+c) → command child dostane SIGKILL, auto-fix se přeskočí, worker končí. |
+| **Config → file-scope globály** | `su_daemon.c` | `launcher_path/rootfs/uid/gid/auto_fix` se propisují do `g_*` (worker běží mimo stack main()). |
+| **SIGPIPE ignore** | `su_daemon.c` | `signal(SIGPIPE, SIG_IGN)` — worker nepou mře při write na mrtvý socket. |
+
+### Launcher `-E` NEZNAMENÁ, že existuje (opraveno od uživatele)
+
+- `-E LD_PRELOAD -E PROOT_LOADER` jsem přidal omylem — **proot tento build flag NEMÁ** → `unknown option '-E'` → proot se nespustil. Uživatel opravil na zařízení a poslal správnou verzi.
+- **Správný přístup:** proot spouští `/bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"' -- "$@"` jako první guest proces — ten zdědí host LD_PRELOAD/PROOT_LOADER (proot sám talloc načte), ale **hned je unsetne** PŘED exec cílového programu → po exec() v novém image nejsou → žádný `ld.so: cannot be preloaded` hluk.
+- Aplikováno na všech 5 proot invokací (raw-exec, bare su, bootstrap, entrypoint, docker/normal) v `app/src/main/assets/launcher.sh`.
+- Placeholdery (`__PROOT_BIN__` atd.) zachovány — assets je šablona, ProotManager dosazuje cesty.
+
+### mbuild sync — celý assets z Volume (ne tar.gz)
+
+- Starý mbuild stahoval jen `usrtools.tar.gz` + 3 binárky po souborech → lokální assets zůstávaly zastaralé.
+- **Nový `pull_full_assets()`**: `modal volume get --force kali-build-data src/app/src/main/assets app/src/main/` — stáhne CELÝ assets adresář **rekurzivně** (su_daemon, su_wrapper, usb_bridge, `usr/bin/{nano,rg,rsync,sed}`, `usr/lib/{ld-linux,libc,libm,libpthread}`, certs, launcher.sh, nh, ...) a přepíše lokální verze.
+- `all` = upload_src → build_native → pull_full_assets (ihned po native) → gradle → pull APK. `build` = pull_full_assets (před uploadem) → upload → gradle.
+- `NATIVE_BINARIES` v mbuild nahrazeno `_NATIVE_ASSET_EXCLUDES` v modal_build.py (jediný seznam).

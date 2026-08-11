@@ -61,12 +61,23 @@ BINDS="$BINDS -b $FILES_DIR/tmp:$TMP_DIR"
 BINDS="$BINDS -b $FILES_DIR/ipc:/run/host_ipc"
 BINDS="$BINDS $SDCARD_MOUNT"
 BINDS="$BINDS __EXTRA_ROOT_MOUNTS__"
+# Extra bindy z `nh distro login <distro> --bind src:dst` (host → guest).
+# Předává se jako NH_EXTRA_BINDS="-b /abs/src:/dst" odvolatele (nh skript).
+if [ -n "$NH_EXTRA_BINDS" ]; then
+    BINDS="$BINDS $NH_EXTRA_BINDS"
+fi
 
-# -E LD_PRELOAD / -E PROOT_LOADER: proot sám načte talloc (má je v environ),
+# LD_PRELOAD / PROOT_LOADER: proot sám načte talloc (má je v environ),
 # ale tyto host cesty se NESMÍ předat guest procesům — jinak guest ld.so hlásí
-# "ERROR: 
+# "ERROR:
 #  ld.so: object '/data/.../libtalloc.so.2' from LD_PRELOAD cannot be
 #  preloaded ... ignored." u každého /bin/sh pod prootem.
+#
+# proot NEMÁ flag na exclude proměnné z guest environu (-E neexistuje —
+# odtud "unknown option '-E'"). Jediná funkční cesta: nechat proot spustit
+# /bin/sh jako první guest proces (zdědí LD_PRELOAD/PROOT_LOADER z hosta),
+# a hned v něm `unset` obě proměnné PŘED exec cílového programu — po exec()
+# už v novém image nejsou.
 PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink"
 PROOT_CWD="/root"
 
@@ -94,11 +105,11 @@ if [ "$1" = "--" ]; then
         # Route through guest /bin/sh only to strip the host LD_PRELOAD, then
         # exec the exact args verbatim (no shell re-quoting). PRoot confines
         # every path access to the guest rootfs.
-        exec "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
             /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"' -- "$@"
     else
         # Bare `su` -> interactive root login shell inside proot.
-        exec "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
+        exec "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$WDIR" $BINDS \
             /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; if command -v zsh >/dev/null 2>&1; then exec zsh --login; else exec bash --login; fi'
     fi
 fi
@@ -108,8 +119,8 @@ fi
 # (apt, packages, users), only then the interactive session starts.
 if [ "$DOCKER_MODE" != "1" ] && [ -x "$ROOTFS_DIR/root/bootstrap.sh" ] && { [ -f "$ROOTFS_DIR/root/.bootstrap_required" ] || [ ! -f "$ROOTFS_DIR/root/.setup_done" ]; }; then
     echo "[$LOG_PREFIX] First run detected — running bootstrap..." >&2
-    if "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER -r "$ROOTFS_DIR" -w "$PROOT_CWD" $BINDS \
-        /bin/sh -c 'unset LD_PRELOAD; exec /bin/bash /root/bootstrap.sh'; then
+    if "$PR" $PROOT_FLAGS -r "$ROOTFS_DIR" -w "$PROOT_CWD" $BINDS \
+        /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec /bin/bash /root/bootstrap.sh'; then
         rm -f "$ROOTFS_DIR/root/.bootstrap_required"
         log "Bootstrap completed"
     else
@@ -119,23 +130,23 @@ fi
 
 # ─── Build and execute PRoot command ────────────────────
 if [ "$DOCKER_MODE" = "1" ]; then
-    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
+    set -- "$PR" $PROOT_FLAGS \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
-        /bin/sh -c 'cd /root && exec /bin/bash --login "$@"' -- "$@"
+        /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; cd /root && exec /bin/bash --login "$@"' -- "$@"
 elif [ -f "$ROOTFS_DIR/root/entrypoint.sh" ]; then
-    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
+    set -- "$PR" $PROOT_FLAGS \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
-        /bin/sh /root/entrypoint.sh "$@"
+        /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec /bin/sh /root/entrypoint.sh "$@"' -- "$@"
 else
-    set -- "$PR" $PROOT_FLAGS -E LD_PRELOAD -E PROOT_LOADER \
+    set -- "$PR" $PROOT_FLAGS \
         -r "$ROOTFS_DIR" \
         -w "$PROOT_CWD" \
         $BINDS \
-        /bin/sh -c 'cd /root && exec /bin/bash --login "$@"' -- "$@"
+        /bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; cd /root && exec /bin/bash --login "$@"' -- "$@"
 fi
 
 log "exec: $@"
