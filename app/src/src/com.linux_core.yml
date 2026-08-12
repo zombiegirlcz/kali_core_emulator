@@ -1,0 +1,53 @@
+Categories:
+  - System
+  - Security
+License: GPL-3.0-only
+WebSite: https://github.com/zombiegirlcz/kali_core_emulator
+SourceCode: https://github.com/zombiegirlcz/kali_core_emulator.git
+IssueTracker: https://github.com/zombiegirlcz/kali_core_emulator/issues
+Donate: https://revolut.me/tomaspetrpayme
+
+Name: NetHunter AI Operator
+Description: |-
+  A modern, highly optimized Android application to run full Linux environments (Kali NetHunter & ParrotOS Security) on unrooted devices using PRoot and Termux terminal components.
+  
+  Features:
+  - **Up to 50x Faster Operations:** Optimized disk writes via automated `force-unsafe-io` configurations for both `dpkg` and `apt` package managers.
+  - **Premium Termius-style Hacker Keyboard:** Responzive overlay keypad with 5 scrollable tabs (Control, Symbols, Navigation, Ctrl Combos, F1-F20 Keys), custom ANSI/VT100 keycodes, haptic feedback, and clipboard PASTE integration.
+  - **Android API Bridge (NetHunter API):** Zero-dependency loopback API server allowing seamless system control (flashlight, clipboard, vibration, Text-to-Speech, notifications, GPS, Wi-Fi info) from your guest Linux terminal.
+  - **Smart Root Detection:** Prompts you at startup to skip creating system binary mocks if the host device has ROOT, maintaining a clean native installation.
+  - **Classic Parrot OS Prompt:** Beautiful dual-line terminal prompt featuring cyan layout borders and the green/red spearhead indicator.
+  - **AdGuard VPN & DNS Traffic Sniffer:** Built-in VPN center backed by AdGuard JNI C++ stack with interactive Canvas bandwidth line chart and hourly/daily breakdown history.
+  - **P2P Mesh VPN (Tailscale-style):** Secure peer-to-peer overlay network on subnet `10.9.0.0/24` featuring STUN hole punching and ECDH Diffie-Hellman encryption.
+  - **AI Brain Telemetry & Classifier:** Embedded LightGBM ONNX inference engine tracking network telemetry (size, delta-time, protocol, entropy) to autonomously classify and block Stealth C2 Beacons, low-and-slow Nmap Scans, and DNS Tunneling Data Exfiltration.
+  - **Conversational AI Network Agent:** Hacker console with `vpn-cli chat` leveraging ReAct local agent for real-time network breakdown and anomaly detection toasts.
+  - **Multi-Distro Session Tabs:** Manage active chroot terminal sessions grouped by distribution (ALL, KALI, PARROT) with custom renaming and visual badges (🐉, 🦜).
+  - **System File Editor (Nano Integration):** Reusable intent handlers allowing you to open and edit system-wide files using the nano editor directly inside active terminal sessions.
+
+  Summary: Run Kali & Parrot with AdGuard VPN, Hacker Keyboard, P2P Mesh, and Real-time AI Firewall
+
+  Builds:
+  - versionName: '1.0'
+    versionCode: 1
+    commit: HEAD
+    subdir: app
+    gradle:
+      - yes
+  - versionName: '2.0'
+    versionCode: 2
+    commit: HEAD
+    subdir: app
+    gradle:
+      - yes
+  - versionName: '3.0'
+    versionCode: 3
+    commit: HEAD
+    subdir: app
+    gradle:
+      - yes
+  - versionName: '4.0'
+    versionCode: 4
+    commit: HEAD
+    subdir: app
+    gradle:
+      - yes

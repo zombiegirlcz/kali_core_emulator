@@ -1,0 +1,92 @@
+#!/bin/zsh
+# mbuild — NetHunter full build pipeline
+# Usage: zsh mbuild [all|native|build|usrtools|usbtools]
+#   all       = upload + native compile + APK build (complete flow)
+#   native    = native-only compile (no APK rebuild)
+#   build     = upload -> APK build (BEZ pull assets — pull jen v native|all;
+#               jinak by přepsal lokální úpravy starou Volume verzí)
+#   usrtools  = jen nano/rsync/sed/rg + libncursesw (assets/usr, Bionic buildy)
+#   usbtools  = jen USB gadget tools: libusbgx/usbutils/usbrelayd (assets/usr)
+#
+# PRAVIDLO (AGENTS.md): Zdroj pravdy pro native binárky + usr tools je VOLUME
+# (build_native je tam kompiluje). Lokální app/src/main/assets/ se synchronizuje
+# z Volume POUZE po build_native (native|all|usrtools) — modelový `build` (jen
+# gradle) NESMÍ pull assets, jinak přepíše lokální úpravy launcher.sh/ostatních
+# souborů starou Volume verzí (bug 2026-08-12: „debil dal pull do build").
+set -e
+
+SRC="${KALI_PROJECT_DIR:-.}"
+CMD="${1:-all}"
+
+cd "$SRC"
+
+# ── Synchronizace celého assets z Volume do lokálního app/src/main/assets ──
+# modal volume get stahuje složky rekurzivně; cíl je app/src/main/ a remote
+# src/app/src/main/assets, takže výsledek je app/src/main/assets/ ... (přepisuje
+# existující soubory, vytváří chybějící adresáře).
+pull_full_assets() {
+    echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
+    if modal volume get --force kali-build-data "src/app/src/main/assets" "app/src/main/" >/dev/null 2>&1; then
+        echo "    [OK] assets/ ($(du -sh app/src/main/assets 2>/dev/null | cut -f1))"
+        echo "    [OK] su_daemon ($(stat -c%s app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
+        echo "    [OK] su_wrapper ($(stat -c%s app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
+        echo "    [OK] usb_bridge ($(stat -c%s app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
+    else
+        echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
+    fi
+}
+
+case "$CMD" in
+    all)
+        echo "=== FULL BUILD ==="
+        echo "  -> upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> NDK compile"
+        modal run modal_build.py::build_native > build.log | cat
+        echo "  -> pull CELÝ assets ihned po build_native"
+        pull_full_assets
+        echo "  -> Gradle build"
+	modal run modal_build.py::upload_src
+        modal run modal_build.py::build > build.log | cat
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
+        ;;
+    native)
+        echo "=== NATIVE BUILD ==="
+        echo "  -> upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> NDK compile"
+        modal run modal_build.py::build_native > build.log | cat
+        echo "  -> pull CELÝ assets ihned po build_native"
+        pull_full_assets
+        ;;
+    build)
+        echo "=== APK BUILD ==="
+        echo "  2) upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  3) Gradle build"
+        modal run modal_build.py::build > build.log | cat
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
+        ;;
+    usrtools)
+        echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
+        echo "  -> upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> native build (usrtools)"
+        modal run modal_build.py::build_native > build.log | cat
+        echo "  -> pull CELÝ assets (usr/ je v něm)"
+        pull_full_assets
+        ;;
+    usbtools)
+        echo "=== USBTOOLS BUILD (libusbgx/usbutils/usbrelayd) ==="
+        echo "  -> upload source"
+        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "  -> usb tools build"
+        modal run modal_build.py::build_usb_tools > build.log | cat
+        echo "  -> pull CELÝ assets (usr/ je v něm)"
+        pull_full_assets
+        ;;
+    *)
+        echo "Usage: zsh mbuild [all|native|build|usrtools|usbtools]"
+        exit 1
+        ;;
+esac
