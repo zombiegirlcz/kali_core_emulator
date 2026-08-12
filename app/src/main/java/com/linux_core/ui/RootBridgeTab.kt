@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,6 +26,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 object RootBridgeManager {
@@ -254,6 +259,157 @@ object RootBridgeManager {
     }
 }
 
+/**
+ * Magisk module manager — install/remove Magisk modules from the Root Bridge UI.
+ *
+ * Runs through the real Magisk CLI (su):
+ *   magisk --install-module <zip>
+ *   magisk --remove-modules [-n]      (-n = keep module data)
+ * `magisk` binary is probed at well-known locations, preferring /product/bin
+ * (the user's device layout — AGENTS.md / launcher docs).
+ */
+object MagiskModuleManager {
+    private const val TAG = "MagiskModuleManager"
+
+    // Probe order: user's device has it under /product/bin (same dir as su).
+    private val MAGISK_PATHS = listOf(
+        "/product/bin/magisk",
+        "/system/bin/magisk",
+        "/system/xbin/magisk",
+        "/sbin/magisk",
+        "/data/adb/magisk/magisk",
+        "/apex/com.android.runtime/bin/magisk"
+    )
+
+    data class MagiskModule(val id: String, val name: String, val version: String)
+    data class ModuleZip(val path: String, val size: Long, val name: String)
+
+    /** Locate the magisk CLI binary. */
+    fun findMagisk(): String? {
+        for (p in MAGISK_PATHS) {
+            if (File(p).exists()) return p
+        }
+        return try {
+            val proc = Runtime.getRuntime().exec(arrayOf("which", "magisk"))
+            val out = proc.inputStream.bufferedReader().readText().trim()
+            if (proc.waitFor() == 0 && out.isNotBlank()) out else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** su -c wrapper capturing stdout+stderr; returns (exitCode, output). */
+    fun suExec(cmd: String): Pair<Int, String> {
+        val (suOk, suPath) = RootBridgeManager.checkSuAvailable()
+        val suBin = if (suOk && suPath != null) suPath else "su"
+        return try {
+            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", "$suBin -c '$cmd' 2>&1"))
+            val out = proc.inputStream.bufferedReader().readText()
+            val rc = proc.waitFor()
+            rc to out.trim()
+        } catch (e: Exception) {
+            Log.e(TAG, "suExec failed: ${e.message}")
+            -1 to "ERR: ${e.message}"
+        }
+    }
+
+    /** List installed modules: `magisk --list-modules` and read module.prop for name/version. */
+    fun listInstalled(): List<MagiskModule> {
+        val magisk = findMagisk()
+        // Module dir names ARE the module ids; comment/disabled modules have
+        // a `disable` marker — include them (visible in the list).
+        var ids: List<String> = emptyList()
+        if (magisk != null) {
+            val (rc, out) = suExec("$magisk --list-modules")
+            if (rc == 0 && out.isNotBlank()) {
+                ids = out.lines().map { it.trim() }.filter { it.isNotBlank() }
+            }
+        }
+        // Fallback: ne všechny Magisk verze mají --list-modules — čteme module
+        // root přímo (funguje i s KSU/APatch).
+        if (ids.isEmpty()) {
+            val (_, lsOut) = suExec("ls -1 /data/adb/modules 2>/dev/null")
+            ids = lsOut.lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it != "lost+found" }
+        }
+        return ids.mapNotNull { id ->
+                // module.prop is root-readable only — read via su
+                val (_, prop) = suExec("cat /data/adb/modules/$id/module.prop")
+                var name = id
+                var version = ""
+                prop.lineSequence().forEach { line ->
+                    when {
+                        line.startsWith("name=") -> name = line.substringAfter("name=")
+                        line.startsWith("version=") -> version = line.substringAfter("version=")
+                    }
+                }
+                MagiskModule(id, name, version)
+            }
+            .sortedBy { it.name.lowercase() }
+    }
+
+    /**
+     * Candidate module ZIPs (not yet installed): /sdcard/Download, /sdcard,
+     * the app files dir and /data/local/tmp. No root needed to scan sdcard.
+     */
+    fun findModuleZips(context: Context): List<ModuleZip> {
+        val dirs = listOf(
+            File("/sdcard/Download"),
+            File("/sdcard"),
+            File("/data/local/tmp"),
+            context.getExternalFilesDir(null),
+            context.filesDir
+        )
+        val seen = HashSet<String>()
+        val zips = ArrayList<ModuleZip>()
+        for (dir in dirs) {
+            if (dir == null || !dir.isDirectory) continue
+            (dir.listFiles { f -> f.isFile && f.name.endsWith(".zip", true) } ?: emptyArray())
+                .sortedBy { it.name }
+                .forEach { f ->
+                    if (seen.add(f.absolutePath)) {
+                        zips += ModuleZip(f.absolutePath, f.length(), f.name)
+                    }
+                }
+        }
+        return zips
+    }
+
+    /** Install a module from a ZIP in background: magisk --install-module <zip>. */
+    fun installModule(
+        zipPath: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        Thread {
+            val magisk = findMagisk()
+            if (magisk == null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(false, "magisk CLI not found") }
+                return@Thread
+            }
+            val (rc, out) = suExec("$magisk --install-module \"$zipPath\"")
+            android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(rc == 0, out) }
+        }.start()
+    }
+
+    /** Remove ALL modules (optionally keep data with -n): magisk --remove-modules [-n]. */
+    fun removeAllModules(
+        keepData: Boolean,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        Thread {
+            val magisk = findMagisk()
+            if (magisk == null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(false, "magisk CLI not found") }
+                return@Thread
+            }
+            val flag = if (keepData) " -n" else ""
+            val (rc, out) = suExec("$magisk --remove-modules$flag")
+            android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(rc == 0, out) }
+        }.start()
+    }
+}
+
 @Composable
 fun RootBridgeTab(modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -264,6 +420,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var daemonRunning by remember { mutableStateOf(false) }
     var daemonPid by remember { mutableStateOf<Int?>(null) }
     var isStarting by remember { mutableStateOf(false) }
+    var showModuleDialog by remember { mutableStateOf(false) }
 
     // Bind mount toggles
     var bindSystem by remember { mutableStateOf(prefs.getBoolean("bind_system", true)) }
@@ -476,6 +633,74 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
             }
         }
 
+        // Magisk Module Manager Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, Color(0xFF333333)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF121212))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "\uD83E\uDDFE Magisk moduly",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Instalace ZIP / odebrání modulů\nmagisk --install-module | --remove-modules [-n]",
+                            color = Color.Gray,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.List,
+                        contentDescription = "Modules",
+                        tint = Color(0xFF00FF41),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = { showModuleDialog = true },
+                    enabled = suDetected,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00AA33),
+                        contentColor = Color.Black
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "\uD83D\uDCC1 Spravovat moduly",
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (!suDetected) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "⚠ vyžaduje root (su)",
+                        color = Color(0xFFFF8888),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+
         // PRoot Bind Mounts Card
         Card(
             modifier = Modifier
@@ -567,4 +792,288 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
             }
         }
     }
+
+    if (showModuleDialog) {
+        MagiskModuleDialog(
+            onDismiss = { showModuleDialog = false },
+            onToast = { msg ->
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            }
+        )
+    }
+}
+
+/**
+ * Dialog spravující Magisk moduly: seznam instalovaných modulů + ZIPy
+ * k instalaci (z /sdcard/Download, /sdcard, filesDir, /data/local/tmp).
+ * Instalace i odebrání běží na pozadí přes magisk CLI (su).
+ */
+@Composable
+fun MagiskModuleDialog(
+    onDismiss: () -> Unit,
+    onToast: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var magiskPath by remember { mutableStateOf(MagiskModuleManager.findMagisk()) }
+    var installed by remember { mutableStateOf<List<MagiskModuleManager.MagiskModule>>(emptyList()) }
+    var zips by remember { mutableStateOf<List<MagiskModuleManager.ModuleZip>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var keepData by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }          // operace běží na pozadí
+    var lastOutput by remember { mutableStateOf<String?>(null) }
+
+    fun refresh() {
+        loading = true
+        scope.launch {
+            val inst = withContext(Dispatchers.IO) { MagiskModuleManager.listInstalled() }
+            val zipsList = withContext(Dispatchers.IO) { MagiskModuleManager.findModuleZips(context) }
+            magiskPath = MagiskModuleManager.findMagisk()
+            installed = inst
+            zips = zipsList
+            loading = false
+        }
+    }
+
+    LaunchedEffect(Unit) { refresh() }
+
+    fun installZip(zip: MagiskModuleManager.ModuleZip) {
+        if (busy) return
+        busy = true
+        lastOutput = null
+        scope.launch {
+            MagiskModuleManager.installModule(zip.path) { ok, out ->
+                lastOutput = (if (ok) "✅ INSTALL OK" else "❌ INSTALL FAILED") + "\n" + out
+                busy = false
+                if (ok) onToast("Modul nainstalován: ${zip.name}")
+                refresh()
+            }
+        }
+    }
+
+    fun removeAll() {
+        if (busy) return
+        busy = true
+        lastOutput = null
+        scope.launch {
+            MagiskModuleManager.removeAllModules(keepData) { ok, out ->
+                lastOutput = (if (ok) "✅ REMOVE OK" else "❌ REMOVE FAILED") + "\n" + out
+                busy = false
+                if (ok) onToast(if (keepData) "Moduly odebrány (data zachována -n)" else "Moduly odebrány")
+                refresh()
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = Color(0xFF141414),
+        title = {
+            Text(
+                text = "\uD83D\uDCC1 Magisk moduly",
+                color = Color(0xFF00FF41),
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                // magisk path + refresh bar
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = magiskPath ?: "magisk CLI nenalezen",
+                        color = if (magiskPath != null) Color(0xFF88FF88) else Color(0xFFFF8888),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { refresh() },
+                        enabled = !loading && !busy
+                    ) {
+                        Text("⟳ Obnovit", color = Color(0xFF00FF41), fontSize = 11.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Instalované moduly
+                Text(
+                    text = "✅ INSTALOVANÉ (${installed.size})",
+                    color = Color(0xFF88FF88),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                if (loading) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF00FF41)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("načítám…", color = Color.Gray, fontSize = 11.sp)
+                    }
+                } else if (installed.isEmpty()) {
+                    Text("— žádné inst. moduly —", color = Color.Gray, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                } else {
+                    installed.forEach { m ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(m.name, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                Text(
+                                    "${m.id} · v${m.version}",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Odebrat vše (--remove-modules [-n])
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Checkbox(
+                        checked = keepData,
+                        onCheckedChange = { keepData = it },
+                        enabled = !busy,
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF00FF41),
+                            checkmarkColor = Color.Black,
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Text(
+                        text = "-n zachovat data",
+                        color = Color.Gray,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Button(
+                    onClick = { removeAll() },
+                    enabled = !busy && !loading && magiskPath != null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFF5252),
+                        contentColor = Color.Black
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🗑 Odebrat VŠECHNY moduly", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = Color(0xFF2A2A2A))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // ZIPy k instalaci
+                Text(
+                    text = "\uD83D\uDCC1 K INSTALACI (${zips.size})",
+                    color = Color(0xFFFFB000),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                if (zips.isEmpty()) {
+                    Text("— žádné ZIPy (Download / sdcard / filesDir) —", color = Color.Gray, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                } else {
+                    zips.forEach { z ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(z.name, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                Text(
+                                    "${z.size / 1024} KB · ${z.path}",
+                                    color = Color.Gray,
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            Button(
+                                onClick = { installZip(z) },
+                                enabled = !busy && magiskPath != null,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF00AA33),
+                                    contentColor = Color.Black
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = if (busy) "…" else "INSTALOVAT",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Busy + výstup operace
+                if (busy) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF00FF41)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("probíhá na pozadí…", color = Color(0xFF00FF41), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+                lastOutput?.let { out ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0A0A)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = out,
+                            color = Color(0xFFBBBBBB),
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { if (!busy) onDismiss() }, enabled = !busy) {
+                Text("Zavřít", color = Color(0xFF00FF41))
+            }
+        }
+    )
 }

@@ -17,6 +17,11 @@ object ProotManager {
     private const val TAG = "ProotManager"
     private const val NL = "\n" // Force Unix line endings
 
+    // Host-side usr tools (sed/rsync/nano/rg + libncursesw) — verze deploye.
+    // Bumpnout při změně binárek v assets: staré verze se pak smažou a
+    // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
+    private const val USR_TOOLS_VERSION = "bionic-20260811-1"
+
     fun setupProotEnvironment(
         context: Context,
         rootfsDirName: String = "kali-arm64",
@@ -34,12 +39,18 @@ object ProotManager {
         // files/usr/{bin,lib} musí existovat PŘED deployem binárek z assets
         // (aplikace sem nasadí host nástroje). Vytváříme je zde (fáze deploy,
         // spouští se při každém startu kontejneru) — idempotentně.
+        //
+        // USR_TOOLS_VERSION: version-gate — staré glibc buildy (rseq → SIGSYS
+        // na hostu) se musí při bumpu smazat a nasadit znovu (Bionic). Bez
+        // tohohle by deploy-only-if-missing nechal na zařízení navždy rozbité
+        // binárky i po APK updatu. usr/lib drží jen případné host-side .so
+        // (aktuálně prázdné).
         val hostPrefixBinDir = File(rootDir, "usr/bin")
         val hostPrefixLibDir = File(rootDir, "usr/lib")
         hostPrefixBinDir.mkdirs()
         hostPrefixLibDir.mkdirs()
-        deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true)
-        deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false)
+        deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true, version = USR_TOOLS_VERSION)
+        deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false, version = USR_TOOLS_VERSION)
 
         val criticalDirs = listOf(
             "system", "dev", "proc", "sys", "tmp", "root", "sdcard",
@@ -133,8 +144,25 @@ object ProotManager {
         )
     }
 
-    private fun deployDir(context: Context, assetDir: String, targetDir: File, executable: Boolean) {
-        val names = try { context.assets.list(assetDir) ?: return } catch (e: Exception) { return }
+    private fun deployDir(context: Context, assetDir: String, targetDir: File, executable: Boolean, version: String = "") {
+        val names = try { context.assets.list(assetDir) } catch (e: Exception) { null }
+        val hasAssets = !names.isNullOrEmpty()
+
+        // Version gate: při změně verze host nástrojů smaž staré binárky, i když
+        // existují (jinak by deploy-only-if-missing nechal na zařízení navždy
+        // staré glibc/rseq rozbité verze). Marker .version se píše i pro prázdné
+        // assetDir (usr/lib) — staré soubory se tak taky uklidí.
+        if (version.isNotEmpty()) {
+            val marker = File(targetDir, ".version")
+            val current = if (marker.exists()) marker.readText().trim() else ""
+            if (current != version) {
+                Log.i(TAG, "deployDir $assetDir: version '$current' -> '$version' — wiping $targetDir")
+                targetDir.deleteRecursively()
+                targetDir.mkdirs()
+            }
+        }
+        if (!hasAssets) return
+
         for (name in names) {
             val target = File(targetDir, name)
             // Už existuje (deploynuto nebo ručně umístěno) — přeskoč, nepřepisuj.
@@ -152,6 +180,9 @@ object ProotManager {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to deploy host tool $assetDir/$name: ${e.message}")
             }
+        }
+        if (version.isNotEmpty()) {
+            File(targetDir, ".version").writeText(version)
         }
     }
 

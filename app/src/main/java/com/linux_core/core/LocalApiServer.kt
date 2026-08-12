@@ -365,7 +365,7 @@ object LocalApiServer {
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/", "/usb/",
+                "/battery/optimize", "/app/logs", "/editor/", "/usb/", "/usbg2/",
                 "/vpn/ai/", "/vpn/mitm/selective")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
@@ -511,6 +511,11 @@ object LocalApiServer {
                 path == "/usb/raw_transfer" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
                 path == "/usb/raw_transfer" && method == "GET" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
                 path == "/usb/stream" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
+
+                // ─── USB Gadget g2 (aktivace/deaktivace; přípravu dělá Magisk modul)
+                path == "/usbg2/status" && method == "GET" -> handleUsbG2Status(context, out)
+                path == "/usbg2/start" && method == "POST" -> handleUsbG2Start(context, out)
+                path == "/usbg2/stop" && method == "POST" -> handleUsbG2Stop(context, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -518,6 +523,35 @@ object LocalApiServer {
             sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
         }
     }
+
+    // ── USB Gadget g2 (aktivace = navázání na UDC; přípravu dělá Magisk modul) ──
+    private fun handleUsbG2Status(context: Context, out: OutputStream) {
+        try {
+            val mgr = UsbGadgetManager(context)
+            sendResponse(out, 200, "OK", mgr.statusJson())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    private fun handleUsbG2Start(context: Context, out: OutputStream) {
+        val mgr = UsbGadgetManager(context)
+        mgr.activate().fold(
+            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
+            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
+        )
+    }
+
+    private fun handleUsbG2Stop(context: Context, out: OutputStream) {
+        val mgr = UsbGadgetManager(context)
+        mgr.deactivate().fold(
+            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
+            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
+        )
+    }
+
+    private fun jsonEsc(s: String): String =
+        "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ") + "\""
 
     private fun sendResponse(out: OutputStream, statusCode: Int, statusText: String, jsonResponse: String) {
         val rawResponse = jsonResponse.toByteArray(Charsets.UTF_8)
@@ -1106,16 +1140,27 @@ object LocalApiServer {
     /**
      * Host shell environment pro `sh -c` (ashell -c, /shell API).
      * App process dědí výchozí PATH (/system/bin:/system/xbin...) a NEMÁ
-     * cesty k host-side nástrojům (files/usr/bin) ani LD_LIBRARY_PATH na
-     * glibc (files/usr/lib). Bez toho ashell -c vidí jen toybox binárky a
-     * GNU sed/nano/rsync z usertools nejdou spustit. Sestavujeme env ve
-     * stejném vzoru jako startAshellSession() v TerminalActivity.
+     * cesty k host-side nástrojům (files/usr/bin). Bez toho ashell -c vidí
+     * jen toybox binárky a GNU sed/nano/rsync z usertools nejdou spustit.
+     * Sestavujeme env ve stejném vzoru jako startAshellSession() v TerminalActivity.
+     *
+     * usr/bin = Bionic buildy (NDK, linker64) — běží přímo na hostu;
+     * usr/lib = případné host-side .so (aktuálně prázdné — ncursesw je
+     *           staticky v nano).
+     *
+     * ⚠️ NEPŘIDÁVAT LD_LIBRARY_PATH do hostShellEnv! Měření 2026-08-11
+     * (docs/prompt_proot_perf_diag.md): jakmile env proot procesu obsahuje
+     * LD_LIBRARY_PATH ukazující na files/usr/lib, rootfs glibc tracee při
+     * startu spadne SIGBUS (signal 7) — jeho ld.so načte cross-kompilované
+     * glibc libs z usr/lib (nebo se o to pokusí) místo rootfs knihoven a
+     * skončí bus error. Proto ashell-spawnované proot repliky celou dobu
+     * padaly, zatímco reálná session (čistý env z TerminalService) běžela.
+     * Bionic host nástroje jsou self-contained — LD_LIBRARY_PATH nepotřebují.
      */
     private fun hostShellEnv(): Array<String> {
         val ctx = appContext ?: return emptyArray()
         val filesDir = ctx.filesDir
         val hostPrefixBin = File(filesDir, "usr/bin").absolutePath
-        val hostPrefixLib = File(filesDir, "usr/lib").absolutePath
         val basePath = "/system/bin:/system/xbin:/vendor/bin"
         // usr/bin na začátku: GNU sed/nano/rsync/rg přebíjejí toybox
         val fullPath = "$hostPrefixBin:$basePath:${filesDir.absolutePath}"
@@ -1124,7 +1169,6 @@ object LocalApiServer {
             "USER=app",
             "PATH=$fullPath",
             "PREFIX=${File(filesDir, "usr").absolutePath}",
-            "LD_LIBRARY_PATH=$hostPrefixLib",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"

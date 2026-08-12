@@ -973,3 +973,67 @@ Wifi scan / `ip address` přes `sudo` běžel dlouho → daemon (single-threaded
 - **Nový `pull_full_assets()`**: `modal volume get --force kali-build-data src/app/src/main/assets app/src/main/` — stáhne CELÝ assets adresář **rekurzivně** (su_daemon, su_wrapper, usb_bridge, `usr/bin/{nano,rg,rsync,sed}`, `usr/lib/{ld-linux,libc,libm,libpthread}`, certs, launcher.sh, nh, ...) a přepíše lokální verze.
 - `all` = upload_src → build_native → pull_full_assets (ihned po native) → gradle → pull APK. `build` = pull_full_assets (před uploadem) → upload → gradle.
 - `NATIVE_BINARIES` v mbuild nahrazeno `_NATIVE_ASSET_EXCLUDES` v modal_build.py (jediný seznam).
+
+## Session 2026-08-11 — Host-side usr tools: glibc → Bionic (Permission denied / Bad system call fix)
+
+**Bug:** volání `files/usr/bin/{nano,rsync,sed}` z PRootu do hostitelského Android shellu (`ashell -c`, `/shell` API) selhávalo i po `chmod +x` s `Permission denied` a po doplnění exec bitu s `Bad system call` (SIGSYS).
+
+**Příčiny (2 vrstvy):**
+1. **Deploy bez exec bitu** — staré APK nasadilo `usr/bin/*` a `usr/lib/*` s oprávněním 0644.
+2. **glibc binárky v app kontextu jdou vždy failnout** — rootfs glibc = **Ubuntu GLIBC 2.43**, která při startu NEPODMINĚNĚ volá syscall `rseq` (tunable `GLIBC_TUNABLES=glibc.pthread.rseq=0` byl v ≥2.40 odstraněn). Android app **seccomp policy** (zygote filtr) `rseq`(293) blokuje → SIGSYS. V guestu to funguje jen proto, že **PRootův vlastní seccomp filtr (SECCOMP_RET_TRACE)** se vyhodnocuje PŘED zygote filtrem a blokované syscally propustí.
+
+**Fix (versionCode 16, `4.2-BIONIC-USERTOOLS`):**
+- `tools/modal_build.py` `_build_usrtools()`: **všechny 4 nástroje (sed/rsync/nano/rg) jsou teď Bionic** (`aarch64-linux-android{28|24|21}-clang` z NDK r28, `-O2 -fPIE -pie`, interpreter `/system/bin/linker64`). Glibc cross (aarch64-linux-gnu-gcc + `--dynamic-linker=$PREFIX/lib/ld-linux-aarch64.so.1` + kopie glibc libs do `assets/usr/lib`) **odstraněn**.
+- nano: **ncursesw staticky** (`--disable-shared` na ncurses — `-pie` v LDFLAGS koliduje s `-shared` GNU ld error; terminfo fallbacky zůstávají zabudované), takže nepotřebuje žádné host-side .so. `assets/usr/lib` je prázdné.
+- `CFLAGS += -D__USE_FORTIFY_LEVEL=0` — gnulib (sed/nano) tábne vlastní `cdefs.h`, který shadowne bionic `sys/cdefs.h` → `__USE_FORTIFY_LEVEL` nikdy nedefinovaný → bionic fortify headery spadnou na `undeclared identifier`.
+- `ProotManager.deployDir()`: **version-gate** (marker `usr/bin/.version`, konstanta `USR_TOOLS_VERSION="bionic-20260811-1"`). Při bumpu se `usr/bin` i `usr/lib` smažou celé (`deleteRecursively`) a nasadí znovu — jinak by deploy-only-if-missing nechal na zařízení navždy staré rozbité binárky.
+- `_build_usrtools` na začátku `shutil.rmtree(assets_usr)` — čistý stav, žádná akumulace glibc libs na Volume.
+
+**Ověření (na zařízení, host shell přes /shell API):** `sed --version` → GNU sed 4.9, `rsync --version` → 3.3.0, `rg --version` → 14.1.1, `nano --version` → 8.2 — **vše rc=0**; funkčně sed `-n 2p`, `rg -c`, `rsync -a` OK. V APK: `assets/usr/bin/{sed,rsync,nano,rg}` (Bionic, linker64), žádné glibc libs, dex obsahuje `bionic-20260811` (version gate).
+
+**Poznámka:** `mbuild native` trvá ~15 min (kompilace ncurses/sed/rsync/nano ze zdrojáků na Modal cloudu).
+
+## Session 2026-08-11 (b) — PRoot performance diagnóza + SIGBUS root cause (perf diag)
+
+Požadavek: proč je PRoot session pomalejší než Termux (docs/prompt_proot_perf_diag.md). **Výsledek měření na zařízení (Redmi Note 10 Pro, kernel 4.14.190, aarch64):**
+
+### Závěr: seccomp NENÍ vypnutý — H1/H2/H3 z plánu REJECTED
+
+| Hypotéza | Stav |
+|----------|------|
+| H1 seccomp neaktivní kvůli `-v 0` | **REJECTED** — `proot -V` → `seccomp_filter = yes`; runtime log `ptrace acceleration (seccomp mode 2) enabled` i při `-v 0` (informační řádek potlačí až `-v -1`) |
+| H2 stale binárka | **REJECTED** — nasazený proot (215 760 B) má seccomp + process_vm podporu |
+| H3 concurrent load | sekundární (není hlavní příčina) |
+
+### Skutečná příčina: per-syscall tracer cost (~50–200× vs native)
+
+Benchmark `syscall_bench` (stat x5000, v guestu i přes čerstvý proot):
+
+| Konfigurace | µs/stat |
+|-------------|---------|
+| Host native | ~1–2 µs |
+| **Čerstvý proot bare** | **~104 µs** (baseline tracer cost — ptrace+seccomp round-trip na tomto kernelu) |
+| + `--link2symlink` | +32 % (137 µs) |
+| + `-0` | +29 % (134 µs) |
+| + `-0 --link2symlink --kill-on-exit` | 190 µs |
+| + plné bindy (dev/proc/sys/tmp/ipc/sdcard) | 189 µs (bindy ≈ 0) |
+| **Reálná live session** | **345–449 µs** (později vyvráceno — interleaved měření: live ≈ fresh, šum) |
+
+- getpid/read (untraced) = 0.3–0.9 µs → seccomp acceleration FUNGUJE; bottleneck jsou TRACED syscally (stat/open/… — musí se, kvůli path translationu).
+- Termux proot 5.1.107.89 (z packages.termux.dev) **nejde na tomto zařízení rozjet** — SIGSEGV i na static ELF (jeho loader/libandroid-shmem build se na tomhle kernelu/Android verzi rozpadne) → head-to-head nemožný, ale per-stop cost na stejném kernelu by byl stejný.
+
+### ⚠️ SIGBUS root cause nalezen (vysvětluje celé session mystery)
+
+**`LD_LIBRARY_PATH=filesDir/usr/lib` v `hostShellEnv()` (LocalApiServer) = jediná env proměnná, která zabije rootfs glibc tracee (SIGBUS/signal 7 při startu).** Bisect: HOME/USER/PREFIX/ANDROID_DATA/ANDROID_ROOT = 0 crashů; LD_LIBRARY_PATH → vždy crash. Mechanismus: tracee ld.so najde v usr/lib cross-kompilované glibc libs (na zařízení pořád leží staré libc.so.6/libm.so.6/libpthread.so.0 z 2026-08-07) a použije je místo rootfs knihoven → bus error. Reálná session běží, protože env z TerminalService je čistý (bez LD_LIBRARY_PATH); ashell-spawnované proot repliky padaly, protože ashell env ho má.
+
+**Fix aplikován:** `LocalApiServer.kt` — `hostShellEnv()` už NEPŘIDÁVÁ `LD_LIBRARY_PATH` (usr/lib je po bionic migraci prázdný, Bionic nástroje jsou self-contained). Pozor: na zařízení usr/lib drží staré glibc libs do doby, než se nainstaluje nový APK (version gate ho smaže) — ale bez LD_LIBRARY_PATH už nevadí.
+
+### Nálezy a doporučení
+
+1. **`--link2symlink` NELZE odebrat** (ověřeno 2026-08-11): bez něj Android blokuje hardlinky pro app UID (`ln` → Permission denied) a **apt/dpkg je úplně rozbitý** (`dpkg: error creating new backup file '/var/lib/dpkg/status-old': Permission denied` — dpkg zálohuje přes link(2)). +32 % tracer cost = nutná daň za funkční balíčkový systém. Kód se nemění.
+2. `-0` je potřeba (fake root UX), bindy nic nestojí.
+3. **Bug opraven na zařízení:** `/usr/sbin/find` byl symlink na `/usr/bin/rg` (z 2026-08-08, manuální zásah) — `apt-get install --reinstall findutils` + `ln -s /usr/bin/find /usr/sbin/find`. Dřív `find` vracel rg error.
+4. **Live vs čerstvý proot — VYŘEŠENO (interleaved měření perf_interleave.sh):** žádná systematická degradace.
+   Kola 1/2/3: live 187/208/315 µs vs fresh 214/241/232 µs — live je v 1–2 kolech RYCHLEJŠÍ, kolo 3 spiklo
+   (zátěž). Dřívější „2× degredece" = šum (benchmarky běžely v různou dobu). Proot (PID 9834): RSS 2.6 MB,
+   1 vlákno, stabilní utime/stime — žádný leak. Zbytek = intrinsický tracer cost, neřešitelný restartem.

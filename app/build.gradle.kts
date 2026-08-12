@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 15
-        versionName = "4.2-PASSWD-ALL-USERS"
+        versionCode = 16
+        versionName = "4.2-BIONIC-USERTOOLS"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
