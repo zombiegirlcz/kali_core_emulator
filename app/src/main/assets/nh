@@ -1986,27 +1986,39 @@ distro_login() {
         esac
     done
 
-    # Rootfs adresář: přesná shoda, jinak hledej prefix (kali → kali-arm64, ...)
+    # Rootfs adresář: přesná shoda, jinak hledej prefix (kali → kali-arm64, ...).
+    # Nyní robustní i proti prázdnému/neexpandovanému globu a překrývání
+    # DISTRO_LAUNCHER podle skutečně nalezené složky.
     local FILES_DIR="/data/user/0/com.linux_core/files"
     local ROOTFS="$FILES_DIR/$DISTRO"
     local DISTRO_LAUNCHER="$FILES_DIR/launcher-$DISTRO.sh"
     if [ ! -d "$ROOTFS" ]; then
-        # zkus prefix shodu: kali → kali-arm64
+        # explicitní iterace s fallbackem, pokud glob neexpanduje
         local cand=""
+        local found_dir=""
         for cand in "$FILES_DIR"/*; do
+            [ -e "$cand" ] || continue
             [ -d "$cand" ] || continue
             case "$(basename "$cand")" in
                 "$DISTRO"-*)
+                    found_dir="$cand"
                     ROOTFS="$cand"
-                    DISTRO_LAUNCHER="$FILES_DIR/launcher-$(basename "$cand").sh"
-                    DISTRO="$(basename "$cand")"
-                    break ;;
+                    # Launcher name follows the distro id prefix, not the full
+                    # directory name (ProotManager generates launcher-<id>.sh).
+                    DISTRO_LAUNCHER="$FILES_DIR/launcher-${DISTRO}.sh"
+                    break
+                    ;;
             esac
         done
+        if [ -z "$found_dir" ]; then
+            echo "[-] Distro '$DISTRO' nenalezeno v $FILES_DIR" >&2
+            echo "    Dostupná: $(ls -d "$FILES_DIR"/* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
+            exit 1
+        fi
     fi
     if [ ! -d "$ROOTFS" ]; then
         echo "[-] Distro '$DISTRO' nenalezeno v $FILES_DIR" >&2
-        echo "    Dostupná: $(ls -d "$FILES_DIR"/*-arm64 "$FILES_DIR"/docker-* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
+        echo "    Dostupná: $(ls -d "$FILES_DIR"/* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
         exit 1
     fi
 

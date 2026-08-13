@@ -1336,6 +1336,7 @@ object ProotManager {
             if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
             if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
             if (rootPrefs.getBoolean("bind_usb", true)) append(" -b /dev/bus/usb:/mnt/usb")
+            if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
         }
 
         val rendered = template
