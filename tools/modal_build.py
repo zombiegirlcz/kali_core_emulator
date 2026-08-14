@@ -137,12 +137,9 @@ usrtools_image = (
 
 
 # ── Upload source to Volume ──────────────────────────────────────────────────
-@app.function(
-    image=source_image,
-    volumes={"/vol": build_vol},
-    timeout=600,
-    memory=2048,
-)
+# NOTE: plain helper (NOT @app.function) — it is invoked directly from
+# upload_basic/upload_force inside their remote container. A Function object
+# is not directly callable (would raise 'Function' object is not callable).
 def _upload_common(delete: bool):
     dest = "/vol/src"
     if os.path.isdir(dest):
