@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import com.linux_core.core.RootfsManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,6 +71,18 @@ object RootBridgeManager {
      */
     fun detectGuestRootfs(context: Context): String? {
         val filesDir = context.filesDir
+
+        // Nový layout: preferuj nh/distro/*
+        val nhDistroDir = File(filesDir, RootfsManager.NH_DISTRO_DIR)
+        if (nhDistroDir.isDirectory) {
+            val nhCandidates = nhDistroDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+            val nhRootfs = nhCandidates.filter { dir ->
+                File(dir, "etc/passwd").exists() && File(dir, "usr/bin").isDirectory
+            }.maxByOrNull { it.lastModified() }
+            if (nhRootfs != null) return nhRootfs.absolutePath
+        }
+
+        // Legacy fallback
         val candidates = filesDir.listFiles()?.filter { it.isDirectory } ?: return null
         val rootfs = candidates.filter { dir ->
             dir.name.endsWith("-arm64") ||

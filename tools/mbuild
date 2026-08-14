@@ -1,29 +1,31 @@
 #!/bin/zsh
-# mbuild — NetHunter full build pipeline
-# Usage: zsh mbuild [all|native|build|usrtools|usbtools]
-#   all       = upload + native compile + APK build (complete flow)
-#   native    = native-only compile (no APK rebuild)
-#   build     = upload -> APK build (BEZ pull assets — pull jen v native|all;
-#               jinak by přepsal lokální úpravy starou Volume verzí)
-#   usrtools  = jen nano/rsync/sed/rg + libncursesw (assets/usr, Bionic buildy)
-#   usbtools  = jen USB gadget tools: libusbgx/usbutils/usbrelayd (assets/usr)
+# mbuild — NetHunter build pipeline
+# Usage: zsh mbuild <command>
 #
-# PRAVIDLO (AGENTS.md): Zdroj pravdy pro native binárky + usr tools je VOLUME
-# (build_native je tam kompiluje). Lokální app/src/main/assets/ se synchronizuje
-# z Volume POUZE po build_native (native|all|usrtools) — modelový `build` (jen
-# gradle) NESMÍ pull assets, jinak přepíše lokální úpravy launcher.sh/ostatních
-# souborů starou Volume verzí (bug 2026-08-12: „debil dal pull do build").
+# UPLOAD (vždy samostatně, před buildem):
+#   upload       = rsync bez --delete (jen přidá/aktualizuje)
+#   upload_force = rsync --delete (plná synchronizace, smaže co není lokálně)
+#   upload_clean = smaže src + gradle-cache na Volume (builds zůstávají)
+#
+# BUILD (předpokládá, že upload už proběhl):
+#   all       = native compile + pull assets + APK build
+#   native    = native compile + pull assets
+#   build     = APK build + pull APK
+#   usrtools  = native compile (usrtools) + pull assets
+#   usbtools  = USB tools build + pull assets
+#   proot     = proot static build + pull assets
+#
+# PRAVIDLO: Upload se VŽDY dělá zvlášť. Build nikdy nevolá upload.
+# Zdroj pravdy pro native binárky je Volume (build_native je tam kompiluje).
+# Po native buildu se dělá pull_full_assets zpět do lokálního repa.
 set -e
 
 SRC="${KALI_PROJECT_DIR:-.}"
-CMD="${1:-all}"
+CMD="${1:-}"
 
 cd "$SRC"
 
-# ── Synchronizace celého assets z Volume do lokálního app/src/main/assets ──
-# modal volume get stahuje složky rekurzivně; cíl je app/src/main/ a remote
-# src/app/src/main/assets, takže výsledek je app/src/main/assets/ ... (přepisuje
-# existující soubory, vytváří chybějící adresáře).
+# ── Pull celého assets z Volume do lokálního app/src/main/assets ──
 pull_full_assets() {
     echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
     if modal volume get --force kali-build-data "src/app/src/main/assets" "app/src/main/" >/dev/null 2>&1; then
@@ -37,56 +39,67 @@ pull_full_assets() {
 }
 
 case "$CMD" in
+    # ── UPLOAD příkazy ──
+    upload)
+        echo "=== UPLOAD (basic, bez --delete) ==="
+        modal run modal_build.py::upload_basic 2>&1 | tail -5
+        ;;
+    upload_force)
+        echo "=== UPLOAD FORCE (rsync --delete) ==="
+        modal run modal_build.py::upload_force 2>&1 | tail -5
+        ;;
+    upload_clean)
+        echo "=== UPLOAD CLEAN (smaže src + gradle-cache) ==="
+        modal run modal_build.py::upload_clean 2>&1 | tail -5
+        ;;
+
+    # ── BUILD příkazy (předpokládají, že upload proběhl) ──
     all)
-        echo "=== FULL BUILD ==="
-        echo "  -> upload source"
-        modal run modal_build.py::upload_src 2>&1 | tail -3
+        echo "=== FULL BUILD (native + APK) ==="
         echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
         echo "  -> pull CELÝ assets ihned po build_native"
         pull_full_assets
         echo "  -> Gradle build"
-	modal run modal_build.py::upload_src
         modal run modal_build.py::build > build.log | cat
         modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
         ;;
     native)
         echo "=== NATIVE BUILD ==="
-        echo "  -> upload source"
-        modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  -> pull CELÝ assets ihned po build_native"
+        echo "  -> pull CELÝ assets"
         pull_full_assets
         ;;
     build)
         echo "=== APK BUILD ==="
-        echo "  2) upload source"
-        modal run modal_build.py::upload_src 2>&1 | tail -3
-        echo "  3) Gradle build"
+        echo "  -> Gradle build"
         modal run modal_build.py::build > build.log | cat
         modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
         ;;
     usrtools)
         echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
-        echo "  -> upload source"
-        modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> native build (usrtools)"
         modal run modal_build.py::build_native > build.log | cat
-        echo "  -> pull CELÝ assets (usr/ je v něm)"
+        echo "  -> pull CELÝ assets"
         pull_full_assets
         ;;
     usbtools)
         echo "=== USBTOOLS BUILD (libusbgx/usbutils/usbrelayd) ==="
-        echo "  -> upload source"
-        modal run modal_build.py::upload_src 2>&1 | tail -3
         echo "  -> usb tools build"
         modal run modal_build.py::build_usb_tools > build.log | cat
-        echo "  -> pull CELÝ assets (usr/ je v něm)"
+        echo "  -> pull CELÝ assets"
+        pull_full_assets
+        ;;
+    proot)
+        echo "=== PROOT STATIC BUILD (termux fork, talloc linked in) ==="
+        echo "  -> proot + loader cross-compile (4 ABI)"
+        modal run modal_build.py::build_proot_static > build.log | cat
+        echo "  -> pull CELÝ assets"
         pull_full_assets
         ;;
     *)
-        echo "Usage: zsh mbuild [all|native|build|usrtools|usbtools]"
+        echo "Usage: zsh mbuild [upload|upload_force|upload_clean|all|native|build|usrtools|usbtools|proot]"
         exit 1
         ;;
 esac

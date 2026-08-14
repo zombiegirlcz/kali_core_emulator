@@ -137,9 +137,15 @@ app/src/main/assets/certs/google_attestation_root.key
 # These are safe to commit as they are for DEVELOPMENT only
 !app/src/main/assets/certs/
 
-# Usr tools generated binaries (nano/rsync/sed/rg) — stahuji se z Volume
-# pres mbuild pm_usrtools; necommitovat zdrojové buildarty
-app/src/main/assets/usr/
+# Usr tools generated binaries (nano/rsync/sed/rg, usb tools, static proot)
+# — zdroj pravdy je Volume (build_native); lokálně se stahuji přes
+# pull_full_assets. Necommitovat build artefakty.
+# VÝJIMKA (boot refactor fáze 1): repo-owned soubory přesunuté z assets/bin/:
+app/src/main/assets/usr/**
+!app/src/main/assets/usr/bin/
+app/src/main/assets/usr/bin/**
+!app/src/main/assets/usr/bin/terminalmap
+!app/src/main/assets/usr/bin/ifconfig
 
 # Old build artifacts
 app/build_old/

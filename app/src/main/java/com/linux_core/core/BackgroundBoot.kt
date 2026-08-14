@@ -31,6 +31,8 @@ object BackgroundBoot {
         launching = true
         Thread {
             try {
+                // Ensure layout migration has run before scanning for rootfs
+                RootfsManager.ensureMigrated(context)
                 val rootfsDir = detectActiveRootfsDir(context)
                 if (rootfsDir == null) {
                     Log.w(TAG, "No rootfs found — skipping background boot")
@@ -46,7 +48,7 @@ object BackgroundBoot {
                 // Build the proot config (normal container boot + custom command).
                 val config = ProotManager.setupProotEnvironment(
                     context = context,
-                    rootfsDirName = rootfsDir.name,
+                    rootfsDirName = rootfsDir.relativeTo(context.filesDir).path,
                     mountStorage = false,
                     customCommand = "bash /root/.nh_boot.sh",
                     hasRoot = false,
@@ -70,6 +72,18 @@ object BackgroundBoot {
 
     private fun detectActiveRootfsDir(context: Context): File? {
         val filesDir = context.filesDir ?: return null
+
+        // New layout: check nh/distro/kali and nh/distro/parrot first
+        val nhDistroDir = File(filesDir, RootfsManager.NH_DISTRO_DIR)
+        if (nhDistroDir.isDirectory) {
+            val nhCandidates = nhDistroDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+            val nhRootfs = nhCandidates.filter { dir ->
+                File(dir, "etc/passwd").exists() && File(dir, "usr/bin").isDirectory
+            }.maxByOrNull { it.lastModified() }
+            if (nhRootfs != null) return nhRootfs
+        }
+
+        // Legacy fallback: old layout directories
         val candidates = filesDir.listFiles()?.filter { it.isDirectory } ?: return null
         return candidates.filter { dir ->
             dir.name.endsWith("-arm64") ||

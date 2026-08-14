@@ -38,6 +38,7 @@ import com.linux_core.core.ProotManager
 import com.linux_core.core.TerminalService
 import com.linux_core.core.KeyType
 import com.linux_core.core.HackerKeyboardRows
+import com.linux_core.core.RootfsManager
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1360,15 +1361,18 @@ class TerminalActivity : ComponentActivity() {
             val uri = intent.data ?: return
             val fileName = getFileNameFromUri(uri)
             
+            // Ensure layout migration before resolving rootfs paths
+            RootfsManager.ensureMigrated(applicationContext)
+            
             // Determine rootfs directory name
             var rootfsDirName = intent.getStringExtra("rootfsDirName")
             if (rootfsDirName == null) {
-                val kaliSetup = File(File(filesDir, "kali-arm64"), "root/.setup_done")
-                val parrotSetup = File(File(filesDir, "parrot-arm64"), "root/.setup_done")
+                val kaliSetup = File(filesDir, "nh/distro/kali/root/.setup_done")
+                val parrotSetup = File(filesDir, "nh/distro/parrot/root/.setup_done")
                 rootfsDirName = when {
-                    kaliSetup.exists() -> "kali-arm64"
-                    parrotSetup.exists() -> "parrot-arm64"
-                    else -> "kali-arm64"
+                    kaliSetup.exists() -> "nh/distro/kali"
+                    parrotSetup.exists() -> "nh/distro/parrot"
+                    else -> "nh/distro/kali"
                 }
             }
             
@@ -2563,7 +2567,8 @@ class TerminalActivity : ComponentActivity() {
                         val cfg = try {
                             val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
                                            currentDistro.startsWith("docker-") ||
-                                           currentDistro.startsWith("oci-")
+                                           currentDistro.startsWith("oci-") ||
+                                           currentDistro.startsWith("nh/distro/docker/")
                             ProotManager.setupProotEnvironment(this@TerminalActivity, currentDistro, mountStorageSaved, null, false, isDocker)
                         } catch (e: Exception) {
                             Log.e(TAG, "Attach setup failed for $currentDistro", e)
@@ -2581,13 +2586,14 @@ class TerminalActivity : ComponentActivity() {
                 Log.i(TAG, "Attaching to existing active session (no new intent)")
                 val lastSession = activeSessions.last()
                 val sessionId = TerminalService.getSessionId(lastSession)
-                val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "kali-arm64" else "kali-arm64"
+                val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "nh/distro/kali" else "nh/distro/kali"
                 val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
                 lifecycleScope.launch(Dispatchers.IO) {
                     val cfg = try {
                         val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
                                        distroName.startsWith("docker-") ||
-                                       distroName.startsWith("oci-")
+                                       distroName.startsWith("oci-") ||
+                                       distroName.startsWith("nh/distro/docker/")
                         ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker)
                     } catch (e: Exception) {
                         Log.e(TAG, "Attach setup failed for $distroName", e)
@@ -2601,7 +2607,7 @@ class TerminalActivity : ComponentActivity() {
                 return
             }
         }
-        val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "kali-arm64"
+        val rootfsDirName = intent.getStringExtra("rootfsDirName") ?: "nh/distro/kali"
         val mountStorage = intent.getBooleanExtra("mountStorage", false)
         val customCommand = intent.getStringExtra("customCommand")
         val ashellMode = intent.getBooleanExtra("ashellMode", false)
@@ -2609,6 +2615,7 @@ class TerminalActivity : ComponentActivity() {
         val isDockerImage = intent.getBooleanExtra("isDockerImage", false) ||
                             rootfsDirName.startsWith("docker-") ||
                             rootfsDirName.startsWith("oci-") ||
+                            rootfsDirName.startsWith("nh/distro/docker/") ||
                             File(filesDir, "$rootfsDirName/.docker_image").exists()
 
         // ashell: escape z prootu do host app shellu (/system/bin/sh, bez PRoot)
@@ -2652,8 +2659,9 @@ class TerminalActivity : ComponentActivity() {
         // (nh, nmap, python3, atd.) i v ashell (host) shellu.
         val distroPaths = mutableListOf<String>()
         val listedDirs = try { filesDir.listFiles()?.toList() ?: emptyList() } catch (e: Exception) { emptyList() }
-        val knownDirs = listOf("kali-arm64", "parrot-arm64") +
-            (listedDirs.filter { it.isDirectory && it.name.startsWith("docker-") }.map { it.name })
+        val knownDirs = listOf("nh/distro/kali", "nh/distro/parrot") +
+            (listedDirs.filter { it.isDirectory && it.name.startsWith("docker-") }.map { it.name }) +
+            (File(filesDir, "nh/distro/docker").listFiles()?.filter { it.isDirectory }?.map { "nh/distro/docker/${it.name}" } ?: emptyList())
         for (dirName in knownDirs) {
             val rootfs = File(filesDir, dirName)
             if (!rootfs.isDirectory) continue

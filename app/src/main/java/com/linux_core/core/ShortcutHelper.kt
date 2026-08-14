@@ -18,7 +18,7 @@ object ShortcutHelper {
         // 1. Kali Shortcut
         val kaliIntent = Intent(context, TerminalActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            putExtra("rootfsDirName", "kali-arm64")
+            putExtra("rootfsDirName", "nh/distro/kali")
             putExtra("mountStorage", false)
         }
         val kaliShortcut = ShortcutInfo.Builder(context, "shortcut_kali")
@@ -31,7 +31,7 @@ object ShortcutHelper {
         // 2. Parrot Shortcut
         val parrotIntent = Intent(context, TerminalActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            putExtra("rootfsDirName", "parrot-arm64")
+            putExtra("rootfsDirName", "nh/distro/parrot")
             putExtra("mountStorage", false)
         }
         val parrotShortcut = ShortcutInfo.Builder(context, "shortcut_parrot")
@@ -53,7 +53,7 @@ object ShortcutHelper {
         if (!shortcutManager.isRequestPinShortcutSupported) return
 
         val isKali = distroId.contains("kali")
-        val rootfsDirName = if (isKali) "kali-arm64" else "parrot-arm64"
+        val rootfsDirName = if (isKali) "nh/distro/kali" else "nh/distro/parrot"
 
         // Build a unique shortcut ID based on the custom command or just static launch
         val uniqueId = if (!customCommand.isNullOrEmpty()) {

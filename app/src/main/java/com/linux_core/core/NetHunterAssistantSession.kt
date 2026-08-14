@@ -315,8 +315,8 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
 
         executor.execute {
             var isQueryRunning = true
-            val kaliStatusFile = java.io.File(context.filesDir, "kali-arm64/tmp/nethunter_agent_status.json")
-            val parrotStatusFile = java.io.File(context.filesDir, "parrot-arm64/tmp/nethunter_agent_status.json")
+            val kaliStatusFile = RootfsManager.distroRootfsDir(context, "kali").resolve("tmp/nethunter_agent_status.json")
+            val parrotStatusFile = RootfsManager.distroRootfsDir(context, "parrot").resolve("tmp/nethunter_agent_status.json")
 
             // Delete old files if they exist
             try { kaliStatusFile.delete() } catch (e: Exception) {}

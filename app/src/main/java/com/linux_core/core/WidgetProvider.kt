@@ -91,7 +91,7 @@ class WidgetProvider : AppWidgetProvider() {
         fun loadNotebookCells(context: Context) {
             notebookCells.clear()
             var loaded = false
-            for (rootfsName in listOf("kali-arm64", "parrot-arm64")) {
+            for (rootfsName in listOf("nh/distro/kali", "nh/distro/parrot")) {
                 val confFile = File(context.filesDir, "$rootfsName/root/notebook_scripts.conf")
                 if (confFile.exists()) {
                     try {
@@ -252,8 +252,8 @@ class WidgetProvider : AppWidgetProvider() {
                     val action = if (VpnCaptureService.isRunning()) VpnCaptureService.ACTION_STOP else VpnCaptureService.ACTION_START
                     sendVpnCommand(context, action)
                 }
-                "kali" -> startTerminalWithRootfs(context, "kali-arm64")
-                "parrot" -> startTerminalWithRootfs(context, "parrot-arm64")
+                "kali" -> startTerminalWithRootfs(context, "nh/distro/kali")
+                "parrot" -> startTerminalWithRootfs(context, "nh/distro/parrot")
                 "stop_all" -> {
                     val stopIntent = Intent(context, TerminalService::class.java)
                     stopIntent.action = TerminalService.ACTION_STOP_ALL

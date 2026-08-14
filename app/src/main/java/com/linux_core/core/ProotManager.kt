@@ -20,11 +20,12 @@ object ProotManager {
     // Host-side usr tools (sed/rsync/nano/rg + libncursesw) — verze deploye.
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
-    private const val USR_TOOLS_VERSION = "bionic-20260811-1"
+    // 2026-08-14: layout-20260814-1 — redeploy celého toolchainu vč. proot/loader.
+    private const val USR_TOOLS_VERSION = "layout-20260814-1"
 
     fun setupProotEnvironment(
         context: Context,
-        rootfsDirName: String = "kali-arm64",
+        rootfsDirName: String = "nh/distro/kali",
         mountStorage: Boolean = false,
         customCommand: String? = null,
         hasRoot: Boolean = false,
@@ -51,6 +52,13 @@ object ProotManager {
         hostPrefixLibDir.mkdirs()
         deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true, version = USR_TOOLS_VERSION)
         deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false, version = USR_TOOLS_VERSION)
+
+        // Static proot/loader do usr/bin (kanonické jméno pro boot skript Fáze 2)
+        val suffix = detectArchSuffix()
+        deployArchBinaries(context, suffix)
+
+        // Migrace layoutu: staré cesty (kali-arm64, filesDir/bin) → nh/distro + usr/bin
+        RootfsManager.ensureMigrated(context)
 
         val criticalDirs = listOf(
             "system", "dev", "proc", "sys", "tmp", "root", "sdcard",
@@ -102,8 +110,8 @@ object ProotManager {
         }
         deployApiScripts(context, rootfsDir)
 
-        val suffix = if (rootfsDir.name.contains("arm64")) "aarch64" else "arm"
-        deployBinaries(context, suffix)
+        val suffix2 = detectArchSuffix()
+        deployBinaries(context, suffix2)
         fixLdLinuxSymlinks(context, rootfsDir)
 
         val prootBin = File(context.filesDir, "proot")
@@ -218,7 +226,7 @@ object ProotManager {
         try {
             val terminalMapFile = File(context.filesDir, "terminalmap")
             if (!terminalMapFile.exists() || terminalMapFile.length() == 0L) {
-                context.assets.open("bin/terminalmap").use { input ->
+                context.assets.open("usr/bin/terminalmap").use { input ->
                     terminalMapFile.outputStream().use { output -> input.copyTo(output) }
                 }
                 terminalMapFile.setExecutable(true, false)
@@ -229,6 +237,86 @@ object ProotManager {
             Log.w(TAG, "TerminalMap binary not available: ${e.message}")
         }
 
+    }
+
+    /**
+     * Detekce architektury podle Build.SUPPORTED_ABIS (spolehlivější než
+     * odvozování z názvu rootfs adresáře, který se mění s novým layoutem).
+     */
+    private fun detectArchSuffix(): String = when {
+        android.os.Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "aarch64"
+        android.os.Build.SUPPORTED_ABIS.any { it == "armeabi-v7a" } -> "arm"
+        android.os.Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
+        else -> "i686"
+    }
+
+    /**
+     * Deploy arch-specific binárek pod KANONICKÝM jménem do usr/bin / usr/lib.
+     * Primární: STATIC proot/loader (assets/usr/bin/proot-static-$suffix).
+     * Fallback: dynamické (assets/proot-$suffix) jen pokud static asset chybí.
+     * Běží AŽ PO deployDir(usr/bin)/deployDir(usr/lib) — nikdy nemaže, jen dopisuje.
+     */
+    private fun deployArchBinaries(context: Context, suffix: String) {
+        val usrBin = File(context.filesDir, "usr/bin")
+        val usrLib = File(context.filesDir, "usr/lib")
+        usrBin.mkdirs()
+        usrLib.mkdirs()
+
+        // 1) proot: static primární
+        deployFirstAvailable(
+            context,
+            listOf(
+                "usr/bin/proot-static-$suffix" to "STATIC",
+                "proot-$suffix" to "DYNAMIC-FALLBACK"
+            ),
+            File(usrBin, "proot")
+        )
+
+        // 2) loader: static primární (pár k static proot kvůli seccomp akceleraci)
+        deployFirstAvailable(
+            context,
+            listOf(
+                "usr/bin/loader-static-$suffix" to "STATIC",
+                "loader-$suffix" to "DYNAMIC-FALLBACK"
+            ),
+            File(usrBin, "loader")
+        )
+
+        // 3) libtalloc: jen pro dynamický fallback (static proot ho nepotřebuje)
+        deployFirstAvailable(
+            context,
+            listOf("libtalloc-$suffix.so" to "DYNAMIC-FALLBACK"),
+            File(usrLib, "libtalloc.so.2")
+        )
+    }
+
+    /**
+     * Zkusí nasadit první dostupný asset do cílového souboru.
+     * Pokud cíl už existuje a je neprázdný, přeskočí (idempotentní).
+     */
+    private fun deployFirstAvailable(
+        context: Context,
+        candidates: List<Pair<String, String>>,
+        target: File
+    ) {
+        if (target.exists() && target.length() > 0L) {
+            target.setExecutable(true, false)
+            return
+        }
+        for ((asset, label) in candidates) {
+            try {
+                context.assets.open(asset).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.setExecutable(true, false)
+                target.setReadable(true, false)
+                Log.i(TAG, "deployArchBinaries: ${target.name} <- $asset ($label, ${target.length()} B)")
+                return
+            } catch (e: Exception) {
+                Log.d(TAG, "deployArchBinaries: asset $asset nedostupný ($label): ${e.message}")
+            }
+        }
+        Log.e(TAG, "deployArchBinaries: ŽÁDNÝ kandidát pro ${target.name} (suffix) neexistuje!")
     }
 
     private fun updateResolvConf(context: Context, rootfsDir: File) {
@@ -789,8 +877,8 @@ object ProotManager {
 
         val assetsToDeploy = listOf(
             "nethunter_agent.py" to "nethunter_agent.py",
-            "bin/terminalmap" to "terminalmap",
-            "bin/ifconfig" to "ifconfig",
+            "usr/bin/terminalmap" to "terminalmap",
+            "usr/bin/ifconfig" to "ifconfig",
             "code-server-ctl" to "code-server-ctl",
             "scripts/ai-agent.py" to "ai-agent.py",
             "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
@@ -1396,14 +1484,14 @@ object ProotManager {
             appendLine("")
             appendLine("# Try to detect distro from rootfs directory")
             appendLine("for d in kali parrot; do")
-            appendLine("  if [ -d \"\$FILES_DIR/\${d}-arm64\" ] || [ -d \"\$FILES_DIR/\${d}\" ]; then")
+            appendLine("  if [ -d \"\$FILES_DIR/nh/distro/\${d}\" ] || [ -d \"\$FILES_DIR/\${d}-arm64\" ] || [ -d \"\$FILES_DIR/\${d}\" ]; then")
             appendLine("    DISTRO=\"\$d\"")
             appendLine("    break")
             appendLine("  fi")
             appendLine("done")
             appendLine("# Docker images: match any docker-* directory")
             appendLine("if [ -z \"\$DISTRO\" ]; then")
-            appendLine("  for d in \"\$FILES_DIR\"/docker-*; do")
+            appendLine("  for d in \"\$FILES_DIR\"/nh/distro/docker/* \"\$FILES_DIR\"/docker-*; do")
             appendLine("    if [ -d \"\$d\" ]; then")
             appendLine("      DISTRO=\"docker\"")
             appendLine("      break")

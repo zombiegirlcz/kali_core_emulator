@@ -56,8 +56,8 @@ class TerminalService : Service() {
         }
 
         fun getSessionDistro(session: TerminalSession): String {
-            val id = getSessionId(session) ?: return "kali-arm64"
-            return sessionDistros[id] ?: "kali-arm64"
+            val id = getSessionId(session) ?: return "nh/distro/kali"
+            return sessionDistros[id] ?: "nh/distro/kali"
         }
 
         fun getSessionName(session: TerminalSession): String? {
@@ -164,7 +164,11 @@ class TerminalService : Service() {
 
                 sessionIds[session] = sessionId
                 idToSession[sessionId] = session
-                sessionDistros[sessionId] = java.io.File(config.rootfsDir).name
+                sessionDistros[sessionId] = try {
+                    java.io.File(config.rootfsDir).relativeTo(java.io.File(config.cwd)).path
+                } catch (_: Exception) {
+                    java.io.File(config.rootfsDir).name
+                }
 
                 sessions.add(session)
                 sessionClients[session] = client

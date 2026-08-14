@@ -1638,7 +1638,7 @@ help_distro() {
     echo "    nh distro kill sess_123 --force"
     echo "    nh distro remove parrot --force"
     echo "    nh distro backup kali"
-    echo "    nh distro login parrot-arm64 --bind /sdcard/cil:/cil"
+    echo "    nh distro login parrot --bind /sdcard/cil:/cil"
     echo "    nh distro login kali --bind /data/user/0/com.linux_core/files/cil:/cil"
     echo ""
     echo "  ${DIM}  Volá LocalApiServer (127.0.0.1:1337). Z hostitele bez rootu:"
@@ -1990,30 +1990,34 @@ distro_login() {
     # Nyní robustní i proti prázdnému/neexpandovanému globu a překrývání
     # DISTRO_LAUNCHER podle skutečně nalezené složky.
     local FILES_DIR="/data/user/0/com.linux_core/files"
-    local ROOTFS="$FILES_DIR/$DISTRO"
+    local ROOTFS="$FILES_DIR/nh/distro/$DISTRO"
     local DISTRO_LAUNCHER="$FILES_DIR/launcher-$DISTRO.sh"
     if [ ! -d "$ROOTFS" ]; then
-        # explicitní iterace s fallbackem, pokud glob neexpanduje
-        local cand=""
-        local found_dir=""
-        for cand in "$FILES_DIR"/*; do
-            [ -e "$cand" ] || continue
-            [ -d "$cand" ] || continue
-            case "$(basename "$cand")" in
-                "$DISTRO"-*)
-                    found_dir="$cand"
-                    ROOTFS="$cand"
-                    # Launcher name follows the distro id prefix, not the full
-                    # directory name (ProotManager generates launcher-<id>.sh).
-                    DISTRO_LAUNCHER="$FILES_DIR/launcher-${DISTRO}.sh"
-                    break
-                    ;;
-            esac
-        done
-        if [ -z "$found_dir" ]; then
-            echo "[-] Distro '$DISTRO' nenalezeno v $FILES_DIR" >&2
-            echo "    Dostupná: $(ls -d "$FILES_DIR"/* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
-            exit 1
+        # Zkus legacy cesty: $FILES_DIR/$DISTRO nebo $FILES_DIR/$DISTRO-*
+        ROOTFS="$FILES_DIR/$DISTRO"
+        if [ ! -d "$ROOTFS" ]; then
+            # explicitní iterace s fallbackem, pokud glob neexpanduje
+            local cand=""
+            local found_dir=""
+            for cand in "$FILES_DIR"/*; do
+                [ -e "$cand" ] || continue
+                [ -d "$cand" ] || continue
+                case "$(basename "$cand")" in
+                    "$DISTRO"-*)
+                        found_dir="$cand"
+                        ROOTFS="$cand"
+                        # Launcher name follows the distro id prefix, not the full
+                        # directory name (ProotManager generates launcher-<id>.sh).
+                        DISTRO_LAUNCHER="$FILES_DIR/launcher-${DISTRO}.sh"
+                        break
+                        ;;
+                esac
+            done
+            if [ -z "$found_dir" ]; then
+                echo "[-] Distro '$DISTRO' nenalezeno v $FILES_DIR" >&2
+                echo "    Dostupná: $(ls -d "$FILES_DIR"/* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')" >&2
+                exit 1
+            fi
         fi
     fi
     if [ ! -d "$ROOTFS" ]; then

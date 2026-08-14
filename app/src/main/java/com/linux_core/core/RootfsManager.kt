@@ -50,19 +50,30 @@ data class Distro(
 )
 
 object RootfsManager {
+    const val NH_DISTRO_DIR = "nh/distro"
+
+    fun distroRootfsDir(context: Context, distroId: String): File =
+        File(context.filesDir, "$NH_DISTRO_DIR/$distroId")
+
+    fun dockerRootfsDir(context: Context, imageName: String): File =
+        File(context.filesDir, "$NH_DISTRO_DIR/docker/$imageName")
+
+    fun backupDir(context: Context): File =
+        File(context.filesDir, "$NH_DISTRO_DIR/backup")
+
     val DISTROS = listOf(
         Distro(
             id = "kali",
             name = "Kali NetHunter",
             url = "https://images.kali.org/nethunter/rootfs/kali-nethunter-rootfs-nano-arm64.tar.xz",
-            rootfsDirName = "kali-arm64",
+            rootfsDirName = "nh/distro/kali",
             tarFileName = "kali-nethunter-rootfs.tar.xz"
         ),
         Distro(
             id = "parrot",
             name = "ParrotOS Security",
             url = "https://raw.githubusercontent.com/risecid/AndronixOrigin/master/Rootfs/Parrot/arm64/parrot-rootfs-arm64.tar.xz",
-            rootfsDirName = "parrot-arm64",
+            rootfsDirName = "nh/distro/parrot",
             tarFileName = "parrot-rootfs-arm64.tar.xz"
         )
     )
@@ -436,7 +447,7 @@ object RootfsManager {
 
                             for (path in allPaths) {
                                     val file = path.toFile()
-                                    val relativePath = distro.rootfsDirName + "/" +
+                                    val relativePath = distro.id + "/" +
                                         rootfsDir.toPath().relativize(path).toString().replace('\\', '/')
 
                                     val isSymlink = try {
@@ -567,6 +578,10 @@ object RootfsManager {
                         while (entry != null) {
                             if (stripPrefix == null && entry.name.contains('/')) {
                                 stripPrefix = entry.name.substringBefore('/') + "/"
+                                val validPrefixes = listOf("${distro.id}/", "${distro.id}-arm64/", "$NH_DISTRO_DIR/${distro.id}/")
+                                if (stripPrefix !in validPrefixes) {
+                                    throw IOException("Backup incompatible: prefix '$stripPrefix' does not match distro '${distro.id}'")
+                                }
                             }
                             val relativeName = if (stripPrefix != null && entry.name.startsWith(stripPrefix!!)) {
                                 val stripped = entry.name.removePrefix(stripPrefix!!)
@@ -696,7 +711,7 @@ object RootfsManager {
         emit(5 to "Fetching image manifest…")
         val manifest = registry.fetchManifest(imageRef)
 
-        val rootfsDir = File(context.filesDir, "docker-${imageRef.namespace}-${imageRef.repository}")
+        val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/docker/${imageRef.namespace}-${imageRef.repository}")
         rootfsDir.mkdirs()
 
         // 2. Download and extract each layer
@@ -803,8 +818,8 @@ object RootfsManager {
         val fileBase = parsedUrl.path.substringAfterLast('/').ifEmpty { "rootfs" }
             .substringBeforeLast('.') // strip .tar / .gz / .xz
         val safeName = Regex("[^A-Za-z0-9._-]").replace(fileBase, "-")
-        val rootfsName = "docker-${host.replace('.', '-')}-$safeName"
-        val rootfsDir = File(context.filesDir, rootfsName)
+        val rootfsName = "docker/${host.replace('.', '-')}-$safeName"
+        val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/$rootfsName")
         rootfsDir.mkdirs()
 
         val cacheDir = File(context.filesDir, "web-pull")
@@ -958,4 +973,120 @@ object RootfsManager {
             }
         }
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Layout migration (Fáze 1): old layout → nh/distro + usr/{bin,lib}
+    // ──────────────────────────────────────────────────────────────────────
+
+    private const val MIGRATION_PREFS = "nh_migration"
+    private const val MIGRATION_FLAG = "migration_v2_done"
+
+    /**
+     * Idempotentní vstupní bod migrace layoutu. Volat PŘED jakýmkoli
+     * použitím rootfs cest (setupProotEnvironment, install/backup detekce).
+     */
+    fun ensureMigrated(context: Context) {
+        val prefs = context.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(MIGRATION_FLAG, false)) return
+        migrateLayout(context, prefs)
+    }
+
+    private fun migrateLayout(context: Context, prefs: android.content.SharedPreferences) {
+        val filesDir = context.filesDir
+        var allOk = true
+        Log.i("RootfsManager", "Layout migration started (v2)")
+
+        // 1) Legacy filesDir/bin/* → usr/bin/* (po souboru, nikdy nepřepisovat)
+        val legacyBin = File(filesDir, "bin")
+        if (legacyBin.isDirectory) {
+            legacyBin.listFiles()?.forEach { src ->
+                val dst = File(File(filesDir, "usr/bin"), src.name)
+                if (!safeMove(src, dst)) allOk = false
+            }
+            if (legacyBin.listFiles()?.isEmpty() != false) legacyBin.delete()
+        }
+
+        // 2) Legacy rootfs adresáře → nh/distro/
+        val distroMoves = listOf(
+            "kali-arm64" to "$NH_DISTRO_DIR/kali",
+            "parrot-arm64" to "$NH_DISTRO_DIR/parrot"
+        )
+        for ((oldName, newName) in distroMoves) {
+            val src = File(filesDir, oldName)
+            val dst = File(filesDir, newName)
+            if (src.exists()) {
+                dst.parentFile?.mkdirs()
+                if (!safeMove(src, dst)) allOk = false
+            }
+        }
+
+        // 3) Docker/OCI adresáře → nh/distro/docker/
+        filesDir.listFiles()?.filter {
+            it.isDirectory && (it.name.startsWith("docker-") || it.name.startsWith("oci-"))
+        }?.forEach { src ->
+            val dst = File(filesDir, "$NH_DISTRO_DIR/docker/${src.name}")
+            dst.parentFile?.mkdirs()
+            if (!safeMove(src, dst)) allOk = false
+        }
+
+        // 4) Legacy terminalmap → usr/bin/terminalmap
+        val legacyTerminalmap = File(filesDir, "terminalmap")
+        if (legacyTerminalmap.exists()) {
+            val dst = File(filesDir, "usr/bin/terminalmap")
+            dst.parentFile?.mkdirs()
+            if (!safeMove(legacyTerminalmap, dst)) allOk = false
+        }
+
+        // 5) Staré launchery smaž až při kompletním úspěchu (regenerují se při startu)
+        if (allOk) {
+            filesDir.listFiles()?.filter {
+                it.isFile && it.name.startsWith("launcher") && it.name.endsWith(".sh")
+            }?.forEach { it.delete() }
+            prefs.edit().putBoolean(MIGRATION_FLAG, true).apply()
+            Log.i("RootfsManager", "Layout migration completed successfully")
+        } else {
+            Log.w("RootfsManager", "Layout migration incomplete — will retry on next start")
+        }
+    }
+
+    /**
+     * Bezpečný přesun: nikdy nepřepíše existující neprázdný cíl,
+     * zdroj maže až po ověření úspěchu.
+     */
+    private fun safeMove(src: File, dst: File): Boolean {
+        if (!src.exists()) return true
+        if (dst.exists()) {
+            val dstNonEmpty = if (dst.isDirectory) dst.listFiles()?.isNotEmpty() == true else dst.length() > 0L
+            if (dstNonEmpty) {
+                // Soubory stejné velikosti považuj za migrované, smaž zdroj
+                if (src.isFile && dst.isFile && src.length() == dst.length()) {
+                    src.delete()
+                    return true
+                }
+                Log.w("RootfsManager", "safeMove: target exists and is non-empty, skipping: $dst")
+                return false
+            }
+            dst.delete() // prázdný cíl odstraníme, aby renameTo uspěl
+        }
+        dst.parentFile?.mkdirs()
+        if (src.renameTo(dst)) return true
+        return try {
+            src.copyRecursively(dst, overwrite = false)
+            val ok = if (src.isDirectory) countFiles(src) == countFiles(dst)
+                     else dst.exists() && dst.length() == src.length()
+            if (ok) {
+                src.deleteRecursively()
+                true
+            } else {
+                Log.e("RootfsManager", "safeMove: verification failed, keeping source: $src")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "safeMove failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun countFiles(f: File): Int =
+        if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1
 }

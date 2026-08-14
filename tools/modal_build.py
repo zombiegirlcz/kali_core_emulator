@@ -9,8 +9,13 @@ Volume layout after setup:
 Setup:
   1) modal secret create build-secrets RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)
   2) modal run modal_build.py init     # store keystore
-  3) modal run modal_build.py upload   # upload source
+  3) modal run modal_build.py upload   # upload source (basic, bez mazání)
   4) modal run modal_build.py all      # compile native + build APK
+
+Upload (VŽDY samostatně — buildy ho nikdy nevolají):
+  modal run modal_build.py upload        # rsync bez --delete (jen přidá/aktualizuje)
+  modal run modal_build.py upload_force  # rsync --delete (plný mirror lokálního repa)
+  modal run modal_build.py upload_clean  # smaže src + gradle-cache (keys/builds zůstanou)
 
 Individual steps:
   modal run modal_build.py native      # NDK cross-compile C binaries + usr tools (nano/rsync/sed/rg) + USB tools (libusbgx/usbutils/usbrelayd)
@@ -35,21 +40,11 @@ build_vol = modal.Volume.from_name("kali-build-data", create_if_missing=True)
 
 _IGNORE_PARTS = frozenset({".git", ".gradle", "__pycache__", "node_modules", "logcat.log", "build.log", "top.log"})
 
-# Cross-compiled native binaries that MUST NOT be deleted by upload_src's
-# rsync --delete (they are NOT present in the baked image; they only exist
-# on the Volume after build_native compiles them). Without these excludes,
-# `mbuild build` (upload → build, no native step) would wipe them and the
-# APK would ship without su_daemon/su_wrapper/usb_bridge.
-# Keep in sync with build_native outputs and the NATIVE_BINARIES list in
-# the mbuild script. AGENTS.md „Native build pipeline“.
-_NATIVE_ASSET_EXCLUDES = [
-    "assets/su_daemon",
-    "assets/su_wrapper",
-    "assets/usb_bridge",
-    # nano/rsync/sed/rg + libs — generuje je build_native do assets/usr/.
-    # rsync --delete by je jinak smazal (nejsou v baked image).
-    "assets/usr",
-]
+# (2026-08-14, boot refactor) Žádné excludes při uploadu. Lokální repo je
+# zdroj pravdy: build artefakty (su_daemon, su_wrapper, usb_bridge,
+# assets/usr/*) se po native buildu stahují zpět přes pull_full_assets,
+# takže upload může synchronizovat celý strom. Volume se vždy přizpůsobuje
+# lokálnímu repu, nikdy naopak.
 
 
 def _ignore_path(p):
@@ -94,7 +89,7 @@ base_image = (
     })
 )
 
-# Static image: base + source baked in (for upload_src)
+# Static image: base + source baked in (for upload_basic/upload_force/upload_clean)
 source_image = base_image.add_local_dir(
     "/root/kali_core_emulator",
     remote_path="/src-baked",
@@ -129,7 +124,7 @@ usrtools_image = (
         "gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu "
         "libc6-dev-arm64-cross libc6-arm64-cross "
         "build-essential make autoconf automake pkg-config libtool cmake "
-        "curl wget xz-utils bzip2 file patchelf",
+        "curl wget xz-utils bzip2 file patchelf gawk",
         # Rust + Android target (Bionic)
         "curl -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh",
         "sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable",
@@ -148,22 +143,64 @@ usrtools_image = (
     timeout=600,
     memory=2048,
 )
-def upload_src():  # force rebuild marker 2026-07-07
-    """Copy source tree from image into the persistent Volume."""
+def _upload_common(delete: bool):
     dest = "/vol/src"
-
     if os.path.isdir(dest):
-        print(f"[upload] Source already exists at {dest}.  Updating with rsync...")
-        cmd = ["rsync", "-a", "--delete", "/src-baked/", dest]
-        for excl in _NATIVE_ASSET_EXCLUDES:
-            cmd += ["--exclude", excl]
+        cmd = ["rsync", "-a"]
+        if delete:
+            cmd.append("--delete")
+        cmd += ["/src-baked/", dest]
+        print(f"[upload] {'--delete mirror' if delete else 'incremental'}: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
     else:
         print(f"[upload] Copying source tree to {dest} ...")
         shutil.copytree("/src-baked", dest, symlinks=True)
-
     build_vol.commit()
-    print("[upload] Done.  Source tree committed to Volume.")
+    print("[upload] Done. Source tree committed to Volume.")
+
+
+@app.function(
+    image=source_image,
+    volumes={"/vol": build_vol},
+    timeout=600,
+    memory=2048,
+)
+def upload_basic():
+    """rsync BEZ --delete: přidá/aktualizuje soubory z lokálního repa, nikdy
+    nemaže nic, co na Volume je navíc. Bezpečný inkrementální upload."""
+    _upload_common(delete=False)
+
+
+@app.function(
+    image=source_image,
+    volumes={"/vol": build_vol},
+    timeout=600,
+    memory=2048,
+)
+def upload_force():
+    """rsync --delete: plný mirror lokálního repa na Volume — smaže z Volume
+    vše, co lokálně není. Používat až když lokální assets obsahují všechny
+    build artefakty (po pull_full_assets)."""
+    _upload_common(delete=True)
+
+
+@app.function(
+    image=source_image,
+    volumes={"/vol": build_vol},
+    timeout=300,
+    memory=1024,
+)
+def upload_clean():
+    """Smaže /vol/src a /vol/gradle-cache (keys + builds zůstanou).
+    Následuj upload_basic pro čerstvý baseline."""
+    for p in ("/vol/src", "/vol/gradle-cache"):
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+            print(f"[clean] removed {p}")
+        else:
+            print(f"[clean] {p} absent")
+    build_vol.commit()
+    print("[clean] Done.")
 
 
 # ── Initialize signing key on Volume ─────────────────────────────────────────
@@ -431,10 +468,31 @@ def _build_usrtools(assets_usr, builds_dir):
 
     BIN = os.path.join(assets_usr, "bin")
     LIB = os.path.join(assets_usr, "lib")
-    # Čistý stav: smaž staré buildy (glibc libs z dřívějška atd.) — binárky
-    # se generují od nuly, nic se neakumuluje.
-    shutil.rmtree(assets_usr, ignore_errors=True)
-    for d in (WORK, STAGE, BIN, LIB, builds_dir):
+    os.makedirs(BIN, exist_ok=True)
+    os.makedirs(LIB, exist_ok=True)
+
+    # Boot refactor fáze 1 (2026-08-14): ŽÁDNÉ rmtree(assets_usr)!
+    # assets/usr/bin kromě usrtools obsahuje i další artefakty (terminalmap,
+    # ifconfig z repa; usb tools; proot-static-* / loader-static-*). Starý
+    # rmtree by je smazal. Build se přeskočí, pokud všechny 4 výstupy už
+    # existují (FORCE_USRTOOLS=1 vynutí rebuild).
+    _outputs = [os.path.join(BIN, n) for n in ("sed", "rsync", "nano", "rg")]
+    if os.environ.get("FORCE_USRTOOLS") != "1" and all(
+        os.path.exists(p) and os.path.getsize(p) > 0 for p in _outputs
+    ):
+        print("[usrtools] sed/rsync/nano/rg už v assets/usr/bin — build PŘESKOČEN "
+              "(FORCE_USRTOOLS=1 pro rebuild)")
+        # tarball přesto obnov z existujícího obsahu (konzistence /vol/builds)
+        tgz = os.path.join(builds_dir, "usrtools.tar.gz")
+        with tarfile.open(tgz, "w:gz") as tf:
+            for root, _dirs, files in os.walk(assets_usr):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    tf.add(fp, arcname=os.path.relpath(fp, assets_usr))
+        print(f"    ✓ {tgz} ({os.path.getsize(tgz)/1024/1024:.1f} MB)")
+        return
+
+    for d in (WORK, STAGE, builds_dir):
         os.makedirs(d, exist_ok=True)
 
     # strip wrapper: `make install -s` vola `strip` z PATH; host strip (x86_64)
@@ -968,6 +1026,288 @@ def _build_usb_tools(assets_usr, builds_dir, repo_dir=None):
     print(f"    ✓ {tgz} ({os.path.getsize(tgz)/1024/1024:.1f} MB)")
 
 
+# ── Static PRoot build (Termux fork, talloc statically linked) ──────────────
+# Source: termux/proot fork (Android patches: link2symlink, kompat, fake_id0,
+# ashmem_memfd, shm-helper).  talloc is built from samba source as a static
+# library and linked directly → no libtalloc.so.2 needed at runtime.
+# Loader is built separately (PROOT_UNBUNDLE_LOADER) to match existing
+# ProotManager/launcher.sh deployment model (PROOT_LOADER env var).
+PROOT_TAG = "v5.1.107.90"
+PROOT_GIT = "https://github.com/termux/proot.git"
+TALLOC_VER = "2.4.3"
+TALLOC_URL = f"https://www.samba.org/ftp/talloc/talloc-{TALLOC_VER}.tar.gz"
+
+# (asset suffix, NDK triple, uname machine for talloc cross-answers)
+PROOT_ARCHS = [
+    ("aarch64", "aarch64-linux-android", "aarch64"),
+    ("arm",     "armv7a-linux-androideabi", "armv7l"),
+    ("i686",    "i686-linux-android", "i686"),
+    ("x86_64",  "x86_64-linux-android", "x86_64"),
+]
+PROOT_API = 24
+PROOT_UNBUNDLE_PATH = "/data/data/com.linux_core/files"
+
+_TALLOC_CROSS_ANSWERS = """\
+Checking uname sysname type: "Linux"
+Checking uname machine type: "{machine}"
+Checking uname release type: "dontcare"
+Checking uname version type: "dontcare"
+Checking simple C program: OK
+building library support: OK
+Checking for large file support: OK
+Checking for -D_FILE_OFFSET_BITS=64: OK
+Checking for WORDS_BIGENDIAN: OK
+Checking for C99 vsnprintf: OK
+Checking for HAVE_SECURE_MKSTEMP: OK
+rpath library support: OK
+-Wl,--version-script support: FAIL
+Checking correct behavior of strtoll: OK
+Checking correct behavior of strptime: OK
+Checking for HAVE_IFACE_GETIFADDRS: OK
+Checking for HAVE_IFACE_IFCONF: OK
+Checking for HAVE_IFACE_IFREQ: OK
+Checking getconf LFS_CFLAGS: OK
+Checking for large file support without additional flags: OK
+Checking for working strptime: OK
+Checking for HAVE_SHARED_MMAP: OK
+Checking for HAVE_MREMAP: OK
+Checking for HAVE_INCOHERENT_MMAP: NO
+Checking getconf large file support flags work: OK
+"""
+
+# Portable replacement for loader-info.awk (avoids gawk strtonum dependency)
+_LOADER_INFO_AWK = """\
+# Note: This file is included only for targets which have pokedata workaround
+
+function hextodec(h,    i, c, d, v) {
+    v = 0
+    for (i = 1; i <= length(h); i++) {
+        c = tolower(substr(h, i, 1))
+        d = index("0123456789abcdef", c) - 1
+        if (d < 0) return 0
+        v = v * 16 + d
+    }
+    return v
+}
+
+/\\ypokedata_workaround\\y/ { pokedata_workaround = hextodec($2) }
+/\\y_start\\y/              { start = hextodec($2) }
+
+END {
+    print "#include <unistd.h>"
+    print "const ssize_t offset_to_pokedata_workaround=" (pokedata_workaround - start) ";"
+}
+"""
+
+
+def _proot_run(cmd, **kw):
+    print(f"  $ {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+    subprocess.run(cmd, check=True, **kw)
+
+
+def _build_proot_static(assets_dir, builds_dir):
+    """Cross-compile static proot + loader for all target architectures."""
+    import glob as _glob
+
+    WORK = "/tmp/proot-static"
+    SRC_CACHE = "/vol/proot-src"
+    os.makedirs(WORK, exist_ok=True)
+    os.makedirs(SRC_CACHE, exist_ok=True)
+    os.makedirs(builds_dir, exist_ok=True)
+    os.makedirs(assets_dir, exist_ok=True)
+
+    tc_bin = f"{NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    READELF = os.path.join(tc_bin, "llvm-readelf")
+    STRIP = os.path.join(tc_bin, "llvm-strip")
+    AR = os.path.join(tc_bin, "llvm-ar")
+
+    # ── Fetch sources (cached on Volume) ────────────────────────────────────
+    proot_clone = os.path.join(SRC_CACHE, "proot")
+    if not os.path.isdir(proot_clone):
+        _proot_run(["git", "clone", "--depth", "1", "--branch", PROOT_TAG,
+                    PROOT_GIT, proot_clone])
+    talloc_tar = os.path.join(SRC_CACHE, f"talloc-{TALLOC_VER}.tar.gz")
+    if not os.path.exists(talloc_tar):
+        _proot_run(["wget", "-q", TALLOC_URL, "-O", talloc_tar])
+
+    results = {}
+    for suffix, triple, machine in PROOT_ARCHS:
+        # Find the right NDK compiler
+        cc = f"{tc_bin}/{triple}{PROOT_API}-clang"
+        if not os.path.exists(cc):
+            for alt_api in (PROOT_API, 28, 21):
+                cand = f"{tc_bin}/{triple}{alt_api}-clang"
+                if os.path.exists(cand):
+                    cc = cand
+                    break
+        if not os.path.exists(cc):
+            results[suffix] = "SKIP: compiler not found"
+            continue
+
+        try:
+            _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
+                                  talloc_tar, WORK, assets_dir, READELF, STRIP, AR)
+            results[suffix] = "OK"
+        except Exception as e:
+            results[suffix] = f"FAIL: {e}"
+
+    print("─" * 60)
+    print("[proot-static] Results:")
+    for k, v in results.items():
+        print(f"  {k}: {v}")
+    if "FAIL" in results.get("aarch64", "FAIL"):
+        raise SystemExit("[proot-static] aarch64 build FAILED — aborting")
+
+
+def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
+                          talloc_tar, work, assets_dir, readelf, strip, ar):
+    """Build static proot + loader for one architecture."""
+    import glob as _glob
+
+    build_dir = os.path.join(work, suffix)
+    if os.path.isdir(build_dir):
+        shutil.rmtree(build_dir)
+    os.makedirs(build_dir)
+
+    talloc_src = os.path.join(build_dir, "talloc")
+    talloc_lib = os.path.join(build_dir, "talloc-lib")
+    proot_src = os.path.join(build_dir, "proot-src")
+    os.makedirs(talloc_lib, exist_ok=True)
+
+    # ── 1. Build talloc (static .a) ─────────────────────────────────────────
+    print(f"\n  [{suffix}] Building talloc {TALLOC_VER} ...")
+    os.makedirs(talloc_src, exist_ok=True)
+    _proot_run(["tar", "xzf", talloc_tar, "-C", talloc_src, "--strip-components=1"])
+
+    # Write cross-answers
+    cross_file = os.path.join(build_dir, "cross-answers.txt")
+    with open(cross_file, "w") as f:
+        f.write(_TALLOC_CROSS_ANSWERS.format(machine=machine))
+
+    env = dict(os.environ)
+    env["CC"] = cc
+    env["CFLAGS"] = "-O2 -fPIC"
+    env["LDFLAGS"] = ""
+
+    _proot_run(["./configure",
+                f"--prefix={os.path.join(build_dir, 'talloc-install')}",
+                "--cross-compile",
+                f"--cross-answers={cross_file}",
+                "--disable-python",
+                "--without-gettext"],
+               cwd=talloc_src, env=env)
+    _proot_run(["make", "-j4"], cwd=talloc_src, env=env)
+
+    # Collect object files into static archive
+    objs = sorted(_glob.glob(os.path.join(talloc_src, "bin", "default", "talloc.c.*.o")))
+    if not objs:
+        objs = sorted(_glob.glob(os.path.join(talloc_src, "bin", "default", "*.o")))
+    if not objs:
+        raise RuntimeError(f"talloc: no object files found in {talloc_src}/bin/default/")
+    _proot_run([ar, "rcs", os.path.join(talloc_lib, "libtalloc.a"), *objs])
+    print(f"    ✓ libtalloc.a ({os.path.getsize(os.path.join(talloc_lib, 'libtalloc.a')):,} B)")
+
+    # ── 2. Prepare proot source ─────────────────────────────────────────────
+    print(f"  [{suffix}] Preparing proot source ...")
+    _proot_run(["cp", "-R", proot_clone, proot_src])
+
+    # Patch 1: add #include <string.h> to ashmem_memfd.c if missing
+    ashmem_c = os.path.join(proot_src, "src", "extension", "ashmem_memfd", "ashmem_memfd.c")
+    if os.path.exists(ashmem_c):
+        with open(ashmem_c, "r") as f:
+            content = f.read()
+        if "#include <string.h>" not in content:
+            lines = content.split("\n")
+            # Insert after first line (#if defined(...))
+            lines.insert(1, "#include <string.h>")
+            with open(ashmem_c, "w") as f:
+                f.write("\n".join(lines))
+            print(f"    patch: added #include <string.h> to ashmem_memfd.c")
+
+    # Patch 2: replace loader-info.awk with portable version (no strtonum)
+    awk_file = os.path.join(proot_src, "src", "loader", "loader-info.awk")
+    if os.path.exists(awk_file):
+        with open(awk_file, "w") as f:
+            f.write(_LOADER_INFO_AWK)
+        print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
+
+    # ── 3. Build proot ──────────────────────────────────────────────────────
+    print(f"  [{suffix}] Building proot (static talloc, PIE) ...")
+    env2 = dict(os.environ)
+    env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072"
+    env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
+    env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
+
+    _proot_run(["make", "-C", "src", "-j4",
+                f"CC={cc}",
+                f"LD={cc}",
+                f"STRIP={strip}",
+                "HAS_LOADER_32BIT=",
+                f"PROOT_UNBUNDLE_LOADER={PROOT_UNBUNDLE_PATH}",
+                "proot"],
+               cwd=proot_src, env=env2)
+
+    proot_bin = os.path.join(proot_src, "src", "proot")
+    loader_bin = os.path.join(proot_src, "src", "loader", "loader")
+    if not os.path.exists(proot_bin):
+        raise RuntimeError("proot binary not found after build")
+    if not os.path.exists(loader_bin):
+        raise RuntimeError("loader binary not found after build")
+
+    # ── 4. Strip and copy to assets ─────────────────────────────────────────
+    _proot_run([strip, proot_bin])
+    _proot_run([strip, loader_bin])
+
+    dest_proot = os.path.join(assets_dir, f"proot-static-{suffix}")
+    dest_loader = os.path.join(assets_dir, f"loader-static-{suffix}")
+    shutil.copy2(proot_bin, dest_proot)
+    shutil.copy2(loader_bin, dest_loader)
+
+    # ── 5. Verify ───────────────────────────────────────────────────────────
+    print(f"  [{suffix}] Verifying ...")
+    # Check no libtalloc dependency
+    dyn_out = subprocess.run([readelf, "-d", dest_proot],
+                             capture_output=True, text=True).stdout
+    needed = [l.split("[")[-1].rstrip("]") for l in dyn_out.splitlines() if "NEEDED" in l]
+    if any("talloc" in n for n in needed):
+        raise RuntimeError(f"proot-static-{suffix} still links libtalloc dynamically!")
+    print(f"    NEEDED: {needed}")
+
+    # Check interpreter
+    interp_out = subprocess.run([readelf, "-l", dest_proot],
+                                capture_output=True, text=True).stdout
+    interp = next((l.split(":")[-1].strip().rstrip("]")
+                   for l in interp_out.splitlines() if "interpreter" in l), None)
+    print(f"    interpreter: {interp}")
+
+    # Check extensions
+    strings_out = subprocess.run(["strings", dest_proot],
+                                 capture_output=True, text=True).stdout
+    for feat in ["--link2symlink", "--kill-on-exit"]:
+        if feat in strings_out:
+            print(f"    ✓ {feat} present")
+        else:
+            print(f"    ⚠ {feat} NOT found")
+
+    print(f"    ✓ proot-static-{suffix} ({os.path.getsize(dest_proot):,} B)")
+    print(f"    ✓ loader-static-{suffix} ({os.path.getsize(dest_loader):,} B)")
+
+
+@app.function(
+    image=base_image,
+    volumes={"/vol": build_vol},
+    timeout=3600,
+    memory=8192,
+    cpu=4,
+)
+def build_proot_static():
+    """Cross-compile static PRoot (Termux fork) + loader for all ABIs."""
+    src_dir = "/vol/src"
+    assets_dir = os.path.join(src_dir, "app/src/main/assets")
+    _build_proot_static(assets_dir, "/vol/builds")
+    build_vol.commit()
+    print("[proot-static] Done. Binaries committed to Volume.")
+
 
 # ── Build APK ────────────────────────────────────────────────────────────────
 @app.function(
@@ -986,8 +1326,8 @@ def build():
     if not os.path.isdir(src_dir):
         print(
             "[build] Source directory not found on Volume.  "
-            "Run upload_src first:\n"
-            "  modal run modal_build.py::upload_src",
+            "Upload first (upload je vždy samostatný krok):\n"
+            "  modal run modal_build.py::upload_basic",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1090,11 +1430,17 @@ def main():
     if cmd == "init":
         init_keys.remote()
     elif cmd == "upload":
-        upload_src.remote()
+        upload_basic.remote()
+    elif cmd == "upload_force":
+        upload_force.remote()
+    elif cmd == "upload_clean":
+        upload_clean.remote()
     elif cmd == "native":
         build_native.remote()
     elif cmd == "usbtools":
         build_usb_tools.remote()
+    elif cmd == "proot":
+        build_proot_static.remote()
     elif cmd == "build":
         build.remote()
     elif cmd == "all":
@@ -1103,4 +1449,4 @@ def main():
     elif cmd == "list":
         list_volume.remote()
     else:
-        print("Usage: modal run modal_build.py [init|upload|native|usbtools|build|all|list]")
+        print("Usage: modal run modal_build.py [init|upload|upload_force|upload_clean|native|usbtools|proot|build|all|list]")

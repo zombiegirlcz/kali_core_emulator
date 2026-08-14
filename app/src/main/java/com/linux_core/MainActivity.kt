@@ -170,6 +170,9 @@ class MainActivity : ComponentActivity() {
         com.linux_core.security.CertificateManager.init(applicationContext)
         com.linux_core.core.ImmersiveMode.enterImmersive(this)
 
+        // Layout migration: ensure old paths are moved to nh/distro + usr/bin before any rootfs access
+        com.linux_core.core.RootfsManager.ensureMigrated(applicationContext)
+
         com.linux_core.core.ShortcutHelper.registerShortcuts(this)
         com.linux_core.core.VpnLogManager.initialize(applicationContext)
 
@@ -390,12 +393,18 @@ fun MainScreen() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasStoragePermission = hasAllFilesAccess(context)
                 activeSessionCount = com.linux_core.core.TerminalService.sessions.size
-                // Skenovat existující Docker image adresáře
-                val dirs = context.filesDir.listFiles()
+                // Skenovat existující Docker image adresáře (nový layout nh/distro/docker + legacy)
+                val filesDir = context.filesDir
+                val newDockerDir = File(filesDir, "nh/distro/docker")
+                val newDockerDirs = if (newDockerDir.isDirectory) {
+                    newDockerDir.listFiles()?.filter { it.isDirectory }
+                        ?.map { "nh/distro/docker/${it.name}" } ?: emptyList()
+                } else emptyList()
+                val legacyDockerDirs = filesDir.listFiles()
                     ?.filter { it.isDirectory && (it.name.startsWith("docker-") || it.name.startsWith("oci-")) }
                     ?.map { it.name }
-                    ?.sortedDescending() // nejnovější první (suffix timestamp)
                     ?: emptyList()
+                val dirs = (newDockerDirs + legacyDockerDirs).sortedDescending()
                 dockerImageDirs = dirs
                 // Pokud není vybrán žádný Docker dir a existuje alespoň jeden, vyber první
                 if (selectedDockerDir == null && dirs.isNotEmpty()) {
@@ -835,7 +844,7 @@ fun MainScreen() {
                                                         dockerPullProgress = progress
                                                         dockerPullStatus = status
                                                         if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                            selectedDockerDir = File(status).name
+                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
                                                         }
                                                     }
                                                     Toast.makeText(context, "Rootfs pulled from URL successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
@@ -848,7 +857,7 @@ fun MainScreen() {
                                                         dockerPullProgress = progress
                                                         dockerPullStatus = status
                                                         if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                            selectedDockerDir = File(status).name
+                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
                                                         }
                                                     }
                                                     Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
