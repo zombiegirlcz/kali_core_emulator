@@ -380,6 +380,7 @@ fun MainScreen() {
     var dockerPullStatus by remember { mutableStateOf("") }
     var selectedDockerDir by remember { mutableStateOf<String?>(null) }
     var isDockerMode by remember { mutableStateOf(false) }
+    var showDockerDialog by remember { mutableStateOf(false) }
     // Seznam všech existujících Docker/OCI image dirů (pro výběr v UI)
     var dockerImageDirs by remember { mutableStateOf<List<String>>(emptyList()) }
 
@@ -704,7 +705,7 @@ fun MainScreen() {
                         modifier = Modifier
                             .weight(1f)
                             .clickable(enabled = !isDownloading && !isPullingDocker) {
-                                isDockerMode = true
+                                showDockerDialog = true
                             },
                         shape = RoundedCornerShape(14.dp),
                         border = BorderStroke(
@@ -762,160 +763,253 @@ fun MainScreen() {
                     Spacer(modifier = Modifier.weight(0.5f))
                 }
 
-                // Docker Hub — pull form (shown when Docker card selected but no image)
-                if (isDockerMode && selectedDockerDir == null) {
-                    // No Docker image yet — show pull UI
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 20.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0x3300FF41)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
+                // Docker / rootfs image dialog — opens from the DOCKER HUB card,
+                // shows installed images + pull form in a separate window
+                if (showDockerDialog) {
+                    androidx.compose.ui.window.Dialog(
+                        onDismissRequest = { if (!isPullingDocker) showDockerDialog = false },
+                        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth(0.95f)
+                                .fillMaxHeight(0.85f),
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, Color(0x3300FF41)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xF20B0D13))
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Cloud,
-                                    contentDescription = "Docker",
-                                    tint = Color(0xFF00FF41),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "PULL FROM DOCKER HUB",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF00FF41),
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                )
-                            }
-
-                            Text(
-                                text = "Enter a Docker Hub image reference (e.g. kali/security, myuser/app:v1.0, alpine@sha256:digest) or an https:// URL to a rootfs archive (.tar.gz / .tar.xz)",
-                                fontSize = 10.sp,
-                                color = Color.Gray,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                OutlinedTextField(
-                                    value = customDockerImage,
-                                    onValueChange = { customDockerImage = it },
-                                    placeholder = { Text("kali/security:latest | https://…rootfs.tar.xz", color = Color.DarkGray, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
-                                    singleLine = true,
-                                    textStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color(0xFF00FF41),
-                                        unfocusedBorderColor = Color(0xFF1E2026),
-                                        focusedContainerColor = Color(0xFF07080A),
-                                        unfocusedContainerColor = Color(0xFF07080A)
-                                    ),
-                                    modifier = Modifier.weight(1f),
-                                    enabled = !isPullingDocker
-                                )
-
-                                Button(
-                                    onClick = {
-                                        if (customDockerImage.isBlank()) {
-                                            Toast.makeText(context, "Enter a Docker image reference", Toast.LENGTH_SHORT).show()
-                                            return@Button
-                                        }
-                                        downloadJob?.cancel()
-                                        // isPullingDocker=true (nastaveno uvnitř jobu) brání double-click,
-                                        // cancel() zajišťuje že starý job neruší nový
-                                        downloadJob = scope.launch {
-                                            isPullingDocker = true
-                                            dockerPullProgress = 0
-                                            val rawInput = customDockerImage.trim()
-                                            val isWebUrl = rawInput.startsWith("http://") || rawInput.startsWith("https://")
-                                            dockerPullStatus = if (isWebUrl) "Parsing URL…" else "Parsing image reference…"
-                                            try {
-                                                if (isWebUrl) {
-                                                    // Web URL: stáhnout+extrahovat rootfs archive (HTTPS + whitelist)
-                                                    dockerPullStatus = "Pulling rootfs from URL…"
-                                                    RootfsManager.pullRootfsFromUrl(context, rawInput).collect { (progress, status) ->
-                                                        dockerPullProgress = progress
-                                                        dockerPullStatus = status
-                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
-                                                        }
-                                                    }
-                                                    Toast.makeText(context, "Rootfs pulled from URL successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
-                                                } else {
-                                                    // Docker Hub image reference (image[:tag] or image@sha256:digest)
-                                                    val ref = DockerImageRef.parse(rawInput)
-                                                    dockerImageRef = ref
-                                                    dockerPullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
-                                                    RootfsManager.pullDockerImage(context, ref).collect { (progress, status) ->
-                                                        dockerPullProgress = progress
-                                                        dockerPullStatus = status
-                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
-                                                        }
-                                                    }
-                                                    Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
-                                                }
-                                                isDockerMode = true
-                                                customDockerImage = ""
-                                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                                dockerPullProgress = 0
-                                                dockerPullStatus = ""
-                                                throw e
-                                            } catch (e: Exception) {
-                                                dockerPullProgress = 0
-                                                dockerPullStatus = ""
-                                                Toast.makeText(context, if (isWebUrl) "URL pull failed: ${e.message}" else "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                            } finally {
-                                                isPullingDocker = false
-                                            }
-                                        }
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF41)),
-                                    modifier = Modifier.height(44.dp),
-                                    enabled = !isPullingDocker
+                                // Header + close
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = if (isPullingDocker) "PULLING…" else "PULL",
-                                        color = Color.Black,
+                                        text = "DOCKER / ROOTFS IMAGES",
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF00FF41),
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "\u2715 CLOSE",
+                                        modifier = Modifier.clickable(enabled = !isPullingDocker) { showDockerDialog = false },
+                                        color = Color.Gray,
                                         fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                     )
                                 }
-                            }
 
-                            if (isPullingDocker || dockerPullStatus.isNotEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .background(Color(0xFF1E2026), RoundedCornerShape(3.dp))
-                                ) {
-                                    val fraction = if (dockerPullProgress > 0) dockerPullProgress / 100f else 0f
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxHeight()
-                                            .fillMaxWidth(fraction)
-                                            .background(
-                                                Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF))),
-                                                RoundedCornerShape(3.dp)
-                                            )
-                                    )
-                                }
+                                // Installed images list
                                 Text(
-                                    text = dockerPullStatus.ifEmpty { "Preparing…" },
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF00FF41),
+                                    text = "INSTALLED IMAGES",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.LightGray,
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                 )
+                                if (dockerImageDirs.isEmpty()) {
+                                    Text(
+                                        text = "No installed images yet \u2014 pull one below.",
+                                        fontSize = 10.sp,
+                                        color = Color.Gray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                } else {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f, fill = false)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        dockerImageDirs.forEach { dir ->
+                                            val isSelected = dir == selectedDockerDir
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 2.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(if (isSelected) Color(0x2600FF41) else Color(0xFF0D0E12))
+                                                    .border(1.dp, if (isSelected) Color(0xFF00FF41) else Color(0xFF1E2026), RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        selectedDockerDir = dir
+                                                        isDockerMode = true
+                                                        showDockerDialog = false
+                                                    }
+                                                    .padding(10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = if (isSelected) "\u25CF" else "\u25CB",
+                                                    color = if (isSelected) Color(0xFF00FF41) else Color.Gray,
+                                                    fontSize = 12.sp
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = dir.substringAfterLast("/"),
+                                                    fontSize = 11.sp,
+                                                    color = Color.White,
+                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Pull form
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Cloud,
+                                        contentDescription = "Docker",
+                                        tint = Color(0xFF00FF41),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "PULL FROM DOCKER HUB",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF00FF41),
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+
+                                Text(
+                                    text = "Enter a Docker Hub image reference (e.g. kali/security, myuser/app:v1.0, alpine@sha256:digest) or an https:// URL to a rootfs archive (.tar.gz / .tar.xz)",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedTextField(
+                                        value = customDockerImage,
+                                        onValueChange = { customDockerImage = it },
+                                        placeholder = { Text("kali/security:latest | https://…rootfs.tar.xz", color = Color.DarkGray, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
+                                        singleLine = true,
+                                        textStyle = TextStyle(color = Color.White, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color(0xFF00FF41),
+                                            unfocusedBorderColor = Color(0xFF1E2026),
+                                            focusedContainerColor = Color(0xFF07080A),
+                                            unfocusedContainerColor = Color(0xFF07080A)
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                        enabled = !isPullingDocker
+                                    )
+
+                                    Button(
+                                        onClick = {
+                                            if (customDockerImage.isBlank()) {
+                                                Toast.makeText(context, "Enter a Docker image reference", Toast.LENGTH_SHORT).show()
+                                                return@Button
+                                            }
+                                            downloadJob?.cancel()
+                                            // isPullingDocker=true (nastaveno uvnitř jobu) brání double-click,
+                                            // cancel() zajišťuje že starý job neruší nový
+                                            downloadJob = scope.launch {
+                                                isPullingDocker = true
+                                                dockerPullProgress = 0
+                                                val rawInput = customDockerImage.trim()
+                                                val isWebUrl = rawInput.startsWith("http://") || rawInput.startsWith("https://")
+                                                dockerPullStatus = if (isWebUrl) "Parsing URL…" else "Parsing image reference…"
+                                                try {
+                                                    if (isWebUrl) {
+                                                        // Web URL: stáhnout+extrahovat rootfs archive (HTTPS + whitelist)
+                                                        dockerPullStatus = "Pulling rootfs from URL…"
+                                                        RootfsManager.pullRootfsFromUrl(context, rawInput).collect { (progress, status) ->
+                                                            dockerPullProgress = progress
+                                                            dockerPullStatus = status
+                                                            if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                            }
+                                                        }
+                                                        Toast.makeText(context, "Rootfs pulled from URL successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        // Docker Hub image reference (image[:tag] or image@sha256:digest)
+                                                        val ref = DockerImageRef.parse(rawInput)
+                                                        dockerImageRef = ref
+                                                        dockerPullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
+                                                        RootfsManager.pullDockerImage(context, ref).collect { (progress, status) ->
+                                                            dockerPullProgress = progress
+                                                            dockerPullStatus = status
+                                                            if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                            }
+                                                        }
+                                                        Toast.makeText(context, "Docker image pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                    }
+                                                    isDockerMode = true
+                                                    customDockerImage = ""
+                                                    // refresh installed list + close dialog
+                                                    val pulledDir = selectedDockerDir
+                                                    if (pulledDir != null && pulledDir !in dockerImageDirs) {
+                                                        dockerImageDirs = (dockerImageDirs + pulledDir).sortedDescending()
+                                                    }
+                                                    showDockerDialog = false
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    dockerPullProgress = 0
+                                                    dockerPullStatus = ""
+                                                    throw e
+                                                } catch (e: Exception) {
+                                                    dockerPullProgress = 0
+                                                    dockerPullStatus = ""
+                                                    Toast.makeText(context, if (isWebUrl) "URL pull failed: ${e.message}" else "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                } finally {
+                                                    isPullingDocker = false
+                                                }
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF41)),
+                                        modifier = Modifier.height(44.dp),
+                                        enabled = !isPullingDocker
+                                    ) {
+                                        Text(
+                                            text = if (isPullingDocker) "PULLING…" else "PULL",
+                                            color = Color.Black,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                }
+
+                                if (isPullingDocker || dockerPullStatus.isNotEmpty()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .background(Color(0xFF1E2026), RoundedCornerShape(3.dp))
+                                    ) {
+                                        val fraction = if (dockerPullProgress > 0) dockerPullProgress / 100f else 0f
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(fraction)
+                                                .background(
+                                                    Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF))),
+                                                    RoundedCornerShape(3.dp)
+                                                )
+                                        )
+                                    }
+                                    Text(
+                                        text = dockerPullStatus.ifEmpty { "Preparing…" },
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF00FF41),
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
                             }
                         }
                     }

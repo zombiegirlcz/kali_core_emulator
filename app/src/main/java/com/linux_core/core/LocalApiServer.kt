@@ -1149,19 +1149,16 @@ object LocalApiServer {
      * usr/lib = případné host-side .so (aktuálně prázdné — ncursesw je
      *           staticky v nano).
      *
-     * ⚠️ NEPŘIDÁVAT LD_LIBRARY_PATH do hostShellEnv! Měření 2026-08-11
-     * (docs/prompt_proot_perf_diag.md): jakmile env proot procesu obsahuje
-     * LD_LIBRARY_PATH ukazující na files/usr/lib, rootfs glibc tracee při
-     * startu spadne SIGBUS (signal 7) — jeho ld.so načte cross-kompilované
-     * glibc libs z usr/lib (nebo se o to pokusí) místo rootfs knihoven a
-     * skončí bus error. Proto ashell-spawnované proot repliky celou dobu
-     * padaly, zatímco reálná session (čistý env z TerminalService) běžela.
-     * Bionic host nástroje jsou self-contained — LD_LIBRARY_PATH nepotřebují.
+     * ⚠️ LD_LIBRARY_PATH obsahuje jen Bionic .so (libusb, hidapi, usbgx, usbrelay).
+     * Od migrace na Bionic (2026-08-11) zde NEJSOU glibc knihovny, takže
+     * SIGBUS riziko pro rootfs tracee odpadá. Pokud by se někdy přidaly
+     * glibc .so do usr/lib, LD_LIBRARY_PATH musí být okamžitě odstraněno.
      */
     private fun hostShellEnv(): Array<String> {
         val ctx = appContext ?: return emptyArray()
         val filesDir = ctx.filesDir
         val hostPrefixBin = File(filesDir, "usr/bin").absolutePath
+        val hostPrefixLib = File(filesDir, "usr/lib").absolutePath
         val basePath = "/system/bin:/system/xbin:/vendor/bin"
         // usr/bin na začátku: GNU sed/nano/rsync/rg přebíjejí toybox
         val fullPath = "$hostPrefixBin:$basePath:${filesDir.absolutePath}"
@@ -1170,6 +1167,7 @@ object LocalApiServer {
             "USER=app",
             "PATH=$fullPath",
             "PREFIX=${File(filesDir, "usr").absolutePath}",
+            "LD_LIBRARY_PATH=$hostPrefixLib",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"

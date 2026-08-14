@@ -16,7 +16,7 @@ API_URL="http://127.0.0.1:1337"
 if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
     shift
     CMD="$*"
-    [ -z "$CMD" ] && { echo "[-] Usage: ashell -c '<prikaz>'" >&2; exit 1; }
+    [ -z "$CMD" ] && { echo "[-] Usage: ashell -c '<prikaz>'" >&2; echo "    Pro multi-command: ashell -c \"ls -la && echo ok\"" >&2; exit 1; }
 
     # Token (potřebný pro /shell)
     TOKEN=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
@@ -44,8 +44,10 @@ if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
         exit 1
     fi
 
-    # DEBUG: ukaž raw odpověď
-    echo "[ASHELL_DEBUG] RESPONSE[${#RESPONSE}]: $(echo "$RESPONSE" | cat -v | head -c 500)" >&2
+    # DEBUG: ukaž raw odpověď (jen když ASHELL_DEBUG=1)
+    if [ -n "${ASHELL_DEBUG:-}" ]; then
+        echo "[ASHELL_DEBUG] RESPONSE[${#RESPONSE}]: $(echo "$RESPONSE" | cat -v | head -c 500)" >&2
+    fi
 
     # Vytisknout stdout + stderr a vrátit exit code
     cat > /tmp/.ashell_parse_$$.py <<'PYEOF'
