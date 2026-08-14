@@ -1,0 +1,221 @@
+#!/system/bin/sh
+# zkill — diagnostika a úklid zombie (stav Z) procesů
+# Cílí na Android host (toybox ps), volá se přes su (Magisk).
+#
+# Použití:
+#   zkill           bezpečný režim: SIGCHLD + TERM/KILL jen na app procesy
+#                   (uid >= 10000), nikdy na systémové a nikdy na vlastní app
+#   zkill --root    navíc povolí restart bezpečných root démonů (su_daemon):
+#                   jejich zombie děti po osiření okamžitě zreapuje init.
+#                   su_daemon je restartovatelný (Root Bridge / relace).
+#
+# BEZPEČNOST:
+#   - Fáze 1 (SIGCHLD) se posílá VŠEM rodičům zombie — je to jen "žádost",
+#     neškodí ničemu, ani systémovým procesům.
+#   - Fáze 2 (SIGTERM/SIGKILL) se aplikuje POUZE na procesy s UID >= 10000
+#     (běžné aplikace/PRoot procesy) a NIKDY na vlastní UID volající app.
+#     Systémové procesy (zygote, system_server, init, surfaceflinger, vold,
+#     netd...) se v žádném případě nezabíjí — jejich pád = reboot / bootloop.
+#   - Žádné dočasné soubory — vše přes proměnné a roury (toybox /tmp nemusí
+#     existovat a v app kontextu není zapisovatelný).
+
+set -u
+
+CRIT_NAMES="zygote zygote64 system_server init surfaceflinger servicemanager hwservicemanager vold netd install logd adbd"
+# Root démoni, které je BEZPEČNÉ restartovat (po osiření zombie zreapuje init).
+SAFE_ROOT_RESTART="su_daemon"
+
+ALLOW_ROOT=0
+for a in "$@"; do
+    case "$a" in
+        --root) ALLOW_ROOT=1 ;;
+        -h|--help)
+            echo "Usage: zkill [--root]"
+            echo "  --root  povolí kill restartovatelných root démonů (su_daemon)"
+            exit 0 ;;
+    esac
+done
+
+SELF_UID="$(id -u)"
+if [ "$SELF_UID" = "0" ]; then
+    RUN=""
+else
+    RUN="su -c"
+fi
+
+run() {
+    if [ -z "$RUN" ]; then
+        sh -c "$1"
+    else
+        su -c "$1"
+    fi
+}
+
+is_critical() {
+    for c in $CRIT_NAMES; do
+        [ "$1" = "$c" ] && return 0
+    done
+    return 1
+}
+
+is_safe_root_restart() {
+    for c in $SAFE_ROOT_RESTART; do
+        [ "$1" = "$c" ] && return 0
+    done
+    return 1
+}
+
+snapshot() {
+    # Jen řádky s číselným PID (ořízne případnou hlavičku toybox ps).
+    run "ps -A -o pid,ppid,uid,stat,comm" 2>/dev/null | awk '$1 ~ /^[0-9]+$/'
+}
+
+echo "=== Zombie Killer ==="
+
+SNAPSHOT=$(snapshot)
+
+# Guard: prázdný snapshot (su nedostupné / chyba ps) — nehlásit falešné "Čisto".
+if [ -z "$SNAPSHOT" ]; then
+    echo "[-] ps nevrátil žádná data — je su dostupné?" >&2
+    exit 1
+fi
+
+ZC_BEFORE=$(echo "$SNAPSHOT" | awk '$4 ~ /^Z/' | wc -l)
+echo "Nalezeno zombie: $ZC_BEFORE"
+
+if [ "$ZC_BEFORE" -eq 0 ]; then
+    echo "Čisto, není co dělat."
+    exit 0
+fi
+
+echo ""
+echo "--- Top rodiče podle počtu zombie dětí ---"
+PPIDS_COUNTED=$(echo "$SNAPSHOT" | awk '$4 ~ /^Z/ {print $2}' | sort | uniq -c | sort -rn)
+echo "$PPIDS_COUNTED" | while read -r cnt ppid; do
+    [ -z "$ppid" ] && continue
+    pname=$(run "cat /proc/$ppid/comm" 2>/dev/null)
+    puid=$(echo "$SNAPSHOT" | awk -v p="$ppid" '$1==p{print $3; exit}')
+    echo "  PPID $ppid  uid=$puid  ($pname)  -> $cnt zombie"
+done
+
+echo ""
+echo "--- Fáze 1: SIGCHLD všem rodičům (žádost o úklid) ---"
+echo "$PPIDS_COUNTED" | while read -r cnt ppid; do
+    [ -z "$ppid" ] && continue
+    [ "$ppid" -le 1 ] && continue
+    run "kill -CHLD $ppid" 2>/dev/null
+done
+
+sleep 3
+
+SNAPSHOT2=$(snapshot)
+ZC_MID=$(echo "$SNAPSHOT2" | awk '$4 ~ /^Z/' | wc -l)
+echo "Po fázi 1: $ZC_MID zombie zbývá"
+
+if [ "$ZC_MID" -eq 0 ]; then
+    echo "Hotovo bez tvrdého zásahu."
+    exit 0
+fi
+
+# ── Fáze 1.5: root démoni (su_daemon) ─────────────────────
+# Rodiče s uid 0 (typicky su_daemon) Fáze 2 přeskočí. Řešení: zabít démona
+# samotného — osiřelé zombie pak okamžitě zreapuje init. Bezpečné jen pro
+# restartovatelné démony a jen s --root.
+DAEMON_PPIDS=""
+for ppid in $(echo "$SNAPSHOT2" | awk '$4 ~ /^Z/ {print $2}' | sort -u); do
+    [ "$ppid" -le 1 ] && continue
+    pname=$(run "cat /proc/$ppid/comm" 2>/dev/null)
+    if is_safe_root_restart "$pname"; then
+        DAEMON_PPIDS="$DAEMON_PPIDS $ppid"
+    fi
+done
+DAEMON_PPIDS=$(echo "$DAEMON_PPIDS" | xargs)
+
+if [ -n "$DAEMON_PPIDS" ]; then
+    if [ "$ALLOW_ROOT" -eq 1 ]; then
+        echo ""
+        echo "--- Fáze 1.5: restart bezpečných root démonů (--root) ---"
+        for ppid in $DAEMON_PPIDS; do
+            pname=$(run "cat /proc/$ppid/comm" 2>/dev/null)
+            echo "  SIGTERM -> $pname (PPID $ppid) — osiřelé zombie zreapuje init"
+            run "kill -TERM $ppid" 2>/dev/null
+        done
+        sleep 3
+        for ppid in $DAEMON_PPIDS; do
+            if run "kill -0 $ppid" 2>/dev/null; then
+                echo "  Stále žije, SIGKILL -> PPID $ppid"
+                run "kill -KILL $ppid" 2>/dev/null
+            fi
+        done
+        sleep 2
+        SNAPSHOT2=$(snapshot)
+        ZC_MID=$(echo "$SNAPSHOT2" | awk '$4 ~ /^Z/' | wc -l)
+        echo "Po fázi 1.5: $ZC_MID zombie zbývá"
+        if [ "$ZC_MID" -eq 0 ]; then
+            echo "Hotovo. (su_daemon restartuj přes Root Bridge nebo další relací.)"
+            exit 0
+        fi
+    else
+        echo ""
+        echo "[!] Někteří zombie rodiče jsou root démoni (uid 0): $(echo "$DAEMON_PPIDS" | wc -w | xargs) PPID"
+        echo "    Fáze 2 je nezasáhne. Bezpečné řešení: zkill --root"
+        echo "    (su_daemon je restartovatelný — osiřelé zombie zreapuje init)"
+    fi
+fi
+
+echo ""
+echo "--- Fáze 2: TERM/KILL rodičů (jen uid >= 10000, systémové a vlastní procesy se přeskakují) ---"
+PPIDS2=$(echo "$SNAPSHOT2" | awk '$4 ~ /^Z/ {print $2}' | sort -u)
+for ppid in $PPIDS2; do
+    [ "$ppid" -le 1 ] && continue
+    pname=$(run "cat /proc/$ppid/comm" 2>/dev/null)
+    puid=$(echo "$SNAPSHOT2" | awk -v p="$ppid" '$1==p{print $3; exit}')
+
+    if is_critical "$pname"; then
+        echo "  PŘESKAKUJI PPID $ppid ($pname) — systémový proces"
+        continue
+    fi
+    # Nikdy nezabíjíme vlastní app (uid volajícího, je-li to app uid).
+    if [ "$SELF_UID" -ge 10000 ] && [ -n "$puid" ] && [ "$puid" = "$SELF_UID" ]; then
+        echo "  PŘESKAKUJI PPID $ppid ($pname) — vlastní proces app (uid $puid)"
+        continue
+    fi
+    if [ -z "$puid" ] || [ "$puid" -lt 10000 ]; then
+        echo "  PŘESKAKUJI PPID $ppid uid=$puid ($pname) — pod hranicí app-uid, netykám"
+        continue
+    fi
+
+    echo "  SIGTERM -> PPID $ppid uid=$puid ($pname)"
+    run "kill -TERM $ppid" 2>/dev/null
+done
+
+sleep 3
+
+for ppid in $PPIDS2; do
+    [ "$ppid" -le 1 ] && continue
+    if run "kill -0 $ppid" 2>/dev/null; then
+        pname=$(run "cat /proc/$ppid/comm" 2>/dev/null)
+        puid=$(echo "$SNAPSHOT2" | awk -v p="$ppid" '$1==p{print $3; exit}')
+        is_critical "$pname" && continue
+        if [ "$SELF_UID" -ge 10000 ] && [ -n "$puid" ] && [ "$puid" = "$SELF_UID" ]; then
+            continue
+        fi
+        if [ -z "$puid" ] || [ "$puid" -lt 10000 ]; then
+            continue
+        fi
+        echo "  Stále žije, SIGKILL -> PPID $ppid ($pname)"
+        run "kill -KILL $ppid" 2>/dev/null
+    fi
+done
+
+sleep 2
+
+ZC_AFTER=$(snapshot | awk '$4 ~ /^Z/' | wc -l)
+echo ""
+echo "=== Výsledek: $ZC_BEFORE -> $ZC_AFTER zombie ==="
+
+if [ "$ZC_AFTER" -gt 0 ]; then
+    echo "Zbývajících $ZC_AFTER patří pravděpodobně systémovým procesům, PID 1"
+    echo "nebo root démonům bez --root. Ty se neuklízí kill-em — mizí až"
+    echo "restartem PRoot guestu / rebootem, nebo přes 'zkill --root'."
+fi

@@ -1451,7 +1451,7 @@ except Exception as e:
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell)
+        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell|zkill)
             "help_$topic"
             ;;
         *)
@@ -1475,6 +1475,7 @@ help_dispatch() {
             printf "  ${CYAN}apps${RST}       usage\n"
             printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
             printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
+            printf "  ${CYAN}zkill${RST}      ⬡  zombie cleanup na hostu (safe; --root pro su_daemon)\n"
             printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
             echo ""
             separator
@@ -1616,6 +1617,24 @@ help_ashell() {
     echo ""
 }
 
+help_zkill() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}ZKILL${RST}  ${DIM}– diagnostika a úklid zombie procesů na Android hostu${RST}"
+    separator
+    echo "  ${GREEN}zkill${RST}             Bezpečný režim: SIGCHLD všem rodičům, pak"
+    echo "                        TERM/KILL jen na app procesy (uid >= 10000)."
+    echo "                        Systémové procesy a vlastní app se NIKDY nezabíjí."
+    echo "  ${GREEN}zkill --root${RST}      Navíc povolí restart bezpečných root démonů"
+    echo "                        (su_daemon) — jejich osiřelé zombie zreapuje init."
+    echo "                        su_daemon je restartovatelný (Root Bridge / relace)."
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh zkill                  # safe cleanup"
+    echo "    nh zkill --root           # + restart su_daemon (pokud je rodič zombie)"
+    echo ""
+}
+
 help_distro() {
     banner
     echo ""
@@ -1668,6 +1687,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
         "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \
+        "zkill" "zkill --root" \
         "ashell"; do
         printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
     done
@@ -2257,6 +2277,37 @@ usb_bridge() {
     exec usb_bridge "$uds_path" "$@"
 }
 
+# ─── ZKILL (host zombie cleanup) ──────────────────────────
+
+zkill_dispatch() {
+    # zkill je HOST nástroj (filesDir/usr/bin/zkill) — /shell API ho spustí na
+    # hostiteli s app uid; zkill si sám eskaluje přes su (Magisk). Bez --root
+    # je čistě bezpečný (systémové procesy a vlastní app se nikdy nezabíjí).
+    ensure_token
+    local cmd="zkill"
+    [ $# -gt 0 ] && cmd="zkill $*"
+    local resp
+    resp=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" --data "$cmd" "$API_URL/shell")
+    if [ -z "$resp" ]; then
+        echo "[-] LocalApiServer neodpovídá na ${API_URL}/shell" >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    sys.stderr.write('Chyba parsování odpovědi: %s\n' % e)
+    sys.exit(1)
+out = d.get('stdout',''); err = d.get('stderr','')
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+if not out and not err and 'error' in d:
+    sys.stderr.write(d['error'] + '\n')
+sys.exit(0 if d.get('exit_code', 0) == 0 else 1)
+"
+}
+
 # ─── MAIN ──────────────────────────────────────────────────
 
 # Check if invoked via compat symlink
@@ -2296,6 +2347,7 @@ case "$CMD" in
     apps)       apps_dispatch "$@" ;;
     usb)        usb_dispatch "$@" ;;
     distro)     distro_dispatch "$@" ;;
+    zkill)      zkill_dispatch "$@" ;;
     ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
     help|--help|-h) help_dispatch "$@" ;;
     list)       list_cmds ;;

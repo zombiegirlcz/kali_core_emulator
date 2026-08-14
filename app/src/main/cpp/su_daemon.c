@@ -381,6 +381,18 @@ static int handle_fix_request(int client_fd, int *fds, char **argv,
 /* forward decl — definice je za main() (fork-per-connection worker) */
 static void handle_client(int client_fd);
 
+/* Reaper pro worker child processes: bez tohohle by každý fork-per-connection
+ * worker po skončení zůstal jako zombie (parent ho nikdy nečeká). SIGCHLD
+ * handler s waitpid(-1, WNOHANG) posbírá všechny skončené workery.
+ * POZN: worker si hned po forku resetuje SIGCHLD na SIG_DFL, aby mohl sám
+ * waitpid() svého command childa a získat exit kód. */
+static void sigchld_reaper(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0) { }
+    errno = saved_errno;
+}
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     char launcher_path[1024] = {0};
@@ -525,6 +537,16 @@ int main(int argc, char **argv) {
      * uvolní okamžitě, ne až po waitpid nekonečného příkazu. */
     signal(SIGPIPE, SIG_IGN);
 
+    /* Reaper pro worker child processes — zabraňuje hromadění zombie. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = sigchld_reaper;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+        sigaction(SIGCHLD, &sa, NULL);
+    }
+
     while (1) {
         int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
@@ -540,7 +562,10 @@ int main(int argc, char **argv) {
             continue;
         }
         if (worker == 0) {
-            /* worker: obslouží právě toto spojení, pak končí */
+            /* worker: obslouží právě toto spojení, pak končí.
+             * Reset SIGCHLD na default, aby waitpid() na command childa
+             * fungoval správně (dědičný reaper by ho sebral dřív). */
+            signal(SIGCHLD, SIG_DFL);
             close(listen_fd);
             handle_client(client_fd);
             _exit(0);

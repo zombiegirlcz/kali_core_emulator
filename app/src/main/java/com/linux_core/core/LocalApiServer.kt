@@ -1108,7 +1108,7 @@ object LocalApiServer {
         "python", "python3", "perl",
         "bash", "sh", "zsh",
         // Project CLI
-        "nh", "nethunter", "vpn-cli",
+        "nh", "nethunter", "vpn-cli", "zkill",
         // Editors / pagers
         "nano", "less", "more", "vim", "vi",
         // Utility

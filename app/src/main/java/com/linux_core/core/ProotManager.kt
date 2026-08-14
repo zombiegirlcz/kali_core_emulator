@@ -17,11 +17,11 @@ object ProotManager {
     private const val TAG = "ProotManager"
     private const val NL = "\n" // Force Unix line endings
 
-    // Host-side usr tools (sed/rsync/nano/rg + libncursesw) — verze deploye.
+    // Host-side usr tools (sed/rsync/nano/rg + libncursesw + zkill) — verze deploye.
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
-    // 2026-08-14: layout-20260814-1 — redeploy celého toolchainu vč. proot/loader.
-    private const val USR_TOOLS_VERSION = "layout-20260814-1"
+    // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
+    private const val USR_TOOLS_VERSION = "layout-20260814-2"
 
     fun setupProotEnvironment(
         context: Context,
@@ -1422,7 +1422,7 @@ object ProotManager {
             if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
             if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
             if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
-            if (rootPrefs.getBoolean("bind_usb", true)) append(" -b /dev/bus/usb:/mnt/usb")
+            if (rootPrefs.getBoolean("bind_usb", true) && java.io.File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
             if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
         }
 
