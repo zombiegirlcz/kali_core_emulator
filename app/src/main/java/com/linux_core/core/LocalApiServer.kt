@@ -77,6 +77,7 @@ object LocalApiServer {
         isRunning = true
         appContext = context.applicationContext
         CertificateManager.init(appContext!!)
+        RootfsManager.ensureMigrated(appContext!!)
         UsbHostManager.init(appContext!!)
         // Pre-load USB bridge JNI library (actual UDS is started by ProotManager
         // with correct rootfs path when terminal opens)

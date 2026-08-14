@@ -95,7 +95,7 @@ object ProcessResolver {
                 val session = findSessionForInode(resolvedInode)
                 if (session != null) {
                     val customName = TerminalService.getSessionName(session)
-                    val distroName = TerminalService.getSessionDistro(session)
+                    val distroName = TerminalService.getSessionDistro(session).substringAfterLast("/")
                     val sessionName = customName ?: "Terminal Session ($distroName)"
                     val procName = findProcNameForInode(resolvedInode) ?: "Shell Client"
                     return ProcessInfo(procName, sessionName, context.packageName)

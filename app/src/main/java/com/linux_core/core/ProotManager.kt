@@ -110,8 +110,7 @@ object ProotManager {
         }
         deployApiScripts(context, rootfsDir)
 
-        val suffix2 = detectArchSuffix()
-        deployBinaries(context, suffix2)
+        deployBinaries(context, suffix)
         fixLdLinuxSymlinks(context, rootfsDir)
 
         val prootBin = File(context.filesDir, "proot")

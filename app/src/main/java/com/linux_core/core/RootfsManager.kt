@@ -984,7 +984,11 @@ object RootfsManager {
     /**
      * Idempotentní vstupní bod migrace layoutu. Volat PŘED jakýmkoli
      * použitím rootfs cest (setupProotEnvironment, install/backup detekce).
+     * @Synchronized: může se volat souběžně z více vláken (MainActivity.onCreate,
+     * BackgroundBoot, ProotManager) — bez zámku by dvě migrateLayout běžely
+     * zároveň a závodily na renameTo/copyRecursively.
      */
+    @Synchronized
     fun ensureMigrated(context: Context) {
         val prefs = context.getSharedPreferences(MIGRATION_PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean(MIGRATION_FLAG, false)) return
@@ -1020,11 +1024,14 @@ object RootfsManager {
             }
         }
 
-        // 3) Docker/OCI adresáře → nh/distro/docker/
+        // 3) Docker/OCI adresáře → nh/distro/docker/<jméno bez prefixu>
         filesDir.listFiles()?.filter {
             it.isDirectory && (it.name.startsWith("docker-") || it.name.startsWith("oci-"))
         }?.forEach { src ->
-            val dst = File(filesDir, "$NH_DISTRO_DIR/docker/${src.name}")
+            // Strippni prefix docker-/oci-, aby jméno odpovídalo novým pullům
+            // (RootfsManager vytváří nh/distro/docker/<host>-<name> bez prefixu)
+            val stripped = src.name.removePrefix("docker-").removePrefix("oci-")
+            val dst = File(filesDir, "$NH_DISTRO_DIR/docker/$stripped")
             dst.parentFile?.mkdirs()
             if (!safeMove(src, dst)) allOk = false
         }
@@ -1079,10 +1086,15 @@ object RootfsManager {
                 true
             } else {
                 Log.e("RootfsManager", "safeMove: verification failed, keeping source: $src")
+                // Smaž částečný cíl, aby příští pokus mohl začít znovu
+                try { if (dst.exists()) dst.deleteRecursively() } catch (_: Exception) {}
                 false
             }
         } catch (e: Exception) {
             Log.e("RootfsManager", "safeMove failed: ${e.message}")
+            // Částečný cíl smaž, aby další pokus začínal z čistého stavu
+            // (jinak by existující neprázdný dst blokoval migraci navždy)
+            try { if (dst.exists()) dst.deleteRecursively() } catch (_: Exception) {}
             false
         }
     }
