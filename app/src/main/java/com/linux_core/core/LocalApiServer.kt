@@ -1149,7 +1149,10 @@ object LocalApiServer {
      * usr/lib = případné host-side .so (aktuálně prázdné — ncursesw je
      *           staticky v nano).
      *
-     * ⚠️ LD_LIBRARY_PATH obsahuje jen Bionic .so (libusb, hidapi, usbgx, usbrelay).
+     * USB gadget libs (libusb, hidapi, usbgx, usbrelay) se už do assets NEBAVÍ;
+     * poskytuje je Magisk modul (magisk-modules/custom_usb_g2_setup) přímo do /system.
+     *
+     * ⚠️ LD_LIBRARY_PATH obsahuje naše usr/lib + systémové cesty Androidu.
      * Od migrace na Bionic (2026-08-11) zde NEJSOU glibc knihovny, takže
      * SIGBUS riziko pro rootfs tracee odpadá. Pokud by se někdy přidaly
      * glibc .so do usr/lib, LD_LIBRARY_PATH musí být okamžitě odstraněno.
@@ -1167,7 +1170,7 @@ object LocalApiServer {
             "USER=app",
             "PATH=$fullPath",
             "PREFIX=${File(filesDir, "usr").absolutePath}",
-            "LD_LIBRARY_PATH=$hostPrefixLib",
+            "LD_LIBRARY_PATH=$hostPrefixLib:/system/lib64:/system/lib",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"

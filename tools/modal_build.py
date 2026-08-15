@@ -18,8 +18,7 @@ Upload (VŽDY samostatně — buildy ho nikdy nevolají):
   modal run modal_build.py upload_clean  # smaže src + gradle-cache (keys/builds zůstanou)
 
 Individual steps:
-  modal run modal_build.py native      # NDK cross-compile C binaries + usr tools (nano/rsync/sed/rg) + USB tools (libusbgx/usbutils/usbrelayd)
-  modal run modal_build.py usbtools    # USB tools only (faster iteration)
+  modal run modal_build.py native      # NDK cross-compile C binaries + usr tools (nano/rsync/sed/rg)
   modal run modal_build.py build       # Gradle assembleDebug only
   modal run modal_build.py list        # show Volume contents
 """
@@ -242,75 +241,6 @@ def init_keys():
     build_vol.commit()
     print(f"[init] Key stored at {key_path}")
 
-
-# ── USB gadget tools: libusbgx / usbutils / usbrelayd ────────────────────
-# Pinned sources — see tools/usbtools/README.md. All outputs are Bionic
-# (aarch64-linux-android, /system/bin/linker64): they run on the Android host
-# (ashell/su, where configfs /config and /dev/bus/usb live) AND inside the
-# PRoot guest. glibc builds would die on the host (rseq blocked by app
-# seccomp) — see AGENTS.md session 2026-08-11.
-ARGP_VER = "1.5.0"
-ARGP_URL = f"https://github.com/argp-standalone/argp-standalone/archive/refs/tags/{ARGP_VER}.tar.gz"
-LIBUSB_VER = "1.0.27"
-LIBUSB_URL = f"https://github.com/libusb/libusb/releases/download/v{LIBUSB_VER}/libusb-{LIBUSB_VER}.tar.bz2"
-HIDAPI_TAG = "hidapi-0.14.0"
-HIDAPI_URL = "https://github.com/libusb/hidapi.git"
-LIBUSBGX_TAG = "libusbgx-v0.3.0"
-LIBUSBGX_URL = "https://github.com/libusbgx/libusbgx.git"
-USBRELAY_TAG = "v0.8"
-USBRELAY_URL = "https://github.com/darrylb123/usbrelay.git"
-USBUTILS_TAG = "v007"
-USBUTILS_URL = "https://github.com/gregkh/usbutils.git"
-USBIDS_URL = "https://raw.githubusercontent.com/usbids/usbids/master/usb.ids"
-
-
-def _usb_run(cmd, **kw):
-    print(f"  $ {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    subprocess.run(cmd, check=True, **kw)
-
-
-def _usb_fetch(url, dest):
-    if not os.path.exists(dest):
-        _usb_run(["wget", "-q", url, "-O", dest])
-
-
-def _usb_extract(archive, dest):
-    _usb_run(["tar", "xf", archive, "-C", dest])
-
-
-def _usb_git(tag, url, dest, submodules=True):
-    if not os.path.isdir(dest):
-        cmd = ["git", "clone", "--depth", "1", "--branch", tag]
-        if submodules:
-            cmd += ["--recurse-submodules", "--shallow-submodules"]
-        cmd += [url, dest]
-        _usb_run(cmd)
-
-
-def _usb_readelf_needed(path):
-    dyn = subprocess.run(["aarch64-linux-gnu-readelf", "-d", path],
-                         capture_output=True, text=True).stdout
-    return [l.split("[")[-1].rstrip("]") for l in dyn.splitlines() if "NEEDED" in l]
-
-
-def _usb_verify(path, name, is_shared=False):
-    """Bionic check: executables must be PIE with /system/bin/linker64;
-    shared libs must not pull glibc (ld-linux / libc.so.6 / libgcc)."""
-    re = "aarch64-linux-gnu-readelf"
-    out = subprocess.run([re, "-d", path], capture_output=True, text=True).stdout
-    needed = [l.split("[")[-1].rstrip("]") for l in out.splitlines() if "NEEDED" in l]
-    bad = [n for n in needed if "ld-linux" in n or n == "libc.so.6" or n.startswith("libgcc")]
-    if bad:
-        raise SystemExit(f"[usbtools] {name}: glibc NEEDED {bad} — na hostu by spadl!")
-    if is_shared:
-        print(f"    {name}: NEEDED={needed}")
-        return
-    el = subprocess.run([re, "-l", path], capture_output=True, text=True).stdout
-    interp = next((l.split(":")[-1].strip().rstrip("]") for l in el.splitlines() if "interpreter" in l), None)
-    print(f"    {name}: interpreter={interp} NEEDED={needed}")
-    if interp != "/system/bin/linker64":
-        raise SystemExit(f"[usbtools] {name}: NENI Bionic (interpreter={interp}) — na hostu by spadl!")
-
 @app.function(
     image=usrtools_image,
     volumes={"/vol": build_vol},
@@ -393,39 +323,14 @@ def build_native():
         "/vol/builds",
     )
 
-    # ── 6. USB gadget tools: libusbgx / usbutils / usbrelay / usbrelayd ────
-    # Musí běžet PO _build_usrtools (ten na začátku smaže celý assets/usr).
-    print("─" * 60)
-    print("[native] Building USB gadget tools (libusbgx/usbutils/usbrelayd) ...")
-    _build_usb_tools(
-        os.path.join(assets_dir, "usr"),
-        "/vol/builds",
-        repo_dir=src_dir,
-    )
+
+    # USB gadget tools (libusbgx/usbutils/usbrelayd) are no longer built
+    # into app assets. They are provided by the Magisk module
+    # (magisk-modules/custom_usb_g2_setup/) which installs them to /system.
 
     # Commit to Volume
     build_vol.commit()
     print(f"[native] Binaries committed to Volume.")
-
-
-# ── USB tools only (rychlejší iterace — bez nano/rsync/sed/rg) ─────────────
-@app.function(
-    image=usrtools_image,
-    volumes={"/vol": build_vol},
-    timeout=1800,
-    memory=8192,
-    cpu=4,
-)
-def build_usb_tools():
-    """Cross-compile only the USB gadget tools (libusbgx/usbutils/usbrelayd)
-    into assets/usr — bez 15 min trvajícího usrtools buildu."""
-    src_dir = "/vol/src"
-    assets_dir = os.path.join(src_dir, "app/src/main/assets")
-    print("[native] Building USB tools only ...")
-    _build_usb_tools(os.path.join(assets_dir, "usr"), "/vol/builds", repo_dir=src_dir)
-    build_vol.commit()
-    print("[native] USB tools committed to Volume.")
-
 
 # ── Usr tools build: nano/rsync/sed (glibc bridge) + ripgrep (Bionic) ───────
 def _build_usrtools(assets_usr, builds_dir):
@@ -713,315 +618,6 @@ def _build_usrtools(assets_usr, builds_dir):
     with tarfile.open(tgz, "r:gz") as tf:
         for m in tf.getmembers():
             print(f"      {m.name} ({m.size:,} B)")
-
-
-# ── USB gadget tools build: libusbgx / usbutils / usbrelay / usbrelayd ──────
-# Vše Bionic (aarch64-linux-android, linker64). Tools run on the Android host
-# (su/ashell — configfs /config + /dev/bus/usb) i uvnitř PRoot guestu.
-def _build_usb_tools(assets_usr, builds_dir, repo_dir=None):
-    """Cross-compile USB gadget tools (Bionic/arm64) into assets/usr.
-
-    repo_dir: root repa (cesta k tools/usbtools/usbrelayd.c) — na Modal
-    je to /vol/src; když je None, zkusí os.path.dirname(__file__).
-
-    Produces (relative to assets_usr):
-      bin/  lsusb usbhid-dump usb-devices usbrelay usbrelayd
-            show-gadgets show-udcs gadget-{acm-ecm,ffs,hid,ms,midi,printer,
-                    uvc,rndis-os-desc,export,import,vid-pid-remove}
-      lib/  libusb-1.0.so.0 libhidapi-libusb.so libusbgx.so.3 libusbrelay.so
-      share/usb.ids
-    Plus /vol/builds/usbtools.tar.gz (bin/ + lib/ + share/ → $PREFIX).
-
-    DAG: libusb → hidapi(→libusb) ; libusbgx ; argp+hidapi → usbrelay ;
-         usbutils(→libusb) → lsusb/usbhid-dump."""
-    import tarfile
-
-    WORK = "/tmp/usbtools"
-    SYSTEM_LIBS = {"libc.so", "libdl.so", "libm.so", "liblog.so", "libz.so"}
-    RPATH = "-Wl,-rpath='$$ORIGIN/../lib'"
-    CFLAGS = "-O2 -fPIE -D__USE_FORTIFY_LEVEL=0"
-
-    tc_bin = f"{NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-    CC = f"{tc_bin}/aarch64-linux-android28-clang"
-    for alt_api in (28, 24, 21):
-        if os.path.exists(f"{tc_bin}/aarch64-linux-android{alt_api}-clang"):
-            CC = f"{tc_bin}/aarch64-linux-android{alt_api}-clang"
-            break
-    CXX = CC[: -len("-clang")] + "-clang++"
-
-    BIN = os.path.join(assets_usr, "bin")
-    LIB = os.path.join(assets_usr, "lib")
-    SHARE = os.path.join(assets_usr, "share")
-    for d in (WORK, BIN, LIB, SHARE, builds_dir):
-        os.makedirs(d, exist_ok=True)
-
-    env = dict(os.environ)
-    env["PKG_CONFIG_PATH"] = os.path.join(WORK, "libusb-install/lib/pkgconfig")
-
-    # ── 1. argp-standalone (staticky; usbrelay používá glibc argp, bionic ho nemá)
-    print("─" * 60)
-    print(f"[usbtools] argp-standalone-{ARGP_VER} ...")
-    argp_dir = os.path.join(WORK, f"argp-standalone-{ARGP_VER}")
-    if not os.path.isdir(argp_dir):
-        _usb_fetch(ARGP_URL, os.path.join(WORK, "argp.tar.gz"))
-        _usb_extract(os.path.join(WORK, "argp.tar.gz"), WORK)
-    argp_stage = os.path.join(WORK, "argp-install")
-    os.makedirs(argp_stage, exist_ok=True)
-    if not os.path.exists(os.path.join(argp_stage, "lib", "libargp.a")):
-        _usb_run(["autoreconf", "-fi"], cwd=argp_dir)
-        _usb_run(["./configure", "--host=aarch64-linux-android", f"--prefix={argp_stage}",
-                  f"CC={CC}", f"CFLAGS={CFLAGS}"], cwd=argp_dir)
-        _usb_run(["make", "-j8"], cwd=argp_dir)
-        _usb_run(["make", "install"], cwd=argp_dir)
-        # argp-standalone deklaruje libargp.a jako noinst_LIBRARIES — make
-        # install ho NEinstaluje („Nothing to be done“); lib i hlavička zůstanou
-        # v build dir. Kopírujeme je ručně do stage.
-        for rel, dst in (("libargp.a", os.path.join(argp_stage, "lib", "libargp.a")),
-                         ("argp.h", os.path.join(argp_stage, "include", "argp.h"))):
-            src = os.path.join(argp_dir, rel)
-            if not os.path.exists(src):
-                raise RuntimeError(f"argp build artifact missing: {src}")
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-    print(f"    ✓ libargp.a ({os.path.getsize(os.path.join(argp_stage, 'lib', 'libargp.a')):,} B)")
-
-    # ── 2. libusb 1.0.27 (host-side; lsusb + hidapi + usbrelay) ────────────
-    print("─" * 60)
-    print(f"[usbtools] libusb-{LIBUSB_VER} ...")
-    libusb_dir = os.path.join(WORK, f"libusb-{LIBUSB_VER}")
-    if not os.path.isdir(libusb_dir):
-        _usb_fetch(LIBUSB_URL, os.path.join(WORK, "libusb.tar.bz2"))
-        _usb_extract(os.path.join(WORK, "libusb.tar.bz2"), WORK)
-    libusb_stage = os.path.join(WORK, "libusb-install")
-    os.makedirs(libusb_stage, exist_ok=True)
-    # libtool při cross-compile na Android ne vždy vyprodukuje verzovaná
-    # jména — dejme si OR přes kandidáty místo tvrdého .so.0.
-    def _libusb_candidates(stage, bases):
-        return [os.path.join(stage, "lib", b) for b in bases if os.path.exists(os.path.join(stage, "lib", b))]
-    libusb_bases = ("libusb-1.0.so.0", "libusb-1.0.so", "libusb-1.0.so.0.0.0")
-    if not _libusb_candidates(libusb_stage, libusb_bases):
-        _usb_run(["./configure", "--host=aarch64-linux-android", f"--prefix={libusb_stage}",
-                  "--disable-udev", "--disable-tests", "--disable-dependency-tracking",
-                  f"CC={CC}", f"CFLAGS={CFLAGS}"], cwd=libusb_dir)
-        _usb_run(["make", "-j8"], cwd=libusb_dir)
-        _usb_run(["make", "install"], cwd=libusb_dir)
-    libusb_so = _libusb_candidates(libusb_stage, libusb_bases)[0]
-    print(f"    ✓ libusb ({os.path.basename(libusb_so)}: {os.path.getsize(libusb_so):,} B)")
-
-    # ── 3. hidapi 0.14.0 (libusb backend) — standalone build se PTÁ přes
-    # pkg-config na EXTERNÍ libusb (libusb/CMakeLists: if(TARGET usb-1.0)
-    # ... else pkg_check_modules). Submodul libusb/ je potřeba jen jako
-    # CMake wrapper — jeho knihovna se NIKDY neveze.
-    print("─" * 60)
-    print(f"[usbtools] hidapi-{HIDAPI_TAG} (libusb backend) ...")
-    hidapi_dir = os.path.join(WORK, "hidapi")
-    if not os.path.isdir(hidapi_dir):
-        _usb_git(HIDAPI_TAG, HIDAPI_URL, hidapi_dir)
-    hidapi_stage = os.path.join(WORK, "hidapi-install")
-    os.makedirs(hidapi_stage, exist_ok=True)
-    hidapi_build = os.path.join(WORK, "hidapi-build")
-    os.makedirs(hidapi_build, exist_ok=True)
-    if not os.path.exists(os.path.join(hidapi_stage, "lib", "libhidapi-libusb.so")):
-        _usb_run(["cmake", "-S", hidapi_dir, "-B", hidapi_build,
-                  "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",  # Modal cmake je moc nový na min 3.5
-                  f"-DCMAKE_TOOLCHAIN_FILE={NDK_DIR}/build/cmake/android.toolchain.cmake",
-                  "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-28",
-                  "-DANDROID_STL=none", "-DCMAKE_BUILD_TYPE=Release",
-                  f"-DCMAKE_INSTALL_PREFIX={hidapi_stage}",
-                  "-DHIDAPI_WITH_HIDRAW=OFF", "-DHIDAPI_WITH_LIBUSB=ON",
-                  "-DHIDAPI_BUILD_HIDTEST=OFF", "-DBUILD_SHARED_LIBS=ON",
-                  # hidapi linkuje jen ${USB_LIBRARIES} (-lusb-1.0) a zapomíná
-                  # na USB_LIBRARY_DIRS → přidáváme -L ručně.
-                  f"-DCMAKE_SHARED_LINKER_FLAGS=-L{libusb_stage}/lib",
-                  f"-DCMAKE_EXE_LINKER_FLAGS=-L{libusb_stage}/lib"], env=env)
-        _usb_run(["cmake", "--build", hidapi_build, "-j8"])
-        _usb_run(["cmake", "--install", hidapi_build])
-    hidapi_so = _libusb_candidates(hidapi_stage, ("libhidapi-libusb.so", "libhidapi-libusb.so.0", "libhidapi-libusb.so.0.0.0"))[0]
-    print(f"    ✓ libhidapi ({os.path.basename(hidapi_so)}: {os.path.getsize(hidapi_so):,} B)")
-
-    # ── 4. libusbgx 0.3.0 (knihovna + show-gadgets/show-udcs + gadget-*) ──
-    print("─" * 60)
-    print(f"[usbtools] libusbgx-{LIBUSBGX_TAG} ...")
-    libusbgx_dir = os.path.join(WORK, "libusbgx")
-    if not os.path.isdir(libusbgx_dir):
-        _usb_git(LIBUSBGX_TAG, LIBUSBGX_URL, libusbgx_dir)
-    libusbgx_stage = os.path.join(WORK, "libusbgx-install")
-    os.makedirs(libusbgx_stage, exist_ok=True)
-    libusbgx_bases = ("libusbgx.so.3", "libusbgx.so", "libusbgx.so.3.0.0")
-    def _find_libusbgx_so():
-        for base in libusbgx_bases:
-            p = os.path.join(libusbgx_stage, "lib", base)
-            if os.path.exists(p):
-                return [p]
-        hit = []
-        for root, _dirs, files in os.walk(libusbgx_stage):
-            for fn in sorted(files):
-                if fn.startswith("libusbgx.so"):
-                    hit.append(os.path.join(root, fn))
-        return hit
-    if not _find_libusbgx_so():
-        if not os.path.exists(os.path.join(libusbgx_dir, "configure")):
-            _usb_run(["autoreconf", "-fi"], cwd=libusbgx_dir)
-        _usb_run(["./configure", "--host=aarch64-linux-android", f"--prefix={libusbgx_stage}",
-                  "--without-libconfig", "--disable-gadget-schemes", "--disable-tests",
-                  f"CC={CC}", f"CXX={CXX}", f"CFLAGS={CFLAGS}", f"CXXFLAGS={CFLAGS}",
-                  f"LDFLAGS={RPATH}"], cwd=libusbgx_dir)
-        _usb_run(["make", "-j8"], cwd=libusbgx_dir)
-        _usb_run(["make", "install"], cwd=libusbgx_dir)
-    libusbgx_so = _find_libusbgx_so()
-    if not libusbgx_so:
-        raise RuntimeError("libusbgx: .so nenalezen po build/install")
-    print(f"    ✓ libusbgx ({os.path.basename(libusbgx_so[0])}: {os.path.getsize(libusbgx_so[0]):,} B)")
-
-    # ── 5. usbrelay v0.8 (libusbrelay.so + usbrelay, HIDAPI=libusb, -largp)
-    print("─" * 60)
-    print(f"[usbtools] usbrelay-{USBRELAY_TAG} ...")
-    urelay_dir = os.path.join(WORK, "usbrelay")
-    if not os.path.isdir(urelay_dir):
-        _usb_git(USBRELAY_TAG, USBRELAY_URL, urelay_dir)
-    if not os.path.exists(os.path.join(urelay_dir, "usbrelay")):
-        _usb_run(["make", "HIDAPI=libusb",
-                  f"CC={CC}",
-                  f"CPPFLAGS=-I{hidapi_stage}/include -I{argp_stage}/include",
-                  # −fPIC PŘEPÍNE −fPIE (poslední vyhrává): libusbrelay.so je
-                  # -shared → lld by jinak odmítl PIE relokace (R_AARCH64_*)
-                  f"CFLAGS={CFLAGS} -fPIC",
-                  f"LDFLAGS=-L{hidapi_stage}/lib -lhidapi-libusb -L{argp_stage}/lib -largp {RPATH}"],
-                 cwd=urelay_dir)
-    shutil.copy2(os.path.join(urelay_dir, "usbrelay"), os.path.join(BIN, "usbrelay"))
-    shutil.copy2(os.path.join(urelay_dir, "libusbrelay.so"), os.path.join(LIB, "libusbrelay.so"))
-    _usb_verify(os.path.join(BIN, "usbrelay"), "usbrelay")
-    print(f"    ✓ usbrelay ({os.path.getsize(os.path.join(BIN, 'usbrelay')):,} B)")
-
-    # ── 6. usbrelayd — náš C TCP daemon (tools/usbtools/usbrelayd.c) ───────
-    print("─" * 60)
-    print("[usbtools] usbrelayd (custom C TCP daemon) ...")
-    if repo_dir is None:
-        repo_dir = os.path.dirname(__file__)
-    daemon_src = os.path.join(repo_dir, "tools", "usbtools", "usbrelayd.c")
-    daemon_out = os.path.join(BIN, "usbrelayd")
-    _usb_run([CC, *CFLAGS.split(), "-fPIE", "-pie",
-              f"-I{urelay_dir}", f"-I{hidapi_stage}/include", f"-I{argp_stage}/include",
-              daemon_src,
-              f"-L{urelay_dir}", "-lusbrelay",
-              f"-L{hidapi_stage}/lib", "-lhidapi-libusb",
-              "-Wl,-rpath='$$ORIGIN/../lib'", "-o", daemon_out])
-    _usb_verify(daemon_out, "usbrelayd")
-    print(f"    ✓ usbrelayd ({os.path.getsize(daemon_out):,} B)")
-
-    # ── 7. usbutils v007 (lsusb + usbhid-dump + usb-devices) + usb.ids ────
-    # v015+ přešlo na udev hwdb (#include <libudev.h>) — na bionicu
-    # nezkompiluješ; v007 je poslední, které čte usb.ids přímo.
-    print("─" * 60)
-    print(f"[usbtools] usbutils-{USBUTILS_TAG} ...")
-    usbutils_dir = os.path.join(WORK, "usbutils")
-    if not os.path.isdir(usbutils_dir):
-        # usbutils v007 má submodul usbhid-dump na MRTvém git://sourceforge
-        # (clone selže) — submoduly přeskočíme, usbhid-dump je volitelný.
-        _usb_git(USBUTILS_TAG, USBUTILS_URL, usbutils_dir, submodules=False)
-    usbutils_stage = os.path.join(WORK, "usbutils-install")
-    os.makedirs(usbutils_stage, exist_ok=True)
-    if not os.path.exists(os.path.join(usbutils_stage, "bin", "lsusb")):
-        # usbhid-dump jsme neklonovali (submodul = mrtvý sourceforge git) —
-        # Makefile.am stejně požaduje ten adresář, takže tam vytvoříme PRÁZDNÝ
-        # stub sub-projekt (autoreconf pak projde a binárka nevznikne — je
-        # volitelná, lsusb/usb-devices fungují bez ní).
-        hid_dump = os.path.join(usbutils_dir, "usbhid-dump")
-        if os.path.isdir(hid_dump) and not os.listdir(hid_dump):
-            os.rmdir(hid_dump)
-        os.makedirs(hid_dump, exist_ok=True)
-        for fn, body in (
-            ("configure.ac", "AC_INIT([usbhid-dump-stub],[0.0])\nAM_INIT_AUTOMAKE([foreign])\nAC_PROG_CC\nAC_CONFIG_FILES([Makefile])\nAC_OUTPUT\n"),
-            ("Makefile.am", "# stub — usbhid-dump submodul (sourceforge) se neklonuje\n"),
-        ):
-            with open(os.path.join(hid_dump, fn), "w", encoding="utf-8") as _f:
-                _f.write(body)
-        cac = os.path.join(usbutils_dir, "configure.ac")
-        # Pozn.: AC_CONFIG_SUBDIRS([usbhid-dump]) NECHÁVÁME — stub sub-projekt
-        # má vlastní configure.ac, takže configure do něj čistě sestoupí a
-        # make tam nic nepostaví (prázdný stub).
-        if not os.path.exists(os.path.join(usbutils_dir, "configure")):
-            # autogen.sh by selhal (cd usbhid-dump — submodul přeskočen) →
-            # generujeme configure přímo.
-            _usb_run(["autoreconf", "-fi"], cwd=usbutils_dir)
-        _usb_run(["./configure", "--host=aarch64-linux-android",
-                  f"--prefix={usbutils_stage}",
-                  f"--datadir={USRTOOLS_PREFIX}/share",
-                  "--disable-zlib", "--disable-usbids",
-                  f"CC={CC}", f"CFLAGS={CFLAGS}", f"LDFLAGS={RPATH}"],
-                 cwd=usbutils_dir, env=env)
-        _usb_run(["make", "-j8"], cwd=usbutils_dir, env=env)
-        _usb_run(["make", "install"], cwd=usbutils_dir, env=env)
-    for tool in ("lsusb", "usbhid-dump", "usb-devices"):
-        src = os.path.join(usbutils_stage, "bin", tool)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(BIN, tool))
-    _usb_fetch(USBIDS_URL, os.path.join(SHARE, "usb.ids"))
-    print(f"    ✓ usb.ids ({os.path.getsize(os.path.join(SHARE, 'usb.ids')):,} B)")
-
-    # ── 8. knihovny → assets/usr/lib ───────────────────────────────────────
-    print("─" * 60)
-    print("[usbtools] libs → assets/usr/lib ...")
-    def copy_lib(src, dst):
-        shutil.copy2(src, dst)
-        _usb_verify(dst, os.path.basename(dst), is_shared=True)
-    def ship_lib(stage, bases, names):
-        """Vezmi první existující kandidát (libtool cross někdy jmenuje .so
-        bez verze) a materiálizuj pod VŠEMI potřebnými jmény — DT_NEEDED
-        linkeru může ukazovat na libusb-1.0.so.0 i libusb-1.0.so podle toho,
-        jaké SONAME libtool do knihovny zapsal."""
-        cand = _libusb_candidates(stage, bases)
-        if not cand:
-            return False
-        for nm in names:
-            dst = os.path.join(LIB, nm)
-            if not os.path.exists(dst):
-                copy_lib(cand[0], dst)
-        return True
-    ship_lib(libusb_stage, libusb_bases, ("libusb-1.0.so.0", "libusb-1.0.so"))
-    ship_lib(hidapi_stage, ("libhidapi-libusb.so", "libhidapi-libusb.so.0", "libhidapi-libusb.so.0.0.0"),
-             ("libhidapi-libusb.so", "libhidapi-libusb.so.0"))
-    ship_lib(libusbgx_stage, libusbgx_bases, ("libusbgx.so.3", "libusbgx.so"))
-    # gadget-* a show-* nástroje libusbgx → assets/usr/bin
-    examples_src = os.path.join(libusbgx_stage, "bin")
-    if os.path.isdir(examples_src):
-        for fn in sorted(os.listdir(examples_src)):
-            fp = os.path.join(examples_src, fn)
-            if os.path.isfile(fp) and not fn.endswith(".py"):
-                shutil.copy2(fp, os.path.join(BIN, fn))
-                _usb_verify(os.path.join(BIN, fn), fn)
-                print(f"    ✓ {fn} ({os.path.getsize(fp):,} B)")
-
-    # ── 9. sanity: NEEDED mimo /system ─────────────────────────────────────
-    print("─" * 60)
-    print("[usbtools] NEEDED mimo /system ...")
-    shipped_libs = set(os.listdir(LIB))
-    for fn in sorted(os.listdir(BIN)):
-        fp = os.path.join(BIN, fn)
-        if not os.path.isfile(fp) or not os.access(fp, os.X_OK):
-            continue
-        for lib in _usb_readelf_needed(fp):
-            if lib in SYSTEM_LIBS or lib.startswith("libgcc"):
-                continue
-            if lib not in shipped_libs and not os.path.exists(os.path.join("/system/lib64", lib)):
-                print(f"    ! {fn}: NEEDED {lib} — mimo assets/usr/lib i /system!")
-
-    # ── 10. tarball (bin/ + lib/ + share/ → $PREFIX) ────────────────────────
-    print("─" * 60)
-    print("[usbtools] tarball ...")
-    tgz = os.path.join(builds_dir, "usbtools.tar.gz")
-    with tarfile.open(tgz, "w:gz") as tf:
-        for sub in ("bin", "lib", "share"):
-            base = os.path.join(assets_usr, sub)
-            if not os.path.isdir(base):
-                continue
-            for root, _dirs, files in os.walk(base):
-                for fn in files:
-                    fp = os.path.join(root, fn)
-                    arc = os.path.relpath(fp, assets_usr)
-                    tf.add(fp, arcname=arc)
-    print(f"    ✓ {tgz} ({os.path.getsize(tgz)/1024/1024:.1f} MB)")
-
 
 # ── Static PRoot build (Termux fork, talloc statically linked) ──────────────
 # Source: termux/proot fork (Android patches: link2symlink, kompat, fake_id0,
@@ -1434,8 +1030,6 @@ def main():
         upload_clean.remote()
     elif cmd == "native":
         build_native.remote()
-    elif cmd == "usbtools":
-        build_usb_tools.remote()
     elif cmd == "proot":
         build_proot_static.remote()
     elif cmd == "build":
@@ -1446,4 +1040,4 @@ def main():
     elif cmd == "list":
         list_volume.remote()
     else:
-        print("Usage: modal run modal_build.py [init|upload|upload_force|upload_clean|native|usbtools|proot|build|all|list]")
+        print("Usage: modal run modal_build.py [init|upload|upload_force|upload_clean|native|proot|build|all|list]")

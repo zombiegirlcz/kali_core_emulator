@@ -2707,7 +2707,7 @@ class TerminalActivity : ComponentActivity() {
             "USER=app",
             "PATH=$fullPath",
             "PREFIX=${hostPrefix.absolutePath}",
-            "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}",
+            "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}:/system/lib64:/system/lib",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"

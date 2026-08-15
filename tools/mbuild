@@ -12,7 +12,6 @@
 #   native    = native compile + pull assets
 #   build     = APK build + pull APK
 #   usrtools  = native compile (usrtools) + pull assets
-#   usbtools  = USB tools build + pull assets
 #   proot     = proot static build + pull assets
 #
 # PRAVIDLO: Upload se VŽDY dělá zvlášť. Build nikdy nevolá upload.
@@ -58,7 +57,6 @@ case "$CMD" in
         echo "=== FULL BUILD (native + APK) ==="
         echo "  -> NDK compile"
 	modal run modal_build.py::build_proot_static > build.log | cat
-	modal run modal_build.py::build_usb_tools >> build.log | cat
         modal run modal_build.py::build_native >> build.log | cat
         echo "  -> pull CELÝ assets ihned po enviroment buildu"
         pull_full_assets
@@ -86,13 +84,6 @@ case "$CMD" in
        # echo "  -> pull CELÝ assets"
        # pull_full_assets
      #   ;;
-#    usbtools)
- #       echo "=== USBTOOLS BUILD (libusbgx/usbutils/usbrelayd) ==="
-  #      echo "  -> usb tools build"
-   #     modal run modal_build.py::build_usb_tools > build.log | cat
-    #    echo "  -> pull CELÝ assets"
-     #   pull_full_assets
- #       ;;
   #  proot)
    #     echo "=== PROOT STATIC BUILD (termux fork, talloc linked in) ==="
     #    echo "  -> proot + loader cross-compile (4 ABI)"
@@ -101,7 +92,7 @@ case "$CMD" in
        # pull_full_assets
         #;;
     *)
-        echo "Usage: zsh mbuild [upload|upload_force|upload_clean|all|native|build|usrtools|usbtools|proot]"
+        echo "Usage: zsh mbuild [upload|upload_force|upload_clean|all|native|build|usrtools|proot]"
         exit 1
         ;;
 esac
