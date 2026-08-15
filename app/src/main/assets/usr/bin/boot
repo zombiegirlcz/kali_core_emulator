@@ -32,7 +32,7 @@ export PROOT_LOADER="$LOADER"
 export PROOT_TMP_DIR="$FILES_DIR/tmp"
 export TMPDIR="$FILES_DIR/tmp"
 
-PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink --sysvipc -L --kernel-release=\\Linux\\proot\\6.17.0-proot-distro\\6.17.0-proot-distro\\aarch64\\localdomain\\-1\\"
+PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink --sysvipc -L --kernel-release=\\Linux\\localhost\\6.17.0-proot-distro\\6.17.0-proot-distro\\aarch64\\localdomain\\-1\\"
 
 log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
 err() { echo "[boot] ERROR: $*" >&2; }
