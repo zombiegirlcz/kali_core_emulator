@@ -2654,48 +2654,21 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "startAshellSession: escape proot → host app shell")
         val cwd = filesDir
 
-        // Prohledá filesDir na existující rootfs adresáře a přidá jejich
-        // bin/sbin cesty do PATH — uživatel tak má přístup k distrib. toolům
-        // (nh, nmap, python3, atd.) i v ashell (host) shellu.
-        // Jen AKTIVNÍ distro (nh/.active_distro marker) — jinak by se PATH
-        // míchal ze všech nainstalovaných distro a první shoda vyhrává.
-        val activeDistro = try {
-            File(filesDir, "nh/.active_distro").readText().trim()
-        } catch (e: Exception) { "" }
-        val distroPaths = mutableListOf<String>()
-        val knownDirs = when {
-            activeDistro.startsWith("docker:") ->
-                listOf("nh/distro/docker/${activeDistro.removePrefix("docker:")}")
-            activeDistro.isNotEmpty() ->
-                listOf("nh/distro/$activeDistro")
-            else -> emptyList()
-        }
-        for (dirName in knownDirs) {
-            val rootfs = File(filesDir, dirName)
-            if (!rootfs.isDirectory) continue
-            for (sub in listOf("usr/local/bin", "usr/local/sbin", "usr/bin", "usr/sbin", "bin", "sbin")) {
-                val path = File(rootfs, sub)
-                if (path.isDirectory) {
-                    distroPaths.add(path.absolutePath)
-                }
-            }
-        }
-
         // Host-side nástroje (mimo proot) pro kontext com.linux_core.
-        // Uživatel sem skládá binárky/skripty do files/usr/bin (+ lib) a spouští
-        // je přímo z host (ashell) shellu — proto zajistíme, že PREFIX prostor
-        // existuje a cesty jsou přidané do PATH/LD_LIBRARY_PATH.
-        // Host-side nástroje (mimo proot) pro kontext com.linux_core.
+        // ashell je ESCAPE z PRootu → čistý host shell. Žádné distro (proot)
+        // cesty do PATH nepatří: glibc binárky z rootfs na Android hostu
+        // stejně neběží (rseq → SIGSYS) a míchání cest všech distro způsobuje
+        // nejednoznačnou rezoluci. nh CLI je v filesDir, host nástroje
+        // (boot, proot, nano, rg, ...) v filesDir/usr/bin — obojí níže.
         // Adresáře files/usr/{bin,lib} vytvoří a binárky z assets sem nasadí
-        // ProotManager.setupProotEnvironment (fáze deploy) — zde jen vystavíme
-        // cesty host (ashell) shellu, abych je mohl používat mimo proot.
+        // ProotManager.setupProotEnvironment (fáze deploy).
         val hostPrefix = File(filesDir, "usr")
         val hostPrefixBin = File(hostPrefix, "bin")
         val hostPrefixLib = File(hostPrefix, "lib")
 
-        // Sestav PATH: Android host cesty + distrib. cesty + filesDir (nh CLI) + host PREFIX/bin
+        // Sestav PATH: Android host cesty + filesDir (nh CLI) + host PREFIX/bin
         val basePath = "/system/bin:/system/xbin:/vendor/bin"
-        val extraPaths = (distroPaths + filesDir.absolutePath + hostPrefixBin.absolutePath).joinToString(":")
+        val extraPaths = listOf(filesDir.absolutePath, hostPrefixBin.absolutePath).joinToString(":")
         val fullPath = "$basePath:$extraPaths"
 
         Log.i(TAG, "ashell PATH: $fullPath")
