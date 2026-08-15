@@ -2657,11 +2657,19 @@ class TerminalActivity : ComponentActivity() {
         // Prohledá filesDir na existující rootfs adresáře a přidá jejich
         // bin/sbin cesty do PATH — uživatel tak má přístup k distrib. toolům
         // (nh, nmap, python3, atd.) i v ashell (host) shellu.
+        // Jen AKTIVNÍ distro (nh/.active_distro marker) — jinak by se PATH
+        // míchal ze všech nainstalovaných distro a první shoda vyhrává.
+        val activeDistro = try {
+            File(filesDir, "nh/.active_distro").readText().trim()
+        } catch (e: Exception) { "" }
         val distroPaths = mutableListOf<String>()
-        val listedDirs = try { filesDir.listFiles()?.toList() ?: emptyList() } catch (e: Exception) { emptyList() }
-        val knownDirs = listOf("nh/distro/kali", "nh/distro/parrot") +
-            (listedDirs.filter { it.isDirectory && it.name.startsWith("docker-") }.map { it.name }) +
-            (File(filesDir, "nh/distro/docker").listFiles()?.filter { it.isDirectory }?.map { "nh/distro/docker/${it.name}" } ?: emptyList())
+        val knownDirs = when {
+            activeDistro.startsWith("docker:") ->
+                listOf("nh/distro/docker/${activeDistro.removePrefix("docker:")}")
+            activeDistro.isNotEmpty() ->
+                listOf("nh/distro/$activeDistro")
+            else -> emptyList()
+        }
         for (dirName in knownDirs) {
             val rootfs = File(filesDir, dirName)
             if (!rootfs.isDirectory) continue
