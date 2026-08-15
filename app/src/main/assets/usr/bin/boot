@@ -297,6 +297,29 @@ boot_reentry() {
 
 # ─── Main dispatch ──────────────────────────────────────
 main() {
+    # Pre-parse --bind options from anywhere in args
+    local _newargs=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bind)
+                shift
+                [ $# -gt 0 ] || { err "--bind requires a src:dest argument"; return 1; }
+                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b $1"
+                shift
+                continue
+                ;;
+            --bind=*)
+                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b ${1#--bind=}"
+                shift
+                continue
+                ;;
+        esac
+        _newargs="$_newargs '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+        shift
+    done
+    [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
+    eval "set -- $_newargs"
+
     case "${1:-}" in
         kali|parrot)
             boot_classic "$@"
@@ -308,17 +331,48 @@ main() {
         --)
             boot_reentry "$@"
             ;;
-        --help|-h|"")
-            echo "Usage: boot {kali|parrot} [-- cmd args...]"
-            echo "       boot docker <image-name> [-- cmd args...]"
+        --help|-h)
+            echo "Usage: boot {kali|parrot} [--bind src:dest] [-- cmd args...]"
+            echo "       boot docker <image-name> [--bind src:dest] [-- cmd args...]"
             echo "       boot -- cmd args...   (su_daemon re-entry, auto-detect distro)"
+            echo "       boot [--bind src:dest]  (auto-detect active distro)"
+            echo ""
+            echo "Options:"
+            echo "  --bind src:dest    Extra bind mount (repeatable)"
+            echo "  --bind=src:dest    Same, equals-sign form"
             echo ""
             echo "Env vars: PREFIX, FILES_DIR, NH_MOUNT_STORAGE, NH_EXTRA_MOUNTS,"
             echo "          NH_EXTRA_BINDS, NH_CWD, NH_DISTRO, BOOT_DEBUG"
             ;;
+        "")
+            # No distro specified — auto-detect and boot interactively
+            local _spec=""
+            if [ -f "$FILES_DIR/nh/.active_distro" ]; then
+                _spec=$(head -n1 "$FILES_DIR/nh/.active_distro" 2>/dev/null | tr -d '[:space:]')
+            fi
+            if [ -z "$_spec" ]; then
+                if [ -d "$FILES_DIR/nh/distro/kali" ]; then _spec="kali"
+                elif [ -d "$FILES_DIR/nh/distro/parrot" ]; then _spec="parrot"
+                else
+                    local _d
+                    for _d in "$FILES_DIR"/nh/distro/docker/*/; do
+                        [ -d "$_d" ] && _spec="docker:$(basename "$_d")" && break
+                    done
+                fi
+            fi
+            if [ -z "$_spec" ]; then
+                err "No distro found (set NH_DISTRO or create nh/.active_distro)"
+                return 1
+            fi
+            log "auto-detect distro=$_spec"
+            case "$_spec" in
+                docker:*) boot_docker "${_spec#docker:}" ;;
+                *)        boot_classic "$_spec" ;;
+            esac
+            ;;
         *)
             err "Unknown command: $1"
-            echo "Usage: boot {kali|parrot|docker} ..." >&2
+            echo "Usage: boot {kali|parrot|docker} [--bind src:dest] ..." >&2
             return 1
             ;;
     esac
