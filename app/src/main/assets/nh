@@ -1984,9 +1984,9 @@ except Exception as e:
 }
 
 # ─── nh distro login: vstup do distro z host ashellu ────────────────────
-# proot-distro-like: spustí launcher-<distro>.sh přímo (sdílí stdin/stdout),
+# proot-distro-like: spustí univerzální boot skript (usr/bin/boot) přímo (sdílí stdin/stdout),
 # takže se z ashellu (host shell) dostaneme do PRoot kontejneru. Extra bindy
-# se předávají launcheru přes NH_EXTRA_BINDS env (launcher.sh je přidá do BINDS).
+# se předávají boot skriptu přes NH_EXTRA_BINDS env.
 distro_login() {
     [ $# -lt 1 ] && { echo "[-] Usage: nh distro login <distro> [--bind src:dst ...]" >&2; exit 1; }
     local DISTRO="$1"; shift
@@ -2011,7 +2011,7 @@ distro_login() {
     # DISTRO_LAUNCHER podle skutečně nalezené složky.
     local FILES_DIR="/data/user/0/com.linux_core/files"
     local ROOTFS="$FILES_DIR/nh/distro/$DISTRO"
-    local DISTRO_LAUNCHER="$FILES_DIR/launcher-$DISTRO.sh"
+    local BOOT_SCRIPT="$FILES_DIR/usr/bin/boot"
     if [ ! -d "$ROOTFS" ]; then
         # Zkus legacy cesty: $FILES_DIR/$DISTRO nebo $FILES_DIR/$DISTRO-*
         ROOTFS="$FILES_DIR/$DISTRO"
@@ -2026,9 +2026,6 @@ distro_login() {
                     "$DISTRO"-*)
                         found_dir="$cand"
                         ROOTFS="$cand"
-                        # Launcher name follows the distro id prefix, not the full
-                        # directory name (ProotManager generates launcher-<id>.sh).
-                        DISTRO_LAUNCHER="$FILES_DIR/launcher-${DISTRO}.sh"
                         break
                         ;;
                 esac
@@ -2046,18 +2043,10 @@ distro_login() {
         exit 1
     fi
 
-    # Launcher: preferuj distro-specifický, jinak generický launcher.sh (má placeholder
-    # __ROOTFS_DIR__ jen v šabloně — na zařízení je launcher.sh fallback, ale bez cesty
-    # k rootfs; proto je potřeba distro launcher, který ProotManager vygeneroval).
-    if [ ! -x "$DISTRO_LAUNCHER" ]; then
-        # generický launcher.sh je fallback — zkusit, ale varovat
-        if [ -x "$FILES_DIR/launcher.sh" ]; then
-            echo "[!] Varování: distro launcher $DISTRO_LAUNCHER neexistuje, používám generický launcher.sh (rootfs musí být ve filesDir)" >&2
-            DISTRO_LAUNCHER="$FILES_DIR/launcher.sh"
-        else
-            echo "[-] Launcher nenalezen (žádný kontejner ještě neběžel?) — otevři terminál se "$DISTRO" v aplikaci a zkus znovu" >&2
-            exit 1
-        fi
+    # Boot script: univerzální launcher (usr/bin/boot)
+    if [ ! -x "$BOOT_SCRIPT" ]; then
+        echo "[-] Boot script nenalezen (žádný kontejner ještě neběžel?) — otevři terminál se "$DISTRO" v aplikaci a zkus znovu" >&2
+        exit 1
     fi
 
     # Zajisti, že extra bind cesty existují (proot na to nebude stěžovat)
@@ -2073,7 +2062,16 @@ distro_login() {
     [ -n "$EXTRA_BINDS" ] && echo "[*] Extra bindy: $EXTRA_BINDS"
     echo "[*] Ukončení: exit / Ctrl+D"
     echo ""
-    NH_EXTRA_BINDS="$EXTRA_BINDS" exec "$DISTRO_LAUNCHER"
+    # Handle docker/imagename format for boot script
+    case "$DISTRO" in
+        docker/*)
+            local IMAGE_NAME="${DISTRO#docker/}"
+            NH_EXTRA_BINDS="$EXTRA_BINDS" exec "$BOOT_SCRIPT" docker "$IMAGE_NAME"
+            ;;
+        *)
+            NH_EXTRA_BINDS="$EXTRA_BINDS" exec "$BOOT_SCRIPT" "$DISTRO"
+            ;;
+    esac
 }
 
 usb_list() {

@@ -147,6 +147,7 @@ app/src/main/assets/usr/bin/**
 !app/src/main/assets/usr/bin/terminalmap
 !app/src/main/assets/usr/bin/ifconfig
 !app/src/main/assets/usr/bin/zkill
+!app/src/main/assets/usr/bin/boot
 
 # Old build artifacts
 app/build_old/

@@ -21,7 +21,7 @@ object ProotManager {
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
     // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
-    private const val USR_TOOLS_VERSION = "layout-20260814-2"
+    private const val USR_TOOLS_VERSION = "layout-20260815-1"
 
     fun setupProotEnvironment(
         context: Context,
@@ -81,7 +81,11 @@ object ProotManager {
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
 
         val setupDoneFile = File(homeDir, ".setup_done")
-        val distroId = if (rootfsDirName.contains("parrot")) "parrot" else "kali"
+        val distroId = when {
+            isDockerImage -> "docker:${rootfsDirName.substringAfterLast("/")}"
+            rootfsDirName.contains("parrot") -> "parrot"
+            else -> "kali"
+        }
         
         deployZshrc(context, rootfsDir, distroId)
         
@@ -113,40 +117,62 @@ object ProotManager {
         deployBinaries(context, suffix)
         fixLdLinuxSymlinks(context, rootfsDir)
 
-        val prootBin = File(context.filesDir, "proot")
-        val loaderBin = File(context.filesDir, "loader")
-        val tallocLib = File(context.filesDir, "libtalloc.so.2")
+        // Univerzální boot skript (assets/usr/bin/boot → filesDir/usr/bin/boot)
+        // nasazuje deployDir("usr/bin", ...) výše. Zde jen ověříme existenci.
+        val bootScript = File(rootDir, "usr/bin/boot")
+        if (!bootScript.exists() || !bootScript.canExecute()) {
+            Log.e(TAG, "Boot script missing after deploy: ${bootScript.absolutePath}")
+        }
 
-        // Generujeme distro-specifický launcher (launcher-kali.sh, launcher-parrot.sh,
-        // launcher-docker.sh) — každý s vlastním log prefixem. Pro Docker image
-        // se použije "docker" místo názvu distribuce, aby se správně logovalo.
-        val launcherDistroId = if (isDockerImage) "docker" else distroId
-        val distroLauncherName = "launcher-${launcherDistroId}.sh"
-        val launcherFile = File(rootDir, distroLauncherName)
-        deployLauncherScript(
-            context = context,
-            launcherFile = launcherFile,
-            distroId = launcherDistroId,
-            rootfsDir = rootfsDir,
-            prootBin = prootBin,
-            loaderBin = loaderBin,
-            tallocLib = tallocLib,
-            tmpDir = tmpDir,
-            mountStorage = mountStorage,
-            isDockerImage = isDockerImage
+        // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
+        // když NH_DISTRO env není nastavený.
+        val nhDir = File(rootDir, "nh")
+        if (!nhDir.exists()) nhDir.mkdirs()
+        try {
+            File(nhDir, ".active_distro").writeText(distroId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to write .active_distro: ${e.message}")
+        }
+
+        // Env proměnné pro boot skript (mount options, extra bindy)
+        val rootPrefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        val extraMounts = buildString {
+            if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
+            if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
+            if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
+            if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
+            if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
+        }
+
+        val envVars = mutableListOf(
+            "NH_MOUNT_STORAGE=${if (mountStorage) "1" else "0"}",
+            "NH_EXTRA_MOUNTS=$extraMounts",
+            "NH_DISTRO=$distroId"
         )
 
-        val fullCommand = mutableListOf("/system/bin/sh", launcherFile.absolutePath)
+        // Příkaz: boot <distro> [-- <customCommand>]
+        // Docker: boot docker <imageName>
+        val fullCommand = mutableListOf("/system/bin/sh", bootScript.absolutePath)
+        if (isDockerImage) {
+            fullCommand.add("docker")
+            // rootfsDirName = "nh/distro/docker/<imageName>"
+            val imageName = rootfsDirName.substringAfterLast("/")
+            if (imageName.isNotEmpty() && imageName != "docker") {
+                fullCommand.add(imageName)
+            }
+        } else {
+            fullCommand.add(distroId)
+        }
         if (!customCommand.isNullOrEmpty()) {
             fullCommand.add(customCommand)
         }
 
-        val defaultProot = prootBin
+        val prootBin = File(context.filesDir, "proot")
         return ProotConfig(
             command = fullCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
-            env = emptyArray(),
-            prootPath = defaultProot.absolutePath,
+            env = envVars.toTypedArray(),
+            prootPath = prootBin.absolutePath,
             rootfsDir = rootfsDir.absolutePath
         )
     }
@@ -977,7 +1003,7 @@ object ProotManager {
      */
     private fun deploySuBridge(context: Context, rootfsDir: File) {
         // 0. Host ipc dir MUST exist BEFORE the PRoot container starts —
-        //    launcher.sh binds $FILES_DIR/ipc to /run/host_ipc. If the dir is
+        //    boot script binds $FILES_DIR/ipc to /run/host_ipc. If the dir is
         //    created only later (in startDaemon), the bind is a dead mountpoint
         //    and the guest never sees the daemon socket.
         try {
@@ -1375,141 +1401,5 @@ object ProotManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write /etc/motd: ${e.message}")
         }
-    }
-
-    /**
-     * Nasadí launcher.sh z assets/ do filesDir a vyplní
-     * placeholdery skutečnými cestami. Generuje distro-specifický launcher
-     * (launcher-kali.sh, launcher-parrot.sh, launcher-docker.sh) s vlastním
-     * log prefixem a záložní launcher.sh pro zpětnou kompatibilitu.
-     *
-     * @param launcherFile   cílový soubor (např. rootDir/launcher-kali.sh)
-     * @param distroId       identifikátor distra ("kali", "parrot", "docker")
-     * @param isDockerImage  true = Docker image, false = běžná distribuce
-     */
-    private fun deployLauncherScript(
-        context: Context,
-        launcherFile: File,
-        distroId: String,
-        rootfsDir: File,
-        prootBin: File,
-        loaderBin: File,
-        tallocLib: File,
-        tmpDir: File,
-        mountStorage: Boolean,
-        isDockerImage: Boolean
-    ) {
-        val template = try {
-            context.assets.open("launcher.sh").use { input ->
-                input.bufferedReader().use { it.readText() }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read launcher.sh from assets: ${e.message}")
-            return
-        }.replace("\r\n", "\n").replace("\r", "\n")
-
-        // Každá distribuce má vlastní log prefix pro snadnou identifikaci
-        val logPrefix = when (distroId) {
-            "kali" -> "KaliLauncher"
-            "parrot" -> "ParrotLauncher"
-            "docker" -> "DockerLauncher"
-            else -> if (isDockerImage) "DockerLauncher" else "${distroId.replaceFirstChar { it.uppercase() }}Launcher"
-        }
-        val sdcardMount = if (mountStorage) " -b /sdcard" else ""
-
-        val rootPrefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
-        val extraMounts = buildString {
-            if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
-            if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
-            if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
-            if (rootPrefs.getBoolean("bind_usb", true) && java.io.File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
-            if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
-        }
-
-        val rendered = template
-            .replace("__PROOT_BIN__", prootBin.absolutePath)
-            .replace("__LOADER_BIN__", loaderBin.absolutePath)
-            .replace("__TALLOC_LIB__", tallocLib.absolutePath)
-            .replace("__ROOTFS_DIR__", rootfsDir.absolutePath)
-            .replace("__ROOTFS_NAME__", rootfsDir.name)
-            .replace("__TMP_DIR__", tmpDir.absolutePath)
-            .replace("__FILES_DIR__", context.filesDir.absolutePath)
-            .replace("__SDCARD_MOUNT__", sdcardMount)
-            .replace("__EXTRA_ROOT_MOUNTS__", extraMounts)
-            .replace("__DOCKER_MODE__", if (isDockerImage) "1" else "0")
-            .replace("__LOG_PREFIX__", logPrefix)
-            .replace("__DISTRO_ID__", distroId)
-
-        // Ověř, že všechny placeholdery byly nahrazeny (jinak by se spustil
-        // skript s nevyplněnou proměnnou – tichá chyba).
-        val unfilled = Regex("__[A-Z_]+__").findAll(rendered).map { it.value }.toList()
-        if (unfilled.isNotEmpty()) {
-            Log.w(TAG, "launcher.sh has unfilled placeholders: $unfilled")
-        }
-
-        try {
-            launcherFile.parentFile?.mkdirs()
-            synchronized(this) {
-                launcherFile.writeText(rendered)
-                launcherFile.setExecutable(true, false)
-                launcherFile.setReadable(true, false)
-            }
-            Log.i(TAG, "Deployed ${launcherFile.name} (${launcherFile.length()} bytes, distro=$distroId, docker=$isDockerImage, log=$logPrefix)")
-
-            // Pro zpětnou kompatibilitu zapíšeme i hlavní launcher.sh,
-            // který bude dispatchem na distro-specifický skript.
-            if (launcherFile.name != "launcher.sh") {
-                val compatLauncher = File(launcherFile.parentFile, "launcher.sh")
-                compatLauncher.writeText(renderCompatLauncher(context.filesDir, distroId))
-                compatLauncher.setExecutable(true, false)
-                compatLauncher.setReadable(true, false)
-                Log.i(TAG, "Updated compat launcher.sh -> ${launcherFile.name}")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write ${launcherFile.name}: ${e.message}")
-        }
-    }
-
-    /**
-     * Vytvori wrapper launcher.sh, ktery deleguje na spravny distro-specificky launcher.
-     */
-    private fun renderCompatLauncher(filesDir: File, currentDistro: String): String {
-        return buildString {
-            appendLine("#!/system/bin/sh")
-            appendLine("# Backward-compat launcher.sh wrapper")
-            appendLine("# Delegates to the correct distro-specific launcher.")
-            appendLine("# Generated by ProotManager.deployLauncherScript().")
-            appendLine("FILES_DIR=\"${filesDir.absolutePath}\"")
-            appendLine("")
-            appendLine("# Try to detect distro from rootfs directory")
-            appendLine("for d in kali parrot; do")
-            appendLine("  if [ -d \"\$FILES_DIR/nh/distro/\${d}\" ] || [ -d \"\$FILES_DIR/\${d}-arm64\" ] || [ -d \"\$FILES_DIR/\${d}\" ]; then")
-            appendLine("    DISTRO=\"\$d\"")
-            appendLine("    break")
-            appendLine("  fi")
-            appendLine("done")
-            appendLine("# Docker images: match any docker-* directory")
-            appendLine("if [ -z \"\$DISTRO\" ]; then")
-            appendLine("  for d in \"\$FILES_DIR\"/nh/distro/docker/* \"\$FILES_DIR\"/docker-*; do")
-            appendLine("    if [ -d \"\$d\" ]; then")
-            appendLine("      DISTRO=\"docker\"")
-            appendLine("      break")
-            appendLine("    fi")
-            appendLine("  done")
-            appendLine("fi")
-            appendLine("")
-            appendLine("# Fallback: use the distro that generated this wrapper")
-            appendLine("if [ -z \"\$DISTRO\" ]; then")
-            appendLine("  DISTRO=\"$currentDistro\"")
-            appendLine("fi")
-            appendLine("")
-            appendLine("LAUNCHER=\"\$FILES_DIR/launcher-\${DISTRO}.sh\"")
-            appendLine("if [ -x \"\$LAUNCHER\" ]; then")
-            appendLine("  exec \"\$LAUNCHER\" \"\$@\" || exit 1")
-            appendLine("else")
-            appendLine("  echo \"[CompatLauncher] ERROR: \$LAUNCHER not found\" >&2")
-            appendLine("  exit 1")
-            appendLine("fi")
-        }.toString()
     }
 }

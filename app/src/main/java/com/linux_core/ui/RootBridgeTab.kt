@@ -51,16 +51,20 @@ object RootBridgeManager {
     )
 
     /**
-     * Locate the active PRoot distro launcher script (launcher-<distro>.sh).
-     * su_daemon RE-ENTERS this launcher under real root so every sudo/su
+     * Locate the universal boot script (usr/bin/boot).
+     * su_daemon RE-ENTERS this script under real root so every sudo/su
      * command stays confined to the guest rootfs by PRoot.
      */
     fun detectActiveLauncher(context: Context): String? {
         val filesDir = context.filesDir ?: return null
+        val bootScript = File(filesDir, "usr/bin/boot")
+        if (bootScript.exists() && bootScript.canExecute()) {
+            return bootScript.absolutePath
+        }
+        // Fallback: legacy launcher-*.sh
         val candidates = filesDir.listFiles()?.filter {
             it.isFile && it.name.startsWith("launcher-") && it.name.endsWith(".sh")
         } ?: return null
-        // Prefer the most recently generated launcher (matches the active rootfs).
         return candidates.maxByOrNull { it.lastModified() }?.absolutePath
     }
 
@@ -214,7 +218,7 @@ object RootBridgeManager {
                 // argv[6] = auto-fix on/off
                 val launcherPath = detectActiveLauncher(context)
                 if (launcherPath == null) {
-                    Log.e(TAG, "No launcher-*.sh found — su_daemon will refuse to run (fail closed)")
+                    Log.e(TAG, "No boot script found — su_daemon will refuse to run (fail closed)")
                 }
                 val launcherArg = launcherPath?.let { " '$it'" } ?: ""
                 val rootfs = detectGuestRootfs(context)

@@ -1263,8 +1263,8 @@ class TerminalActivity : ComponentActivity() {
         guiScope.launch {
             withContext(Dispatchers.IO) {
                 try {
-                    val launcher = File(filesDir, "launcher.sh").absolutePath
-                    val builder = ProcessBuilder("/system/bin/sh", launcher, "nethunter-desktop start")
+                    val bootScript = File(filesDir, "usr/bin/boot").absolutePath
+                    val builder = ProcessBuilder("/system/bin/sh", bootScript, "--", "nethunter-desktop", "start")
                     builder.directory(filesDir)
                     val process = builder.start()
                     // Wait for the process to finish to reap it (prevent zombie)
@@ -3522,12 +3522,12 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun runCodeServerCtl(vararg args: String): String {
-        val launcherFile = java.io.File(applicationContext.filesDir, "launcher.sh")
-        if (!launcherFile.exists() || !launcherFile.canExecute()) {
-            return "{\"error\":\"launcher.sh not found\"}"
+        val bootScript = java.io.File(applicationContext.filesDir, "usr/bin/boot")
+        if (!bootScript.exists() || !bootScript.canExecute()) {
+            return "{\"error\":\"boot script not found\"}"
         }
         return try {
-            val pb = ProcessBuilder("sh", launcherFile.absolutePath, "code-server-ctl", *args)
+            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--", "code-server-ctl", *args)
             pb.directory(applicationContext.filesDir)
             pb.redirectErrorStream(true)
             val proc = pb.start()

@@ -1458,7 +1458,7 @@ object LocalApiServer {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
             return
         }
-        val launcherScript = java.io.File(ctx.filesDir, "launcher.sh")
+        val bootScript = java.io.File(ctx.filesDir, "usr/bin/boot")
 
         // Try daemon first (fast path) with auth token
         currentAgentStatus = "Connecting to agent..."
@@ -1470,10 +1470,10 @@ object LocalApiServer {
         }
 
         // Self-healing: try to start the daemon
-        if (launcherScript.exists() && launcherScript.canExecute()) {
+        if (bootScript.exists() && bootScript.canExecute()) {
             try {
                 currentAgentStatus = "Starting agent daemon..."
-                val pbStart = ProcessBuilder("sh", launcherScript.absolutePath, "nethunter-agent-cli", "start")
+                val pbStart = ProcessBuilder("sh", bootScript.absolutePath, "--", "nethunter-agent-cli", "start")
                 pbStart.directory(ctx.filesDir)
                 val procStart = pbStart.start()
                 procStart.waitFor()
@@ -1491,17 +1491,17 @@ object LocalApiServer {
             }
         }
 
-        // Fallback: run agent inline via PRoot + launcher.sh
+        // Fallback: run agent inline via PRoot + boot script
         currentAgentStatus = "Starting agent..."
         try {
-            if (!launcherScript.exists() || !launcherScript.canExecute()) {
+            if (!bootScript.exists() || !bootScript.canExecute()) {
                 currentAgentStatus = ""
-                sendResponse(out, 500, "Internal Error", "{\"error\":\"launcher.sh not found. Please open a terminal session first.\"}")
+                sendResponse(out, 500, "Internal Error", "{\"error\":\"boot script not found. Please open a terminal session first.\"}")
                 return
             }
 
             currentAgentStatus = "Agent is processing..."
-            val pb = ProcessBuilder("sh", launcherScript.absolutePath,
+            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--",
                 "python3", "/usr/local/bin/nethunter_agent.py", "run-direct", prompt)
             pb.directory(appContext?.filesDir)
             pb.redirectErrorStream(true)
@@ -1510,7 +1510,7 @@ object LocalApiServer {
             val output = process.inputStream.bufferedReader().use { it.readText() }
             process.waitFor()
 
-            // Parse output: launcher.sh prepends "[*] Starting session..." and "[*] Running custom launcher command..."
+            // Parse output: boot script may prepend "[boot]" diagnostic lines
             // The actual agent response is everything after those lines
             val lines = output.lines()
             val agentOutput = lines.dropWhile { it.startsWith("[*]") || it.isBlank() }.joinToString("\n").trim()
@@ -2698,12 +2698,12 @@ object LocalApiServer {
         context.getSharedPreferences("editor_settings", Context.MODE_PRIVATE)
 
     private fun runCodeServerCtl(context: Context, vararg args: String): String {
-        val launcherFile = java.io.File(context.filesDir, "launcher.sh")
-        if (!launcherFile.exists() || !launcherFile.canExecute()) {
-            return "{\"error\":\"launcher.sh not found or not executable. Open a terminal session first to bootstrap the rootfs.\"}"
+        val bootScript = java.io.File(context.filesDir, "usr/bin/boot")
+        if (!bootScript.exists() || !bootScript.canExecute()) {
+            return "{\"error\":\"boot script not found or not executable. Open a terminal session first to bootstrap the rootfs.\"}"
         }
         return try {
-            val pb = ProcessBuilder("sh", launcherFile.absolutePath, "code-server-ctl", *args)
+            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--", "code-server-ctl", *args)
             pb.directory(context.filesDir)
             pb.redirectErrorStream(true)
             val proc = pb.start()
