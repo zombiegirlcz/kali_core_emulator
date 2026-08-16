@@ -475,6 +475,7 @@ object LocalApiServer {
                 path == "/distro/ps" && method == "GET" -> handleDistroPs(context, out)
                 path == "/distro/kill" && method == "POST" -> handleDistroKill(context, body, out)
                 path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
+                path == "/terminal/float" && method == "POST" -> handleTerminalFloat(context, body, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
@@ -1270,6 +1271,74 @@ object LocalApiServer {
                 put("uid", Process.myUid())
                 put("pwd", ctx.filesDir.absolutePath)
                 put("user", "app")
+            }.toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    /**
+     * Plovoucí terminál — `nh float` / `nh float here` / `nh float close`.
+     *
+     * Vstup: POST /terminal/float, JSON body {"mode":"new|here|close","session_id":"..."}
+     *  - new:   nová session aktivního distro v plovoucím okně
+     *  - here:  přesun aktuální session (session_id) do plovoucího okna
+     *  - close: zavření plovoucího okna (vypůjčená session se vrací do TerminalActivity)
+     *
+     * Vyžaduje SYSTEM_ALERT_WINDOW (Settings.canDrawOverlays). Bez oprávnění
+     * otevře systémové nastavení a vrátí status overlay_permission_required.
+     */
+    private fun handleTerminalFloat(context: Context, body: String, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            var mode = "new"
+            var sessionId = ""
+            try {
+                val json = JSONObject(body)
+                mode = json.optString("mode", "new")
+                sessionId = json.optString("session_id", "")
+            } catch (_: Exception) {
+                // plain-text fallback: "new" / "here:<id>" / "close"
+                val t = body.trim()
+                when {
+                    t.startsWith("here:") -> { mode = "here"; sessionId = t.removePrefix("here:") }
+                    t == "here" -> mode = "here"
+                    t == "close" -> mode = "close"
+                    else -> mode = "new"
+                }
+            }
+
+            if (!FloatingTerminalService.canDraw(ctx)) {
+                FloatingTerminalService.requestOverlayPermission(ctx)
+                sendResponse(out, 200, "OK", JSONObject().apply {
+                    put("status", "overlay_permission_required")
+                    put("message", "Povol 'Zobrazit přes ostatní aplikace' v otevřeném nastavení a zkus to znovu")
+                }.toString())
+                return
+            }
+
+            val intent = Intent(ctx, FloatingTerminalService::class.java)
+            when (mode) {
+                "here" -> {
+                    if (sessionId.isEmpty()) {
+                        sendResponse(out, 400, "Bad Request", "{\"error\":\"mode=here requires session_id\"}")
+                        return
+                    }
+                    intent.action = FloatingTerminalService.ACTION_ATTACH
+                    intent.putExtra(FloatingTerminalService.EXTRA_SESSION_ID, sessionId)
+                }
+                "close" -> intent.action = FloatingTerminalService.ACTION_CLOSE
+                else -> intent.action = FloatingTerminalService.ACTION_NEW
+            }
+            ctx.startForegroundService(intent)
+
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("status", if (mode == "close") "float_closed" else "float_started")
+                put("mode", mode)
+                if (sessionId.isNotEmpty()) put("session_id", sessionId)
             }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")

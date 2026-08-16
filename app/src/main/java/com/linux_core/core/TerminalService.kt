@@ -39,6 +39,15 @@ class TerminalService : Service() {
         val sessionNames = java.util.concurrent.ConcurrentHashMap<String, String>()
         val sessionDistros = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+        /** Sessiony dočasně přesunuté do plovoucího okna (FloatingTerminalService).
+         *  TerminalActivity je přeskakuje při attach-to-existing a callbacky níže
+         *  řeší přepnutí/ vrácení session mezi aktivitou a overlayem. */
+        val floatedSessionIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        @Volatile var onSessionFloated: ((String) -> Unit)? = null
+        @Volatile var onSessionReturned: ((String) -> Unit)? = null
+
+        fun getSessionById(id: String): TerminalSession? = idToSession[id]
+
         /** Session ID of the headless background (cron) boot, if one is active.
          *  Guards against duplicate cron sessions (MED-2) and drives auto-
          *  relaunch after a clean death (MED-3). */

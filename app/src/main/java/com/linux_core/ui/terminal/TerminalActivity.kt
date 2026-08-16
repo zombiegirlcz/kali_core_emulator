@@ -181,6 +181,8 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var toolbarScroll: View
     private val guiScope = CoroutineScope(Dispatchers.Main + Job())
     private var pendingNanoCommand: String? = null
+    // PiP: uložené visibility chrome prvků před vstupem do PiP (obnovení při návratu)
+    private val pipSavedVisibility = HashMap<View, Int>()
     private lateinit var btnTouchToggle: Button
     private var guiTouchMode = true // true = trackpad (default), false = direct touch
 
@@ -894,7 +896,39 @@ class TerminalActivity : ComponentActivity() {
         })
 
         handleFileIntent(intent)
+        registerFloatCallbacks()
         setupAndStartSession()
+    }
+
+    /** Callbacky pro FloatingTerminalService (`nh float here` / návrat session). */
+    private fun registerFloatCallbacks() {
+        TerminalService.onSessionFloated = { id ->
+            runOnUiThread { handleSessionFloated(id) }
+        }
+        TerminalService.onSessionReturned = { id ->
+            runOnUiThread { handleSessionReturned(id) }
+        }
+    }
+
+    /** Session byla přesunuta do plovoucího okna — přepni na jinou, nebo vytvoř novou. */
+    private fun handleSessionFloated(id: String) {
+        val cur = currentSession
+        if (cur != null && TerminalService.getSessionId(cur) == id) {
+            val others = TerminalService.sessions.filter { it != cur && it.isRunning }
+            if (others.isNotEmpty()) {
+                switchToSession(others.last())
+            } else {
+                currentSession = null
+                addNewSession()
+            }
+        }
+        updateSessionDrawer()
+    }
+
+    /** Session se vrátila z plovoucího okna — attachni ji zpět. */
+    private fun handleSessionReturned(id: String) {
+        val s = TerminalService.getSessionById(id) ?: return
+        if (s.isRunning) switchToSession(s)
     }
 
     private fun switchViewMode(mode: String) {
@@ -1322,7 +1356,10 @@ class TerminalActivity : ComponentActivity() {
             showSoftKeyboard()
         }
 
-        val serviceSessions = TerminalService.sessions
+        val serviceSessions = TerminalService.sessions.filter {
+            val sid = TerminalService.getSessionId(it)
+            sid == null || !TerminalService.floatedSessionIds.contains(sid)
+        }
         if (serviceSessions.isNotEmpty()) {
             if (currentSession == null) {
                 switchToSession(serviceSessions[0])
@@ -1338,6 +1375,53 @@ class TerminalActivity : ComponentActivity() {
         super.onPause()
         servicesUpdateHandler.removeCallbacks(servicesPoller)
         stopDrawerRamUpdateLoop()
+    }
+
+    /**
+     * Picture-in-Picture: při odchodu z aplikace s běžící session automaticky
+     * do PiP (16:9). Terminál zůstává viditelný a živý nad ostatními aplikacemi.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (!isInPictureInPictureMode && currentSession?.isRunning == true) {
+            try {
+                enterPictureInPictureMode(
+                    android.app.PictureInPictureParams.Builder()
+                        .setAspectRatio(android.util.Rational(16, 9))
+                        .build()
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "PiP enter failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // V PiP schováme všechen chrome (topbar, panely, lišty, drawer) —
+        // zůstane jen terminál. Původní visibility si pamatujeme pro návrat.
+        val chrome = listOfNotNull(
+            if (::topBar.isInitialized) topBar else null,
+            if (::servicesPanel.isInitialized) servicesPanel else null,
+            if (::servicesDetailPanel.isInitialized) servicesDetailPanel else null,
+            if (::suggestionBar.isInitialized) suggestionBar else null,
+            if (::toolbarScroll.isInitialized) toolbarScroll else null,
+            if (::specialKeypadPanel.isInitialized) specialKeypadPanel else null,
+            if (::drawerView.isInitialized) drawerView else null
+        )
+        if (isInPictureInPictureMode) {
+            pipSavedVisibility.clear()
+            chrome.forEach { v -> pipSavedVisibility[v] = v.visibility; v.visibility = View.GONE }
+            drawerLayout.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
+        } else {
+            chrome.forEach { v -> pipSavedVisibility[v]?.let { v.visibility = it } }
+            pipSavedVisibility.clear()
+            drawerLayout.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_UNLOCKED)
+            terminalView.requestFocus()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1455,6 +1539,8 @@ class TerminalActivity : ComponentActivity() {
             instance = null
         }
         com.linux_core.core.VpnCaptureService.onStateChangeListener = null
+        TerminalService.onSessionFloated = null
+        TerminalService.onSessionReturned = null
         servicesUpdateHandler.removeCallbacks(servicesPoller)
         super.onDestroy()
         guiScope.cancel()
@@ -2547,7 +2633,21 @@ class TerminalActivity : ComponentActivity() {
 
     private fun setupAndStartSession() {
         Log.i(TAG, "setupAndStartSession")
-        val activeSessions = TerminalService.sessions
+        // Session vrácená z plovoucího okna (nh float here → zavřít) má přednost
+        intent.getStringExtra("returnSessionId")?.let { rid ->
+            intent.removeExtra("returnSessionId")
+            val s = TerminalService.getSessionById(rid)
+            if (s != null && s.isRunning) {
+                Log.i(TAG, "Re-attaching session returned from float: $rid")
+                switchToSession(s)
+                return
+            }
+        }
+        // Sessiony dočasně v plovoucím okně se nesmí znovu attachnout zde
+        val activeSessions = TerminalService.sessions.filter {
+            val sid = TerminalService.getSessionId(it)
+            sid == null || !TerminalService.floatedSessionIds.contains(sid)
+        }
         if (activeSessions.isNotEmpty()) {
             // singleTask: pokud nový intent míří na jiný rootfs, restartovat session
             val newRootfsDirName = intent.getStringExtra("rootfsDirName")

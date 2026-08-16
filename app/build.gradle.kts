@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 17
-        versionName = "4.3-BOOT-REFACTOR"
+        versionCode = 18
+        versionName = "4.4-FLOAT-SHARE"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

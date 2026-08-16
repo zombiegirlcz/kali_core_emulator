@@ -70,6 +70,9 @@ build_binds() {
     local _binds="-b /dev -b /proc -b /sys"
     _binds="$_binds -b $FILES_DIR/tmp:$FILES_DIR/tmp"
     _binds="$_binds -b $FILES_DIR/ipc:/run/host_ipc"
+    # ~/share: shared folder between Android app and guest (Termux-style)
+    mkdir -p "$FILES_DIR/share" 2>/dev/null || true
+    _binds="$_binds -b $FILES_DIR/share:/root/share"
     [ "$NH_MOUNT_STORAGE" = "1" ] && _binds="$_binds -b /sdcard"
     [ -n "$NH_EXTRA_MOUNTS" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
     [ -n "$NH_EXTRA_BINDS" ] && _binds="$_binds $NH_EXTRA_BINDS"
@@ -218,6 +221,8 @@ boot_docker() {
         BINDS="$BINDS -b /sdcard"
         BINDS="$BINDS -b $FILES_DIR/tmp:/tmp"
         BINDS="$BINDS -b $FILES_DIR/ipc:/run/host_ipc"
+        mkdir -p "$FILES_DIR/share" 2>/dev/null || true
+        BINDS="$BINDS -b $FILES_DIR/share:/root/share"
     fi
     [ -n "$NH_EXTRA_MOUNTS" ] && BINDS="$BINDS $NH_EXTRA_MOUNTS"
     [ -n "$NH_EXTRA_BINDS" ] && BINDS="$BINDS $NH_EXTRA_BINDS"

@@ -1037,3 +1037,28 @@ Benchmark `syscall_bench` (stat x5000, v guestu i přes čerstvý proot):
    Kola 1/2/3: live 187/208/315 µs vs fresh 214/241/232 µs — live je v 1–2 kolech RYCHLEJŠÍ, kolo 3 spiklo
    (zátěž). Dřívější „2× degredece" = šum (benchmarky běžely v různou dobu). Proot (PID 9834): RSS 2.6 MB,
    1 vlákno, stabilní utime/stime — žádný leak. Zbytek = intrinsický tracer cost, neřešitelný restartem.
+
+## Session 2026-08-16 — Open-with + ~/share, PiP, Plovoucí terminál (`nh float`)
+
+Design: `docs/plans/2026-08-16-float-terminal-share-design.md`. Build green, versionCode 18 (`4.4-FLOAT-SHARE`).
+
+### 1. „Open with" / share → `~/share` (Termux-style)
+- **`ShareReceiverActivity`** (`core/`, exported, translucent): filtry `ACTION_VIEW`/`SEND`/`SEND_MULTIPLE` (`*/*`) → appka v systémovém „Otevřít v aplikaci" i share sheetu. Kopíruje `content://`/`file://` do `filesDir/share/` (sanitizace jména, kolize → `name (1).ext`), toast, otevře TerminalActivity s `cd /root/share`.
+- **`boot` skript**: `build_binds()` vždy přidá `-b $FILES_DIR/share:/root/share` (+ mkdir); stejně pro non-termux docker. → guest vidí `~/share`.
+- Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění).
+
+### 2. PiP + oprávnění
+- Manifest: `SYSTEM_ALERT_WINDOW`; TerminalActivity `supportsPictureInPicture` + `resizeableActivity`.
+- `onUserLeaveHint()` → auto-PiP 16:9 při běžící session. `onPictureInPictureModeChanged()` schová chrome (topBar/panely/lišty/keypad/drawer), při návratu obnoví uložené visibility.
+
+### 3. Plovoucí terminál (`FloatingTerminalService`)
+- Foreground service + `WindowManager` overlay (`TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
+- **Expanded**: titulková lišta (tažení, ◐ průhlednost 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + TerminalView + rohová resize úchytka. **Minimized**: 56dp chat-head (Messenger-like), tap = obnovit, dlouhý stisk = zavřít. Geometrie + alpha v SharedPreferences `float_terminal`.
+- **Session** (rozhodnutí C): `nh float` = nová session aktivního distro; `nh float here` = přesun aktuální session (detach + `floatedSessionIds` + callback → TerminalActivity přepne); ✕ = vypůjčená session se vrací (`returnSessionId` extra + `onSessionReturned`).
+- `TerminalService`: `getSessionById()`, `floatedSessionIds`, `onSessionFloated`/`onSessionReturned`.
+- **API**: `POST /terminal/float` `{"mode":"new|here|close","session_id":...}`; bez overlay oprávnění otevře systémové nastavení. **CLI**: `nh float` / `nh float here` / `nh float close` (používá `$NETHUNTER_SESSION_ID`, už propagované do guestu — stejný mechanismus jako `nh vpn ignore`).
+
+### Rizika (ověřit na zařízení)
+- IME fokus v overlay okně (tap-to-focus + showSoftInput; chce reálný test).
+- Overlay oprávnění se musí jednou ručně povolit (deep-link do nastavení zajištěn).
+- PiP: terminál renderuje, vstup v PiP nejde (limitace Androidu).

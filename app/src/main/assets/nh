@@ -1451,7 +1451,7 @@ except Exception as e:
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell|zkill)
+        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell|zkill|float)
             "help_$topic"
             ;;
         *)
@@ -1475,6 +1475,7 @@ help_dispatch() {
             printf "  ${CYAN}apps${RST}       usage\n"
             printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
             printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
+            printf "  ${CYAN}float${RST}      ⬡  plovoucí terminál přes ostatní aplikace (here, close)\n"
             printf "  ${CYAN}zkill${RST}      ⬡  zombie cleanup na hostu (safe; --root pro su_daemon)\n"
             printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
             echo ""
@@ -1688,6 +1689,7 @@ list_cmds() {
         "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
         "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \
         "zkill" "zkill --root" \
+        "float" "float here" "float close" \
         "ashell"; do
         printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
     done
@@ -2306,6 +2308,68 @@ sys.exit(0 if d.get('exit_code', 0) == 0 else 1)
 "
 }
 
+# ─── FLOAT (plovoucí terminál přes ostatní aplikace) ────────────
+
+help_float() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}FLOAT${RST}  ${DIM}– plovoucí terminálové okno (overlay, Messenger-like)${RST}"
+    separator
+    echo "  ${GREEN}float${RST}             Nová session aktivního distro v plovoucím okně"
+    echo "  ${GREEN}float here${RST}        Přesune AKTUÁLNÍ session do plovoucího okna"
+    echo "  ${GREEN}float close${RST}       Zavře plovoucí okno (vypůjčená session se vrací)"
+    echo ""
+    echo "  ${YELLOW}Ovládání okna:${RST}"
+    echo "    tažení za titulkovou lištu = přesun, roh ◢ = změna velikosti"
+    echo "    ◐ = průhlednost (100/85/70/55/40 %), ▁ = minimalizovat do bubliny, ✕ = zavřít"
+    echo "    bublina: tap = obnovit, dlouhý stisk = zavřít"
+    echo ""
+    echo "  ${DIM}Vyžaduje oprávnění 'Zobrazit přes ostatní aplikace' — při prvním"
+    echo "  volání se otevře systémové nastavení.${RST}"
+    echo ""
+}
+
+float_dispatch() {
+    local mode="new" sid=""
+    case "${1:-}" in
+        here)
+            sid="${NETHUNTER_SESSION_ID:-}"
+            if [ -z "$sid" ]; then
+                echo "[-] NETHUNTER_SESSION_ID není nastavené — spusť 'nh float here' uvnitř session" >&2
+                exit 1
+            fi
+            mode="here" ;;
+        close|stop)
+            mode="close" ;;
+        ""|new) mode="new" ;;
+        help|-h|--help) help_float; exit 0 ;;
+        *) echo "Usage: nh float [here|close|new]" >&2; exit 1 ;;
+    esac
+    ensure_token
+    api_post_json "/terminal/float" "{\"mode\":\"$mode\",\"session_id\":\"$sid\"}" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    st = d.get("status", "")
+    if st == "overlay_permission_required":
+        print("[!] Chybí oprávnění \u201eZobrazit přes ostatní aplikace\u201c.")
+        print("    Otevřelo se systémové nastavení — povol ho a spusť nh float znovu.")
+    elif st == "float_started":
+        m = d.get("mode", "new")
+        print(f"[+] Plovoucí terminál spuštěn (mode={m})")
+    elif st == "float_closed":
+        print("[+] Plovoucí terminál zavřen")
+    elif "error" in d:
+        sys.stderr.write("[-] " + d["error"] + chr(10))
+        sys.exit(1)
+    else:
+        print(json.dumps(d))
+except Exception as e:
+    sys.stderr.write("Chyba: %s" % e + chr(10))
+    sys.exit(1)
+'
+}
+
 # ─── MAIN ──────────────────────────────────────────────────
 
 # Check if invoked via compat symlink
@@ -2346,6 +2410,7 @@ case "$CMD" in
     usb)        usb_dispatch "$@" ;;
     distro)     distro_dispatch "$@" ;;
     zkill)      zkill_dispatch "$@" ;;
+    float)      float_dispatch "$@" ;;
     ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
     help|--help|-h) help_dispatch "$@" ;;
     list)       list_cmds ;;
