@@ -55,6 +55,12 @@ EOF
 }
 
 # --- eskalace na root (až po validaci argumentů) ---
+# Cesty, kde může být su (Magisk, system, product, vendor)
+for su_path in /sbin/su /system/bin/su /system/xbin/su /product/bin/su /vendor/bin/su /data/adb/magisk/su; do
+    [ -x "$su_path" ] && SU="$su_path" && break
+done
+[ -z "$SU" ] && { echo "CHYBA: su nenalezen v žádné známé cestě"; exit 1; }
+
 if [ "$(id -u)" != "0" ]; then
     case "$1" in
         brom-crash)
@@ -62,9 +68,9 @@ if [ "$(id -u)" != "0" ]; then
             case "$2" in
                 *[!A-Za-z0-9/._-]*) echo "Neplatná cesta zařízení: $2"; exit 1 ;;
             esac
-            exec su -c "$0 $1 ${2:-/sys/bus/usb/devices/1-1}"
+            exec "$SU" -c "\"$0\" \"$1\" ${2:-/sys/bus/usb/devices/1-1}"
             ;;
-        *) exec su -c "$0 $1" ;;
+        *) exec "$SU" -c "\"$0\" \"$1\"" ;;
     esac
 fi
 

@@ -453,6 +453,38 @@ nh usb send "/dev/bus/usb/001/002" exploit.bin
 
 > **Poznámka:** USB Host vyžaduje, aby první telefon podporoval OTG. Druhé zařízení se musí tvářit jako USB device (gadget režim) - jinak ho `UsbManager` neuvidí.
 
+## 🔌 USB Magisk Module — `custom_usb_g2_setup` (gadget g2)
+
+Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
+
+> **Důležité:** Modul g2 **nikdy není** připojen k UDC — aktivaci/deaktivaci nechává na aplikaci (`UsbGadgetManager` / `/usbg2` API). Tak se dá přepínat mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) bez rebootu.
+
+### Instalace
+- Flash přes Magisk (zip), vyžaduje **Magisk ≥ 20400** (`minMagisk=20400`).
+- Po rebootu najdeš v `/system/bin` CLI: `usbtool` (alias `switch-usb-gadget`), `show-gadgets`, `show-udcs`, `lsusb`, `usbrelay`, `gadget-hid`, `gadget-ms`, `gadget-rndis-os-desc`, `gadget-uvc`, `gadget-acm-ecm`, `gadget-ffs`, `gadget-import`, `gadget-export`, `gadget-midi`, `gadget-printer`, `gadget-vid-pid-remove`.
+
+### Co modul obsahuje
+| Soubor (`/system/bin` / `/system/lib`) | Účel |
+|---|---|
+| `usbtool` / `switch-usb-gadget` | Přepnutí aktivního gadgetu g1 ↔ g2 |
+| `gadget-hid` | HID keyboard/mouse gadget skript |
+| `gadget-ms` | mass_storage (USB disk) gadget |
+| `gadget-rndis-os-desc` | RNDIS + OS descriptor (auto-driver na Windows) |
+| `gadget-uvc` | USB Video Class (webcam) gadget |
+| `gadget-acm-ecm` | CDC ACM / ECM (serial / ethernet) gadget |
+| `gadget-ffs` / `gadget-import` / `gadget-export` | FunctionFS bridge pro custom funkce |
+| `gadget-midi` / `gadget-printer` | MIDI / printer gadget |
+| `gadget-vid-pid-remove` | Odebrání VID/PID z configfs |
+| `usbrelay` / `usbrelayd` | ovládání USB relay (hardware) |
+| `show-gadgets` / `show-udcs` | dump aktuálního gadget stavu |
+| `lsusb` | seznam USB zařízení (host strana) |
+| `libusbgx.so*`, `libusb-1.0.so*`, `libhidapi-libusb.so`, `libusbrelay.so`, `usb.ids` | nativní knihovny pro gadget/tools |
+
+### Použití z aplikace
+- Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
+- HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
+- Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
+
 ## 🌐 Přímé HTTP API Volání
 
 Všechny nástroje výše používají pod kapotou HTTP volání na localhost. Můžete je používat i přímo pomocí `curl`:
@@ -568,6 +600,42 @@ code-server --install-extension /cesta/k/souboru.vsix
 - WebView nezachytává `Ctrl+` kombinace — použití Hacker Keyboard je nutné pro pokročilé operace
 - Port 8443 je vázán pouze na localhost — pro přístup z jiného zařízení použít SSH tunel nebo VPN bypass proxy :13339
 - Workspace je omezen na `/root/projects` — nelze otevřít adresář mimo guest bez symlinku
+
+## 📂 Open-with & `~/share` (Termux-style)
+
+Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
+
+- **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
+- Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+
+> Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
+
+## 🖼️ Picture-in-Picture (PiP)
+
+- Manifest: `SYSTEM_ALERT_WINDOW` + `TerminalActivity` má `supportsPictureInPicture` / `resizeableActivity`.
+- Odejdeš z appky s běžící session → **auto PiP** (16:9), terminál běží v okně nad ostatními aplikacemi.
+- Při vstupu do PiP se schová veškerý chrome (topBar, panely, lišty, keypad, drawer); při návratu se obnoví uložená viditelnost.
+- Limitace Androidu: v PiP se terminál **renderuje, ale nejde do něj psát** (vstup jen v plné aktivitě).
+
+## 🪟 Plovoucí terminál (`nh float`)
+
+Terminál jako Messenger chat-head nad ostatními aplikacemi.
+
+- **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
+
+### Session režimy
+| Příkaz | Chování |
+|---|---|
+| `nh float` | **Nová** session aktivního distro v plovoucím okně |
+| `nh float here` | **Přesun** aktuální session do plovoucího okna (terminál se přepne na jinou/novou) |
+| `nh float close` | Zavře; vypůjčená session se **vrátí** do hlavního terminálu |
+
+- **API:** `POST /terminal/float` `{"mode":"new|here|close","session_id":...}`; bez oprávnění „Zobrazit přes ostatní aplikace" otevře systémové nastavení.
+- Při prvním použití Android vyzve k povolení overlay — `nh float` ho sám otevře, povol a spusť znovu.
+- `nh float here` používá `$NETHUNTER_SESSION_ID` (stejný mechanismus jako `nh vpn ignore`).
 
 ---
 *Dokument byl automaticky vygenerován NetHunter AI Operatorem.*
