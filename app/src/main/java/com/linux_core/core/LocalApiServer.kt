@@ -361,7 +361,7 @@ object LocalApiServer {
             }
 
             // Authentication check
-            val sensitiveEndpoints = listOf("/shell", "/clipboard", "/location", "/cellinfo",
+            val sensitiveEndpoints = listOf("/shell", "/proot/exec", "/clipboard", "/location", "/cellinfo",
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove",
@@ -447,6 +447,7 @@ object LocalApiServer {
                 path == "/volume" && method == "POST" -> handleVolumeSet(context, body, out)
                 path == "/torch" && method == "POST" -> handleTorch(context, body, out)
                 path == "/shell" && method == "POST" -> handleShell(body, out)
+                path == "/proot/exec" && method == "POST" -> handleProotExec(context, body, out)
                 path == "/ashell" && method == "POST" -> handleAshell(context, body, out)
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
                 path.startsWith("/vpn/logs") && method == "GET" -> handleVpnLogs(path, out)
@@ -1230,6 +1231,131 @@ object LocalApiServer {
             }
             sendResponse(out, 200, "OK", json)
         } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    /**
+     * /proot/exec — Execute a command inside the PRoot guest environment.
+     *
+     * Uses the boot script to launch a one-shot command in the specified distro.
+     * Same security guards as /shell (allowlist + destructive patterns).
+     *
+     * Request (JSON body):
+     *   { "distro": "kali", "command": "nmap -sV 192.168.1.0/24", "timeout": 30000 }
+     *
+     * Response:
+     *   { "exit_code": 0, "stdout": "...", "stderr": "...", "duration_ms": 4523 }
+     *
+     * Note: Each invocation is a cold-start via boot script (~200-500ms).
+     * For high-frequency use, consider a persistent daemon (Phase 2).
+     */
+    private fun handleProotExec(context: Context, body: String, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            // Parse JSON body
+            val jsonBody = try { JSONObject(body) } catch (e: Exception) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+                return
+            }
+            val command = jsonBody.optString("command", "").trim()
+            val distro = jsonBody.optString("distro", "kali").trim().lowercase()
+            val timeout = jsonBody.optLong("timeout", 30000L)
+
+            if (command.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+                return
+            }
+            if (command.length > 2048) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long (max 2048 chars)\"}")
+                return
+            }
+            if (distro !in listOf("kali", "parrot")) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid distro: '$distro'. Use 'kali' or 'parrot'.\"}")
+                return
+            }
+
+            // ── 1. Allowlist gate (same as /shell) ─────────────────────────
+            val cmdName = command
+                .trim()
+                .substringBefore(" ")
+                .substringBefore("\t")
+                .substringAfterLast("/")
+            if (cmdName !in SHELL_ALLOWLIST) {
+                sendResponse(out, 403, "Forbidden",
+                    "{\"error\":\"Command '$cmdName' is not in the allowed commands list\"}")
+                return
+            }
+
+            // ── 2. Destructive patterns guard (same as /shell) ─────────────
+            val commandLower = command.lowercase()
+            for (pattern in DESTRUCTIVE_PATTERNS) {
+                if (commandLower.contains(pattern.lowercase())) {
+                    sendResponse(out, 403, "Forbidden",
+                        "{\"error\":\"Command blocked for security reasons\"}")
+                    return
+                }
+            }
+
+            // ── 3. Execute via boot script ─────────────────────────────────
+            val bootScript = java.io.File(ctx.filesDir, "usr/bin/boot")
+            if (!bootScript.exists() || !bootScript.canExecute()) {
+                sendResponse(out, 500, "Internal Error",
+                    "{\"error\":\"Boot script not found. Please open a terminal session first to initialize PRoot.\"}")
+                return
+            }
+
+            val startTime = System.currentTimeMillis()
+            val pb = ProcessBuilder("sh", bootScript.absolutePath, distro, "--", "sh", "-c", command)
+            pb.directory(ctx.filesDir)
+            pb.redirectErrorStream(false)
+            val process = pb.start()
+
+            // Read stdout and stderr concurrently to prevent pipe deadlock
+            val stdoutReader = process.inputStream.bufferedReader()
+            val stderrReader = process.errorStream.bufferedReader()
+
+            val output = stdoutReader.readText()
+            val error = stderrReader.readText()
+
+            val completed = process.waitFor(timeout, java.util.concurrent.TimeUnit.MILLISECONDS)
+            val durationMs = System.currentTimeMillis() - startTime
+
+            if (!completed) {
+                process.destroyForcibly()
+                sendResponse(out, 200, "OK", buildString {
+                    append("{")
+                    append("\"exit_code\":-1,")
+                    append("\"stdout\":").append(JSONObject.quote(output)).append(",")
+                    append("\"stderr\":").append(JSONObject.quote("Command timed out after ${timeout}ms")).append(",")
+                    append("\"duration_ms\":").append(durationMs).append(",")
+                    append("\"timed_out\":true")
+                    append("}")
+                })
+                return
+            }
+
+            val exitCode = process.exitValue()
+
+            // Filter boot diagnostic lines from stdout
+            val cleanOutput = output.lines()
+                .dropWhile { it.startsWith("[*]") || it.startsWith("[boot]") || it.isBlank() }
+                .joinToString("\n")
+
+            val json = buildString {
+                append("{")
+                append("\"exit_code\":").append(exitCode).append(",")
+                append("\"stdout\":").append(JSONObject.quote(cleanOutput)).append(",")
+                append("\"stderr\":").append(JSONObject.quote(error)).append(",")
+                append("\"duration_ms\":").append(durationMs)
+                append("}")
+            }
+            sendResponse(out, 200, "OK", json)
+        } catch (e: Exception) {
+            Log.e(TAG, "PRoot exec error: ${e.message}", e)
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
     }
