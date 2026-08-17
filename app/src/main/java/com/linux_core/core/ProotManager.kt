@@ -22,6 +22,7 @@ object ProotManager {
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
     // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
     private const val USR_TOOLS_VERSION = "layout-20260815-1"
+    private const val BOOT_SCRIPT_VERSION = "path-20260817-1"
 
     fun setupProotEnvironment(
         context: Context,
@@ -52,6 +53,30 @@ object ProotManager {
         hostPrefixLibDir.mkdirs()
         deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true, version = USR_TOOLS_VERSION)
         deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false, version = USR_TOOLS_VERSION)
+
+        // Force-update boot script when its version changes (independent of usrtools).
+        // deployDir() above skips existing files, so a change in boot alone would
+        // otherwise never reach the device.
+        val bootTarget = File(rootDir, "usr/bin/boot")
+        val bootMarker = File(rootDir, "usr/bin/.boot_version")
+        val bootAssetVersion = BOOT_SCRIPT_VERSION
+        if (bootMarker.exists() && bootMarker.readText().trim() == bootAssetVersion && bootTarget.exists() && bootTarget.length() > 0L) {
+            Log.i(TAG, "boot script up-to-date (version=$bootAssetVersion)")
+        } else {
+            Log.i(TAG, "boot script outdated (marker=${if(bootMarker.exists()) bootMarker.readText().trim() else "none"}) — redeploying")
+            if (bootTarget.exists()) bootTarget.delete()
+            try {
+                context.assets.open("usr/bin/boot").use { input ->
+                    bootTarget.outputStream().use { output -> input.copyTo(output) }
+                }
+                bootTarget.setExecutable(true, false)
+                bootTarget.setReadable(true, false)
+                Log.i(TAG, "Deployed boot script (${bootTarget.length()} B)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to deploy boot script: ${e.message}")
+            }
+            bootMarker.writeText(bootAssetVersion)
+        }
 
         // Static proot/loader do usr/bin (kanonické jméno pro boot skript Fáze 2)
         val suffix = detectArchSuffix()
@@ -1372,7 +1397,9 @@ object ProotManager {
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[0;33m     sudo id\u001b[0m                       root na hostiteli (uid=0)").append(NL)
         motd.append("  \u001b[0;33m     su -c 'prikaz'\u001b[0m               spustit příkaz jako root").append(NL)
-        motd.append("  \u001b[0;33m     su\u001b[0m                          hostitelský root shell").append(NL)
+        motd.append("  \u001b[0;33m     su\u001b[0m                          interaktivní root shell (PTY)").append(NL)
+        motd.append("  \u001b[0;33m     nh log -su\u001b[0m                 zobrazit su_daemon.log").append(NL)
+        motd.append("  \u001b[0;33m     nh log -K\u001b[0m                   zobrazit i InputTransport/TerminalView logy").append(NL)
         motd.append("  \u001b[0;33m     ifconfig\u001b[0m                     wlan0 + tun0 (i bez su)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)

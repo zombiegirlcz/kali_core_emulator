@@ -101,7 +101,7 @@ Od verze 4.2-MITM-LOG-FIX je implementován **root bridge** přes hostitelský M
 - `/usr/local/bin/su` a `/usr/local/bin/sudo` jsou symlinky (nebo kopie) na `su_wrapper`.
 - `su_wrapper` komunikuje přes Unix socket s `su_daemon` (běží na hostu jako root v `filesDir/ipc/magisk_daemon.sock`, s bind do `/run/host_ipc`).
 - Původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` jsou přejmenovány na `.orig` zálohy.
-- **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli**. Místo toho znovu vstupuje do PRoot sandboxu jako skutečný root: `launcher.sh -- <příkaz>` (raw-exec režim, tokeny předané verbatim) → příkaz běží uvnitř guestu s UID 0. Pokud daemon nemá launcher path → **fail-closed** (exit 126), nikdy se nic nespustí na hostu.
+- **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli**. Místo toho znovu vstupuje do PRoot sandboxu jako skutečný root: `boot -- <příkaz>` (raw-exec režim, tokeny předané verbatim) → příkaz běží uvnitř guestu s UID 0. Pokud daemon nemá boot path → **fail-closed** (exit 126), nikdy se nic nespustí na hostu.
 - Po dokončení příkazu daemon automaticky opraví vlastnictví vytvořených souborů (viz níže).
 
 ### CLI
@@ -129,6 +129,27 @@ nh fix permission /root/muj-adresar
 ```
 
 Bind / host-mapped cesty daemon odmítne (exit 126): `/`, `/dev/*`, `/proc/*`, `/sys/*`, `/run/*`, `/sdcard/*`, `/mnt/*`, `/system/*`, `/vendor/*`, `/product/*`, `/apex/*`, `/storage/*`, `/data/*`.
+
+## 🆕 Nové funkce (2026-08-17)
+
+### Interaktivní `su` / `sudo` (PTY session)
+- `su` bez `-c` spustí **interaktivní root shell** uvnitř PRootu s PTY (proper TTY, line editing, job control, signály).
+- `su -c 'cmd'` zůstává one-shot command.
+- Daemon udržuje session napříč requesty; PTY master předává klientovi.
+
+### `nh log` vylepšení
+- Výchozí chování: skryje `InputTransport`, `TerminalView`, klávesnici a doteky.
+- `nh log -K` — zobrazí všechny logy včetně input/touch.
+- `nh log -su` — vypíše `su_daemon.log` (posledních N řádků).
+
+### `boot` re-entry PATH fix
+- `boot -- <cmd>` (su_daemon re-entry) teď explicitně nastavuje guest `PATH` z `build_path()`.
+- Opravuje `sudo ls: not found` a podobné chyby, když command závisí na `/usr/bin`.
+
+### Force-update `boot` script
+- `ProotManager` používá `BOOT_SCRIPT_VERSION` marker — při změně `boot` se nasadí nová verze i když už na zařízení existuje.
+
+---
 
 ## 💻 ashell (-c)
 

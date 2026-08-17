@@ -101,6 +101,7 @@
             android:exported="false"
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
+            android:enableOnBackInvokedCallback="true"
             android:theme="@style/Theme.Nethunteraioperator.Terminal">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

@@ -18,6 +18,10 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <stdint.h>
+#include <pty.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <signal.h>
 
 #define PRIMARY_SOCKET "/run/host_ipc/magisk_daemon.sock"
 #define SECONDARY_SOCKET "/data/data/com.linux_core/files/ipc/magisk_daemon.sock"
@@ -31,11 +35,22 @@ static const char *invoked_name(const char *arg0) {
     return slash ? slash + 1 : arg0;
 }
 
+/* Detect bare su/sudo without -c: should run as interactive session. */
+static int is_interactive_su(const char *name, int argc, char **argv) {
+    if (strcmp(name, "su") != 0 && strcmp(name, "sudo") != 0) return 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0) return 0;
+        if (strcmp(argv[i], "--") == 0) break;
+    }
+    return 1;
+}
+
 static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
                                 uint32_t target_uid, uint32_t target_gid,
-                                const char *cwd, int argc, char **argv) {
+                                const char *cwd, int argc, char **argv,
+                                int interactive, int pty_master) {
     struct msghdr msg = {0};
-    char control_buf[CMSG_SPACE(sizeof(int) * 3)];
+    char control_buf[CMSG_SPACE(sizeof(int) * 5)];
     memset(control_buf, 0, sizeof(control_buf));
 
     char payload_buf[BUFFER_SIZE];
@@ -48,6 +63,9 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
 
     uint32_t u_argc = (uint32_t)argc;
     memcpy(ptr, &u_argc, sizeof(uint32_t)); ptr += sizeof(uint32_t);
+
+    uint8_t flags = (interactive ? 0x01 : 0x00);
+    memcpy(ptr, &flags, sizeof(uint8_t)); ptr += sizeof(uint8_t);
 
     // CWD
     size_t cwd_len = strlen(cwd);
@@ -67,13 +85,19 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
     msg.msg_iov = &io;
     msg.msg_iovlen = 1;
     msg.msg_control = control_buf;
-    msg.msg_controllen = CMSG_LEN(sizeof(int) * fd_count);
+    msg.msg_controllen = CMSG_LEN(sizeof(int) * (fd_count + (pty_master >= 0 ? 1 : 0)));
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * fd_count);
-    memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * fd_count);
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int) * (fd_count + (pty_master >= 0 ? 1 : 0)));
+    int idx = 0;
+    for (int i = 0; i < fd_count; i++) {
+        ((int *)CMSG_DATA(cmsg))[idx++] = fds[i];
+    }
+    if (pty_master >= 0) {
+        ((int *)CMSG_DATA(cmsg))[idx++] = pty_master;
+    }
 
     return sendmsg(socket_fd, &msg, 0) >= 0 ? 0 : -1;
 }
@@ -122,6 +146,7 @@ int main(int argc, char **argv) {
 
     const char *name = invoked_name(argv[0]);
     int is_su = (strcmp(name, "su") == 0);
+    int interactive = is_interactive_su(name, argc, argv);
 
     // ── Build the command to forward to the host daemon (strip wrapper name) ──
     char *cmd_argv[MAX_ARGS];
@@ -141,6 +166,7 @@ int main(int argc, char **argv) {
         cmd_argv[1] = "-c";
         cmd_argv[2] = argv[2];
         cmd_argc = 3;
+        interactive = 0;
     } else if (argc > 1) {
         // sudo <cmd> [args...] or su <cmd> [args...] or su_wrapper <cmd> [args...]
         for (int i = 1; i < argc && cmd_argc < MAX_ARGS - 1; i++) {
@@ -154,12 +180,6 @@ int main(int argc, char **argv) {
     cmd_argv[cmd_argc] = NULL;
 
     // ── Connect to host daemon (try each known socket path) ──
-    // (1) /run/host_ipc/...  — guest view (PRoot bind of $FILES_DIR/ipc)
-    // (2) /data/data/...      — classic app data path
-    // (3) /data/user/0/...    — some devices resolve app data here
-    // NOTE: access(F_OK) is NOT enough — a stale socket file (0 bytes from a
-    // dead daemon) passes access() but connect() fails. So try connect() on
-    // every candidate in order.
     const char *sock_candidates[] = {
         PRIMARY_SOCKET,
         SECONDARY_SOCKET,
@@ -192,12 +212,53 @@ int main(int argc, char **argv) {
     }
 
     int fds[3] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
-    uint32_t target_uid = 0; // Default root
+    uint32_t target_uid = 0;
     uint32_t target_gid = 0;
 
-    if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv) < 0) {
+    int pty_master = -1;
+    if (interactive) {
+        int pty_slave;
+        if (openpty(&pty_master, &pty_slave, NULL, NULL, NULL) == 0) {
+            fds[0] = pty_slave;
+            fds[1] = pty_slave;
+            fds[2] = pty_slave;
+        }
+    }
+
+    if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv, interactive, pty_master) < 0) {
+        if (pty_master >= 0) close(pty_master);
         close(sock_fd);
         return try_fallback(argc, argv);
+    }
+    if (pty_master >= 0) close(fds[0]); /* slave no longer needed */
+
+    if (interactive && pty_master >= 0) {
+        unsigned char buf[BUFFER_SIZE];
+        fd_set rfds;
+        int maxfd = (sock_fd > pty_master ? sock_fd : pty_master) + 1;
+        int client_closed = 0;
+        while (1) {
+            FD_ZERO(&rfds);
+            FD_SET(sock_fd, &rfds);
+            FD_SET(pty_master, &rfds);
+            int r = select(maxfd, &rfds, NULL, NULL, NULL);
+            if (r <= 0) break;
+            if (FD_ISSET(sock_fd, &rfds)) {
+                ssize_t n = read(sock_fd, buf, sizeof(buf));
+                if (n <= 0) { client_closed = 1; break; }
+                if (write(STDOUT_FILENO, buf, n) != n) break;
+            }
+            if (FD_ISSET(pty_master, &rfds)) {
+                ssize_t n = read(pty_master, buf, sizeof(buf));
+                if (n <= 0) break;
+                if (write(STDIN_FILENO, buf, n) != n) break;
+            }
+        }
+        close(pty_master);
+        close(sock_fd);
+        /* Daemon sends exit code only for non-interactive; interactive
+         * session exit is reflected by EOF on pty_master/sock_fd. */
+        return client_closed ? 0 : 130;
     }
 
     // Read exit status code from host daemon
