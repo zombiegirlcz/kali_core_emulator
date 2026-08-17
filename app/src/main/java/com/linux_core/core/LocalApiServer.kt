@@ -1172,7 +1172,6 @@ object LocalApiServer {
             "USER=app",
             "PATH=$fullPath",
             "PREFIX=${File(filesDir, "usr").absolutePath}",
-            "LD_LIBRARY_PATH=$hostPrefixLib:/system/lib64:/system/lib",
             "TERM=xterm-256color",
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"

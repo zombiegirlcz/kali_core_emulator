@@ -115,11 +115,14 @@ boot_classic() {
     if [ "${1:-}" = "--" ]; then
         shift
         local NH_CWD="${NH_CWD:-/root}"
-        log "re-entry: cwd=$NH_CWD args=$*"
+        local GUEST_PATH
+        GUEST_PATH=$(build_path "$ROOTFS") || true
+        export PATH="$GUEST_PATH"
+        log "re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -129,7 +132,7 @@ boot_classic() {
             # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
             # then exec the exact args verbatim (no shell re-quoting loss)
             exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
 
@@ -235,11 +238,12 @@ boot_docker() {
     if [ "${1:-}" = "--" ]; then
         shift
         local NH_CWD="${NH_CWD:-$PROOT_CWD}"
-        log "docker re-entry: cwd=$NH_CWD args=$*"
+        export PATH="$GUEST_PATH"
+        log "docker re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -247,7 +251,7 @@ boot_docker() {
                 set -- "$GUEST_SH" "$@"
             fi
             exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
 
