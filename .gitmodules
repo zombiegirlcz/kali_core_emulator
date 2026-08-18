@@ -1,3 +1,7 @@
 [submodule "nethunter-store-data"]
 	path = nethunter-store-data
 	url = https://gitlab.com/zombiegirlcz/nethunter-store-data.git
+
+[submodule "mbuild"]
+	path = tools/mbuild
+	url = file:///root/linux_core/mbuild.git
