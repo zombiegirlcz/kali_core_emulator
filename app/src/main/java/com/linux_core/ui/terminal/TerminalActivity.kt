@@ -183,7 +183,6 @@ class TerminalActivity : ComponentActivity() {
     private var pendingNanoCommand: String? = null
     // PiP: uložené visibility chrome prvků před vstupem do PiP (obnovení při návratu)
     private val pipSavedVisibility = HashMap<View, Int>()
-    private var pipEntered = false
     private lateinit var btnTouchToggle: Button
     private var guiTouchMode = true // true = trackpad (default), false = direct touch
 
@@ -1384,17 +1383,14 @@ class TerminalActivity : ComponentActivity() {
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (isFinishing || isDestroyed || pipEntered) return
         if (!isInPictureInPictureMode && currentSession?.isRunning == true) {
             try {
-                pipEntered = true
                 enterPictureInPictureMode(
                     android.app.PictureInPictureParams.Builder()
                         .setAspectRatio(android.util.Rational(16, 9))
                         .build()
                 )
             } catch (e: Exception) {
-                pipEntered = false
                 Log.w(TAG, "PiP enter failed: ${e.message}")
             }
         }
@@ -1425,7 +1421,6 @@ class TerminalActivity : ComponentActivity() {
             pipSavedVisibility.clear()
             drawerLayout.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_UNLOCKED)
             terminalView.requestFocus()
-            pipEntered = false
         }
     }
 

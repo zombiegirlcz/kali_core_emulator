@@ -2616,7 +2616,7 @@ object LocalApiServer {
                 fallback.destroy()
             }
             // Client-side keyboard tag filtering (logcat -v time format: tag after priority)
-            val keyboardTags = setOf("inputreader", "inputdispatcher", "inputmanager", "keyboard", "touchinjector", "inputtransport", "terminalview")
+            val keyboardTags = setOf("inputreader", "inputdispatcher", "inputmanager", "keyboard", "touchinjector")
             val filtered = if (keyboardOnly) {
                 sb.lines().filter { line ->
                     !keyboardTags.any { tag -> line.lowercase().contains(tag) }

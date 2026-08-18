@@ -6,7 +6,7 @@
  * 2. Receives target UID/GID, CWD, and command arguments.
  * 3. Forks a child process.
  * 4. In child: duplicates FDs to 0,1,2 and RE-ENTERS the PRoot guest sandbox
- *    (boot -- <command...>) under real root. The command therefore runs
+ *    (launcher.sh -- <command...>) under real root. The command therefore runs
  *    INSIDE the guest rootfs and can never touch the host filesystem directly.
  *    If no PRoot launcher is configured the request is refused (FAIL CLOSED).
  * 5. In parent: waits for child (proot --kill-on-exit reaps guest children), and
@@ -39,11 +39,10 @@
 
 static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
                                 uint32_t *target_uid, uint32_t *target_gid,
-                                uint8_t *flags, int *pty_master,
                                 char *cwd, size_t cwd_size,
                                 char **argv, int max_args) {
     struct msghdr msg = {0};
-    char control_buf[CMSG_SPACE(sizeof(int) * (max_fds + 1))];
+    char control_buf[CMSG_SPACE(sizeof(int) * max_fds)];
     memset(control_buf, 0, sizeof(control_buf));
 
     char payload_buf[BUFFER_SIZE];
@@ -63,18 +62,12 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
     // Extract file descriptors
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     int fd_count = 0;
-    *pty_master = -1;
     if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
         int *fd_ptr = (int *)CMSG_DATA(cmsg);
         int total_bytes = cmsg->cmsg_len - CMSG_LEN(0);
         fd_count = total_bytes / sizeof(int);
         for (int i = 0; i < fd_count && i < max_fds; i++) {
             fds[i] = fd_ptr[i];
-        }
-        /* PTY master is appended after the 3 stdio fds when interactive */
-        if (fd_count > 3) {
-            *pty_master = fds[3];
-            fd_count = 3;
         }
     }
 
@@ -83,11 +76,11 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
     }
 
     // Parse payload protocol:
-    // [uint32_t target_uid][uint32_t target_gid][uint32_t argc][uint8_t flags][null-terminated cwd][null-terminated arg0]...
+    // [uint32_t target_uid][uint32_t target_gid][uint32_t argc][null-terminated cwd][null-terminated arg0]...
     unsigned char *ptr = (unsigned char *)payload_buf;
     unsigned char *end = (unsigned char *)payload_buf + n;
 
-    if ((size_t)(end - ptr) < sizeof(uint32_t) * 3 + sizeof(uint8_t)) {
+    if ((size_t)(end - ptr) < sizeof(uint32_t) * 3) {
         return -1;
     }
 
@@ -96,12 +89,6 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
 
     uint32_t argc = 0;
     memcpy(&argc, ptr, sizeof(uint32_t)); ptr += sizeof(uint32_t);
-
-    *flags = 0;
-    if (ptr < end) {
-        *flags = (uint8_t)(*ptr);
-        ptr++;
-    }
 
     // Read CWD
     if (ptr >= end) return -1;
@@ -417,7 +404,7 @@ int main(int argc, char **argv) {
     if (argc > 1) {
         socket_path = argv[1];
     }
-    /* argv[2] = path of the guest PRoot boot script (e.g. boot).
+    /* argv[2] = path of the guest PRoot launcher script (e.g. launcher-kali.sh).
      * Commands are NEVER run on the bare host: we re-enter PRoot through this
      * launcher so real root stays confined to the guest rootfs. If it is not
      * configured the daemon refuses to run (FAIL CLOSED). */
@@ -611,14 +598,11 @@ int main(int argc, char **argv) {
 static void handle_client(int client_fd) {
     int fds[3] = {-1, -1, -1};
     uint32_t target_uid = 0, target_gid = 0;
-    uint8_t flags = 0;
-    int pty_master = -1;
     char cwd[BUFFER_SIZE] = {0};
     char *cmd_argv[MAX_ARGS] = {NULL};
 
-    if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, &flags, &pty_master, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
+    if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
         close(fds[0]); close(fds[1]); close(fds[2]);
-        if (pty_master >= 0) close(pty_master);
         close(client_fd);
         for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
         return;
@@ -628,7 +612,6 @@ static void handle_client(int client_fd) {
         int deny_code = 126; /* 126 = command not permitted */
         write(client_fd, &deny_code, sizeof(deny_code));
         close(fds[0]); close(fds[1]); close(fds[2]);
-        if (pty_master >= 0) close(pty_master);
         close(client_fd);
         for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
         return;
@@ -638,157 +621,15 @@ static void handle_client(int client_fd) {
     if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "@FIX") == 0) {
         handle_fix_request(client_fd, fds, cmd_argv, g_rootfs_path, g_app_uid, g_app_gid);
         close(fds[0]); close(fds[1]); close(fds[2]);
-        if (pty_master >= 0) close(pty_master);
         close(client_fd);
         for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
         return;
     }
 
-    /* Interactive session: bare su/sudo without -c. Use PTY master for
-     * proper TTY behavior (line editing, job control, signals). */
-    if ((flags & 0x01) && pty_master >= 0) {
-        close(fds[0]); close(fds[1]); close(fds[2]);
-        fds[0] = fds[1] = fds[2] = -1;
-
-        pid_t pid = fork();
-        if (pid < 0) {
-            perror("[su_daemon] fork interactive");
-            int err_code = 1;
-            write(client_fd, &err_code, sizeof(err_code));
-            close(pty_master);
-            close(client_fd);
-            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
-            return;
-        }
-
-        if (pid == 0) {
-            // Interactive shell child: re-enter PRoot via boot
-            close(client_fd);
-            close(pty_master);
-
-            /* SAFETY: never exec on the bare host. */
-            if (g_launcher_path[0] == '\0' || access(g_launcher_path, X_OK) != 0) {
-                dprintf(STDERR_FILENO,
-                        "[su_daemon] FATAL: no PRoot launcher configured; refusing interactive shell.\n");
-                _exit(126);
-            }
-
-            // Build launcher argv: boot -- <shell>
-            char *launcher_argv[MAX_ARGS + 4];
-            int li = 0;
-            launcher_argv[li++] = (char *)g_launcher_path;
-            launcher_argv[li++] = (char *)"--";
-
-            if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
-                cmd_argv[0] = (char *)"/bin/sh";
-            }
-            int guest_args = 0;
-            for (int i = 0; cmd_argv[i] != NULL; i++) guest_args = i + 1;
-            int bare_su = (guest_args == 1) &&
-                (strcmp(cmd_argv[0], "sh") == 0 || strcmp(cmd_argv[0], "/bin/sh") == 0 ||
-                 strcmp(cmd_argv[0], "bash") == 0 || strcmp(cmd_argv[0], "/bin/bash") == 0);
-            if (!bare_su) {
-                for (int i = 0; cmd_argv[i] != NULL && li < MAX_ARGS + 3; i++) {
-                    launcher_argv[li++] = cmd_argv[i];
-                }
-            }
-            launcher_argv[li] = NULL;
-
-            if (cwd[0] != '\0') setenv("NH_CWD", cwd, 1);
-
-            execv(g_launcher_path, launcher_argv);
-            dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
-                    g_launcher_path, strerror(errno));
-            _exit(127);
-        }
-
-        // Worker: proxy data between client socket and PTY master
-        int status = 0;
-        int exit_code = 0;
-        int child_done = 0;
-        fd_set rfds;
-        int maxfd = (client_fd > pty_master ? client_fd : pty_master) + 1;
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 100000; // 100ms select timeout
-
-        while (!child_done) {
-            FD_ZERO(&rfds);
-            FD_SET(client_fd, &rfds);
-            FD_SET(pty_master, &rfds);
-            int r = select(maxfd, &rfds, NULL, NULL, &tv);
-            if (r <= 0) {
-                // Check if child exited
-                pid_t wr = waitpid(pid, &status, WNOHANG);
-                if (wr == pid) {
-                    child_done = 1;
-                    if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
-                    else if (WIFSIGNALED(status)) exit_code = 128 + WTERMSIG(status);
-                    else exit_code = 1;
-                    break;
-                }
-                continue;
-            }
-            if (FD_ISSET(client_fd, &rfds)) {
-                char buf[BUFFER_SIZE];
-                ssize_t n = read(client_fd, buf, sizeof(buf));
-                if (n <= 0) {
-                    // Client closed: send SIGHUP to child
-                    kill(pid, SIGHUP);
-                    break;
-                }
-                if (write(pty_master, buf, n) != n) {
-                    break;
-                }
-            }
-            if (FD_ISSET(pty_master, &rfds)) {
-                char buf[BUFFER_SIZE];
-                ssize_t n = read(pty_master, buf, sizeof(buf));
-                if (n <= 0) {
-                    // PTY closed: child exited
-                    waitpid(pid, &status, WNOHANG);
-                    child_done = 1;
-                    if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
-                    else if (WIFSIGNALED(status)) exit_code = 128 + WTERMSIG(status);
-                    else exit_code = 1;
-                    break;
-                }
-                if (write(client_fd, buf, n) != n) {
-                    kill(pid, SIGHUP);
-                    break;
-                }
-            }
-        }
-
-        // Cleanup
-        kill(pid, SIGKILL);
-        waitpid(pid, &status, WNOHANG);
-        close(pty_master);
-        close(client_fd);
-
-        for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
-
-        // Layer 1 — automatic ownership fix (host side, OUTSIDE PRoot).
-        if (g_auto_fix && exit_code != 126 && g_rootfs_path[0] != '\0') {
-            struct timeval tv0, tv1;
-            gettimeofday(&tv0, NULL);
-            fix_permissions(g_rootfs_path, g_app_uid, g_app_gid, 1);
-            gettimeofday(&tv1, NULL);
-            long ms = (tv1.tv_sec - tv0.tv_sec) * 1000L + (tv1.tv_usec - tv0.tv_usec) / 1000L;
-            dprintf(STDERR_FILENO, "[su_daemon] auto-fix: chowned root-owned files to %d:%d in %ld ms\n",
-                    (int)g_app_uid, (int)g_app_gid, ms);
-        }
-
-        write(client_fd, &exit_code, sizeof(exit_code));
-        return;
-    }
-
-    // ── One-shot command (existing behavior) ────────────────────────────
     pid_t pid = fork();
     if (pid < 0) {
         perror("[su_daemon] fork");
         close(fds[0]); close(fds[1]); close(fds[2]);
-        if (pty_master >= 0) close(pty_master);
         int err_code = 1;
         write(client_fd, &err_code, sizeof(err_code));
         close(client_fd);
@@ -858,7 +699,6 @@ static void handle_client(int client_fd) {
 
     // Worker: wait for child; abort if client dies (POLLHUP on client_fd).
     close(fds[0]); close(fds[1]); close(fds[2]);
-    if (pty_master >= 0) close(pty_master);
 
     int status = 0;
     int exit_code = 0;
