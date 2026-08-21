@@ -114,7 +114,6 @@ object ProotManager {
         }
         deployApiScripts(context, rootfsDir)
 
-        deployBinaries(context, suffix)
         fixLdLinuxSymlinks(context, rootfsDir)
 
         // Univerzální boot skript (assets/usr/bin/boot → filesDir/usr/bin/boot)
@@ -168,7 +167,7 @@ object ProotManager {
             fullCommand.add(customCommand)
         }
 
-        val prootBin = File(context.filesDir, "proot")
+        val prootBin = File(context.filesDir, "usr/bin/proot")
         return ProotConfig(
             command = fullCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
@@ -218,51 +217,6 @@ object ProotManager {
         if (version.isNotEmpty()) {
             File(targetDir, ".version").writeText(version)
         }
-    }
-
-    private fun deployBinaries(context: Context, suffix: String) {
-        val binaries = listOf(
-            "proot" to "proot-$suffix",
-            "loader" to "loader-$suffix",
-            "libtalloc.so.2" to "libtalloc-$suffix.so"
-        )
-        for ((name, asset) in binaries) {
-            val file = File(context.filesDir, name)
-            // Optimization: Only deploy if missing to speed up startup
-            if (file.exists() && file.length() > 0L) {
-                file.setExecutable(true, false)
-                continue
-            }
-            try {
-                context.assets.open(asset).use { input ->
-                    file.outputStream().use { output -> input.copyTo(output) }
-                }
-                Log.i(TAG, "Deployed binary $name (${file.length()} bytes)")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to deploy $name from asset $asset: ${e.message}")
-            }
-            if (file.exists() && file.length() > 0L) {
-                file.setExecutable(true, false)
-                file.setReadable(true, false)
-                Log.d(TAG, "Permissions enforced: $name (${file.length()} bytes, canExecute=${file.canExecute()})")
-            }
-        }
-
-        // Deploy terminalmap binary from assets/bin/
-        try {
-            val terminalMapFile = File(context.filesDir, "terminalmap")
-            if (!terminalMapFile.exists() || terminalMapFile.length() == 0L) {
-                context.assets.open("usr/bin/terminalmap").use { input ->
-                    terminalMapFile.outputStream().use { output -> input.copyTo(output) }
-                }
-                terminalMapFile.setExecutable(true, false)
-                terminalMapFile.setReadable(true, false)
-                Log.i(TAG, "Deployed terminalmap binary (${terminalMapFile.length()} bytes)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "TerminalMap binary not available: ${e.message}")
-        }
-
     }
 
     /**
@@ -669,7 +623,11 @@ object ProotManager {
     }
 
     private fun fixLdLinuxSymlinks(context: Context, rootfsDir: File) {
-        val tallocFile = File(context.filesDir, "libtalloc.so.2")
+        // Kanonické umístění tallocu: files/usr/lib/libtalloc.so.2 (deployArchBinaries).
+        // Legacy kopie v files rootu už se nenasazuje — fallback pro staré instalace.
+        val tallocFile = File(context.filesDir, "usr/lib/libtalloc.so.2")
+            .takeIf { it.exists() && it.length() > 0L }
+            ?: File(context.filesDir, "libtalloc.so.2")
         // Copy talloc into rootfs lib so guest binaries can find it
         val tallocDest = File(rootfsDir, "lib/libtalloc.so.2")
         if (!tallocDest.exists() || tallocDest.length() == 0L) {
@@ -908,7 +866,8 @@ object ProotManager {
             "code-server-ctl" to "code-server-ctl",
             "scripts/ai-agent.py" to "ai-agent.py",
             "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
-            "usb_bridge" to "usb_bridge"
+            "usb_bridge" to "usb_bridge",
+            "usbtool" to "usbtool"
         )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)

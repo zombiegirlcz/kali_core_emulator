@@ -519,6 +519,7 @@ object LocalApiServer {
                 path == "/usbg2/status" && method == "GET" -> handleUsbG2Status(context, out)
                 path == "/usbg2/start" && method == "POST" -> handleUsbG2Start(context, out)
                 path == "/usbg2/stop" && method == "POST" -> handleUsbG2Stop(context, out)
+                path == "/usbg2/exec" && method == "POST" -> handleUsbG2Exec(context, body, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
@@ -550,6 +551,35 @@ object LocalApiServer {
         mgr.deactivate().fold(
             onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
             onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
+        )
+    }
+
+    /**
+     * POST /usbg2/exec  {"args":["g2"]}
+     * Spustí skript z Magisk modulu (custom_usb_g2_setup) pod real rootem:
+     *   su -c "/system/bin/usbtool <args...>"
+     */
+    private fun handleUsbG2Exec(context: Context, body: String, out: OutputStream) {
+        val args: List<String> = try {
+            val j = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
+            val raw = j.optJSONArray("args") ?: org.json.JSONArray()
+            (0 until raw.length()).map { raw.getString(it) }
+        } catch (e: Exception) {
+            sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid JSON body\"}")
+            return
+        }
+        val mgr = UsbGadgetManager(context)
+        mgr.execUsbTool(args).fold(
+            onSuccess = { (rc, output) ->
+                // Vlastní escape — zachová \n (jsonEsc je mění na mezery, což rozbije výpis)
+                val esc = output.replace("\\", "\\\\").replace("\"", "\\\"")
+                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+                sendResponse(out, 200, "OK",
+                    "{\"ok\":${rc == 0},\"rc\":$rc,\"output\":\"$esc\"}")
+            },
+            onFailure = { e ->
+                sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}")
+            }
         )
     }
 

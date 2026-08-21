@@ -188,6 +188,8 @@ Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připra
 ### Použití z aplikace
 - Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
 - HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
+- **Spuštění skriptů z modulu přes API:** `POST /usbg2/exec` s body `{"args":["g2"]}` — spustí `/system/bin/usbtool <args>` pod real rootem (Magisk su). Argumenty se validují (jen `[a-zA-Z0-9_.-]`), `watch` je blokovaný (streamuje donekonečna).
+- **Z prootu:** `usbtool status|g1|g2|setup|host|device|detect|logs` (wrapper v `/usr/local/bin`, volá API) nebo `nh usb gadget <cmd>`.
 - Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
 
 ---

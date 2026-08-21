@@ -97,6 +97,32 @@ class UsbGadgetManager(context: Context) {
     }
 
     // ── operations ─────────────────────────────────────────────────────────
+
+    // ── usbtool (skripty z Magisk modulu custom_usb_g2_setup) ──────────────
+    /** Povolené argumenty: jednotlivá slova bez metaznaků shellu. */
+    private val usbtoolArgRe = Regex("^[a-zA-Z0-9_.-]+$")
+    /** Dlouho běžící příkazy — streamují donekonečna, přes API nepodporované. */
+    private val usbtoolBlocked = setOf("watch")
+
+    /**
+     * Spustí skript z Magisk modulu pod real rootem:
+     *   su -c "/system/bin/usbtool <args...>"
+     * Vrací (exitCode, output). rc=127 typicky znamená, že modul není nainstalovaný.
+     */
+    fun execUsbTool(args: List<String>, timeoutMs: Long = 20000L): Result<Pair<Int, String>> {
+        if (args.isEmpty()) return Result.failure(IllegalArgumentException(
+            "no command given (try: status | g1 | g2 | setup | normal | brom | preloader | host | device | detect | logs)"))
+        for (a in args) {
+            if (!usbtoolArgRe.matches(a)) return Result.failure(IllegalArgumentException(
+                "invalid argument '$a' — only [a-zA-Z0-9_.-] allowed"))
+            if (a.lowercase() in usbtoolBlocked) return Result.failure(IllegalArgumentException(
+                "'watch' streams indefinitely — not supported over API (use 'detect' instead)"))
+        }
+        val script = "/system/bin/usbtool " + args.joinToString(" ") { q(it) }
+        val (rc, out) = rootShell(script, timeoutMs)
+        return Result.success(rc to out)
+    }
+
     /**
      * Bind g2 to a UDC. Policy:
      *   1. g2 already bound → success (idempotent).

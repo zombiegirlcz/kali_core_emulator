@@ -1792,8 +1792,9 @@ usb_dispatch() {
         bulk)           shift; usb_bulk "$@" ;;
         control)        shift; usb_control "$@" ;;
         bridge)         shift; usb_bridge "$@" ;;
+        gadget)         shift; usb_gadget "$@" ;;
         *)
-            echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge"
+            echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge|gadget"
             exit 1 ;;
     esac
 }
@@ -2275,6 +2276,57 @@ usb_bridge() {
 
     # Run the bridge binary — it connects to UDS, receives USB fd, does ioctl
     exec usb_bridge "$uds_path" "$@"
+}
+
+# ─── USB GADGET (Magisk modul custom_usb_g2_setup) ─────────
+
+usb_gadget() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: nh usb gadget <command> [args...]"
+        echo ""
+        echo "  Spustí skript z Magisk modulu custom_usb_g2_setup na hostiteli"
+        echo "  (real root, přes API /usbg2/exec)."
+        echo ""
+        echo "  Commands:"
+        echo "    status            Stav gadgetů a UDC"
+        echo "    g1 | g2           Přepnutí aktivního gadgetu (MTP+ADB ↔ HID+MS+RNDIS)"
+        echo "    setup             Znovu vytvořit konfiguraci g2 v configfs"
+        echo "    normal|brom|preloader  Režim g2 + setup"
+        echo "    host | device     USB host (OTG) / gadget režim portu"
+        echo "    detect            Výpis připojených USB zařízení"
+        echo "    logs              Logy modulu"
+        exit 1
+    fi
+
+    # JSON args pole (argy jsou jednoduchá slova)
+    local ARGS="" a e
+    for a in "$@"; do
+        e=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        if [ -z "$ARGS" ]; then ARGS="\"$e\""; else ARGS="$ARGS,\"$e\""; fi
+    done
+
+    local resp
+    resp=$(api_post_json "/usbg2/exec" "{\"args\":[$ARGS]}")
+    if [ -z "$resp" ]; then
+        echo "[-] LocalApiServer neodpovídá (${API_URL}/usbg2/exec)" >&2
+        exit 1
+    fi
+    printf '%s' "$resp" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    sys.stderr.write("[-] Neplatná odpověď API: %s\n" % e)
+    sys.exit(1)
+if "error" in d:
+    sys.stderr.write("[-] %s\n" % d["error"])
+    sys.exit(1)
+out = d.get("output", "")
+if out:
+    print(out)
+rc = d.get("rc", 1)
+sys.exit(0 if d.get("ok") else (rc or 1))
+'
 }
 
 # ─── ZKILL (host zombie cleanup) ──────────────────────────
