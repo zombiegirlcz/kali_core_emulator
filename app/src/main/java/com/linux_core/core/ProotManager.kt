@@ -142,6 +142,7 @@ object ProotManager {
             if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
             if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
             if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
+            if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
         }
 
         val envVars = mutableListOf(

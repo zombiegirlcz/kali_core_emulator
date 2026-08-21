@@ -445,6 +445,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindTmp by remember { mutableStateOf(prefs.getBoolean("bind_tmp", false)) }
     var bindUsb by remember { mutableStateOf(prefs.getBoolean("bind_usb", true)) }
     var bindBluetooth by remember { mutableStateOf(prefs.getBoolean("bind_bluetooth", false)) }
+    var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", false)) }
 
     // Auto-fix ownership after sudo commands (layer 1)
     var autoFixPermissions by remember { mutableStateOf(prefs.getBoolean("auto_fix_permissions", true)) }
@@ -744,7 +745,8 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     Triple("Vendor", "/vendor → /mnt/vendor", "bind_vendor" to bindVendor),
                     Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
                     Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
-                    Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth)
+                    Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
+                    Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp)
                 )
 
                 items.forEach { (label, mountPath, statePair) ->
@@ -765,6 +767,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                     "bind_tmp" -> bindTmp = checked
                                     "bind_usb" -> bindUsb = checked
                                     "bind_bluetooth" -> bindBluetooth = checked
+                                    "bind_app" -> bindApp = checked
                                 }
                             },
                             colors = CheckboxDefaults.colors(
