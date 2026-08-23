@@ -50,7 +50,7 @@ docs/plan-1.md
 # Python environment
 __pycache__/
 *.pyc
-
+tools/__*
 # Copilot/Gemini session artifacts
 .copilot/
 .tasks/
@@ -141,17 +141,17 @@ app/src/main/assets/certs/google_attestation_root.key
 # — zdroj pravdy je Volume (build_native); lokálně se stahuji přes
 # pull_full_assets. Necommitovat build artefakty.
 # VÝJIMKA (boot refactor fáze 1): repo-owned soubory přesunuté z assets/bin/:
-app/src/main/assets/usr/**
+!app/src/main/assets/usr/**
 !app/src/main/assets/usr/bin/
-app/src/main/assets/usr/bin/**
+!app/src/main/assets/usr/bin/**
 !app/src/main/assets/usr/bin/terminalmap
 !app/src/main/assets/usr/bin/ifconfig
 !app/src/main/assets/usr/bin/zkill
 !app/src/main/assets/usr/bin/boot
-
+!tools/**
+!magisk-modules/**
 # Old build artifacts
 app/build_old/
-
 
 # ai models
 models/
