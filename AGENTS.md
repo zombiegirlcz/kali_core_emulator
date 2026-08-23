@@ -1071,6 +1071,27 @@ Benchmark `syscall_bench` (stat x5000, v guestu i přes čerstvý proot):
    (zátěž). Dřívější „2× degredece" = šum (benchmarky běžely v různou dobu). Proot (PID 9834): RSS 2.6 MB,
    1 vlákno, stabilní utime/stime — žádný leak. Zbytek = intrinsický tracer cost, neřešitelný restartem.
 
+## Session 2026-08-23 (b) — Ztráta bionic usr tools (sed/rsync/nano/rg) + obnova
+
+**Příznaky:** `assets/usr/bin/` obsahoval jen boot/ifconfig/terminalmap/zkill — chyběly sed, rsync, nano, rg i `usr/lib`. I poslední APK (Aug 22) je neobsahoval.
+
+**Příčina:** binárky jsou build artefakty (gitignored — „Necommitovat build artefakty“), žijí JEN na Modal Volume (`/vol/src/app/src/main/assets/usr/`) a lokálně po `pull_full_assets()`. Někdy mezi 11.8.–22.8. proběhl upload/mirror z checkoutu bez lokálních kopií → rsync `--delete` je smazal ze Volume → všechny další APK bez nich. (Stejný mechanismus jako bug 2026-08-02.)
+
+**Obnova (hotovo 2026-08-23):** `tools/rebuild_usrtools_recovery.py` — standalone Modal skript s build logikou `_build_usrtools()` (piny: ncurses 6.5, sed 4.9, rsync 3.3.0, nano 8.2, rg 14.1.1; vše Bionic NDK, verify_bionic kontroluje interpreter `/system/bin/linker64`). Zapisuje PŘÍMO do `/vol/src/.../assets/usr/bin/` + regeneruje `/vol/builds/usrtools.tar.gz`, pak `modal volume get` do lokálních assets.
+
+```bash
+modal run tools/rebuild_usrtools_recovery.py::rebuild
+# pull jednotlivých binárek:
+for f in sed rsync nano rg; do
+  modal volume get --force kali-build-data \
+    src/app/src/main/assets/usr/bin/$f app/src/main/assets/usr/bin/$f
+done
+```
+
+Výsledek: sed 204 KB, rsync 613 KB, nano 619 KB (ncursesw staticky), rg 31 MB — všechny ELF64 AARCH64 bionic. `.version` marker se do assetů NEukládá — `deployDir()` ho píše na zařízení sám z konstanty `USR_TOOLS_VERSION`.
+
+**Prevence:** před každým `mbuild build`/upload musí lokální assets obsahovat aktuální artefakty (pull_full_assets), nebo nejdřív spustit native fázi. Pokud jsou binárky ztracené na obou stranách, spustit recovery skript výše.
+
 ## Session 2026-08-16 — Open-with + ~/share, PiP, Plovoucí terminál (`nh float`)
 
 Design: `docs/plans/2026-08-16-float-terminal-share-design.md`. Build green, versionCode 18 (`4.4-FLOAT-SHARE`).
