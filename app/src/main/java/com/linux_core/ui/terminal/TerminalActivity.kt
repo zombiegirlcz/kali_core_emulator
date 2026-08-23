@@ -2775,7 +2775,24 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "ashell PREFIX=${hostPrefix.absolutePath} (bin/lib ready)")
 
         val cmd = arrayOf("/system/bin/sh", "-i")
-        val env = arrayOf(
+        // ashell.conf -> ENV skript pro interaktivní mksh (čte $ENV při startu):
+        // vynech `block` řádky (ty řeší /shell API), expanduj ${FILES_DIR}.
+        var ashellEnvScript: String? = null
+        try {
+            val conf = File(filesDir, "ashell.conf")
+            if (conf.exists()) {
+                val filtered = conf.readLines()
+                    .filterNot { val t = it.trim(); t == "block" || t.startsWith("block ") || t.startsWith("block\t") }
+                    .joinToString("\n") { it.replace("\${FILES_DIR}", filesDir.absolutePath) }
+                val envFile = File(filesDir, ".ashell_env")
+                envFile.writeText(filtered + "\n")
+                ashellEnvScript = envFile.absolutePath
+                Log.i(TAG, "ashell env script ready: $ashellEnvScript")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ashell.conf -> ENV failed: ${e.message}")
+        }
+        val env = mutableListOf(
             "HOME=${filesDir.absolutePath}",
             "USER=app",
             "PATH=$fullPath",
@@ -2785,10 +2802,13 @@ class TerminalActivity : ComponentActivity() {
             "ANDROID_DATA=/data",
             "ANDROID_ROOT=/system"
         )
+        // ENV skript se sourcuje po startu shellu — unset LD_LIBRARY_PATH z configu
+        // tím bezpečně přebije spawn hodnotu výše (viz SIGBUS lesson v AGENTS.md).
+        ashellEnvScript?.let { env.add("ENV=$it") }
         val cfg = com.linux_core.core.ProotConfig(
             command = cmd,
             cwd = cwd.absolutePath,
-            env = env,
+            env = env.toTypedArray(),
             prootPath = "",
             rootfsDir = "(host)"
         )

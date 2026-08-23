@@ -274,6 +274,39 @@ CLI komunikuje s `LocalApiServer` na `127.0.0.1:1337`.
 
 Detailní dokumentace MITM feature je v `nethunter_docs.md`.
 
+## ashell — host shell konfigurace (ashell.conf, v4.5)
+
+`/shell` API (`ashell -c`) nepoužívá hardcoded allowlist, ale **blocklist + env konfiguraci** z `<filesDir>/ashell.conf`. DESTRUCTIVE_PATTERNS zůstávají jako druhá vrstva; `SHELL_ALLOWLIST` dál chrání jen `/proot/exec`.
+
+Syntaxe configu (sh-like):
+
+```sh
+# komentář
+block <cmd>        # zakáže spuštění <cmd> přes /shell (basename match)
+export FOO=bar     # libovolné sh řádky — aplikují se před KAŽDÝM příkazem
+unset LD_LIBRARY_PATH
+```
+
+- Placeholder `${FILES_DIR}` se expanduje na filesDir aplikace (config je přenositelný; GET vrací raw).
+- Defaultní obsah = bývalé `hostShellEnv()` (HOME/USER/PATH/PREFIX/TERM/ANDROID_*) + `unset LD_LIBRARY_PATH` + ukázky `block reboot|shutdown|poweroff`.
+- Vytvoří se automaticky při prvním použití /shell.
+
+Endpointy (Bearer token, citlivé i pro remote): `GET/POST /ashell/config` (raw text), `GET/POST /ashell/blocklist` ({"cmd", "action": "add|remove"} nebo {"commands": [...]}).
+
+CLI:
+
+```bash
+ashell -e              # otevře celý ashell.conf v $EDITOR; není-li EDITOR nastaven,
+                       # jen vypíše hlášku (žádný tichý nano fallback)
+ashell --list          # aktuální blocklist
+ashell --add reboot    # přidá block řádek
+ashell --remove reboot # odebere block řádek
+```
+
+Interaktivní host shell (`startAshellSession`) taky čte config: `TerminalActivity` zapíše ashell.conf bez `block` řádků do `.ashell_env` a předá ho mksh přes `ENV=` (sourcuje se při interaktivním startu — unset tím přebije spawn LD_LIBRARY_PATH).
+
+Unit testy parseru: `app/src/test/java/com/linux_core/core/AshellConfigParserTest.kt`.
+
 ## Diagnostické CLI nástroje
 
 ### nethunter-log

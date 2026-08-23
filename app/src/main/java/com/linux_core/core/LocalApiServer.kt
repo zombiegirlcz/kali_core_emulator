@@ -62,6 +62,9 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.regex.Pattern
 
+/** Výsledek parsování ashell.conf (čistý datový typ, testovatelný bez Androidu). */
+data class AshellConfigParserResult(val envLines: List<String>, val blocked: Set<String>)
+
 object LocalApiServer {
     private const val TAG = "LocalApiServer"
     private const val PORT = 1337
@@ -364,7 +367,7 @@ object LocalApiServer {
             val sensitiveEndpoints = listOf("/shell", "/proot/exec", "/clipboard", "/location", "/cellinfo",
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
-                "/distro/kill", "/distro/remove",
+                "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/editor/", "/usb/", "/usbg2/",
                 "/vpn/ai/", "/vpn/mitm/selective")
@@ -449,6 +452,10 @@ object LocalApiServer {
                 path == "/shell" && method == "POST" -> handleShell(body, out)
                 path == "/proot/exec" && method == "POST" -> handleProotExec(context, body, out)
                 path == "/ashell" && method == "POST" -> handleAshell(context, body, out)
+                path == "/ashell/config" && method == "GET" -> handleAshellConfigGet(context, out)
+                path == "/ashell/config" && method == "POST" -> handleAshellConfigPost(body, out)
+                path == "/ashell/blocklist" && method == "GET" -> handleAshellBlocklistGet(context, out)
+                path == "/ashell/blocklist" && method == "POST" -> handleAshellBlocklistPost(context, body, out)
                 path == "/vpn" && method == "GET" -> handleVpnStatus(context, out)
                 path.startsWith("/vpn/logs") && method == "GET" -> handleVpnLogs(path, out)
                 path == "/vpn/stop" && method == "POST" -> handleVpnStop(context, out)
@@ -1170,6 +1177,210 @@ object LocalApiServer {
         "cat /dev/sda", "cat /dev/sdb", "cat /dev/mem"
     )
 
+    // ── ashell.conf — editovatelná konfigurace host shellu ─────────────────
+    // Flip původního allowlistu: /shell teď používá BLOCKLIST načtený z
+    // <filesDir>/ashell.conf (editace přes `ashell -e`) + volitelné env řádky
+    // aplikované před KAŽDÝM příkazem (jako .zshrc — export/unset/...).
+    // DESTRUCTIVE_PATTERNS zůstávají jako druhá vrstva obrany.
+    // SHELL_ALLOWLIST dál chrání jen /proot/exec (guest one-shot API).
+
+    private fun ashellConfigFile(ctx: Context): File = File(ctx.filesDir, "ashell.conf")
+
+    /** Výchozí obsah configu — zrcadlí hostShellEnv() + bezpečnostní unset. */
+    private fun defaultAshellConfig(): String = listOf(
+        "# ashell.conf — konfigurace host shellu (ashell)",
+        "#",
+        "# Aplikuje se před KAŽDÝM příkazem `ashell -c '...'` a při startu",
+        "# interaktivního host shellu.",
+        "#",
+        "# Syntaxe:",
+        "#   # ...            komentář",
+        "#   block <cmd>      zakáže spuštění <cmd> přes /shell API (ashell -c)",
+        "#   cokoliv jiného   sh řádek vykonaný před příkazem",
+        "#                    (export FOO=bar, unset LD_LIBRARY_PATH, ...)",
+        "#",
+        "# Placeholder \${FILES_DIR} se expanduje na filesDir aplikace",
+        "# (/data/data/com.linux_core/files) — config zůstává přenositelný.",
+        "",
+        "export HOME=\${FILES_DIR}",
+        "export USER=app",
+        "export PATH=\${FILES_DIR}/usr/bin:/system/bin:/system/xbin:/vendor/bin:\${FILES_DIR}",
+        "export PREFIX=\${FILES_DIR}/usr",
+        "export TERM=xterm-256color",
+        "export ANDROID_DATA=/data",
+        "export ANDROID_ROOT=/system",
+        "unset LD_LIBRARY_PATH",
+        "",
+        "# Výchozí blokace (ukázka syntaxe; DESTRUCTIVE_PATTERNS blokují navíc)",
+        "block reboot",
+        "block shutdown",
+        "block poweroff",
+        ""
+    ).joinToString("\n")
+
+    /** Načtený config: sh řádky pro env prefix + set blokovaných příkazů. */
+    private class AshellConfig(val envLines: List<String>, val blocked: Set<String>)
+
+    /** Čistý parser ashell.conf (bez Contextu) — volatelný i z JVM unit testů. */
+    fun parseAshellConfig(text: String): AshellConfigParserResult {
+        val env = mutableListOf<String>()
+        val blocked = mutableSetOf<String>()
+        text.lines().forEach { raw ->
+            val line = raw.trim()
+            when {
+                line.isEmpty() || line.startsWith("#") -> {}
+                line == "block" -> {}  // blok bez jména — ignoruj (nezařazovat do env)
+                line.startsWith("block ") || line.startsWith("block\t") ->
+                    line.substring(5).trim().split(Regex("\\s+")).firstOrNull()?.let { if (it.isNotEmpty()) blocked.add(it) }
+                else -> env.add(raw)
+            }
+        }
+        return AshellConfigParserResult(env, blocked)
+    }
+
+    private fun loadAshellConfig(ctx: Context): AshellConfig {
+        val f = ashellConfigFile(ctx)
+        if (!f.exists()) {
+            try { f.writeText(defaultAshellConfig()) } catch (_: Exception) {}
+        }
+        val parsed = try { parseAshellConfig(f.readText()) } catch (_: Exception) { parseAshellConfig("") }
+        return AshellConfig(parsed.envLines, parsed.blocked)
+    }
+
+    /** Expanduje placeholder \${FILES_DIR} na reálnou cestu filesDir. */
+    private fun expandAshellLine(line: String, ctx: Context): String =
+        line.replace("\${FILES_DIR}", ctx.filesDir.absolutePath)
+
+    /**
+     * GET /ashell/config — vrátí aktuální obsah ashell.conf jako text/plain.
+     * Placeholder \${FILES_DIR} se NEexpanduje (raw editace, zůstává přenositelný).
+     */
+    private fun handleAshellConfigGet(context: Context, out: OutputStream) {
+        val f = ashellConfigFile(context)
+        if (!f.exists()) {
+            try { f.writeText(defaultAshellConfig()) } catch (_: Exception) {}
+        }
+        val text = try { f.readText() } catch (_: Exception) { defaultAshellConfig() }
+        sendRawTextResponse(out, 200, "OK", text)
+    }
+
+    /**
+     * POST /ashell/config — uloží nový obsah configu (raw text/plain body,
+     * tak jak ho vrátil editor). Max 16 KB.
+     */
+    private fun handleAshellConfigPost(body: String, out: OutputStream) {
+        if (body.length > 16384) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Config too large (max 16 KB)\"}")
+            return
+        }
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            ashellConfigFile(ctx).writeText(body)
+            val blockedCount = parseAshellConfig(body).blocked.size
+            Log.i(TAG, "ashell.conf updated (${body.toByteArray().size} bytes, $blockedCount blocked cmds)")
+            sendResponse(out, 200, "OK", "{\"status\":\"config_saved\",\"bytes\":${body.toByteArray().size},\"blocked_count\":$blockedCount}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    /** GET /ashell/blocklist — odvozený pohled na `block` řádky v ashell.conf. */
+    private fun handleAshellBlocklistGet(context: Context, out: OutputStream) {
+        val cfg = loadAshellConfig(context)
+        val arr = JSONArray()
+        cfg.blocked.sorted().forEach { arr.put(it) }
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("commands", arr)
+            put("blocked_count", cfg.blocked.size)
+            put("source", "ashell.conf")
+        }.toString())
+    }
+
+    /**
+     * POST /ashell/blocklist — správa blokovaných příkazů (přepisuje `block`
+     * řádky v ashell.conf, ostatní obsah zůstává nedotčený).
+     * Body: {"cmd":"reboot","action":"add|remove"} nebo {"commands":[...] (nahradit vše)}
+     */
+    private fun handleAshellBlocklistPost(context: Context, body: String, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            val json = JSONObject(body)
+            val f = ashellConfigFile(ctx)
+            if (!f.exists()) f.writeText(defaultAshellConfig())
+            val lines = f.readLines().toMutableList()
+            val validCmd = Regex("[A-Za-z0-9_./+-]{1,64}")
+
+            when {
+                json.has("cmd") -> {
+                    val cmd = json.optString("cmd").trim()
+                    val action = json.optString("action", "add").trim().lowercase()
+                    if (cmd.isEmpty() || !validCmd.matches(cmd)) {
+                        sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid cmd token\"}")
+                        return
+                    }
+                    val isBlockLine = { l: String ->
+                        val t = l.trim()
+                        t.startsWith("block ") && t.substringAfter(" ").trim() == cmd
+                    }
+                    when (action) {
+                        "add" -> {
+                            if (lines.none(isBlockLine)) lines.add("block $cmd")
+                        }
+                        "remove" -> lines.removeAll(isBlockLine)
+                        else -> {
+                            sendResponse(out, 400, "Bad Request", "{\"error\":\"action must be add|remove\"}")
+                            return
+                        }
+                    }
+                    f.writeText(lines.joinToString("\n") + "\n")
+                    val count = parseAshellConfig(f.readText()).blocked.size
+                    sendResponse(out, 200, "OK", "{\"status\":\"$action\",\"cmd\":\"$cmd\",\"blocked_count\":$count}")
+                }
+                json.has("commands") -> {
+                    val cmdsRaw = json.optJSONArray("commands") ?: JSONArray()
+                    val cmds = mutableListOf<String>()
+                    for (i in 0 until cmdsRaw.length()) {
+                        val c = cmdsRaw.optString(i).trim()
+                        if (c.isNotEmpty()) {
+                            if (!validCmd.matches(c)) {
+                                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid cmd token: '$c'\"}")
+                                return
+                            }
+                            cmds.add(c)
+                        }
+                    }
+                    // Odstraň VŠECHNY block řádky, přidej nové na konec
+                    val kept = lines.filterNot { it.trim().startsWith("block ") }
+                    val newContent = kept + cmds.map { "block $it" }
+                    f.writeText(newContent.joinToString("\n") + "\n")
+                    Log.i(TAG, "ashell.conf blocklist replaced (${cmds.size} cmds)")
+                    sendResponse(out, 200, "OK", "{\"status\":\"replaced\",\"count\":${cmds.size}}")
+                }
+                else -> sendResponse(out, 400, "Bad Request", "{\"error\":\"Body must contain 'cmd' or 'commands'\"}")
+            }
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    /** HTTP odpověď s text/plain tělem (pro raw editaci configu). */
+    private fun sendRawTextResponse(out: OutputStream, statusCode: Int, statusText: String, text: String) {
+        val raw = text.toByteArray(Charsets.UTF_8)
+        val headers = "HTTP/1.1 $statusCode $statusText\r\n" +
+                "Content-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Length: ${raw.size}\r\n" +
+                "Connection: close\r\n\r\n"
+        out.write(headers.toByteArray(Charsets.UTF_8))
+        out.write(raw)
+        out.flush()
+    }
+
     /**
      * Host shell environment pro `sh -c` (ashell -c, /shell API).
      * App process dědí výchozí PATH (/system/bin:/system/xbin...) a NEMÁ
@@ -1222,15 +1433,17 @@ object LocalApiServer {
                 return
             }
 
-            // ── 1. Allowlist gate ───────────────────────────────────────────
+            // ── 1. Blocklist gate (z ashell.conf — editace přes `ashell -e`) ──
             val cmdName = command
                 .trim()
                 .substringBefore(" ")
                 .substringBefore("\t")
                 .substringAfterLast("/")
-            if (cmdName !in SHELL_ALLOWLIST) {
+            // Flip allowlist -> blocklist z ashell.conf (editace pres `ashell -e`)
+            val cfg = loadAshellConfig(appContext!!)
+            if (cmdName in cfg.blocked) {
                 sendResponse(out, 403, "Forbidden",
-                    "{\"error\":\"Command '$cmdName' is not in the allowed commands list\"}")
+                    "{\"error\":\"Command '$cmdName' is blocked by ashell.conf\"}")
                 return
             }
 
@@ -1244,7 +1457,13 @@ object LocalApiServer {
                 }
             }
 
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command), hostShellEnv())
+            // Aplikuj env prefix z configu pred uzivatelsky prikaz
+            // (export/unset/... jako .zshrc; exit code nese uzivatelsky prikaz,
+            // protoze je posledni ve skriptu)
+            val prefix = cfg.envLines.joinToString("\n") { expandAshellLine(it, appContext!!) }
+            val fullCommand = if (prefix.isBlank()) command else "$prefix\n$command"
+
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", fullCommand), hostShellEnv())
             val output = process.inputStream.bufferedReader().readText()
             val error = process.errorStream.bufferedReader().readText()
             val exitCode = process.waitFor()
@@ -1268,7 +1487,8 @@ object LocalApiServer {
      * /proot/exec — Execute a command inside the PRoot guest environment.
      *
      * Uses the boot script to launch a one-shot command in the specified distro.
-     * Same security guards as /shell (allowlist + destructive patterns).
+     * Security guards: SHELL_ALLOWLIST (guest API zůstává konzervativní) + destructive
+     * patterns. (/shell pro host ashell už používá blocklist z ashell.conf.)
      *
      * Request (JSON body):
      *   { "distro": "kali", "command": "nmap -sV 192.168.1.0/24", "timeout": 30000 }

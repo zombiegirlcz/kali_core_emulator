@@ -4,6 +4,15 @@
 # Bez argumentů:    otevře novou TerminalActivity mimo PRoot (host app shell)
 # ashell -c <cmd>:  spustí příkaz na HOSTITELI (uid aplikace) a vrátí
 #                   stdout/stderr zpět do aktuálního terminálu (přes /shell API)
+#                   — před příkazem se aplikuje konfigurace z ashell.conf
+# ashell -e:        otevře konfiguraci (ashell.conf: proměnné prostředí + blocklist)
+#                   v $EDITOR; pokud není nastaven, vypíše hlášku
+# ashell --add <cmd> | --remove <cmd> | --list: správa blokovaných příkazů
+#
+# Konfigurace: <filesDir>/ashell.conf — řádky `block <cmd>` zakazují příkazy,
+# ostatní neprázdné řádky jsou sh příkazy vykonané před KAŽDÝM `ashell -c`
+# (jako .zshrc: export FOO=bar, unset LD_LIBRARY_PATH, ...).
+# Placeholder ${FILES_DIR} se expanduje na filesDir aplikace.
 #
 # Primární metoda: cmd activity (ActivityManager) — nepotřebuje curl/wget ani token
 # Fallback metoda:  POST /ashell na LocalApiServer (127.0.0.1:1337)
@@ -76,56 +85,83 @@ PYEOF
     exit $?
 fi
 
-# ── Blocklist management (default = allow all) ──────────────────────────
+# ── Konfigurace (ashell.conf: env proměnné + blocklist) ─────────────────
 #   ashell --add <cmd>      Přidá příkaz do blocklistu (zakazuje spuštění)
 #   ashell --remove <cmd>   Odebere příkaz z blocklistu
 #   ashell --list           Zobrazí aktuální blocklist
-#   ashell -e / --edit      Otevře blocklist v $EDITOR (nano/vi), uloží změny
+#   ashell -e / --edit      Otevře celý ashell.conf v $EDITOR (proměnné + blokace).
+#                           EDITOR musí být nastaven (export EDITOR=nano|vi|...),
+#                           jinak se jen vypíše hláška.
 if [ "$1" = "--add" ] || [ "$1" = "--remove" ] || [ "$1" = "--list" ] || [ "$1" = "-e" ] || [ "$1" = "--edit" ]; then
     ACTION="$1"; shift
     TOKEN=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
         sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1)
-    AUTH_HEADER=""
-    [ -n "$TOKEN" ] && AUTH_HEADER="-H 'Authorization: Bearer $TOKEN'"
+
+    # Auth args (poziční parametry) se staví AŽ po zachycení <cmd>
+    # (set -- by původní argumenty smazal)
 
     case "$ACTION" in
         --add)
             [ $# -lt 1 ] && { echo "[-] Usage: ashell --add <cmd>" >&2; exit 1; }
             CMD="$1"
-            curl -s -X POST $AUTH_HEADER -d "{\"cmd\":\"$CMD\",\"action\":\"add\"}" "${API_URL}/ashell/blocklist" 2>/dev/null | \
-                python3 -c 'import sys,json; d=json.load(sys.stdin); print("[+] " + d.get("status","?") + " (blocked_count=" + str(d.get("blocked_count",0)) + ")")' 2>/dev/null || \
-                echo "[+] add $CMD"
+            set --
+            [ -n "$TOKEN" ] && set -- "$@" --header "Authorization: Bearer $TOKEN"
+            curl -s -X POST "$@" -H "Content-Type: application/json" \
+                -d "{\"cmd\":\"$CMD\",\"action\":\"add\"}" "${API_URL}/ashell/blocklist" 2>/dev/null | \
+                python3 -c 'import sys,json; d=json.load(sys.stdin); print("[+] " + d.get("status","?") + " " + sys.argv[1] + " (blocked_count=" + str(d.get("blocked_count",0)) + ")")' "$CMD" 2>/dev/null \
+                || { echo "[-] LocalApiServer neodpovídá na ${API_URL}/ashell/blocklist" >&2; exit 1; }
             ;;
         --remove)
             [ $# -lt 1 ] && { echo "[-] Usage: ashell --remove <cmd>" >&2; exit 1; }
             CMD="$1"
-            curl -s -X POST $AUTH_HEADER -d "{\"cmd\":\"$CMD\",\"action\":\"remove\"}" "${API_URL}/ashell/blocklist" 2>/dev/null | \
-                python3 -c 'import sys,json; d=json.load(sys.stdin); print("[+] " + d.get("status","?") + " (blocked_count=" + str(d.get("blocked_count",0)) + ")")' 2>/dev/null || \
-                echo "[+] remove $CMD"
+            set --
+            [ -n "$TOKEN" ] && set -- "$@" --header "Authorization: Bearer $TOKEN"
+            curl -s -X POST "$@" -H "Content-Type: application/json" \
+                -d "{\"cmd\":\"$CMD\",\"action\":\"remove\"}" "${API_URL}/ashell/blocklist" 2>/dev/null | \
+                python3 -c 'import sys,json; d=json.load(sys.stdin); print("[+] " + d.get("status","?") + " " + sys.argv[1] + " (blocked_count=" + str(d.get("blocked_count",0)) + ")")' "$CMD" 2>/dev/null \
+                || { echo "[-] LocalApiServer neodpovídá na ${API_URL}/ashell/blocklist" >&2; exit 1; }
             ;;
         --list)
-            curl -s $AUTH_HEADER "${API_URL}/ashell/blocklist" 2>/dev/null | \
-                python3 -c 'import sys,json; d=json.load(sys.stdin); cmds=d.get("commands",[]); print("Blocklist (" + str(len(cmds)) + "):"); [print("  - " + c) for c in cmds] if cmds else print("  (empty — all commands allowed)")' 2>/dev/null || \
-                curl -s $AUTH_HEADER "${API_URL}/ashell/blocklist"
+            set --
+            [ -n "$TOKEN" ] && set -- "$@" --header "Authorization: Bearer $TOKEN"
+            RESPONSE=$(curl -s "$@" "${API_URL}/ashell/blocklist" 2>/dev/null)
+            if [ -z "$RESPONSE" ]; then
+                echo "[-] LocalApiServer neodpovídá na ${API_URL}/ashell/blocklist"
+                exit 1
+            fi
+            printf '%s' "$RESPONSE" | python3 -c 'import sys,json; d=json.load(sys.stdin); cmds=d.get("commands",[]); print("Blocklist (" + str(len(cmds)) + ") — zdroj: " + d.get("source","ashell.conf")); [print("  - " + c) for c in cmds] if cmds else print("  (empty — všechny příkazy povoleny)")'
             ;;
         -e|--edit)
-            TMPFILE="/tmp/.ashell_blocklist_$$.txt"
-            # Stáhnout aktuální blocklist
-            curl -s $AUTH_HEADER "${API_URL}/ashell/blocklist" 2>/dev/null | \
-                python3 -c 'import sys,json; d=json.load(sys.stdin); [print(c) for c in d.get("commands",[])]' > "$TMPFILE" 2>/dev/null || true
-            [ ! -s "$TMPFILE" ] && echo "# ashell blocklist (empty = allow all)" > "$TMPFILE"
-            EDITOR="${EDITOR:-nano}"
-            echo "[*] Opening blocklist in $EDITOR (save + exit to apply)..." >&2
-            $EDITOR "$TMPFILE"
-            # Upload zpět
-            python3 -c '
-import sys, json, subprocess
-cmds = [l.strip() for l in open("$TMPFILE") if l.strip() and not l.startswith("#")]
-payload = json.dumps({"commands": cmds})
-print(payload)
-' | curl -s -X POST $AUTH_HEADER -H "Content-Type: application/json" --data-binary @- "${API_URL}/ashell/blocklist" 2>/dev/null | \
-                python3 -c 'import sys,json; d=json.load(sys.stdin); print("[+] Blocklist updated (count=" + str(d.get("count",0)) + ")")' 2>/dev/null || \
-                echo "[+] Blocklist updated"
+            if [ -z "${EDITOR:-}" ]; then
+                echo "[-] Proměnná EDITOR není nastavena." >&2
+                echo "    Nastav ji např.:  export EDITOR=nano    (nebo vi/vim)" >&2
+                echo "    Pak znovu spusť:  ashell -e" >&2
+                exit 1
+            fi
+            set --
+            [ -n "$TOKEN" ] && set -- "$@" --header "Authorization: Bearer $TOKEN"
+            TMPFILE="/tmp/.ashell_conf_$$.conf"
+            curl -s "$@" "${API_URL}/ashell/config" > "$TMPFILE" 2>/dev/null
+            if [ ! -s "$TMPFILE" ]; then
+                echo "[-] Nelze stáhnout konfiguraci z ${API_URL}/ashell/config" >&2
+                rm -f "$TMPFILE"; exit 1
+            fi
+            echo "[*] Otevírám konfiguraci v $EDITOR (ulož + ukonči pro aplikaci)..." >&2
+            echo "    Řádky 'block <cmd>' = blokace, ostatní řádky = env před každým příkazem." >&2
+            "$EDITOR" "$TMPFILE"
+            RC=$?
+            if [ $RC -ne 0 ]; then
+                echo "[-] Editor skončil s chybou (RC=$RC) — změny NEbyly uloženy." >&2
+                rm -f "$TMPFILE"; exit $RC
+            fi
+            RESULT=$(curl -s -X POST "$@" -H "Content-Type: text/plain" \
+                --data-binary @"$TMPFILE" "${API_URL}/ashell/config" 2>/dev/null)
+            if printf '%s' "$RESULT" | grep -q '"config_saved"'; then
+                echo "[+] Konfigurace uložena — aplikuje se od dalšího ashell -c / nového host shellu."
+            else
+                echo "[-] Uložení selhalo: $RESULT" >&2
+                rm -f "$TMPFILE"; exit 1
+            fi
             rm -f "$TMPFILE"
             ;;
     esac
