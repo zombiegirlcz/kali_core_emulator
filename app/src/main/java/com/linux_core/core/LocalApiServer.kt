@@ -618,55 +618,12 @@ object LocalApiServer {
     }
 
     private fun handleBattery(context: Context, out: OutputStream) {
-        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        val batteryIntent = context.registerReceiver(null, filter)
-        if (batteryIntent == null) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"Could not query battery state\"}")
+        val json = DeviceInfo.batteryJson(context)
+        if ("\"error\":" in json) {
+            sendResponse(out, 500, "Internal Error", json)
             return
         }
-
-        val level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-        val scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-        val percentage = if (level >= 0 && scale > 0) (level * 100 / scale) else -1
-        val temperature = batteryIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f
-        val voltage = batteryIntent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
-
-        val statusInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        val status = when (statusInt) {
-            BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
-            BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
-            BatteryManager.BATTERY_STATUS_FULL -> "full"
-            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not charging"
-            else -> "unknown"
-        }
-
-        val healthInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)
-        val health = when (healthInt) {
-            BatteryManager.BATTERY_HEALTH_GOOD -> "good"
-            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "overheat"
-            BatteryManager.BATTERY_HEALTH_DEAD -> "dead"
-            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "over voltage"
-            else -> "unknown"
-        }
-
-        val pluggedInt = batteryIntent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
-        val plugged = when (pluggedInt) {
-            BatteryManager.BATTERY_PLUGGED_AC -> "ac"
-            BatteryManager.BATTERY_PLUGGED_USB -> "usb"
-            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
-            else -> "none"
-        }
-
-        val json = JSONObject().apply {
-            put("percentage", percentage)
-            put("temperature", temperature)
-            put("voltage", voltage)
-            put("status", status)
-            put("health", health)
-            put("plugged", plugged)
-        }.toString()
-
-        Log.i(TAG, "Battery EXECUTED: level=${percentage}% status=${status} temp=${temperature}C plugged=${plugged}")
+        Log.i(TAG, "Battery EXECUTED")
         sendResponse(out, 200, "OK", json)
     }
 
@@ -873,70 +830,24 @@ object LocalApiServer {
     }
 
     private fun handleWifi(context: Context, out: OutputStream) {
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            val info = wifiManager.connectionInfo
-            val json = JSONObject().apply {
-                if (info != null) {
-                    put("ssid", info.ssid?.replace("\"", ""))
-                    put("bssid", info.bssid)
-                    put("rssi", info.rssi)
-                    put("link_speed_mbps", info.linkSpeed)
-                    // IP + MAC z DHCP/WifiInfo, aby `ifconfig` mohl zobrazit inet/ether
-                    @Suppress("DEPRECATION")
-                    val dhcp = wifiManager.dhcpInfo
-                    if (dhcp != null && dhcp.ipAddress != 0) {
-                        put("ip", formatIpv4(dhcp.ipAddress))
-                        put("netmask", formatIpv4(dhcp.netmask))
-                        put("gateway", formatIpv4(dhcp.gateway))
-                        put("dns1", formatIpv4(dhcp.dns1))
-                    } else {
-                        put("ip", "")
-                    }
-                    @Suppress("DEPRECATION")
-                    val mac = try { info.macAddress } catch (e: Exception) { null }
-                    put("mac", mac ?: "")
-                } else {
-                    put("error", "No connection info available")
-                }
-            }.toString()
-            sendResponse(out, 200, "OK", json)
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
+        val json = DeviceInfo.wifiJson(context)
+        sendResponse(out, deviceInfoStatus(json), "OK", json)
     }
 
-    private fun formatIpv4(value: Int): String {
-        return "${value and 0xFF}.${(value shr 8) and 0xFF}.${(value shr 16) and 0xFF}.${(value shr 24) and 0xFF}"
+    /**
+     * Status pro DeviceInfo JSONy: žádný error → 200; "soft" error
+     * (No connection info / No last known location) → 200 jako dřív;
+     * výjimka (jiný error text) → 500.
+     */
+    private fun deviceInfoStatus(json: String): Int = when {
+        !json.contains("\"error\":") -> 200
+        "No connection info" in json || "No last known location" in json -> 200
+        else -> 500
     }
 
     private fun handleLocation(context: Context, out: OutputStream) {
-        try {
-            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            var location: Location? = null
-            try {
-                location = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            } catch (_: SecurityException) {}
-
-            val json = JSONObject().apply {
-                if (location != null) {
-                    put("latitude", location.latitude)
-                    put("longitude", location.longitude)
-                    put("accuracy", location.accuracy.toDouble())
-                    put("provider", location.provider)
-                    put("time", location.time)
-                    put("maps_url", "https://www.google.com/maps?q=${location.latitude},${location.longitude}")
-                    put("geo_uri", "geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}")
-                } else {
-                    put("error", "No last known location available. Check permissions and GPS.")
-                }
-            }.toString()
-            sendResponse(out, 200, "OK", json)
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
+        val json = DeviceInfo.locationJson(context)
+        sendResponse(out, deviceInfoStatus(json), "OK", json)
     }
 
     private fun handleCellInfo(context: Context, out: OutputStream) {
