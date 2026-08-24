@@ -71,8 +71,15 @@ class CoreBridgeService : Service() {
     private fun checkCaller(method: String) {
         val pm = packageManager
         val callerUid = Binder.getCallingUid()
-        if (pm.checkSignatures(callerUid, packageName) != PackageManager.SIGNATURE_MATCH) {
-            Log.w(TAG, "Rejected $method from uid=$callerUid (signature mismatch)")
+        // getNameForUid vrací jméno balíku (případně "pkg1:pkg2" při sdíleném uid)
+        val callerPkg = pm.getNameForUid(callerUid)
+            ?.substringBefore(":")
+            ?: run {
+                Log.w(TAG, "Rejected $method from uid=$callerUid (unknown package)")
+                throw SecurityException("Caller not signed with core key")
+            }
+        if (pm.checkSignatures(callerPkg, packageName) != PackageManager.SIGNATURE_MATCH) {
+            Log.w(TAG, "Rejected $method from uid=$callerUid pkg=$callerPkg (signature mismatch)")
             throw SecurityException("Caller not signed with core key")
         }
     }
