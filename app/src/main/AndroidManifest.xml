@@ -284,6 +284,22 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- App-to-app Binder most pro kali_ai_assistant (signature permission).
+         !   Volající musí být podepsán stejným klíčem, jinak SecurityException. -->
+        <service
+            android:name=".bridge.CoreBridgeService"
+            android:exported="true"
+            android:permission="com.linux_core.permission.BIND_BRIDGE">
+            <intent-filter>
+                <action android:name="com.linux_core.action.BIND_BRIDGE" />
+            </intent-filter>
+        </service>
     </application>
+
+    <!-- Signature-level permission: bind povolen pouze appkám se stejným signing key -->
+    <permission
+        android:name="com.linux_core.permission.BIND_BRIDGE"
+        android:protectionLevel="signature" />
 
 </manifest>

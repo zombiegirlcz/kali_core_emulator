@@ -285,6 +285,88 @@ object ExecCore {
         )
     }
 
+    // ── ELF direct exec (EXPERIMENTÁLNÍ, Binder elfExec) ─────────────────
+
+    /**
+     * Přímé spuštění glibc binárky z rootfs na Android hostu přes `elf`
+     * wrapper (elf_loader --ownall) — bypass PRoot cold-startu.
+     *
+     * Guardy: STEJNÉ jako guest exec (allowlist prvního slova + destructive
+     * patterns) — jde o reálný filesystem, žádný sandbox!
+     *
+     * Wrapper se hledá na kandidátních cestách (/system/bin/elf z Magisk
+     * modulu, files/usr/bin/elf z manuálního deploymu), ROOTFS na prvním
+     * existujícím files/nh/distro/{kali,parrot}. Wrapper si sám řeší
+     * LD_LIBRARY_PATH pořadí (bionic první, glibc za nimi) i resolve()
+     * jména binárky v rootfs.
+     */
+    fun elfExec(ctx: Context, command: String, timeoutMs: Long): String {
+        val command = command.trim()
+        if (command.isEmpty()) return errJson("Command cannot be empty")
+        if (command.length > 2048) return errJson("Command too long (max 2048 chars)")
+
+        // ── 1. Allowlist gate (stejná politika jako /proot/exec) ────────
+        val cmdName = command
+            .substringBefore(" ")
+            .substringBefore("\t")
+            .substringAfterLast("/")
+        if (cmdName !in SHELL_ALLOWLIST) {
+            return errJson("Command '$cmdName' is not in the allowed commands list")
+        }
+
+        // ── 2. Destructive patterns guard (reálny FS!) ──────────────────
+        val commandLower = command.lowercase()
+        for (pattern in DESTRUCTIVE_PATTERNS) {
+            if (commandLower.contains(pattern.lowercase())) {
+                return errJson("Command blocked for security reasons")
+            }
+        }
+
+        // ── 3. Najdi wrapper a rootfs ─────────────────────────────────
+        val wrapper = listOf("/system/bin/elf", File(ctx.filesDir, "usr/bin/elf").absolutePath)
+            .firstOrNull { File(it).let { f -> f.exists() && f.canExecute() } }
+            ?: return errJson(
+                "ELF wrapper not found (tried /system/bin/elf, files/usr/bin/elf). " +
+                "Install the parrot_elf_loader Magisk module first."
+            )
+        val rootfs = listOf("kali", "parrot")
+            .map { File(ctx.filesDir, "nh/distro/$it") }
+            .firstOrNull { it.isDirectory }
+            ?.absolutePath
+            ?: return errJson("No rootfs found under files/nh/distro/{kali,parrot}")
+
+        // ── 4. Execute: sh -c "$wrapper $command" s ROOTFS env ─────────
+        return try {
+            val startTime = System.currentTimeMillis()
+            val pb = ProcessBuilder("sh", "-c", "$wrapper $command")
+            pb.directory(ctx.filesDir)
+            pb.redirectErrorStream(false)
+            pb.environment().apply {
+                put("ROOTFS", rootfs)
+            }
+            val process = pb.start()
+
+            val stdoutReader = process.inputStream.bufferedReader()
+            val stderrReader = process.errorStream.bufferedReader()
+            val output = stdoutReader.readText()
+            val error = stderrReader.readText()
+
+            val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
+            val durationMs = System.currentTimeMillis() - startTime
+
+            if (!completed) {
+                process.destroyForcibly()
+                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
+            } else {
+                val exitCode = process.exitValue()
+                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "elfExec error: ${e.message}", e)
+            errJson(e.message ?: "internal error")
+        }
+    }
+
     private fun errJson(msg: String): String =
         "{\"error\":${JSONObject.quote(msg)}}"
 }
