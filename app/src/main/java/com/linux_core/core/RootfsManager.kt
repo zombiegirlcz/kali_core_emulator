@@ -949,21 +949,53 @@ object RootfsManager {
                             }
 
                             val tarEntry = entry as? TarArchiveEntry
+                            val name = tarEntry?.name ?: entry.name
                             when {
+                                // ── Docker whiteouts: .wh.<name> smaže <name> z předchozí vrstvy,
+                                //    .wh..wh..opq vyprázdní celý adresář. Bez toho po rozbalení
+                                //    zůstávají soubory ze starších vrstev, které image odstranil.
+                                tarEntry != null && tarEntry.name.contains("/.wh.") -> {
+                                    val baseName = name.substringAfterLast("/")
+                                    val parentDir = entryFile.parentFile ?: targetDir
+                                    if (baseName == ".wh..wh..opq") {
+                                        parentDir.listFiles()?.forEach { it.deleteRecursively() }
+                                        Log.d("RootfsManager", "Opaque whiteout: cleared ${parentDir.path}")
+                                    } else {
+                                        val victim = java.io.File(parentDir, baseName.removePrefix(".wh."))
+                                        if (victim.exists()) {
+                                            victim.deleteRecursively()
+                                            Log.d("RootfsManager", "Whiteout: removed ${victim.path}")
+                                        }
+                                    }
+                                }
+                                // ── Hardlink: commons-compress nedodává obsah — vytvoř symlink na
+                                //    cíl v rámci rootfs (funkční ekvivalent; PRoot symlinky zvládá).
+                                tarEntry?.isLink == true -> {
+                                    entryFile.parentFile?.mkdirs()
+                                    try {
+                                        entryFile.delete()
+                                        android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+                                    } catch (_: Exception) {}
+                                }
                                 tarEntry?.isSymbolicLink == true -> {
                                     entryFile.parentFile?.mkdirs()
                                     try {
+                                        entryFile.delete()
                                         android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
                                     } catch (_: Exception) {}
                                 }
                                 tarEntry?.isDirectory == true -> entryFile.mkdirs()
                                 else -> {
                                     entryFile.parentFile?.mkdirs()
+                                    // Přepis existujícího souboru: pokud je to symlink, smaž ho
+                                    // (FileOutputStream by psal SKRZ symlink do cíle mimo rootfs!")
+                                    if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
                                     FileOutputStream(entryFile).use { tarIn.copyTo(it) }
                                     if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
                                         entryFile.setExecutable(true, false)
                                     }
                                     entryFile.setReadable(true, false)
+                                    entryFile.setWritable(true, false)
                                 }
                             }
                             entry = tarIn.nextEntry

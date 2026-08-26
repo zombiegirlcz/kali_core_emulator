@@ -53,6 +53,14 @@ class TerminalService : Service() {
          *  relaunch after a clean death (MED-3). */
         @Volatile var backgroundBootSessionId: String? = null
         @Volatile var backgroundBootReloads = 0
+        /** Timestamp posledního úspěšného startu cron session — resetuje
+         *  backoff counter, když session žila stabilně (> STABLE_MS). */
+        @Volatile var backgroundBootStartedAt = 0L
+        private const val STABLE_MS = 5L * 60_000L
+
+        /** Watchdog/revive check: service běží A má aspoň jednu session. */
+        fun isAliveWithSessions(): Boolean =
+            instance != null && sessions.isNotEmpty()
 
         // BUG 5 FIX: Atomic monotonicky rostoucí counter, který se kombinuje
         // s nanoTime pro 100% unikátní session ID i při paralelních createSession
@@ -228,6 +236,12 @@ class TerminalService : Service() {
                         ?.getBoolean("boot_autostart", true) == true &&
                     backgroundBootReloads < 3
                 if (reload) {
+                    // Stabilní běh > STABLE_MS resetuje backoff counter: 3 crashy
+                    // za sebou v průběhu dne nesmí trvale vypnout cron obnovu.
+                    if (backgroundBootStartedAt > 0 &&
+                        System.currentTimeMillis() - backgroundBootStartedAt > STABLE_MS) {
+                        backgroundBootReloads = 0
+                    }
                     backgroundBootReloads++
                     Log.i(TAG, "Background cron session ended — relaunching (attempt $backgroundBootReloads)")
                     val app = instance?.applicationContext
@@ -334,6 +348,8 @@ class TerminalService : Service() {
         acquireLocks()
         createNotificationChannel()
         LocalApiServer.start(applicationContext)
+        // Watchdog alarm: service alive → alarm musí běžet (revive po LMK/OEM killu).
+        WatchdogReceiver.schedule(this)
         Log.i(TAG, "Service created")
     }
 
@@ -343,6 +359,7 @@ class TerminalService : Service() {
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, buildNotification())
+        WatchdogReceiver.schedule(this)
 
         // START_STICKY restart: the system killed the app — bring the background
         // cron session back so cron automation keeps running.
@@ -354,6 +371,34 @@ class TerminalService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * Swipe z recents / OEM "clean all" — systém (hlavně MIUI/HyperOS) zabije
+     * process group. Service má šanci se restartovat PŘED smrtí: pokud běží
+     * sessiony nebo je zapnutý autostart, pustíme startForegroundService znovu
+     * (z onTaskRemoved je to povolené — app je ve foreground-service stavu).
+     * android:stopWithTask="false" v manifestu zajišťuje, že se tahle metoda
+     * vůbec zavolá a service není stopnut automaticky.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.w(TAG, "onTaskRemoved — OEM swipe-kill defense")
+        val prefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+        val wantAlive = sessions.isNotEmpty() || prefs.getBoolean("boot_autostart", true)
+        if (wantAlive) {
+            try {
+                val restart = Intent(applicationContext, TerminalService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    applicationContext.startForegroundService(restart)
+                } else {
+                    applicationContext.startService(restart)
+                }
+                WatchdogReceiver.schedule(applicationContext)
+            } catch (e: Exception) {
+                Log.e(TAG, "onTaskRemoved revive failed: ${e.message}")
+            }
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -377,6 +422,8 @@ class TerminalService : Service() {
         sessionClients.clear()
         backgroundBootSessionId = null
         backgroundBootReloads = 0
+        // Uživatel explicitně ukončil — watchdog nesmí app oživovat.
+        WatchdogReceiver.cancel(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -415,8 +462,11 @@ class TerminalService : Service() {
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setContentIntent(openIntent)
-            .setOngoing(count > 0)
-            .setPriority(if (count > 0) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MIN)
+            // Ongoing VŽDY když service běží: swipenutelná notifikace = slabší
+            // pozice v LMK a OEM killer ji bere jako "app nepoužívaná".
+            .setOngoing(true)
+            // PRIORITY_MIN = pozvánka k zabití na OEM ROM; LOW je minimum pro FGS.
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,

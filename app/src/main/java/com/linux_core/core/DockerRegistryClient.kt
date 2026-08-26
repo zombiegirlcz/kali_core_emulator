@@ -223,8 +223,8 @@ class DockerRegistryClient(
      */
     private fun fetchTokenFromAuthServer(imageRef: DockerImageRef): String {
         val scope = imageRef.authScope
-        val service = "registry.docker.io"
-        val realm = "https://auth.docker.io/token"
+        val service = imageRef.authService
+        val realm = "https://${imageRef.authRealm}"
 
         val url = "$realm?service=$service&scope=$scope"
         Log.d("DockerRegistry", "Requesting token: $url")
@@ -271,8 +271,10 @@ class DockerRegistryClient(
         Log.d("DockerRegistry", "Www-Authenticate: $authHeader")
 
         // Parsování: Bearer realm="...",service="...",scope="..."
-        val realm = extractAuthParam(authHeader, "realm") ?: "https://auth.docker.io/token"
-        val service = extractAuthParam(authHeader, "service") ?: "registry.docker.io"
+        // Challenge z registru má přednost (funguje i pro custom registry).
+        val realm = extractAuthParam(authHeader, "realm")
+            ?: "https://${imageRef.authRealm}"
+        val service = extractAuthParam(authHeader, "service") ?: imageRef.authService
         val scope = extractAuthParam(authHeader, "scope") ?: imageRef.authScope
 
         val url = "$realm?service=$service&scope=$scope"
@@ -483,7 +485,8 @@ class DockerRegistryClient(
             namespace = imageRef.namespace,
             repository = imageRef.repository,
             tag = "",
-            digest = digest
+            digest = digest,
+            registryHost = imageRef.registryHost
         )
 
         Log.i("DockerRegistry", "Resolving manifest list → fetching single manifest by digest: $digest")
@@ -511,7 +514,9 @@ class DockerRegistryClient(
     companion object {
         private const val DEFAULT_BUFFER_SIZE = 256 * 1024 // 256KB
         private const val CONNECT_TIMEOUT_SEC = 30L
-        private const val READ_TIMEOUT_SEC = 60L
+        // Mobilní sítě + velké vrstvy (ubuntu ~40 MB gzip): 60s stačilo jen na
+        // rychlém Wi-Fi; pomalé LTE padalo na read timeout uprostřed vrstvy.
+        private const val READ_TIMEOUT_SEC = 180L
 
         fun defaultHttpClient(): OkHttpClient {
             return OkHttpClient.Builder()

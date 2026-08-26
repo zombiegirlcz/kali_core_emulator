@@ -2014,17 +2014,40 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun addNewSession() {
-        val cfg = config ?: return
         Log.i(TAG, "addNewSession")
-        val session = try {
-            TerminalService.createSession(this, cfg, terminalView) { showError(it) }
-        } catch (e: Exception) {
-            showError("Session error: ${e.message}")
-            return
+        // MULTI-ROOTFS: config aktivity může ukazovat na jiné distro než aktuální
+        // session (uživatel přepnl drawerem mezi Kali a Parrot). Vždy postavíme
+        // config podle distra AKTIVNÍ session, aby "+" vytvořilo session téhož
+        // rootfs, který si uživatel prohlíží.
+        val sid = currentSession?.let { TerminalService.getSessionId(it) }
+        val distroName = if (sid != null) TerminalService.sessionDistros[sid] ?: "nh/distro/kali" else "nh/distro/kali"
+        val isDocker = distroName.startsWith("docker-") ||
+                       distroName.startsWith("oci-") ||
+                       distroName.startsWith("nh/distro/docker/")
+        val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
+        lifecycleScope.launch(Dispatchers.IO) {
+            val cfg = try {
+                ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker)
+            } catch (e: Exception) {
+                Log.e(TAG, "addNewSession setup failed for $distroName", e)
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (cfg == null) {
+                    showError("Setup failed: $distroName")
+                    return@withContext
+                }
+                config = cfg
+                val session = try {
+                    TerminalService.createSession(this@TerminalActivity, cfg, terminalView) { showError(it) }
+                } catch (e: Exception) {
+                    showError("Session error: ${e.message}")
+                    return@withContext
+                }
+                switchToSession(session)
+                updateSessionDrawer()
+            }
         }
-
-        switchToSession(session)
-        updateSessionDrawer()
     }
 
     private fun switchToSession(session: TerminalSession) {
@@ -2649,38 +2672,44 @@ class TerminalActivity : ComponentActivity() {
             sid == null || !TerminalService.floatedSessionIds.contains(sid)
         }
         if (activeSessions.isNotEmpty()) {
-            // singleTask: pokud nový intent míří na jiný rootfs, restartovat session
+            // MULTI-ROOTFS: nový intent na jiný rootfs NESMÍ zabíjet existující
+            // sessiony — Kali i Parrot můžou běžet současně (drawer je umí
+            // vypsat a přepínat). Chování:
+            //   1. existuje session stejného rootfs  → jen se na ni přepneme,
+            //   2. neexistuje                        → vytvoří se NOVÁ session
+            //      (ostatní distra běží dál na pozadí).
             val newRootfsDirName = intent.getStringExtra("rootfsDirName")
             if (newRootfsDirName != null) {
-                val lastSession = activeSessions.last()
-                val sessionId = TerminalService.getSessionId(lastSession)
-                val currentDistro = if (sessionId != null) TerminalService.sessionDistros[sessionId] else null
-                if (currentDistro != newRootfsDirName) {
-                    Log.i(TAG, "Rootfs changed from $currentDistro to $newRootfsDirName — restarting session")
-                    activeSessions.forEach { it.finishIfRunning() }
-                    TerminalService.sessions.clear()
-                    // Fall through to create new session below
-                } else {
-                    Log.i(TAG, "Attaching to existing active session (same rootfs: $currentDistro)")
+                val sameRootfs = activeSessions.firstOrNull { s ->
+                    val sid = TerminalService.getSessionId(s)
+                    val d = if (sid != null) TerminalService.sessionDistros[sid] else null
+                    // null distro = stará/neznámá session — default je kali
+                    d == newRootfsDirName || (d == null && newRootfsDirName == "nh/distro/kali")
+                }
+                if (sameRootfs != null) {
+                    Log.i(TAG, "Attaching to existing active session (same rootfs: $newRootfsDirName)")
                     val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
                     lifecycleScope.launch(Dispatchers.IO) {
                         val cfg = try {
                             val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
-                                           currentDistro.startsWith("docker-") ||
-                                           currentDistro.startsWith("oci-") ||
-                                           currentDistro.startsWith("nh/distro/docker/")
-                            ProotManager.setupProotEnvironment(this@TerminalActivity, currentDistro, mountStorageSaved, null, false, isDocker)
+                                           newRootfsDirName.startsWith("docker-") ||
+                                           newRootfsDirName.startsWith("oci-") ||
+                                           newRootfsDirName.startsWith("nh/distro/docker/")
+                            ProotManager.setupProotEnvironment(this@TerminalActivity, newRootfsDirName, mountStorageSaved, null, false, isDocker)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Attach setup failed for $currentDistro", e)
+                            Log.e(TAG, "Attach setup failed for $newRootfsDirName", e)
                             null
                         }
                         withContext(Dispatchers.Main) {
                             config = cfg
-                            switchToSession(lastSession)
+                            switchToSession(sameRootfs)
                         }
                     }
                     return
                 }
+                Log.i(TAG, "No running session for $newRootfsDirName — creating NEW session " +
+                    "(${activeSessions.size} existing session(s) of other rootfs keep running)")
+                // Fall through to create new session below — nic se nemaže.
             } else {
                 // No new intent — attach to existing
                 Log.i(TAG, "Attaching to existing active session (no new intent)")

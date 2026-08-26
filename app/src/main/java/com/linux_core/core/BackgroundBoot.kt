@@ -61,6 +61,7 @@ object BackgroundBoot {
                 }
                 TerminalService.sessionIds[created]?.let { TerminalService.backgroundBootSessionId = it }
                 TerminalService.backgroundBootReloads = 0
+                TerminalService.backgroundBootStartedAt = System.currentTimeMillis()
                 Log.i(TAG, "Background boot started (cron session in ${rootfsDir.name})")
             } catch (e: Exception) {
                 Log.e(TAG, "Background boot failed: ${e.message}")

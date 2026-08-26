@@ -142,17 +142,20 @@
         <service
             android:name=".core.TerminalService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <!-- Plovoucí terminál (overlay, `nh float`) -->
         <service
             android:name=".core.FloatingTerminalService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <service
             android:name=".core.BackupService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <service
@@ -276,6 +279,11 @@
         <receiver
             android:name=".core.VerdictReceiver"
             android:exported="false" />
+        <!-- Watchdog: exact alarm každých 10 min, oživí service+cron po LMK/OEM killu -->
+        <receiver
+            android:name=".core.WatchdogReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".core.BootReceiver"
             android:exported="true">

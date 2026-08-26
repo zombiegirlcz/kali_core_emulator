@@ -20,8 +20,8 @@ android {
         applicationId = "com.linux_core"
         minSdk = 28
         targetSdk = 28
-        versionCode = 19
-        versionName = "4.5-ASHELL-CONF"
+        versionCode = 20
+        versionName = "4.5-MULTI-ROOTFS"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

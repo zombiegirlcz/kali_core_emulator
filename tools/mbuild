@@ -18,6 +18,7 @@
 # Zdroj pravdy pro native binárky je Volume (build_native je tam kompiluje).
 # Po native buildu se dělá pull_full_assets zpět do lokálního repa.
 set -e
+set -o pipefail
 
 SRC="${KALI_PROJECT_DIR:-.}"
 CMD="${1:-}"
