@@ -39,7 +39,8 @@ class CoreBridgeService : Service() {
 
         override fun hostShell(command: String?): String {
             checkCaller("hostShell")
-            return runBlocking { ExecCore.hostExec(applicationContext, command ?: "") }
+            // Agent (assistant) dostává čisté vlastní env, ne elf_loader config uživatele
+            return runBlocking { ExecCore.hostExec(applicationContext, command ?: "", agentMode = true) }
         }
 
         override fun elfExec(command: String?, timeoutMs: Int): String {

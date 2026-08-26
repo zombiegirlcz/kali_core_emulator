@@ -13,53 +13,20 @@ data class AshellConfigParserResult(val envLines: List<String>, val blocked: Set
  * Jediné místo s exec business logikou — volá ho LocalApiServer (HTTP, guest cesta)
  * i CoreBridgeService (Binder, app-to-app cesta). Žádná duplikace guardů.
  *
- * Obsah přesunut 1:1 z LocalApiServer.kt (SHELL_ALLOWLIST, DESTRUCTIVE_PATTERNS,
+ * Obsah přesunut 1:1 z LocalApiServer.kt (DESTRUCTIVE_PATTERNS,
  * ashell config cluster, hostShellEnv) + hostExec/guestExec (těla bývalých
  * handleShell/handleProotExec). Chování musí zůstat identické.
+ *
+ * Allowlist (SHELL_ALLOWLIST) byl ZRUŠEN 2026-08-26 — agent i guest mohou
+ * spouštět libovolné příkazy; bezpečnostní síť zůstává DESTRUCTIVE_PATTERNS
+ * + ashell blocklist (host) + distro validace (guest).
  */
 object ExecCore {
 
     private const val TAG = "ExecCore"
 
-    // ── Přesunuto z LocalApiServer (allowlist guest API /proot/exec) ─────
-
-    val SHELL_ALLOWLIST = setOf(
-        // Diagnostic
-        "ls", "cat", "echo", "printf", "pwd", "whoami", "id", "uname",
-        "ps", "df", "du", "free", "uptime", "date", "which", "find",
-        "grep", "egrep", "fgrep", "rg", "head", "tail", "wc", "sort", "cut",
-        "tr", "sed", "awk", "xargs", "tee", "basename", "dirname",
-        "readlink", "realpath", "stat", "file",
-        // Network
-        "ping", "ping6", "curl", "wget", "netstat", "ss", "ip", "ifconfig",
-        "nslookup", "dig", "host", "traceroute", "tracepath", "mtr", "nc", "ncat",
-        // Filesystem (safe subset — rm is allowed but guarded by DESTRUCTIVE_PATTERNS)
-        "touch", "chmod", "chown", "ln", "mkdir", "rmdir",
-        "tar", "gzip", "gunzip", "bzip2", "xz", "unzip", "zip",
-        "cp", "mv", "rm",
-        // Package management
-        "apt", "apt-get", "dpkg", "pip", "pip3", "npm",
-        // System / Android
-        "env", "printenv", "getprop", "dmesg", "logcat",
-        // Interpreters (inline code can still be dangerous — DESTRUCTIVE_PATTERNS also scans
-        // inside the argument string so e.g. 'rm -rf /' inside a python -c is caught)
-        "python", "python3", "perl",
-        "bash", "sh", "zsh",
-        // Project CLI
-        "nh", "nethunter", "vpn-cli", "zkill",
-        // Editors / pagers
-        "nano", "less", "more", "vim", "vi",
-        // Utility
-        "free", "w", "who", "users", "last",
-        "diff", "cmp", "patch",
-        "clear", "reset", "history",
-        "test", "expr",
-        "sleep", "timeout",
-        "dd"
-    )
-
-    // Destructive patterns — checked across the entire command string *after*
-    // the allowlist gate, so they catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
+    // Destructive patterns — checked across the entire command string, so they
+    // catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
     val DESTRUCTIVE_PATTERNS = listOf(
         "rm -rf /", "rm -rf /*", "rm -rf *", "rm -rf .", "rm -rf ~",
         "rm -fr /", "rm -fr /*", "rm -fr *", "rm -fr .", "rm -fr ~",
@@ -82,8 +49,14 @@ object ExecCore {
      * Blocklist gate (ashell.conf) + destructive patterns + env prefix + Runtime.exec.
      * Vrací JSON identický tvaru odpovědi /shell: {exit_code, stdout, stderr}
      * nebo {error:"..."} pro odmítnutí (HTTP handler odvodí status kód).
+     *
+     * @param agentMode true = voláno z AI assistantu přes Binder bridge.
+     *   Agent dostává VLASTNÍ čisté prostředí (defaultAshellConfig), nikoliv
+     *   uživatelův ashell.conf, který může obsahovat elf_loader env
+     *   (ROOTFS/LD_LIBRARY_PATH), jenž agenta mate ("cesty jsou rozbité").
+     *   Blocklist + destructive guards platí pro obě cesty.
      */
-    fun hostExec(ctx: Context, command: String): String {
+    fun hostExec(ctx: Context, command: String, agentMode: Boolean = false): String {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 1024) return errJson("Command too long (max 1024 chars)")
 
@@ -104,10 +77,14 @@ object ExecCore {
             }
         }
 
-        // Aplikuj env prefix z configu pred uzivatelsky prikaz
-        // (export/unset/... jako .zshrc; exit code nese uzivatelsky prikaz,
-        // protoze je posledni ve skriptu)
-        val prefix = cfg.envLines.joinToString("\n") { expandAshellLine(it, ctx) }
+        // Agent používá čisté defaultní env (žádné elf_loader z ashell.conf
+        // uživatele); interaktivní host si nechá uživatelův config.
+        val prefix = if (agentMode) {
+            parseAshellConfig(defaultAshellConfig()).envLines
+                .joinToString("\n") { expandAshellLine(it, ctx) }
+        } else {
+            cfg.envLines.joinToString("\n") { expandAshellLine(it, ctx) }
+        }
         val fullCommand = if (prefix.isBlank()) command else "$prefix\n$command"
 
         return try {
@@ -138,16 +115,7 @@ object ExecCore {
             return errJson("Invalid distro: '$distro'. Use 'kali' or 'parrot'.")
         }
 
-        // ── 1. Allowlist gate ────────────────────────────────────────────
-        val cmdName = command
-            .substringBefore(" ")
-            .substringBefore("\t")
-            .substringAfterLast("/")
-        if (cmdName !in SHELL_ALLOWLIST) {
-            return errJson("Command '$cmdName' is not in the allowed commands list")
-        }
-
-        // ── 2. Destructive patterns guard ───────────────────────────────
+        // ── 1. Destructive patterns guard (allowlist zrušen 2026-08-26) ──
         val commandLower = command.lowercase()
         for (pattern in DESTRUCTIVE_PATTERNS) {
             if (commandLower.contains(pattern.lowercase())) {
@@ -305,16 +273,7 @@ object ExecCore {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 2048) return errJson("Command too long (max 2048 chars)")
 
-        // ── 1. Allowlist gate (stejná politika jako /proot/exec) ────────
-        val cmdName = command
-            .substringBefore(" ")
-            .substringBefore("\t")
-            .substringAfterLast("/")
-        if (cmdName !in SHELL_ALLOWLIST) {
-            return errJson("Command '$cmdName' is not in the allowed commands list")
-        }
-
-        // ── 2. Destructive patterns guard (reálny FS!) ──────────────────
+        // ── 1. Destructive patterns guard (reálný FS!, allowlist zrušen) ─
         val commandLower = command.lowercase()
         for (pattern in DESTRUCTIVE_PATTERNS) {
             if (commandLower.contains(pattern.lowercase())) {
