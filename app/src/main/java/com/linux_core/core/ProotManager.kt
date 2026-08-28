@@ -17,6 +17,25 @@ object ProotManager {
     private const val TAG = "ProotManager"
     private const val NL = "\n" // Force Unix line endings
 
+    // Cesty k su binárce (root). Bind cross-app adresáře vyžaduje root.
+    private val SU_PATHS = listOf(
+        "/product/bin/su",
+        "/system/xbin/su",
+        "/system/bin/su",
+        "/data/adb/ksu/bin/su",
+        "/apex/com.android.runtime/bin/su",
+        "/sbin/su",
+        "/data/adb/magisk/su"
+    )
+
+    private fun findSu(ctx: Context): String? {
+        for (path in SU_PATHS) {
+            val f = File(path)
+            if (f.exists() && f.canExecute()) return path
+        }
+        return null
+    }
+
     // Host-side usr tools (sed/rsync/nano/rg + libncursesw + zkill) — verze deploye.
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
@@ -169,8 +188,18 @@ object ProotManager {
         }
 
         val prootBin = File(context.filesDir, "usr/bin/proot")
+        // Cross-app bind (bind_aiapp) vyžaduje root, aby proot mohl bindovat
+        // cizí app data (/data/user/0/com.kali.aiassistant). Pokud je su k
+        // dispozici, celý guest pustíme pod rootem — jinak zůstává v app sandboxu
+        // (bind selže s varováním "can't sanitize binding", ale není fatální).
+        val finalCommand = if (rootPrefs.getBoolean("bind_aiapp", false)) {
+            val su = findSu(context)
+            if (su != null) listOf(su, "-c", fullCommand.joinToString(" ")) else fullCommand
+        } else {
+            fullCommand
+        }
         return ProotConfig(
-            command = fullCommand.toTypedArray(),
+            command = finalCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
             env = envVars.toTypedArray(),
             prootPath = prootBin.absolutePath,

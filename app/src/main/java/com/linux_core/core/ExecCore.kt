@@ -25,6 +25,25 @@ object ExecCore {
 
     private const val TAG = "ExecCore"
 
+    // Cesty k su binárce (root). Bind cross-app adresáře vyžaduje root.
+    private val SU_PATHS = listOf(
+        "/product/bin/su",
+        "/system/xbin/su",
+        "/system/bin/su",
+        "/data/adb/ksu/bin/su",
+        "/apex/com.android.runtime/bin/su",
+        "/sbin/su",
+        "/data/adb/magisk/su"
+    )
+
+    private fun findSu(ctx: Context): String? {
+        for (path in SU_PATHS) {
+            val f = File(path)
+            if (f.exists() && f.canExecute()) return path
+        }
+        return null
+    }
+
     // Destructive patterns — checked across the entire command string, so they
     // catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
     val DESTRUCTIVE_PATTERNS = listOf(
@@ -135,12 +154,40 @@ object ExecCore {
             return errJson("Boot script not found. Please open a terminal session first to initialize PRoot.")
         }
 
+        // Jen cross-app bind (bind_aiapp) — agentův guest dřív žádné extra mouny
+        // neměl, takže neměníme jeho chování. Vyžaduje root -> guest pod su.
+        val rootPrefs = ctx.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        val extraMounts = buildString {
+            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+        }
+        // Root jen pokud je zapnutý cross-app bind A zároveň dostupné su — jinak
+        // zůstává guest v app sandboxu (bezpečnější, bez SELinux rizika na rootfs).
+        val su = if (rootPrefs.getBoolean("bind_aiapp", false)) findSu(ctx) else null
+
         return try {
             val startTime = System.currentTimeMillis()
-            val cmd = mutableListOf("sh", bootScript.absolutePath, bootSub)
-            if (bootImage != null) cmd.add(bootImage)
-            cmd.add("--"); cmd.add("sh"); cmd.add("-c"); cmd.add(command)
-            val pb = ProcessBuilder(cmd)
+            // Příkaz i wrapper píšeme do souborů — vyhneme se quoting problému a
+            // pod su funguje i příkaz s mezerami/uvozovkami. NH_EXTRA_MOUNTS se
+            // předá přes export uvnitř wrapperu (čte ho boot skript).
+            val cmdFile = File(ctx.cacheDir, "aiexec_cmd_${System.currentTimeMillis()}.sh").apply {
+                writeText(command)
+                setExecutable(true)
+            }
+            val wrapper = File(ctx.cacheDir, "aiexec_wrap_${System.currentTimeMillis()}.sh").apply {
+                writeText(
+                    "#!/system/bin/sh\n" +
+                    "export NH_EXTRA_MOUNTS='$extraMounts'\n" +
+                    "exec sh ${bootScript.absolutePath} $bootSub" +
+                    (if (bootImage != null) " $bootImage" else "") +
+                    " -- sh -c 'sh ${cmdFile.absolutePath}'\n"
+                )
+                setExecutable(true)
+            }
+            val pb = if (su != null) {
+                ProcessBuilder(su, "-c", "sh ${wrapper.absolutePath}")
+            } else {
+                ProcessBuilder("sh", wrapper.absolutePath)
+            }
             pb.directory(ctx.filesDir)
             pb.redirectErrorStream(false)
             val process = pb.start()
