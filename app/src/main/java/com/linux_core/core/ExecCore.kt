@@ -111,8 +111,14 @@ object ExecCore {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 2048) return errJson("Command too long (max 2048 chars)")
         val distroLower = distro.trim().lowercase()
-        if (distroLower !in listOf("kali", "parrot")) {
-            return errJson("Invalid distro: '$distro'. Use 'kali' or 'parrot'.")
+        val (bootSub, bootImage) = if (distroLower.startsWith("docker/")) {
+            "docker" to distroLower.substringAfter("docker/")
+        } else {
+            distroLower to null
+        }
+        val distroRoot = File(ctx.filesDir, "nh/distro/$distroLower")
+        if (!distroRoot.exists() || !distroRoot.isDirectory) {
+            return errJson("Distro '$distro' not found under nh/distro/. Use listDistros() to see installed distros.")
         }
 
         // ── 1. Destructive patterns guard (allowlist zrušen 2026-08-26) ──
@@ -131,7 +137,10 @@ object ExecCore {
 
         return try {
             val startTime = System.currentTimeMillis()
-            val pb = ProcessBuilder("sh", bootScript.absolutePath, distroLower, "--", "sh", "-c", command)
+            val cmd = mutableListOf("sh", bootScript.absolutePath, bootSub)
+            if (bootImage != null) cmd.add(bootImage)
+            cmd.add("--"); cmd.add("sh"); cmd.add("-c"); cmd.add(command)
+            val pb = ProcessBuilder(cmd)
             pb.directory(ctx.filesDir)
             pb.redirectErrorStream(false)
             val process = pb.start()
@@ -161,6 +170,22 @@ object ExecCore {
             Log.e(TAG, "guestExec error: ${e.message}", e)
             errJson(e.message ?: "internal error")
         }
+    }
+
+    /** Vrátí JSON pole nainstalovaných distrí (podadresáře nh/distro/, docker jako "docker/<image>"). */
+    fun listDistros(ctx: Context): String {
+        val distroDir = File(ctx.filesDir, "nh/distro")
+        val ids = mutableListOf<String>()
+        distroDir.listFiles()?.forEach { f ->
+            if (f.isDirectory) {
+                when (f.name) {
+                    "docker" -> f.listFiles()?.forEach { if (it.isDirectory) ids.add("docker/${it.name}") }
+                    "backup" -> { /* přeskočit */ }
+                    else -> ids.add(f.name)
+                }
+            }
+        }
+        return "[" + ids.joinToString(",") { JSONObject.quote(it) } + "]"
     }
 
     // ── ashell config cluster — přesunuto z LocalApiServer ───────────────

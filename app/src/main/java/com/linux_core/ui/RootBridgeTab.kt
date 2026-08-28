@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -467,8 +468,9 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
 
     val scrollState = rememberScrollState()
 
+    SelectionContainer(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 12.dp)
             .verticalScroll(scrollState)
@@ -816,6 +818,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     )
                 }
             }
+        }
         }
     }
 
