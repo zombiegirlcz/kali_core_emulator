@@ -161,7 +161,11 @@ def sync():
         subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
         subprocess.run(["git", "fetch", "origin", GITHUB_BRANCH], cwd=dest, check=True)
         subprocess.run(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], cwd=dest, check=True)
-        subprocess.run(["git", "clean", "-fdx"], cwd=dest, check=True)
+        # ZÁMĚRNĚ BEZ `git clean`: ponechává postavené build artefakty
+        # (proot-static-*, loader-static-*, *.so, binárky v assets/), které NEjsou
+        # v gitu (untracked). Díky tomu `smart_build` najde proot/lib/bin na
+        # Volume a podle `git diff` rozhodne o skipu. `reset --hard` aktualizuje
+        # tracked soubory 1:1 na GitHub; untracked artefakty přežijí sync.
     else:
         print(f"[sync] Klonuji {GITHUB_REPO}@{GITHUB_BRANCH} -> {dest}")
         if os.path.isdir(dest):
@@ -177,7 +181,7 @@ def sync():
         cwd=dest, check=True,
     )
     build_vol.commit()
-    print("[sync] Hotovo. /vol/src odpovídá 1:1 GitHubu.")
+    print("[sync] Hotovo. Tracked strom = 1:1 GitHub; build artefakty (proot/lib/bin) zachovány.")
 
 
 @app.function(
