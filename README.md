@@ -90,7 +90,7 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh device scroll forward\|backward` | device | Scroll the active view | `nh device scroll forward` |
 | `nh device global back\|home\|recents` | device | Global device action | `nh device global home` |
 | `nh api share on\|off\|status` | api | Expose API externally (0.0.0.0 vs 127.0.0.1) | `nh api share on` |
-| `nh desktop start\|stop\|status` | desktop | Control noVNC XFCE4 desktop | `nh desktop start` |
+| `nh desktop start\|stop\|status` | desktop | Control XFCE4 desktop (rendered by external X11 launcher) | `nh desktop start` |
 | `nh fix pkg <name>` | fix | Fix a stuck post-install script | `nh fix pkg libc6` |
 | `nh fix auto` | fix | Auto-fix all broken packages | `nh fix auto` |
 | `nh fix permission <path>` | fix | Fix file ownership after real-root (su_daemon) commands | `nh fix permission /root/dir` |
@@ -407,7 +407,7 @@ This release introduces UI modularity improvements and advanced resource monitor
 
 ### 1. Draggable & Minimized Session Drawer
 - **Clean CLI View:** Automatically hides the top navigation bar in CLI mode to maximize vertical terminal space. Added a floating corner hamburger button (`☰`) to open the session panel.
-- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast VNC GUI launcher. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
+- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast launcher for the external X11 desktop. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
 
 ### 2. Live Resource & RAM Telemetry
 - **Total System RAM:** Displays real-time total and used system memory in the expanded drawer header (e.g. `[RAM: 3.4 GB / 8.0 GB]`).
