@@ -23,6 +23,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.ProgressBar
+import android.widget.Toast
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebSettings
@@ -40,6 +41,7 @@ import com.linux_core.core.KeyType
 import com.linux_core.core.HackerKeyboardRows
 import com.linux_core.core.RootfsManager
 import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -167,12 +169,11 @@ class TerminalActivity : ComponentActivity() {
     private val tabsList = listOf("CONTROL", "SYMBOLS", "NAVIGATION", "CTRL COMBOS", "F-KEYS")
     private val tabButtons = HashMap<String, Button>()
 
-    // X11 GUI Desktop integration fields
+    // X11 Desktop (external launcher) integration fields
     private var activeViewMode = "CLI" // "CLI" or "GUI"
     private lateinit var btnCli: Button
     private lateinit var btnGui: Button
     private lateinit var guiContainer: FrameLayout
-    private lateinit var guiWebView: WebView
     private lateinit var guiPlaceholderLayout: LinearLayout
     private lateinit var guiPlaceholderTitle: TextView
     private lateinit var guiPlaceholderDesc: TextView
@@ -183,28 +184,9 @@ class TerminalActivity : ComponentActivity() {
     private var pendingNanoCommand: String? = null
     // PiP: uložené visibility chrome prvků před vstupem do PiP (obnovení při návratu)
     private val pipSavedVisibility = HashMap<View, Int>()
-    private lateinit var btnTouchToggle: Button
-    private var guiTouchMode = true // true = trackpad (default), false = direct touch
 
-    // Trackpad state variables (Android-level touch interception)
-    private var virtualCursorX = 960f
-    private var virtualCursorY = 540f
-    private var lastTouchX = 0f
-    private var lastTouchY = 0f
-    private var touchStartTime = 0L
-    private var totalTouchMovement = 0f
-    private var isTouchMoving = false
-    private var isTwoFingerGesture = false
-    private var longPressTriggered = false
-    private var twoFingerStartY = 0f
-    private var scrollAccum = 0f
-    private val longPressHandler = Handler(Looper.getMainLooper())
-
-    // Double tap drag lock states
-    private var lastTapTime = 0L
-    private var lastTapX = 0f
-    private var lastTapY = 0f
-    private var isDragGesture = false
+    // External X11 launcher app (renders the desktop; this app only runs the X server)
+    private val EXTERNAL_LAUNCHER_PKG = "com.linux_core.xlauncher"
 
     var terminalFontSizeFloat = 32f
 
@@ -410,27 +392,6 @@ class TerminalActivity : ComponentActivity() {
         guiToggleLayout.addView(btnCli)
         guiToggleLayout.addView(btnGui)
 
-        btnTouchToggle = Button(this).apply {
-            text = "🖱️ Trackpad"
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
-            setPadding(12, 0, 12, 0)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-            ).apply {
-                setMargins(8, 0, 8, 0)
-            }
-            layoutParams = params
-            visibility = View.GONE
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                toggleTouchMode()
-            }
-        }
-        topBar.addView(btnTouchToggle)
         topBar.addView(guiToggleLayout)
 
         mainLayout.addView(topBar)
@@ -495,136 +456,7 @@ class TerminalActivity : ComponentActivity() {
             visibility = View.GONE
         }
 
-        guiWebView = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.allowFileAccess = true
-            settings.allowContentAccess = true
-            settings.builtInZoomControls = false
-            settings.displayZoomControls = false
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                    super.onPageStarted(view, url, favicon)
-                    // Inject WebSocket interceptor BEFORE noVNC scripts run.
-                    // This captures the VNC WebSocket so we can send raw pointer events.
-                    view?.evaluateJavascript("""
-                (function() {
-                    if (window._nhWsPatched) return;
-                    window._nhWsPatched = true;
-                    window._vncWs = null;
 
-                    // Method 1: Override WebSocket constructor to capture on creation
-                    var OrigWS = window.WebSocket;
-                    window.WebSocket = function(url, protocols) {
-                        var ws = protocols !== undefined ? new OrigWS(url, protocols) : new OrigWS(url);
-                        window._vncWs = ws;
-                        return ws;
-                    };
-                    window.WebSocket.prototype = OrigWS.prototype;
-                    window.WebSocket.CONNECTING = 0;
-                    window.WebSocket.OPEN = 1;
-                    window.WebSocket.CLOSING = 2;
-                    window.WebSocket.CLOSED = 3;
-
-                    // Method 2: Also patch prototype.send as backup
-                    var origSend = OrigWS.prototype.send;
-                    OrigWS.prototype.send = function(data) {
-                        if (!window._vncWs || window._vncWs.readyState !== 1) {
-                            window._vncWs = this;
-                        }
-                        return origSend.apply(this, arguments);
-                    };
-
-                    // Define _vncPtr immediately (uses captured WS when available)
-                    window._vncPtr = function(x, y, mask) {
-                        var ws = window._vncWs;
-                        if (!ws || ws.readyState !== 1) return;
-                        var d = new Uint8Array(6);
-                        d[0] = 5;  // VNC pointer event message type
-                        d[1] = mask;
-                        d[2] = (x >> 8) & 0xFF; d[3] = x & 0xFF;
-                        d[4] = (y >> 8) & 0xFF; d[5] = y & 0xFF;
-                        ws.send(d.buffer);
-
-                        if (window._updateCursor) {
-                            window._updateCursor(x, y);
-                        }
-                    };
-
-                    // Create a custom cursor element if it doesn't exist yet
-                    if (!document.getElementById('nh-custom-cursor')) {
-                        var cur = document.createElement('div');
-                        cur.id = 'nh-custom-cursor';
-                        cur.style.position = 'fixed';
-                        cur.style.width = '16px';
-                        cur.style.height = '16px';
-                        cur.style.pointerEvents = 'none';
-                        cur.style.zIndex = '999999';
-                        cur.style.left = '0px';
-                        cur.style.top = '0px';
-                        cur.style.display = 'none'; // hide until first move
-                        cur.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-                                        '  <path d="M0 0V14.5L4.25 10.25L8 18L11 16.5L7.25 8.75L12.5 8.75Z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="miter"/>' +
-                                        '</svg>';
-                        document.body.appendChild(cur);
-                    }
-
-                    window._updateCursor = function(x, y) {
-                        var cur = document.getElementById('nh-custom-cursor');
-                        if (!cur) return;
-                        var canvas = document.querySelector('canvas') || document.getElementById('noVNC_canvas');
-                        if (!canvas) {
-                            cur.style.left = (x / 1920 * window.innerWidth) + 'px';
-                            cur.style.top = (y / 1080 * window.innerHeight) + 'px';
-                            cur.style.display = 'block';
-                            return;
-                        }
-                        var rect = canvas.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            var left = rect.left + (x / canvas.width) * rect.width;
-                            var top = rect.top + (y / canvas.height) * rect.height;
-                            cur.style.left = left + 'px';
-                            cur.style.top = top + 'px';
-                            cur.style.display = 'block';
-                        } else {
-                            cur.style.left = (x / 1920 * window.innerWidth) + 'px';
-                            cur.style.top = (y / 1080 * window.innerHeight) + 'px';
-                            cur.style.display = 'block';
-                        }
-                    };
-                })();
-            """.trimIndent(), null)
-                }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    // Hide the noVNC fullscreen button
-                    view?.evaluateJavascript("(function() { " +
-                        "var css = '#noVNC_fullscreen_button { display: none !important; }'; " +
-                        "var head = document.head || document.getElementsByTagName('head')[0]; " +
-                        "var style = document.createElement('style'); " +
-                        "style.type = 'text/css'; " +
-                        "style.appendChild(document.createTextNode(css)); " +
-                        "head.appendChild(style); " +
-                        "})()", null)
-
-                    // Re-inject WS interceptor as backup (in case onPageStarted was too early)
-                    view?.postDelayed({
-                        view.evaluateJavascript(getVncPointerHelperScript(), null)
-                    }, 3000)
-                }
-            }
-
-            // Android-level touch interceptor for trackpad mode
-            setOnTouchListener(createTrackpadTouchListener())
-
-            visibility = View.GONE
-        }
-        guiContainer.addView(guiWebView)
 
         // Custom Cyber-styled VNC Placeholder
         guiPlaceholderLayout = LinearLayout(this).apply {
@@ -677,7 +509,7 @@ class TerminalActivity : ComponentActivity() {
         guiPlaceholderLayout.addView(guiProgress)
 
         btnStartGui = Button(this).apply {
-            text = "START GRAPHICAL DESKTOP"
+            text = "OPEN DESKTOP LAUNCHER"
             setTextColor(Color.BLACK)
             setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
             textSize = 12f
@@ -689,7 +521,7 @@ class TerminalActivity : ComponentActivity() {
             layoutParams = params
             setOnClickListener {
                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                startDesktopInBackground()
+                onEnterGuiMode()
             }
         }
         guiPlaceholderLayout.addView(btnStartGui)
@@ -943,8 +775,7 @@ class TerminalActivity : ComponentActivity() {
             suggestionBar.visibility = if (historyManager.getSuggestions(currentCommand.toString()).isNotEmpty()) View.VISIBLE else View.GONE
             toolbarScroll.visibility = View.VISIBLE
             guiContainer.visibility = View.GONE
-            btnTouchToggle.visibility = View.GONE
-            
+
             topBar.visibility = View.VISIBLE
             
             showSoftKeyboard()
@@ -959,7 +790,6 @@ class TerminalActivity : ComponentActivity() {
             toolbarScroll.visibility = View.GONE
             specialKeypadPanel.visibility = View.GONE
             guiContainer.visibility = View.VISIBLE
-            btnTouchToggle.visibility = View.VISIBLE
 
             topBar.visibility = View.VISIBLE
 
@@ -967,7 +797,7 @@ class TerminalActivity : ComponentActivity() {
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(terminalView.windowToken, 0)
 
-            checkAndLoadGui()
+            onEnterGuiMode()
         }
         updateTopbarTitle()
     }
@@ -980,320 +810,26 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    private fun checkAndLoadGui() {
-        guiScope.launch {
-            val running = withContext(Dispatchers.IO) {
-                isPortOpen(6080)
-            }
-            if (running) {
-                guiPlaceholderLayout.visibility = View.GONE
-                guiWebView.visibility = View.VISIBLE
-                val vncUrl = getVncUrl()
-                val currentUrl = guiWebView.url
-                if (currentUrl == null || !currentUrl.startsWith("http://127.0.0.1:6080/vnc.html")) {
-                    guiWebView.loadUrl(vncUrl)
-                }
-            } else {
-                guiWebView.visibility = View.GONE
-                guiPlaceholderLayout.visibility = View.VISIBLE
-                guiProgress.visibility = View.GONE
-                btnStartGui.visibility = View.VISIBLE
-                guiPlaceholderTitle.text = "X11 Graphical Desktop"
-                guiPlaceholderDesc.text = "Start a fully interactive XFCE4 desktop inside Kali/Parrot.\n(On the first boot, packages will be installed automatically)"
-            }
-        }
-    }
-
-    private fun getVncUrl(): String {
-        return "http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale&password=kali_operator&cursor=false&locale=en&lang=en"
-    }
-
-    private fun toggleTouchMode() {
-        guiTouchMode = !guiTouchMode
-        if (guiTouchMode) {
-            btnTouchToggle.text = "🖱️ Trackpad"
-            btnTouchToggle.setTextColor(Color.parseColor("#00FF41"))
-            enableNativeTrackpad()
-        } else {
-            btnTouchToggle.text = "✋ Touch"
-            btnTouchToggle.setTextColor(Color.WHITE)
-        }
-    }
-
     /**
-     * Reset virtual cursor to center of VNC framebuffer (default 1920x1080).
+     * Called when the user enters GUI mode (or taps the desktop button).
+     * This host app only runs the X server (via `nh desktop start`); the actual
+     * desktop rendering happens in the separate X11 launcher app.
      */
-    private fun enableNativeTrackpad() {
-        virtualCursorX = 960f
-        virtualCursorY = 540f
-        Log.d(TAG, "Trackpad: enabled, cursor at (${virtualCursorX.toInt()},${virtualCursorY.toInt()})")
-    }
-
-    /**
-     * Returns a JavaScript snippet that ensures window._vncPtr is defined.
-     * This is a backup injection — the primary injection happens in onPageStarted
-     * which intercepts the WebSocket constructor and prototype.send.
-     *
-     * This backup handles the case where the WS interceptor from onPageStarted
-     * was too early or got overwritten by the page.
-     */
-    private fun getVncPointerHelperScript(): String {
-        return """
-        (function() {
-            // Re-patch WebSocket.prototype.send to capture WS if not already captured
-            if (!window._vncWs) {
-                var origSend = WebSocket.prototype.send;
-                if (!window._nhSendPatched) {
-                    window._nhSendPatched = true;
-                    WebSocket.prototype.send = function(data) {
-                        if (!window._vncWs || window._vncWs.readyState !== 1) {
-                            window._vncWs = this;
-                        }
-                        return origSend.apply(this, arguments);
-                    };
-                }
-            }
-
-            // Ensure _vncPtr is defined
-            window._vncPtr = function(x, y, mask) {
-                var ws = window._vncWs;
-                if (!ws || ws.readyState !== 1) return;
-                var d = new Uint8Array(6);
-                d[0] = 5;
-                d[1] = mask;
-                d[2] = (x >> 8) & 0xFF; d[3] = x & 0xFF;
-                d[4] = (y >> 8) & 0xFF; d[5] = y & 0xFF;
-                ws.send(d.buffer);
-
-                if (window._updateCursor) {
-                    window._updateCursor(x, y);
-                }
-            };
-
-            // Create a custom cursor element if it doesn't exist yet
-            if (!document.getElementById('nh-custom-cursor')) {
-                var cur = document.createElement('div');
-                cur.id = 'nh-custom-cursor';
-                cur.style.position = 'fixed';
-                cur.style.width = '16px';
-                cur.style.height = '16px';
-                cur.style.pointerEvents = 'none';
-                cur.style.zIndex = '999999';
-                cur.style.left = '0px';
-                cur.style.top = '0px';
-                cur.style.display = 'none'; // hide until first move
-                cur.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-                                '  <path d="M0 0V14.5L4.25 10.25L8 18L11 16.5L7.25 8.75L12.5 8.75Z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="miter"/>' +
-                                '</svg>';
-                document.body.appendChild(cur);
-            }
-
-            window._updateCursor = function(x, y) {
-                var cur = document.getElementById('nh-custom-cursor');
-                if (!cur) return;
-                var canvas = document.querySelector('canvas') || document.getElementById('noVNC_canvas');
-                if (!canvas) {
-                    cur.style.left = (x / 1920 * window.innerWidth) + 'px';
-                    cur.style.top = (y / 1080 * window.innerHeight) + 'px';
-                    cur.style.display = 'block';
-                    return;
-                }
-                var rect = canvas.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    var left = rect.left + (x / canvas.width) * rect.width;
-                    var top = rect.top + (y / canvas.height) * rect.height;
-                    cur.style.left = left + 'px';
-                    cur.style.top = top + 'px';
-                    cur.style.display = 'block';
-                } else {
-                    cur.style.left = (x / 1920 * window.innerWidth) + 'px';
-                    cur.style.top = (y / 1080 * window.innerHeight) + 'px';
-                    cur.style.display = 'block';
-                }
-            };
-
-            // If WS is already captured, test it
-            if (window._vncWs && window._vncWs.readyState === 1) {
-                window._vncPtr(960, 540, 0);
-                console.log('NethunterTrackpad: _vncPtr ready, WS captured');
-            } else {
-                console.log('NethunterTrackpad: _vncPtr defined, waiting for WS...');
-            }
-        })();
-        """.trimIndent()
-    }
-
-    @Suppress("ClickableViewAccessibility")
-    private fun createTrackpadTouchListener(): View.OnTouchListener {
-        return View.OnTouchListener { _, event ->
-            // If NOT in trackpad mode, let noVNC handle touch events normally
-            if (!guiTouchMode) return@OnTouchListener false
-
-            val pointerCount = event.pointerCount
-            val sensitivity = 1.2f
-
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    lastTouchX = event.x
-                    lastTouchY = event.y
-                    touchStartTime = System.currentTimeMillis()
-                    totalTouchMovement = 0f
-                    isTouchMoving = false
-                    isTwoFingerGesture = false
-                    longPressTriggered = false
-
-                    val now = System.currentTimeMillis()
-                    val dxFromLastTap = event.x - lastTapX
-                    val dyFromLastTap = event.y - lastTapY
-                    val distFromLastTap = kotlin.math.sqrt(dxFromLastTap * dxFromLastTap + dyFromLastTap * dyFromLastTap)
-
-                    if (now - lastTapTime < 300 && distFromLastTap < 50f) {
-                        isDragGesture = true
-                        longPressHandler.removeCallbacksAndMessages(null)
-                        val cx = virtualCursorX.toInt()
-                        val cy = virtualCursorY.toInt()
-                        guiWebView.evaluateJavascript(
-                            "if(window._vncPtr)window._vncPtr($cx,$cy,1)", null)
-                    } else {
-                        isDragGesture = false
-                        // Long-press timer → right click
-                        longPressHandler.removeCallbacksAndMessages(null)
-                        longPressHandler.postDelayed({
-                            if (!isTouchMoving && totalTouchMovement < 15f && !isTwoFingerGesture) {
-                                longPressTriggered = true
-                                val cx = virtualCursorX.toInt()
-                                val cy = virtualCursorY.toInt()
-                                guiWebView.evaluateJavascript(
-                                    "if(window._vncPtr)window._vncPtr($cx,$cy,4)", null)
-                                guiWebView.postDelayed({
-                                    guiWebView.evaluateJavascript(
-                                        "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
-                                }, 100)
-                            }
-                        }, 500)
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    // Second finger → enter scroll mode
-                    isTwoFingerGesture = true
-                    longPressHandler.removeCallbacksAndMessages(null)
-                    if (pointerCount >= 2) {
-                        twoFingerStartY = (event.getY(0) + event.getY(1)) / 2f
-                        scrollAccum = 0f
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    if (isTwoFingerGesture && pointerCount >= 2) {
-                        // Two-finger scroll
-                        val midY = (event.getY(0) + event.getY(1)) / 2f
-                        val delta = midY - twoFingerStartY
-                        twoFingerStartY = midY
-                        scrollAccum += delta
-
-                        val cx = virtualCursorX.toInt()
-                        val cy = virtualCursorY.toInt()
-                        while (scrollAccum > 30f) {
-                            guiWebView.evaluateJavascript(
-                                "if(window._vncPtr){window._vncPtr($cx,$cy,16);" +
-                                "setTimeout(function(){window._vncPtr($cx,$cy,0)},10)}", null)
-                            scrollAccum -= 30f
-                        }
-                        while (scrollAccum < -30f) {
-                            guiWebView.evaluateJavascript(
-                                "if(window._vncPtr){window._vncPtr($cx,$cy,8);" +
-                                "setTimeout(function(){window._vncPtr($cx,$cy,0)},10)}", null)
-                            scrollAccum += 30f
-                        }
-                    } else if (!isTwoFingerGesture) {
-                        // Single finger → move cursor relative
-                        val dx = event.x - lastTouchX
-                        val dy = event.y - lastTouchY
-                        lastTouchX = event.x
-                        lastTouchY = event.y
-                        totalTouchMovement += kotlin.math.abs(dx) + kotlin.math.abs(dy)
-
-                        if (totalTouchMovement > 15f) {
-                            isTouchMoving = true
-                            longPressHandler.removeCallbacksAndMessages(null)
-                        }
-
-                        // Update virtual cursor, clamped to 0..1920, 0..1080
-                        virtualCursorX = (virtualCursorX + dx * sensitivity).coerceIn(0f, 1920f)
-                        virtualCursorY = (virtualCursorY + dy * sensitivity).coerceIn(0f, 1080f)
-
-                        val cx = virtualCursorX.toInt()
-                        val cy = virtualCursorY.toInt()
-                        val mask = if (isDragGesture) 1 else 0
-                        guiWebView.evaluateJavascript(
-                            "if(window._vncPtr)window._vncPtr($cx,$cy,$mask)", null)
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP -> {
-                    longPressHandler.removeCallbacksAndMessages(null)
-
-                    val cx = virtualCursorX.toInt()
-                    val cy = virtualCursorY.toInt()
-
-                    if (isDragGesture) {
-                        // End of drag
-                        guiWebView.evaluateJavascript(
-                            "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
-                        lastTapTime = 0L
-                    } else if (!isTwoFingerGesture && !longPressTriggered) {
-                        val elapsed = System.currentTimeMillis() - touchStartTime
-                        if (elapsed < 300 && totalTouchMovement < 15f) {
-                            // Quick tap → left click (down then up)
-                            guiWebView.evaluateJavascript(
-                                "if(window._vncPtr)window._vncPtr($cx,$cy,1)", null)
-                            guiWebView.postDelayed({
-                                guiWebView.evaluateJavascript(
-                                    "if(window._vncPtr)window._vncPtr($cx,$cy,0)", null)
-                            }, 80)
-
-                            lastTapTime = System.currentTimeMillis()
-                            lastTapX = event.x
-                            lastTapY = event.y
-                        }
-                    }
-
-                    isTouchMoving = false
-                    isTwoFingerGesture = false
-                    longPressTriggered = false
-                    isDragGesture = false
-                    true
-                }
-
-                MotionEvent.ACTION_POINTER_UP -> {
-                    // One finger lifted, others still down
-                    true
-                }
-
-                MotionEvent.ACTION_CANCEL -> {
-                    longPressHandler.removeCallbacksAndMessages(null)
-                    isTouchMoving = false
-                    isTwoFingerGesture = false
-                    longPressTriggered = false
-                    isDragGesture = false
-                    true
-                }
-
-                else -> true
-            }
-        }
-    }
-
-    private fun startDesktopInBackground() {
+    private fun onEnterGuiMode() {
+        guiPlaceholderTitle.text = "X11 Graphical Desktop"
+        guiPlaceholderDesc.text = "Starting desktop in guest container and opening the external X11 launcher…"
+        guiPlaceholderLayout.visibility = View.VISIBLE
         btnStartGui.visibility = View.GONE
         guiProgress.visibility = View.VISIBLE
-        guiPlaceholderTitle.text = "Initializing Desktop..."
-        guiPlaceholderDesc.text = "Running setup and launching graphical server in guest container.\nThis may take up to 2-3 minutes if packages are being installed."
-        
+        ensureDesktopStarted()
+        launchExternalLauncher()
+        guiProgress.visibility = View.GONE
+        btnStartGui.visibility = View.VISIBLE
+    }
+
+    /** Start the X server in the guest (no-op if it is already listening on :1 / TCP 6001). */
+    private fun ensureDesktopStarted() {
+        if (isPortOpen(6001)) return
         guiScope.launch {
             withContext(Dispatchers.IO) {
                 try {
@@ -1301,26 +837,28 @@ class TerminalActivity : ComponentActivity() {
                     val builder = ProcessBuilder("/system/bin/sh", bootScript, "--", "nethunter-desktop", "start")
                     builder.directory(filesDir)
                     val process = builder.start()
-                    // Wait for the process to finish to reap it (prevent zombie)
-                    val exitCode = process.waitFor()
-                    Log.i(TAG, "Desktop launcher process finished with exit code: $exitCode")
+                    // The vncserver wrapper can deadlock reading a huge localhost:N.log;
+                    // reap with a bounded timeout and never block forever.
+                    val finished = process.waitFor(5, TimeUnit.MINUTES)
+                    if (!finished) process.destroyForcibly()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start desktop process: ${e.message}")
+                    Log.e(TAG, "Failed to start desktop: ${e.message}")
                 }
             }
-            
-            // Poll for port 6080 to open
-            var attempts = 0
-            while (attempts < 120) {
-                delay(2000)
-                val running = withContext(Dispatchers.IO) { isPortOpen(6080) }
-                if (running) {
-                    break
-                }
-                attempts++
+        }
+    }
+
+    /** Open the standalone X11 launcher app; prompt to install it if missing. */
+    private fun launchExternalLauncher() {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(EXTERNAL_LAUNCHER_PKG)
+            if (intent != null) {
+                startActivity(intent)
+            } else {
+                Toast.makeText(this, "Install the NetHunter X11 Launcher ($EXTERNAL_LAUNCHER_PKG)", Toast.LENGTH_LONG).show()
             }
-            
-            checkAndLoadGui()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch external launcher: ${e.message}")
         }
     }
 
