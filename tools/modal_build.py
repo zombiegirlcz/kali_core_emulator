@@ -57,8 +57,11 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # su_wrapper, usb_bridge, assets/usr/*) jsou po native buildu commitnuté zpět
 # do repa (pull_full_assets → git add/commit/push), takže sync vždy odpovídá
 # 1:1 tomu, co je na GitHubu.
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "zombiegirlcz/kali_core_emulator")
-GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "master")
+# HARDCODEOVANO na projekt (nasazeno pres sed). ZAMERNE bez os.environ.get -
+# Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
+# prepisoval default a GUI/assistant by klonovaly core. Proto literál.
+GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
+GITHUB_BRANCH = "master"
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
