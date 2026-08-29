@@ -990,5 +990,3 @@ static void handle_client(int client_fd) {
         free(cmd_argv[i]);
     }
 }
-
-/* TEST MARKER pro smart-build incremental test */
