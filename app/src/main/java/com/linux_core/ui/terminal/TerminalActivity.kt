@@ -842,7 +842,7 @@ class TerminalActivity : ComponentActivity() {
                                 Toast.LENGTH_LONG
                             ).show()
                         }
-                        return@withContext
+                        return@launch
                     }
                 }
                 launchExternalLauncher()
