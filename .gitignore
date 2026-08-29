@@ -159,3 +159,6 @@ format_raw_commands.py
 refactor_motd_table.py
 .worktrees/
 .reď/
+
+# Stray launcher stage (canonical copy lives in /tmp/launcher_stage)
+_launcher_stage/
