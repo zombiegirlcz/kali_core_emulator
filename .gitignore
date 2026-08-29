@@ -148,7 +148,7 @@ app/src/main/assets/certs/google_attestation_root.key
 !app/src/main/assets/usr/bin/ifconfig
 !app/src/main/assets/usr/bin/zkill
 !app/src/main/assets/usr/bin/boot
-!tools/**
+!tools/modal_build.py
 !magisk-modules/**
 # Old build artifacts
 app/build_old/
