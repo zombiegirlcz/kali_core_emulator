@@ -50,7 +50,7 @@ Jednomodulová Android aplikace (`:app`), která spouští Kali/ParrotOS v neroo
 | Třída | Role |
 |-------|------|
 | `MainActivity` | Compose UI: stažení/extrakce rootfs, spuštění terminálu, VPN centrum dashboard |
-| `ProotManager` | Detekce CPU architektury, nasazení PRoot binárek z assets, generuje `launcher.sh` shell skript, nasazuje pomocné skripty do guest `/usr/local/bin/` |
+| `ProotManager` | Detekce CPU architektury, nasazení PRoot binárek z assets, nasazuje univerzální `boot` launcher (assets/usr/bin/boot), nasazuje pomocné skripty do guest `/usr/local/bin/` |
 | `RootfsManager` | OkHttp stahování + commons-compress tar.xz extrakce, emituje `Flow<Int>` průběh |
 | `TerminalActivity` | Termux `TerminalView`, správa relace, předletové kontroly |
 | `VpnCaptureService` | Android VPN služba, životní cyklus JNI AdGuard enginu |
@@ -72,7 +72,7 @@ Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modal cloudu do `app
 
 1. **Přidej kompilační krok do `build_native()` v `tools/modal_build.py`** — NDK cross-compile výstupu do `assets/` (např. `su_daemon`, `su_wrapper`, `usb_bridge`) nebo `jniLibs/arm64-v8a/` (`.so`).
 2. **Přidej název výstupu do `_NATIVE_ASSET_EXCLUDES` v `tools/modal_build.py`** — `upload_src` používá `rsync -a --delete` a bez exclude by binárku smazal z Volume (není v baked image) → APK by byl bez ní.
-3. **Stáhni celý assets z Volume** — `zsh mbuild native` nebo `zsh mbuild all` po `build_native` spouští `pull_full_assets()` v `mbuild`, který stáhne **CELÝ `app/src/main/assets/` adresář rekurzivně** z Volume (su_daemon, su_wrapper, usb_bridge, usr/ s nano/rsync/sed/rg + glibc knihovnami, certs, launcher.sh, ...) a přepíše lokální verze. Žádný tar.gz.
+3. **Stáhni celý assets z Volume** — `zsh mbuild native` nebo `zsh mbuild all` po `build_native` spouští `pull_full_assets()` v `mbuild`, který stáhne **CELÝ `app/src/main/assets/` adresář rekurzivně** z Volume (su_daemon, su_wrapper, usb_bridge, usr/ s nano/rsync/sed/rg + glibc knihovnami, certs, boot, ...) a přepíše lokální verze. Žádný tar.gz.
 
 **Pořadí buildu se nesmí měnit:** `all` = `upload_src` → `build_native` → `pull_full_assets` (ihned po native kompilaci) → gradle `build` → pull APK. `build` sám = `pull_full_assets` (před uploadem, jinak rsync --delete smaže binárky z Volume) → `upload_src` → `build`.
 
@@ -650,7 +650,7 @@ Kompletní mapa projektu — k 2026-07-23
 #### 1. PRoot Virtualizace (ProotManager.kt, RootfsManager.kt)
 
  - Funkce: Spouští Kali/ParrotOS v uživatelském prostoru (bez rootu)
- - Flow: Stažení rootfs (tar.xz) → extrakce → nasazení PRoot loaderů → generování launcher.sh → bootstrap OS
+ - Flow: Stažení rootfs (tar.xz) → extrakce → nasazení PRoot loaderů → nasazení `boot` launcheru → bootstrap OS
  - Binární strategie: Dynamické PRoot (arm64 + ostatní architektury); standalone/statické binárky odstraněny (2026-08-01, nefungovaly)
  - Deployuje do guestu: nh CLI, shizuku, helper skripty
 
@@ -865,11 +865,11 @@ proot $ sudo chmod 777 -R /root/cil/dir
 
 | File | Change |
 |------|--------|
-| `assets/launcher.sh` | New `--` raw-exec mode: `launcher.sh -- <args...>` re-enters PRoot as real root, exports guest `PATH`/`HOME`, honours `NH_CWD` (from wrapper getcwd), routes through guest `/bin/sh` only to strip host `LD_PRELOAD`/`PROOT_LOADER`, then `exec "$@"` token-faithfully. Bare `--` = interactive root login shell. Uses existing `-0 --kill-on-exit`. |
+| `assets/usr/bin/boot` | Univerzální launcher (nahradil `launcher.sh`). Re-entry mód `boot -- <args...>` znovu vstupuje do PRoot jako real root, exportuje guest `PATH`/`HOME`, honours `NH_CWD`, routuje přes guest `/bin/sh` (ořeže host `LD_PRELOAD`/`PROOT_LOADER`), pak `exec "$@"` verbatim. Prázdné `boot --` = interaktivní root login shell. Používá `-0 --kill-on-exit`. |
 | `cpp/su_daemon.c` | Replaced chroot+setresuid+execvp with PRoot re-entry `execv(launcher, {"--", <args>})`. **Fail closed**: no launcher configured → `_exit(126)` (never runs on host). Stays real root. Passes `NH_CWD`. Keep `deny_command` blocklist. |
-| `ui/RootBridgeTab.kt` | `startDaemon` passes launcher-`* .sh` as argv[2]; added `detectActiveLauncher()`; removed dead `detectGuestRootfs()`. |
+| `ui/RootBridgeTab.kt` | `startDaemon` passes `boot` (assets/usr/bin/boot) as argv[2]; added `detectActiveLauncher()`; removed dead `detectGuestRootfs()`. |
 
-Guarantee: even a host-global command is confined to the **guest rootfs** because it runs under PRoot with real root. `launcher.sh` template is redeployed on next container start; RootBridge fail-closes until then.
+Guarantee: even a host-global command is confined to the **guest rootfs** because it runs under PRoot with real root. `boot` (assets/usr/bin/boot) is deployed to `$PREFIX/bin/boot` on next container start; RootBridge fail-closes until then.
 
 ### 2. Ownership fix (2 vrstvy) — root-owned files se přepíšou zpět na UID aplikace
 
@@ -1003,7 +1003,7 @@ Wifi scan / `ip address` přes `sudo` běžel dlouho → daemon (single-threaded
 ### mbuild sync — celý assets z Volume (ne tar.gz)
 
 - Starý mbuild stahoval jen `usrtools.tar.gz` + 3 binárky po souborech → lokální assets zůstávaly zastaralé.
-- **Nový `pull_full_assets()`**: `modal volume get --force kali-build-data src/app/src/main/assets app/src/main/` — stáhne CELÝ assets adresář **rekurzivně** (su_daemon, su_wrapper, usb_bridge, `usr/bin/{nano,rg,rsync,sed}`, `usr/lib/{ld-linux,libc,libm,libpthread}`, certs, launcher.sh, nh, ...) a přepíše lokální verze.
+- **Nový `pull_full_assets()`**: `modal volume get --force kali-build-data src/app/src/main/assets app/src/main/` — stáhne CELÝ assets adresář **rekurzivně** (su_daemon, su_wrapper, usb_bridge, `usr/bin/{nano,rg,rsync,sed}`, `usr/lib/{ld-linux,libc,libm,libpthread}`, certs, boot, nh, ...) a přepíše lokální verze.
 - `all` = upload_src → build_native → pull_full_assets (ihned po native) → gradle → pull APK. `build` = pull_full_assets (před uploadem) → upload → gradle.
 - `NATIVE_BINARIES` v mbuild nahrazeno `_NATIVE_ASSET_EXCLUDES` v modal_build.py (jediný seznam).
 

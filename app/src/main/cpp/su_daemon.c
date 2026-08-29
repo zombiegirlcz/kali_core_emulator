@@ -32,6 +32,8 @@
 #include <dirent.h>
 #include <sys/time.h>
 #include <poll.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 #define DEFAULT_SOCKET_PATH "/data/user/0/com.linux_core/files/ipc/magisk_daemon.sock"
 #define MAX_ARGS 128
@@ -393,6 +395,59 @@ static void sigchld_reaper(int sig) {
     errno = saved_errno;
 }
 
+/* ── PTY bridge helpers (interactive binaries) ─────────────────────────────
+ * Interactive programs (editors, pagers, shells, sudo/passwd via /dev/tty,
+ * SIGINT from ctrl-c, job control) need a real controlling terminal. The
+ * command runs as a separate process tree (host daemon, real root) so it can
+ * never share the guest shell's controlling tty. We therefore give it its OWN
+ * pty and relay bytes between that pty and the guest PTY. The guest PTY is
+ * switched to raw only for the command's duration and fully restored after. */
+
+#ifndef TIOCSCTTY
+#define TIOCSCTTY 0x540E
+#endif
+
+static int open_pty(int *master_fd, int *slave_fd) {
+    int m = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    if (m < 0) return -1;
+    if (grantpt(m) < 0) { close(m); return -1; }
+    if (unlockpt(m) < 0) { close(m); return -1; }
+    char *name = ptsname(m);
+    if (name == NULL) { close(m); return -1; }
+    int s = open(name, O_RDWR | O_NOCTTY);
+    if (s < 0) { close(m); return -1; }
+    *master_fd = m;
+    *slave_fd = s;
+    return 0;
+}
+
+static void set_nonblock(int fd) {
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+static void set_block(int fd) {
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+}
+
+/* Write all bytes; handles EAGAIN on non-blocking fds via short poll. */
+static int write_all(int fd, const char *buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, buf + off, len - off);
+        if (w > 0) { off += (size_t)w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && errno == EAGAIN) {
+            struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+            if (poll(&pfd, 1, 2000) < 0) return -1;
+            continue;
+        }
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *socket_path = DEFAULT_SOCKET_PATH;
     char launcher_path[1024] = {0};
@@ -626,6 +681,182 @@ static void handle_client(int client_fd) {
         return;
     }
 
+    int guest_fd = fds[0];
+    int use_bridge = isatty(guest_fd);
+    struct termios saved_term;
+    int have_term = (use_bridge && tcgetattr(guest_fd, &saved_term) == 0);
+    struct winsize gw;
+    if (ioctl(guest_fd, TIOCGWINSZ, &gw) < 0) {
+        gw.ws_row = 24; gw.ws_col = 80; gw.ws_xpixel = 0; gw.ws_ypixel = 0;
+    }
+
+    int master_fd = -1, slave_fd = -1;
+    if (use_bridge && open_pty(&master_fd, &slave_fd) < 0) {
+        use_bridge = 0; /* pty unavailable → degraded direct (pipe-like) mode */
+    }
+
+    if (use_bridge) {
+        /* Guest PTY → raw so INTR/EOF reach the relay as plain bytes; the
+         * command gets its OWN pty (its controlling terminal), so /dev/tty,
+         * ctrl-c (SIGINT) and job control all work. Guest PTY termios is
+         * fully restored when the command exits (see cleanup below). */
+        if (have_term) {
+            struct termios raw = saved_term;
+            cfmakeraw(&raw);
+            tcsetattr(guest_fd, TCSANOW, &raw);
+        }
+        set_nonblock(guest_fd);
+        set_nonblock(master_fd);
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            /* bridge setup failed → restore guest tty and fall back to direct */
+            if (have_term) tcsetattr(guest_fd, TCSANOW, &saved_term);
+            set_block(guest_fd);
+            close(master_fd); close(slave_fd);
+            use_bridge = 0;
+        } else if (pid == 0) {
+            /* command child: own session + fresh controlling pty */
+            close(client_fd);
+            close(guest_fd);
+            close(fds[1]);
+            close(fds[2]);
+            close(master_fd);
+
+            if (setsid() < 0) {
+                setpgid(0, 0);
+                setsid();
+            }
+            ioctl(slave_fd, TIOCSCTTY, 0);
+            if (have_term) tcsetattr(slave_fd, TCSANOW, &saved_term);
+            ioctl(slave_fd, TIOCSWINSZ, &gw);
+
+            dup2(slave_fd, STDIN_FILENO);
+            dup2(slave_fd, STDOUT_FILENO);
+            dup2(slave_fd, STDERR_FILENO);
+            close(slave_fd);
+
+            /* become foreground process group on our own pty → ctrl-c works */
+            tcsetpgrp(STDIN_FILENO, getpgrp());
+
+            /* SAFETY: never exec on the bare host — re-enter PRoot (fail closed). */
+            if (g_launcher_path[0] == '\0' || access(g_launcher_path, X_OK) != 0) {
+                dprintf(STDERR_FILENO,
+                        "[su_daemon] FATAL: no PRoot launcher configured; "
+                        "refusing to run command on host.\n");
+                _exit(126);
+            }
+
+            char *launcher_argv[MAX_ARGS + 4];
+            int li = 0;
+            launcher_argv[li++] = (char *)g_launcher_path;
+            launcher_argv[li++] = (char *)"--";
+
+            if (cmd_argv[0] != NULL && strcmp(cmd_argv[0], "/system/bin/sh") == 0) {
+                cmd_argv[0] = (char *)"/bin/sh";
+            }
+            int guest_args = 0;
+            for (int i = 0; cmd_argv[i] != NULL; i++) guest_args = i + 1;
+            int bare_su = (guest_args == 1) &&
+                (strcmp(cmd_argv[0], "sh") == 0 || strcmp(cmd_argv[0], "/bin/sh") == 0 ||
+                 strcmp(cmd_argv[0], "bash") == 0 || strcmp(cmd_argv[0], "/bin/bash") == 0);
+            if (!bare_su) {
+                for (int i = 0; cmd_argv[i] != NULL && li < MAX_ARGS + 3; i++) {
+                    launcher_argv[li++] = cmd_argv[i];
+                }
+            }
+            launcher_argv[li] = NULL;
+
+            if (cwd[0] != '\0') setenv("NH_CWD", cwd, 1);
+
+            execv(g_launcher_path, launcher_argv);
+            dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
+                    g_launcher_path, strerror(errno));
+            _exit(127);
+        } else {
+            /* worker: relay guest PTY <-> command PTY, watch for client death */
+            close(slave_fd);
+
+            int status = 0, exit_code = 0, aborted = 0;
+            for (;;) {
+                struct pollfd pfds[3];
+                pfds[0].fd = guest_fd;  pfds[0].events = POLLIN;
+                pfds[1].fd = master_fd; pfds[1].events = POLLIN;
+                pfds[2].fd = client_fd; pfds[2].events = POLLIN | POLLHUP;
+                int pr = poll(pfds, 3, 100);
+                if (pr < 0) { if (errno == EINTR) continue; break; }
+
+                if (pfds[2].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                    kill(pid, SIGKILL);
+                    waitpid(pid, &status, 0);
+                    exit_code = 130; aborted = 1; break;
+                }
+
+                char buf[4096];
+                if (pr > 0) {
+                    if (pfds[0].revents & POLLIN) {
+                        ssize_t n = read(guest_fd, buf, sizeof(buf));
+                        if (n > 0) write_all(master_fd, buf, (size_t)n);
+                    }
+                    if (pfds[1].revents & POLLIN) {
+                        ssize_t n = read(master_fd, buf, sizeof(buf));
+                        if (n > 0) write_all(guest_fd, buf, (size_t)n);
+                    }
+                }
+
+                /* forward terminal resize (guest → command pty) */
+                struct winsize cw;
+                if (ioctl(guest_fd, TIOCGWINSZ, &cw) == 0 &&
+                    (cw.ws_row != gw.ws_row || cw.ws_col != gw.ws_col)) {
+                    gw = cw;
+                    ioctl(master_fd, TIOCSWINSZ, &gw);
+                }
+
+                pid_t wr = waitpid(pid, &status, WNOHANG);
+                if (wr == pid) {
+                    /* drain any remaining command output */
+                    for (;;) {
+                        ssize_t n = read(master_fd, buf, sizeof(buf));
+                        if (n > 0) { write_all(guest_fd, buf, (size_t)n); continue; }
+                        if (n == 0) break;
+                        if (n < 0 && errno == EAGAIN) {
+                            struct pollfd p = { master_fd, POLLIN, 0 };
+                            if (poll(&p, 1, 50) < 0) break;
+                            if (!(p.revents & POLLIN)) break;
+                            continue;
+                        }
+                        break;
+                    }
+                    exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+                    break;
+                }
+            }
+
+            /* CRITICAL: restore guest shell terminal (raw was only temporary) */
+            if (have_term) tcsetattr(guest_fd, TCSANOW, &saved_term);
+            close(master_fd);
+            close(fds[0]); close(fds[1]); close(fds[2]);
+
+            if (!aborted) {
+                if (g_auto_fix && exit_code != 126 && g_rootfs_path[0] != '\0') {
+                    struct timeval tv0, tv1;
+                    gettimeofday(&tv0, NULL);
+                    fix_permissions(g_rootfs_path, g_app_uid, g_app_gid, 1);
+                    gettimeofday(&tv1, NULL);
+                    long ms = (tv1.tv_sec - tv0.tv_sec) * 1000L + (tv1.tv_usec - tv0.tv_usec) / 1000L;
+                    dprintf(STDERR_FILENO, "[su_daemon] auto-fix: chowned root-owned files to %d:%d in %ld ms\n",
+                            (int)g_app_uid, (int)g_app_gid, ms);
+                }
+                write(client_fd, &exit_code, sizeof(exit_code));
+            }
+            close(client_fd);
+            for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
+            return;
+        }
+    }
+
+    /* ── Direct (non-interactive / pipe) path ──
+     * guest_fd is NOT a tty (piped input) → no PTY bridge, just dup2. */
     pid_t pid = fork();
     if (pid < 0) {
         perror("[su_daemon] fork");
