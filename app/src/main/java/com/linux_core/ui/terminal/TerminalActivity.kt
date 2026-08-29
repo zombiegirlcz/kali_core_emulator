@@ -821,29 +821,55 @@ class TerminalActivity : ComponentActivity() {
         guiPlaceholderLayout.visibility = View.VISIBLE
         btnStartGui.visibility = View.GONE
         guiProgress.visibility = View.VISIBLE
-        ensureDesktopStarted()
-        launchExternalLauncher()
-        guiProgress.visibility = View.GONE
-        btnStartGui.visibility = View.VISIBLE
+        guiScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    ensureDesktopStarted()
+                    // Wait for the X server (VNC port 5901) to accept connections
+                    // before launching the renderer. Without this the launcher is
+                    // started too early and hits "connection refused"; the desktop
+                    // session may also be reaped before the launcher retries.
+                    var waitedMs = 0L
+                    while (!isPortOpen(5901) && waitedMs < 30000) {
+                        delay(500)
+                        waitedMs += 500
+                    }
+                    if (!isPortOpen(5901)) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                this@TerminalActivity,
+                                "Desktop did not start (VNC port 5901 not listening). Check 'nh desktop status'.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        return@withContext
+                    }
+                }
+                launchExternalLauncher()
+            } finally {
+                withContext(Dispatchers.Main) {
+                    guiProgress.visibility = View.GONE
+                    btnStartGui.visibility = View.VISIBLE
+                }
+            }
+        }
     }
 
     /** Start the X server in the guest (no-op if it is already listening on :1 / TCP 6001). */
-    private fun ensureDesktopStarted() {
+    private suspend fun ensureDesktopStarted() {
         if (isPortOpen(6001)) return
-        guiScope.launch {
-            withContext(Dispatchers.IO) {
-                try {
-                    val bootScript = File(filesDir, "usr/bin/boot").absolutePath
-                    val builder = ProcessBuilder("/system/bin/sh", bootScript, "--", "nethunter-desktop", "start")
-                    builder.directory(filesDir)
-                    val process = builder.start()
-                    // The vncserver wrapper can deadlock reading a huge localhost:N.log;
-                    // reap with a bounded timeout and never block forever.
-                    val finished = process.waitFor(5, TimeUnit.MINUTES)
-                    if (!finished) process.destroyForcibly()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start desktop: ${e.message}")
-                }
+        withContext(Dispatchers.IO) {
+            try {
+                val bootScript = File(filesDir, "usr/bin/boot").absolutePath
+                val builder = ProcessBuilder("/system/bin/sh", bootScript, "--", "nethunter-desktop", "start")
+                builder.directory(filesDir)
+                builder.redirectErrorStream(true)
+                // Fire-and-forget: vncserver keeps running as a long-lived process,
+                // so do NOT block on waitFor(). Readiness is polled via the port above.
+                builder.start()
+                Log.i(TAG, "Desktop start requested (boot -- nethunter-desktop start)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start desktop: ${e.message}")
             }
         }
     }
