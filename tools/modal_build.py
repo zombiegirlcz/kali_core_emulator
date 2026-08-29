@@ -57,7 +57,7 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # do repa (pull_full_assets → git add/commit/push), takže sync vždy odpovídá
 # 1:1 tomu, co je na GitHubu.
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "zombiegirlcz/kali_core_emulator")
-GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "master")
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
