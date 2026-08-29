@@ -2,28 +2,25 @@
 # mbuild — NetHunter build pipeline
 # Usage: zsh mbuild <command>
 #
-# SYNC (vždy samostatně, před buildem):
-#   sync  = git clone/pull PŘÍMO Z GITHUBU na Modal straně (žádný upload z telefonu)
-#   clean = smaže src + gradle-cache na Volume (builds zůstávají)
+# UPLOAD (vždy samostatně, před buildem):
+#   upload       = rsync bez --delete (jen přidá/aktualizuje)
+#   upload_force = rsync --delete (plná synchronizace, smaže co není lokálně)
+#   upload_clean = smaže src + gradle-cache na Volume (builds zůstávají)
 #
-# Než spustíš sync, musíš mít lokální commity na GitHubu:
-#   git add -A && git commit -m "..." && git push
-#
-# BUILD (předpokládá, že sync už proběhl):
+# BUILD (předpokládá, že upload už proběhl):
 #   all       = native compile + pull assets + APK build
 #   native    = native compile + pull assets
 #   build     = APK build + pull APK
 #   usrtools  = native compile (usrtools) + pull assets
 #   proot     = proot static build + pull assets
 #
-# PRAVIDLO: Sync se VŽDY dělá zvlášť. Build nikdy nevolá sync.
-# Zdroj pravdy je teď GitHub, ne lokální disk. Native binárky se po
-# build_native pořád stahují zpět do lokálního repa (pull_full_assets),
-# musíš je jen commitnout + pushnout, ať je má i GitHub.
+# PRAVIDLO: Upload se VŽDY dělá zvlášť. Build nikdy nevolá upload.
+# Zdroj pravdy pro native binárky je Volume (build_native je tam kompiluje).
+# Po native buildu se dělá pull_full_assets zpět do lokálního repa.
 set -e
 set -o pipefail
 
-SRC="${KALI_PROJECT_DIR:-/root/core/kali_core_emulator}"
+SRC="${KALI_PROJECT_DIR:-/root/core/kali_GUI}"
 CMD="${1:-}"
 
 cd "$SRC"
@@ -42,17 +39,21 @@ pull_full_assets() {
 }
 
 case "$CMD" in
-    # ── SYNC příkazy ──
-    sync)
-        echo "=== SYNC (git clone/pull z GitHubu) ==="
-        modal run modal_build.py::sync 2>&1 | tail -10
+    # ── UPLOAD příkazy ──
+    upload)
+        echo "=== UPLOAD (basic, bez --delete) ==="
+        modal run modal_build.py::upload_basic 2>&1 | tail -5
         ;;
-    clean)
-        echo "=== CLEAN (smaže src + gradle-cache na Volume) ==="
-        modal run modal_build.py::clean 2>&1 | tail -5
+    upload_force)
+        echo "=== UPLOAD FORCE (rsync --delete) ==="
+        modal run modal_build.py::upload_force 2>&1 | tail -5
+        ;;
+    upload_clean)
+        echo "=== UPLOAD CLEAN (smaže src + gradle-cache) ==="
+        modal run modal_build.py::upload_clean 2>&1 | tail -5
         ;;
 
-    # ── BUILD příkazy (předpokládají, že sync proběhl) ──
+    # ── BUILD příkazy (předpokládají, že upload proběhl) ──
     all)
         echo "=== FULL BUILD (native + APK) ==="
         echo "  -> NDK compile"
@@ -92,7 +93,7 @@ case "$CMD" in
        # pull_full_assets
         #;;
     *)
-        echo "Usage: zsh mbuild [sync|clean|all|native|build|usrtools|proot]"
+        echo "Usage: zsh mbuild [upload|upload_force|upload_clean|all|native|build|usrtools|proot]"
         exit 1
         ;;
 esac

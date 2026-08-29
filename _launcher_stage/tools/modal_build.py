@@ -1,29 +1,21 @@
 """Modal build pipeline for kali_core_emulator.
 
-Zdroj pravdy je GitHub (zombiegirlcz/kali_core_emulator), ne lokální disk.
-Modal si zdrojový strom natahuje sám přes git clone/fetch přímo z GitHubu —
-žádný upload z telefonu, žádný rsync přes mobilní síť.
-
 Volume layout after setup:
   /vol/keys/release.jks        – signing keystore (persistent)
-  /vol/src/                    – project source tree (git clone z GitHubu)
+  /vol/src/                    – project source tree (upload once, update on change)
   /vol/gradle-cache/           – gradle dependency cache (persistent)
   /vol/builds/app-debug.apk    – latest built APK
 
 Setup:
   1) modal secret create build-secrets RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)
-  2) modal secret create github-token GITHUB_TOKEN=<personal access token>
-  3) modal run modal_build.py init     # store keystore
-  4) modal run modal_build.py sync     # git clone/pull zdroje z GitHubu
-  5) modal run modal_build.py all      # compile native + build APK
+  2) modal run modal_build.py init     # store keystore
+  3) modal run modal_build.py upload   # upload source (basic, bez mazání)
+  4) modal run modal_build.py all      # compile native + build APK
 
-Sync (VŽDY samostatně — buildy ho nikdy nevolají):
-  modal run modal_build.py sync   # git clone (poprvé) nebo fetch+reset --hard (dál)
-  modal run modal_build.py clean  # smaže src + gradle-cache na Volume (keys/builds zůstanou)
-
-Pravidlo zůstává stejné jako dřív: lokální git push na GitHub je jediný krok
-z telefonu. Modal si zbytek (stažení, sestavení) dělá sám přes svou vlastní,
-mnohem stabilnější síť.
+Upload (VŽDY samostatně — buildy ho nikdy nevolají):
+  modal run modal_build.py upload        # rsync bez --delete (jen přidá/aktualizuje)
+  modal run modal_build.py upload_force  # rsync --delete (plný mirror lokálního repa)
+  modal run modal_build.py upload_clean  # smaže src + gradle-cache (keys/builds zůstanou)
 
 Individual steps:
   modal run modal_build.py native      # NDK cross-compile C binaries + usr tools (nano/rsync/sed/rg)
@@ -39,25 +31,30 @@ import shutil
 import subprocess
 import sys
 
-APP_NAME = "kali-gui-build"
-VOLUME_NAME = "kali-gui-build-data"
-APK_OUTPUT = "app-debug.apk"
-
-app = modal.App(APP_NAME)
+app = modal.App("kali-gui-build")
 
 ANDROID_SDK_ROOT = "/opt/android-sdk"
 
-build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+build_vol = modal.Volume.from_name("kali-gui-build-data", create_if_missing=True)
 
-# ── GitHub jako zdroj pravdy ─────────────────────────────────────────────────
-# Repo se klonuje/pulluje přímo na Modal straně, nikdy se z telefonu neuploaduje
-# nic ručně. .gitignore v repu (build/, .gradle/, __pycache__, *.log, ...) řeší
-# excludes stejně, jako to dřív dělal _IGNORE_PARTS — build artefakty (su_daemon,
-# su_wrapper, usb_bridge, assets/usr/*) jsou po native buildu commitnuté zpět
-# do repa (pull_full_assets → git add/commit/push), takže sync vždy odpovídá
-# 1:1 tomu, co je na GitHubu.
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "zombiegirlcz/kali_core_emulator")
-GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
+_IGNORE_PARTS = frozenset({".git", ".gradle", "__pycache__", "node_modules", "logcat.log", "build.log", "top.log"})
+
+# (2026-08-14, boot refactor) Žádné excludes při uploadu. Lokální repo je
+# zdroj pravdy: build artefakty (su_daemon, su_wrapper, usb_bridge,
+# assets/usr/*) se po native buildu stahují zpět přes pull_full_assets,
+# takže upload může synchronizovat celý strom. Volume se vždy přizpůsobuje
+# lokálnímu repu, nikdy naopak.
+
+
+def _ignore_path(p):
+    """Return True for paths that should be EXCLUDED (ignore=True = skip)."""
+    parts = p.parts
+    for i, part in enumerate(parts):
+        if part in _IGNORE_PARTS:
+            return True
+        if part == "build" and i > 0 and parts[i - 1] == "app":
+            return True
+    return False
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
@@ -91,9 +88,13 @@ base_image = (
     })
 )
 
-# (Dřívější blok tady pekl lokální adresář z telefonu do image přes
-# add_local_dir — to byl přesně ten nespolehlivý "upload" krok. Nahrazeno
-# funkcí sync() níže, která běží na Modal straně a stahuje z GitHubu sama.)
+# Static image: base + source baked in (for upload_basic/upload_force/upload_clean)
+source_image = base_image.add_local_dir(
+    "/root/kali_core_emulator",
+    remote_path="/src-baked",
+    ignore=_ignore_path,
+)
+
 
 # ── Usr tools: nano/rsync/sed (glibc bridge) + ripgrep (Bionic) ──────────────
 # Runtime prefix na zařízení — APK je nese v assets/usr/, aplikace je pak
@@ -134,60 +135,67 @@ usrtools_image = (
 )
 
 
-# ── Sync source from GitHub to Volume ────────────────────────────────────────
-@app.function(
-    image=base_image,
-    volumes={"/vol": build_vol},
-    secrets=[modal.Secret.from_name("github-token")],
-    timeout=600,
-    memory=1024,
-)
-def sync():
-    """Git clone (poprvé) nebo fetch + reset --hard (dál) přímo z GitHubu.
-
-    Nahrazuje upload_basic/upload_force/upload_clean. Žádný rsync z telefonu —
-    Modal si repo stahuje sám přes vlastní síť. Výsledný strom na Volume vždy
-    1:1 odpovídá GITHUB_BRANCH na GitHubu (deterministické, žádná otázka
-    "mazat, nebo ne" jako u rsyncu).
-    """
-    token = os.environ.get("GITHUB_TOKEN", "")
-    auth = f"{token}@" if token else ""
-    repo_url = f"https://{auth}github.com/{GITHUB_REPO}.git"
+# ── Upload source to Volume ──────────────────────────────────────────────────
+# NOTE: plain helper (NOT @app.function) — it is invoked directly from
+# upload_basic/upload_force inside their remote container. A Function object
+# is not directly callable (would raise 'Function' object is not callable).
+def _upload_common(delete: bool):
+    # Source selection. Prefer an explicit override (UPLOAD_SRC). Otherwise, if a
+    # staged launcher copy exists under the mounted workspace (Modal mounts the
+    # host workspace at /src-baked), use it; else fall back to /src-baked.
+    src = os.environ.get("UPLOAD_SRC")
+    if not src:
+        staged = "/src-baked/_launcher_stage"
+        src = staged if os.path.isdir(staged) else "/src-baked"
     dest = "/vol/src"
-
-    if os.path.isdir(os.path.join(dest, ".git")):
-        print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{GITHUB_BRANCH}")
-        subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
-        subprocess.run(["git", "fetch", "--depth", "1", "origin", GITHUB_BRANCH], cwd=dest, check=True)
-        subprocess.run(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], cwd=dest, check=True)
-        subprocess.run(["git", "clean", "-fdx"], cwd=dest, check=True)
+    if os.path.isdir(dest):
+        cmd = ["rsync", "-a"]
+        if delete:
+            cmd.append("--delete")
+        cmd += [src.rstrip("/") + "/", dest]
+        print(f"[upload] {'--delete mirror' if delete else 'incremental'}: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
     else:
-        print(f"[sync] Klonuji {GITHUB_REPO}@{GITHUB_BRANCH} -> {dest}")
-        if os.path.isdir(dest):
-            shutil.rmtree(dest)
-        subprocess.run(
-            ["git", "clone", "--branch", GITHUB_BRANCH, "--depth", "1", repo_url, dest],
-            check=True,
-        )
-
-    # Zamaskovat token v remote URL, kdyby si někdo dal `git remote -v`.
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", f"https://github.com/{GITHUB_REPO}.git"],
-        cwd=dest, check=True,
-    )
+        print(f"[upload] Copying source tree to {dest} ...")
+        shutil.copytree(src, dest, symlinks=True)
     build_vol.commit()
-    print("[sync] Hotovo. /vol/src odpovídá 1:1 GitHubu.")
+    print("[upload] Done. Source tree committed to Volume.")
 
 
 @app.function(
-    image=base_image,
+    image=source_image,
     volumes={"/vol": build_vol},
     timeout=600,
+    memory=2048,
+)
+def upload_basic():
+    """rsync BEZ --delete: přidá/aktualizuje soubory z lokálního repa, nikdy
+    nemaže nic, co na Volume je navíc. Bezpečný inkrementální upload."""
+    _upload_common(delete=False)
+
+
+@app.function(
+    image=source_image,
+    volumes={"/vol": build_vol},
+    timeout=600,
+    memory=2048,
+)
+def upload_force():
+    """rsync --delete: plný mirror lokálního repa na Volume — smaže z Volume
+    vše, co lokálně není. Používat až když lokální assets obsahují všechny
+    build artefakty (po pull_full_assets)."""
+    _upload_common(delete=True)
+
+
+@app.function(
+    image=source_image,
+    volumes={"/vol": build_vol},
+    timeout=300,
     memory=1024,
 )
-def clean():
-    """Smaže /vol/src a /vol/gradle-cache (keys/builds zůstanou).
-    Následuj sync() pro čerstvý baseline z GitHubu."""
+def upload_clean():
+    """Smaže /vol/src a /vol/gradle-cache (keys + builds zůstanou).
+    Následuj upload_basic pro čerstvý baseline."""
     for p in ("/vol/src", "/vol/gradle-cache"):
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
@@ -196,8 +204,6 @@ def clean():
             print(f"[clean] {p} absent")
     build_vol.commit()
     print("[clean] Done.")
-
-
 
 
 # ── Initialize signing key on Volume ─────────────────────────────────────────
@@ -264,12 +270,6 @@ def build_native():
     src_dir = "/vol/src"
     cpp_dir = os.path.join(src_dir, "app/src/main/cpp")
 
-    # NDK binárky: pokud projekt nemá app/src/main/cpp (žádný nativní kód),
-    # jednotlivé kroky se přeskočí (viz guardy níž) — žádný pád buildu.
-    if not os.path.isdir(cpp_dir):
-        print(f"[native] {cpp_dir} neexistuje — projekt nemá nativní kód, "
-              "NDK binárky budou přeskočeny.")
-
     # NDK toolchain
     tc_bin = f"{NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin"
     cc = f"{tc_bin}/aarch64-linux-android24-clang"
@@ -287,51 +287,39 @@ def build_native():
     print("─" * 60)
     print("[native] Building libusbfd_exporter.so ...")
     jni_src = os.path.join(cpp_dir, "usbfd_jni.c")
-    if not os.path.exists(jni_src):
-        print(f"[native] {jni_src} chybí — libusbfd_exporter.so PŘESKOČEN")
-    else:
-        cmd = [cc, "-shared", "-fPIC", "-o", so_path, jni_src, "-llog", "-landroid"]
-        print(f"  {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-        print(f"  OK  ({os.path.getsize(so_path):,} B)")
+    cmd = [cc, "-shared", "-fPIC", "-o", so_path, jni_src, "-llog", "-landroid"]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(so_path):,} B)")
 
     # ── 2. Build usb_bridge (static binary for PRoot) ────────────────────────
     print("─" * 60)
     print("[native] Building usb_bridge (static)...")
     bridge_src = os.path.join(cpp_dir, "usb_bridge.c")
-    if not os.path.exists(bridge_src):
-        print(f"[native] {bridge_src} chybí — usb_bridge PŘESKOČEN")
-    else:
-        cmd = [cc, "-static", "-o", bin_path, bridge_src]
-        print(f"  {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-        print(f"  OK  ({os.path.getsize(bin_path):,} B)")
+    cmd = [cc, "-static", "-o", bin_path, bridge_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(bin_path):,} B)")
 
     # ── 3. Build su_daemon (host root daemon) ──────────────────────────────────
     print("─" * 60)
     print("[native] Building su_daemon...")
     daemon_src = os.path.join(cpp_dir, "su_daemon.c")
     daemon_bin_path = os.path.join(assets_dir, "su_daemon")
-    if not os.path.exists(daemon_src):
-        print(f"[native] {daemon_src} chybí — su_daemon PŘESKOČEN")
-    else:
-        cmd = [cc, "-o", daemon_bin_path, daemon_src]
-        print(f"  {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-        print(f"  OK  ({os.path.getsize(daemon_bin_path):,} B)")
+    cmd = [cc, "-o", daemon_bin_path, daemon_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(daemon_bin_path):,} B)")
 
     # ── 4. Build su_wrapper (static binary for PRoot) ─────────────────────────
     print("─" * 60)
     print("[native] Building su_wrapper (static)...")
     wrapper_src = os.path.join(cpp_dir, "su_wrapper.c")
     wrapper_bin_path = os.path.join(assets_dir, "su_wrapper")
-    if not os.path.exists(wrapper_src):
-        print(f"[native] {wrapper_src} chybí — su_wrapper PŘESKOČEN")
-    else:
-        cmd = [cc, "-static", "-o", wrapper_bin_path, wrapper_src]
-        print(f"  {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-        print(f"  OK  ({os.path.getsize(wrapper_bin_path):,} B)")
+    cmd = [cc, "-static", "-o", wrapper_bin_path, wrapper_src]
+    print(f"  {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    print(f"  OK  ({os.path.getsize(wrapper_bin_path):,} B)")
 
     # ── 5. Usr tools: sed/rsync/nano/rg (vše Bionic) ─────────────────────────
     # Výstup: assets/usr/{bin,lib} (jde do APK) + /vol/builds/usrtools.tar.gz.
@@ -938,8 +926,8 @@ def build():
     if not os.path.isdir(src_dir):
         print(
             "[build] Source directory not found on Volume.  "
-            "Sync first (sync je vždy samostatný krok):\n"
-            "  modal run modal_build.py::sync",
+            "Upload first (upload je vždy samostatný krok):\n"
+            "  modal run modal_build.py::upload_basic",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -991,7 +979,7 @@ def build():
 
     out_dir = "/vol/builds"
     os.makedirs(out_dir, exist_ok=True)
-    dest = os.path.join(out_dir, APK_OUTPUT)
+    dest = os.path.join(out_dir, "app-debug.apk")
     shutil.copy2(apk_path, dest)
     build_vol.commit()
     print(f"[build] APK copied to Volume: {dest}")
@@ -1041,10 +1029,12 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd == "init":
         init_keys.remote()
-    elif cmd == "sync":
-        sync.remote()
-    elif cmd == "clean":
-        clean.remote()
+    elif cmd == "upload":
+        upload_basic.remote()
+    elif cmd == "upload_force":
+        upload_force.remote()
+    elif cmd == "upload_clean":
+        upload_clean.remote()
     elif cmd == "native":
         build_native.remote()
     elif cmd == "proot":
@@ -1057,4 +1047,4 @@ def main():
     elif cmd == "list":
         list_volume.remote()
     else:
-        print("Usage: modal run modal_build.py [init|sync|clean|native|proot|build|all|list]")
+        print("Usage: modal run modal_build.py [init|upload|upload_force|upload_clean|native|proot|build|all|list]")
