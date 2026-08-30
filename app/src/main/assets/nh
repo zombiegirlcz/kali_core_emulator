@@ -1355,6 +1355,11 @@ desktop_start() {
 #!/bin/sh
 unset SESSION_MANAGER
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-$USER}"; mkdir -p "$XDG_RUNTIME_DIR"
+# Start system dbus daemon if not running (needed by xfdesktop for background rendering)
+if [ ! -S /run/dbus/system_bus_socket ]; then
+    mkdir -p /run/dbus
+    dbus-daemon --system --fork 2>/dev/null || true
+fi
 if command -v dbus-run-session >/dev/null 2>&1; then
   exec dbus-run-session startxfce4
 else
