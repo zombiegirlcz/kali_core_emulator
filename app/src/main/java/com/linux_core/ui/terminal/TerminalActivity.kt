@@ -823,7 +823,7 @@ class TerminalActivity : ComponentActivity() {
         guiProgress.visibility = View.VISIBLE
         guiScope.launch {
             try {
-                withContext(Dispatchers.IO) {
+                val desktopReady = withContext(Dispatchers.IO) {
                     ensureDesktopStarted()
                     // Wait for the X server (VNC port 5901) to accept connections
                     // before launching the renderer. Without this the launcher is
@@ -834,18 +834,19 @@ class TerminalActivity : ComponentActivity() {
                         delay(500)
                         waitedMs += 500
                     }
-                    if (!isPortOpen(5901)) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(
-                                this@TerminalActivity,
-                                "Desktop did not start (VNC port 5901 not listening). Check 'nh desktop status'.",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        return@launch
+                    isPortOpen(5901)
+                }
+                if (desktopReady) {
+                    launchExternalLauncher()
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@TerminalActivity,
+                            "Desktop did not start (VNC port 5901 not listening). Check 'nh desktop status'.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
-                launchExternalLauncher()
             } finally {
                 withContext(Dispatchers.Main) {
                     guiProgress.visibility = View.GONE
