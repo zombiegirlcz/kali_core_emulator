@@ -1306,9 +1306,33 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     echo "[*] Checking desktop dependencies..."
-    if ! command -v vncserver >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
-        echo "[*] Installing XFCE4 and VNC (X server)..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 curl procps </dev/null
+    if ! command -v vncserver >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
+        echo "[*] Installing XFCE4, VNC, and ADB..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 curl procps adb </dev/null
+        
+        echo "[*] Checking ADB connection to disable Android Phantom Process Killer..."
+        adb start-server >/dev/null 2>&1
+        
+        if ! adb devices | grep -q -w "device"; then
+            echo "[!] ADB is not connected. We need it to disable Phantom Process Killer."
+            read -p "Zadej ADB <IP> <PORT> [PAIRING CODE] (nech prazdne pro preskoceni): " adb_ip adb_port adb_code
+            if [ -n "$adb_ip" ] && [ -n "$adb_port" ]; then
+                if [ -n "$adb_code" ]; then
+                    adb pair "$adb_ip:$adb_port" "$adb_code"
+                else
+                    adb connect "$adb_ip:$adb_port"
+                fi
+                sleep 2
+            fi
+        fi
+        
+        if adb devices | grep -q -w "device"; then
+            echo "[*] Disabling Phantom Process Killer via ADB..."
+            adb shell "device_config put activity_manager max_phantom_processes 2147483647 && settings put global max_phantom_processes 2147483647"
+            echo "[+] Phantom Process Killer disabled!"
+        else
+            echo "[-] ADB not connected. Skipping Phantom Process Killer disable."
+        fi
     fi
     echo "[*] Stopping existing sessions..."
     # BUG B fix: a huge ~/.config/tigervnc/localhost:N.log makes the vncserver
@@ -1322,6 +1346,8 @@ desktop_start() {
     mkdir -p ~/.vnc
     echo "kali_operator" | vncpasswd -f > ~/.vnc/passwd
     chmod 600 ~/.vnc/passwd
+    mkdir -p ~/.config/tigervnc
+    cp ~/.vnc/passwd ~/.config/tigervnc/passwd
     # BUG A fix: do NOT unset DBUS_SESSION_BUS_ADDRESS. With no bus, xfce4 triggers
     # dbus-launch --autolaunch which busy-loops (~90% CPU) inside proot, pegging the
     # CPU so Android kills the session with SIGKILL right after launch.
@@ -1340,7 +1366,7 @@ EOF
     # The desktop is rendered by the separate X11 launcher app
     # (com.linux_core.xlauncher), which connects to this X server over TCP.
     # noVNC/websockify WebView rendering was removed from the host app.
-    vncserver :1 -geometry 1280x720 -depth 24 -localhost no 2>&1 | tee /tmp/vnc.log
+    vncserver :1 -geometry 1280x720 -depth 24 -localhost no -SecurityTypes VncAuth 2>&1 | tee /tmp/vnc.log
     echo "[+] Desktop (X server) ready on 0.0.0.0:5901 — open the NetHunter X11 Launcher."
 }
 
