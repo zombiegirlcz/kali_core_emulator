@@ -1340,8 +1340,8 @@ EOF
     # The desktop is rendered by the separate X11 launcher app
     # (com.linux_core.xlauncher), which connects to this X server over TCP.
     # noVNC/websockify WebView rendering was removed from the host app.
-    vncserver :1 -geometry 1280x720 -depth 24 2>&1 | tee /tmp/vnc.log
-    echo "[+] Desktop (X server) ready on 127.0.0.1:6001 — open the NetHunter X11 Launcher."
+    vncserver :1 -geometry 1280x720 -depth 24 -localhost no 2>&1 | tee /tmp/vnc.log
+    echo "[+] Desktop (X server) ready on 0.0.0.0:5901 — open the NetHunter X11 Launcher."
 }
 
 desktop_stop() {
