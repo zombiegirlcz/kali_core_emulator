@@ -84,7 +84,7 @@ afterEvaluate {
         out << 'import android.content.Context;\n'
         out << 'import android.content.SharedPreferences;\n'
         out << '\n'
-        out << 'public class Prefs extends LoriePreferences.PrefsProto {\n'
+        out << 'public class Prefs  {\n'
         preferences.each {
             if (it.type == 'Int' || it.type == 'Boolean')
                 out << "  public final ${it.type}Preference ${it.key} = new ${it.type}Preference(\"${it.key}\", ${it.default});\n"
@@ -100,11 +100,6 @@ afterEvaluate {
         out << '  }};\n'
         out << '\n'
         out << '  public Prefs(Context ctx) {\n'
-        out << '    super(ctx);\n'
-        out << '    for (SharedPreferences store : new SharedPreferences[]{ builtInDisplayPreferences, secondaryDisplayPreferences }) {\n'
-        out << '      Object legacyKeepScreenOn = store.getAll().get("keepScreenOn");\n'
-        out << '      if (legacyKeepScreenOn instanceof Boolean && !store.contains("screenIdleTimeout"))\n'
-        out << '        store.edit().putString("screenIdleTimeout", (Boolean) legacyKeepScreenOn ? "never" : "system").commit();\n'
         out << '    }\n'
         out << '  }\n'
         out << '}\n'
