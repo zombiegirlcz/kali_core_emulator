@@ -94,8 +94,6 @@ window_dump.xml
 *.tar
 *.lock
 *.xml
-!app/src/main/linux-x11/src/main/templates/xml/shortcuts.xml
-!app/src/main/linux-x11/src/main/res/xml/preferences.xml
 *.py
 *.zip
 *.sh
