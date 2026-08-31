@@ -1306,9 +1306,9 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     echo "[*] Checking desktop dependencies..."
-    if ! command -v termux-x11 >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
-        echo "[*] Installing XFCE4, Termux-X11, and ADB..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal termux-x11 dbus-x11 curl procps adb </dev/null
+    if ! command -v linux-x11 >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
+        echo "[*] Installing XFCE4, Linux-X11, and ADB..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal linux-x11 dbus-x11 curl procps adb </dev/null
         
         echo "[*] Checking ADB connection to disable Android Phantom Process Killer..."
         adb start-server >/dev/null 2>&1

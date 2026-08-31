@@ -50,7 +50,6 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.4.10"
     implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0'
     implementation 'androidx.preference:preference:1.2.1'
-    compileOnly project(':shell-loader:stub')
 }
 afterEvaluate {
     tasks.register("generatePrefs") {
@@ -84,7 +83,6 @@ afterEvaluate {
         out << 'import java.util.HashMap;\n'
         out << 'import android.content.Context;\n'
         out << 'import android.content.SharedPreferences;\n'
-        out << 'import com.linux.x11.utils.TermuxX11ExtraKeys;\n'
         out << '\n'
         out << 'public class Prefs extends LoriePreferences.PrefsProto {\n'
         preferences.each {
@@ -95,7 +93,7 @@ afterEvaluate {
             else if (it.type == 'List')
                 out << "  public final ${it.type}Preference ${it.key} = new ${it.type}Preference(\"${it.key}\", \"${it.default}\", R.array.${it.entries}, R.array.${it.values});\n"
         }
-        out << '  public final StringPreference extra_keys_config = new StringPreference("extra_keys_config", TermuxX11ExtraKeys.DEFAULT_IVALUE_EXTRA_KEYS);\n'
+        out << '  public final StringPreference extra_keys_config = new StringPreference("extra_keys_config", "");\n'
         out << '  public final HashMap<String, Preference> keys = new HashMap<>() {{\n'
         preferences.each { out << '    put("' + it.key + '", ' + it.key + ');\n' }
         out << '    put("extra_keys_config", extra_keys_config);\n'
