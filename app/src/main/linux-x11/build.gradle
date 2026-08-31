@@ -38,7 +38,7 @@ android {
 
     compileOptions.sourceCompatibility JavaVersion.VERSION_1_9
     compileOptions.targetCompatibility JavaVersion.VERSION_1_9
-    externalNativeBuild.cmake.path "src/main/cpp/CMakeLists.txt"
+    // externalNativeBuild.cmake.path "src/main/cpp/CMakeLists.txt"  # disabled: requires bison/flex not available in Android SDK/NDK
     packagingOptions.jniLibs.useLegacyPackaging false
     buildFeatures.aidl true
     buildFeatures.buildConfig true
