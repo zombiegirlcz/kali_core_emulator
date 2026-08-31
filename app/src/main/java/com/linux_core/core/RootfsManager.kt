@@ -937,6 +937,76 @@ object RootfsManager {
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Imports and extracts a local rootfs archive file (.tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2)
+     * from device storage into a docker rootfs directory.
+     *
+     * Emits progress 0..100 (Pair<Int, String> status text).
+     */
+    suspend fun importLocalRootfsFile(
+        context: Context,
+        archiveFile: File
+    ): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Locating file: ${archiveFile.absolutePath}")
+
+        if (!archiveFile.exists() || !archiveFile.isFile) {
+            throw IOException("File not found or invalid: ${archiveFile.absolutePath}")
+        }
+        if (!archiveFile.canRead()) {
+            throw IOException("Permission denied reading file: ${archiveFile.absolutePath}")
+        }
+
+        val nameLower = archiveFile.name.lowercase()
+        val validExts = listOf(".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar", ".tar.bz2", ".tbz2")
+        if (validExts.none { nameLower.endsWith(it) }) {
+            throw IOException("Unsupported archive format for '${archiveFile.name}'. Supported formats: .tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2")
+        }
+
+        val fileBase = archiveFile.name
+            .removeSuffix(".tar.gz").removeSuffix(".tgz")
+            .removeSuffix(".tar.xz").removeSuffix(".txz")
+            .removeSuffix(".tar.bz2").removeSuffix(".tbz2")
+            .removeSuffix(".tar")
+        val safeName = Regex("[^A-Za-z0-9._-]").replace(fileBase, "-")
+        val rootfsName = "docker/local-$safeName"
+        val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/$rootfsName")
+        rootfsDir.mkdirs()
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:importLocal")
+        wakeLock.acquire(2 * 60 * 60 * 1000L)
+
+        try {
+            emit(10 to "Extracting local rootfs archive…")
+            val isXz = nameLower.endsWith(".tar.xz") || nameLower.endsWith(".txz")
+            if (isXz) {
+                extractTarXz(archiveFile, rootfsDir)
+            } else {
+                extractTarGzip(archiveFile, rootfsDir)
+            }
+
+            try {
+                File(rootfsDir, ".docker_image").writeText(
+                    "image=file://${archiveFile.absolutePath}\n" +
+                    "pulled_at=${System.currentTimeMillis()}\n" +
+                    "source=local-file\n" +
+                    "path=${archiveFile.absolutePath}\n"
+                )
+                File(rootfsDir, "etc/hostname").writeText("$safeName-docker\n")
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to write local import markers: ${e.message}")
+            }
+
+            emit(100 to rootfsDir.absolutePath)
+            Log.i("RootfsManager", "Local rootfs import complete: ${rootfsDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "Local rootfs import failed: ${e.message}", e)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+        }
+    }.flowOn(Dispatchers.IO)
+
     /** Extract a .tar.xz archive into targetDir (streaming, progress-free variant used by pull). */
     private fun extractTarXz(source: File, targetDir: File) {
         java.io.FileInputStream(source).use { fis ->
@@ -981,8 +1051,23 @@ object RootfsManager {
     private fun extractTarGzip(source: File, targetDir: File) {
         java.io.FileInputStream(source).use { fis ->
             BufferedInputStream(fis, 512 * 1024).use { bis ->
-                GzipCompressorInputStream(bis).use { gzIn ->
-                    TarArchiveInputStream(gzIn).use { tarIn ->
+                bis.mark(1024)
+                val isGzip = try {
+                    val gzIn = GzipCompressorInputStream(bis)
+                    gzIn.read()
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+                bis.reset()
+
+                val tarInStream: java.io.InputStream = if (isGzip) {
+                    GzipCompressorInputStream(bis)
+                } else {
+                    bis
+                }
+
+                TarArchiveInputStream(tarInStream).use { tarIn ->
                         val canonicalBase = targetDir.canonicalPath
                         var entry: ArchiveEntry? = tarIn.nextEntry
                         while (entry != null) {
@@ -1049,7 +1134,6 @@ object RootfsManager {
                 }
             }
         }
-    }
 
     // ──────────────────────────────────────────────────────────────────────
     // Layout migration (Fáze 1): old layout → nh/distro + usr/{bin,lib}

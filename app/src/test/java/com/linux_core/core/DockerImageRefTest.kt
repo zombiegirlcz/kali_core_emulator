@@ -55,6 +55,16 @@ class DockerImageRefTest {
     }
 
     @Test
+    fun `rejects local absolute path in docker reference`() {
+        try {
+            DockerImageRef.parse("/sdcard/myrootfs.tar.gz")
+            assertTrue("Should throw for local file path", false)
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+
+    @Test
     fun `rejects image with no repository part`() {
         try {
             DockerImageRef.parse("user/")
