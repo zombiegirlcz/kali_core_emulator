@@ -103,6 +103,7 @@ window_dump.xml
 *.json
 *.mdmp
 *.txt
+!app/src/main/linux-x11/src/main/cpp/CMakeLists.txt
 *.png
 *.log
 # Exemptions
