@@ -14,7 +14,7 @@ plugins {
 
 android {
     namespace = "com.linux_core"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.linux_core"

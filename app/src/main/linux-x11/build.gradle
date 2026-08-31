@@ -24,7 +24,7 @@ def hostApplicationId = hostProject.android.defaultConfig.applicationId ?: hostP
 android {
     namespace 'com.linux.x11'
     //noinspection GrDeprecatedAPIUsage
-    compileSdkVersion 34
+    compileSdkVersion 37
     ndkVersion linuxX11NdkVersion
     defaultConfig {
         minSdkVersion 24
