@@ -100,7 +100,6 @@ afterEvaluate {
         out << '  }};\n'
         out << '\n'
         out << '  public Prefs(Context ctx) {\n'
-        out << '    }\n'
         out << '  }\n'
         out << '}\n'
     }
