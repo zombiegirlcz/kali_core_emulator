@@ -64,7 +64,7 @@ afterEvaluate {
                 preferences << [ type: 'String',  key: node.getAttribute("app:key"), default: node.getAttribute("app:defaultValue") ]
             else if (node.nodeName == 'SeekBarPreference')
                 preferences << [ type: 'Int', key: node.getAttribute("app:key"), default: node.getAttribute("app:defaultValue") ]
-            else if (node.nodeName == 'ListPreference') {
+            else if (node.nodeName == 'Preference') {
                 def entries = node.getAttribute("app:entries")
                 def values = node.getAttribute("app:entryValues")
                 preferences << [type: 'List', key: node.getAttribute("app:key"), default: node.getAttribute("app:defaultValue"),
@@ -84,18 +84,17 @@ afterEvaluate {
         out << 'import android.content.Context;\n'
         out << 'import android.content.SharedPreferences;\n'
         out << 'import androidx.preference.Preference;\n'
-        out << 'import androidx.preference.StringPreference;\n'
         out << '\n'
         out << 'public class Prefs  {\n'
         preferences.each {
             if (it.type == 'Int' || it.type == 'Boolean')
-                out << "  public final ${it.type}Preference ${it.key} = new ${it.type}Preference(\"${it.key}\", ${it.default});\n"
+                out << "  public final Preference ${it.key} = new Preference(\"${it.key}\", ${it.default});\n"
             else if (it.type == 'String')
-                out << "  public final StringPreference ${it.key} = new StringPreference(\"${it.key}\", \"${it.default}\");\n"
+                out << "  public final Preference ${it.key} = new Preference(\"${it.key}\", \"${it.default}\");\n"
             else if (it.type == 'List')
-                out << "  public final ${it.type}Preference ${it.key} = new ${it.type}Preference(\"${it.key}\", \"${it.default}\", R.array.${it.entries}, R.array.${it.values});\n"
+                out << "  public final Preference ${it.key} = new Preference(\"${it.key}\", \"${it.default}\", R.array.${it.entries}, R.array.${it.values});\n"
         }
-        out << '  public final StringPreference extra_keys_config = new StringPreference("extra_keys_config", "");\n'
+        out << '  public final Preference extra_keys_config = new Preference("extra_keys_config", "");\n'
         out << '  public final HashMap<String, Preference> keys = new HashMap<>() {{\n'
         preferences.each { out << '    put("' + it.key + '", ' + it.key + ');\n' }
         out << '    put("extra_keys_config", extra_keys_config);\n'
