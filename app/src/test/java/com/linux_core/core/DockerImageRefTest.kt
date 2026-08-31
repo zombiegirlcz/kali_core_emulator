@@ -138,4 +138,16 @@ class DockerImageRefTest {
             // expected
         }
     }
+
+    @Test
+    fun `parses http custom registry reference`() {
+        val ref = DockerImageRef.parse("http://myregistry.local:5000/myuser/myapp:v1")
+        assertEquals("myuser", ref.namespace)
+        assertEquals("myapp", ref.repository)
+        assertEquals("v1", ref.tag)
+        assertEquals("myregistry.local:5000", ref.registryHost)
+        assertTrue(ref.isHttp)
+        assertEquals("http", ref.scheme)
+        assertEquals("http://myregistry.local:5000/v2/myuser/myapp/manifests/v1", ref.manifestUrl())
+    }
 }

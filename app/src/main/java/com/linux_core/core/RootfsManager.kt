@@ -786,6 +786,20 @@ object RootfsManager {
      * Security: HTTPS only + host whitelist (same policy as downloadRootfs).
      * Emits progress 0..100 (Pair<Int, String> status text like pullDockerImage).
      */
+    private fun findCurlExecutable(context: Context): String? {
+        val appCurl = File(context.filesDir, "usr/bin/curl")
+        if (appCurl.exists() && appCurl.canExecute()) return appCurl.absolutePath
+        val sysCurl = File("/system/bin/curl")
+        if (sysCurl.exists() && sysCurl.canExecute()) return sysCurl.absolutePath
+        return try {
+            val p = ProcessBuilder("which", "curl").start()
+            val path = p.inputStream.bufferedReader().use { it.readLine()?.trim() }
+            if (p.waitFor() == 0 && !path.isNullOrEmpty() && File(path).exists()) path else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun pullRootfsFromUrl(
         context: Context,
         url: String,
@@ -796,23 +810,17 @@ object RootfsManager {
     ): Flow<Pair<Int, String>> = flow {
         emit(0 to "Resolving URL: $url")
 
-        // ── Validate URL (HTTPS only + host whitelist) ──
+        // ── Validate URL (HTTP and HTTPS allowed, any host permitted) ──
         val parsedUrl = try {
             java.net.URL(url)
         } catch (e: java.net.MalformedURLException) {
             throw IOException("Invalid download URL: $url")
         }
-        if (parsedUrl.protocol != "https") {
-            throw IOException("Only HTTPS downloads are allowed (URL: $url)")
+        val protocol = parsedUrl.protocol.lowercase()
+        if (protocol != "http" && protocol != "https") {
+            throw IOException("Only HTTP and HTTPS downloads are allowed (URL: $url)")
         }
-        val allowedHosts = listOf(
-            "images.kali.org", "kali.download", "raw.githubusercontent.com", "github.com",
-            "deb.parrot.sh", "archive.parrotsec.org", "downloads.kali.org"
-        )
         val host = parsedUrl.host.lowercase()
-        if (allowedHosts.none { host == it || host.endsWith(".$it") }) {
-            throw IOException("Download from untrusted host blocked: $host")
-        }
 
         // Rootfs dir name: docker-<host>-<filebase> so it appears in UI scan + launcher
         val fileBase = parsedUrl.path.substringAfterLast('/').ifEmpty { "rootfs" }
@@ -832,30 +840,67 @@ object RootfsManager {
         wakeLock.acquire(2 * 60 * 60 * 1000L) // 2 hours max
 
         try {
-            // ── Download to temp file with progress ──
+            // ── Download to temp file using curl (or OkHttp fallback) ──
             emit(5 to "Downloading $url …")
-            val request = okhttp3.Request.Builder().url(url).build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for $url")
-                val responseBody = response.body ?: throw IOException("Response body is null")
-                val totalLength = responseBody.contentLength()
-                val inputStream = responseBody.byteStream()
-                var bytesCopied: Long = 0
-                java.io.FileOutputStream(tempFile).use { outputStream ->
-                    val buffer = ByteArray(8 * 1024)
-                    var bytes = inputStream.read(buffer)
-                    while (bytes >= 0) {
-                        outputStream.write(buffer, 0, bytes)
-                        bytesCopied += bytes
-                        if (totalLength > 0) {
-                            val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
-                            emit(pct.coerceIn(5, 85) to "Downloading… $pct%")
+            val curlBin = findCurlExecutable(context)
+            var downloadSuccess = false
+
+            if (curlBin != null) {
+                try {
+                    Log.i("RootfsManager", "Downloading via curl ($curlBin): $url")
+                    val pb = ProcessBuilder(curlBin, "-sSL", "--fail", "--show-error", "-o", tempFile.absolutePath, url)
+                    pb.redirectErrorStream(true)
+                    val process = pb.start()
+
+                    while (process.isAlive) {
+                        kotlinx.coroutines.delay(300)
+                        val bytes = tempFile.length()
+                        if (bytes > 0) {
+                            emit(10 to "Downloading via curl… (${bytes / (1024 * 1024)} MB)")
                         }
-                        bytes = inputStream.read(buffer)
                     }
+                    val exitCode = process.waitFor()
+                    if (exitCode == 0 && tempFile.exists() && tempFile.length() > 0) {
+                        downloadSuccess = true
+                        Log.i("RootfsManager", "Curl download successful: ${tempFile.length()} bytes")
+                    } else {
+                        val errorOutput = process.inputStream.bufferedReader().use { it.readText() }
+                        Log.w("RootfsManager", "Curl download failed (code $exitCode): $errorOutput")
+                        if (tempFile.exists()) tempFile.delete()
+                    }
+                } catch (e: Exception) {
+                    Log.w("RootfsManager", "Curl execution failed, falling back to OkHttp: ${e.message}")
+                    if (tempFile.exists()) tempFile.delete()
                 }
-                if (totalLength > 0 && bytesCopied != totalLength) {
-                    throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+            }
+
+            if (!downloadSuccess) {
+                Log.i("RootfsManager", "Downloading via OkHttp: $url")
+                val request = okhttp3.Request.Builder().url(url).build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for $url")
+                    val responseBody = response.body ?: throw IOException("Response body is null")
+                    val totalLength = responseBody.contentLength()
+                    val inputStream = responseBody.byteStream()
+                    var bytesCopied: Long = 0
+                    java.io.FileOutputStream(tempFile).use { outputStream ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytes = inputStream.read(buffer)
+                        while (bytes >= 0) {
+                            outputStream.write(buffer, 0, bytes)
+                            bytesCopied += bytes
+                            if (totalLength > 0) {
+                                val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
+                                emit(pct.coerceIn(5, 85) to "Downloading… $pct%")
+                            } else {
+                                emit(10 to "Downloading… (${bytesCopied / (1024 * 1024)} MB)")
+                            }
+                            bytes = inputStream.read(buffer)
+                        }
+                    }
+                    if (totalLength > 0 && bytesCopied != totalLength) {
+                        throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+                    }
                 }
             }
 
