@@ -1306,9 +1306,9 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     echo "[*] Checking desktop dependencies..."
-    if ! command -v vncserver >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
-        echo "[*] Installing XFCE4, VNC, and ADB..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 curl procps adb </dev/null
+    if ! command -v termux-x11 >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
+        echo "[*] Installing XFCE4, Termux-X11, and ADB..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal termux-x11 dbus-x11 curl procps adb </dev/null
         
         echo "[*] Checking ADB connection to disable Android Phantom Process Killer..."
         adb start-server >/dev/null 2>&1
@@ -1335,48 +1335,19 @@ desktop_start() {
         fi
     fi
     echo "[*] Stopping existing sessions..."
-    # BUG B fix: a huge ~/.config/tigervnc/localhost:N.log makes the vncserver
-    # wrapper deadlock on File::ReadBackwards for every -kill/-list/-start.
-    # Remove tigervnc logs/pids BEFORE any vncserver -kill so it cannot hang.
-    rm -f ~/.config/tigervnc/*.log ~/.config/tigervnc/*.pid ~/.vnc/*.log ~/.vnc/*.pid 2>/dev/null || true
-    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f linux-x11 2>/dev/null || true
     pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
     rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    echo "[*] Configuring VNC..."
-    mkdir -p ~/.vnc
-    echo "kali_operator" | vncpasswd -f > ~/.vnc/passwd
-    chmod 600 ~/.vnc/passwd
-    mkdir -p ~/.config/tigervnc
-    cp ~/.vnc/passwd ~/.config/tigervnc/passwd
-    # BUG A fix: do NOT unset DBUS_SESSION_BUS_ADDRESS. With no bus, xfce4 triggers
-    # dbus-launch --autolaunch which busy-loops (~90% CPU) inside proot, pegging the
-    # CPU so Android kills the session with SIGKILL right after launch.
-    cat > ~/.vnc/xstartup << 'EOF'
-#!/bin/sh
-unset SESSION_MANAGER
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-$USER}"; mkdir -p "$XDG_RUNTIME_DIR"
-# Start system dbus daemon if not running (needed by xfdesktop for background rendering)
-if [ ! -S /run/dbus/system_bus_socket ]; then
-    mkdir -p /run/dbus
-    dbus-daemon --system --fork 2>/dev/null || true
-fi
-if command -v dbus-run-session >/dev/null 2>&1; then
-  exec dbus-run-session startxfce4
-else
-  exec dbus-launch --exit-with-session startxfce4
-fi
-EOF
-    chmod +x ~/.vnc/xstartup
-    echo "[*] Starting X server :1 (TCP 6001)..."
+    echo "[*] Starting X server (Linux-X11) ..."
     # The desktop is rendered by the separate X11 launcher app
     # (com.linux_core.xlauncher), which connects to this X server over TCP.
-    # noVNC/websockify WebView rendering was removed from the host app.
-    vncserver :1 -geometry 1280x720 -depth 24 -localhost no -SecurityTypes VncAuth 2>&1 | tee /tmp/vnc.log
-    echo "[+] Desktop (X server) ready on 0.0.0.0:5901 — open the NetHunter X11 Launcher."
+    # This launches Linux-X11 inside the PRoot container, providing DISPLAY=:1 to X11 clients.
+    linux-x11 :1 -xstartup "dbus-launch --exit-with-session xfce4-session" &
+    echo "[+] X server (Linux-X11) ready on DISPLAY=:1 — open the NetHunter X11 Launcher."
 }
 
 desktop_stop() {
-    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f linux-x11 2>/dev/null || true
     pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
     rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
     echo "[-] Desktop stopped."
@@ -1384,7 +1355,7 @@ desktop_stop() {
 
 desktop_status() {
     echo "=== DESKTOP STATUS ==="
-    if pgrep -f "Xvnc|Xtightvnc|Xtigervnc" >/dev/null 2>&1; then echo "[+] VNC Server: RUNNING"; else echo "[-] VNC Server: STOPPED"; fi
+    if pgrep -f "linux-x11" >/dev/null 2>&1; then echo "[+] X Server (Linux-X11): RUNNING"; else echo "[-] X Server (Linux-X11): STOPPED"; fi
     echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)."
 }
 

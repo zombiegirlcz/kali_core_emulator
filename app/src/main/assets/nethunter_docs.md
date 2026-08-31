@@ -55,7 +55,7 @@ nh <kategorie> <akce> [argumenty]
 
 **Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `usb`, `distro`, `help`, `list`
 
-> **Desktop (XFCE4):** hostitelská appka (`com.linux_core`) pouze spouští X server (`nh desktop start`, display `:1` na TCP 6001). Samotné vykreslování GUI běží v samostatné X11 launcher aplikaci (`com.linux_core.xlauncher`) — in-app WebView/noVNC renderoval byl odstraněn.
+> **Desktop (XFCE4):** hostitelská appka (`com.linux_core`) pouze spouští X server (`nh desktop start`, display `:1` na TCP 6000). Samotné vykreslování GUI běží v samostatné X11 launcher aplikaci (`com.linux_core.xlauncher`) — in-app WebView/noVNC renderoval byl odstraněn.
 
 **Příklady:**
 ```bash

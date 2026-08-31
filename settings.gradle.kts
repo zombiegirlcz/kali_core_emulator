@@ -25,4 +25,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "nethunter-ai-operator"
 include(":app")
+include(":linux-x11")
+project(":linux-x11").projectDir = file("app/src/main/linux-x11")
  

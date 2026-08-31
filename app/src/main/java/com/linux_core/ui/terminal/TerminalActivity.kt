@@ -825,16 +825,16 @@ class TerminalActivity : ComponentActivity() {
             try {
                 val desktopReady = withContext(Dispatchers.IO) {
                     ensureDesktopStarted()
-                    // Wait for the X server (VNC port 5901) to accept connections
+                    // Wait for the X server (Linux-X11 port 6000) to accept connections
                     // before launching the renderer. Without this the launcher is
                     // started too early and hits "connection refused"; the desktop
                     // session may also be reaped before the launcher retries.
                     var waitedMs = 0L
-                    while (!isPortOpen(5901) && waitedMs < 30000) {
+                    while (!isPortOpen(6000) && waitedMs < 30000) {
                         delay(500)
                         waitedMs += 500
                     }
-                    isPortOpen(5901)
+                    isPortOpen(6000)
                 }
                 if (desktopReady) {
                     launchExternalLauncher()
@@ -842,7 +842,7 @@ class TerminalActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             this@TerminalActivity,
-                            "Desktop did not start (VNC port 5901 not listening). Check 'nh desktop status'.",
+                            "Desktop did not start (Linux-X11 port 6000 not listening). Check 'nh desktop status'.",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -856,16 +856,16 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    /** Start the X server in the guest (no-op if it is already listening on :1 / TCP 6001). */
+    /** Start the X server in the guest (no-op if it is already listening on :1 / TCP 6000). */
     private suspend fun ensureDesktopStarted() {
-        if (isPortOpen(6001)) return
+        if (isPortOpen(6000)) return
         withContext(Dispatchers.IO) {
             try {
                 val bootScript = File(filesDir, "usr/bin/boot").absolutePath
                 val builder = ProcessBuilder("/system/bin/sh", bootScript, "--", "nethunter-desktop", "start")
                 builder.directory(filesDir)
                 builder.redirectErrorStream(true)
-                // Fire-and-forget: vncserver keeps running as a long-lived process,
+                // Fire-and-forget: linux-x11 keeps running as a long-lived process,
                 // so do NOT block on waitFor(). Readiness is polled via the port above.
                 builder.start()
                 Log.i(TAG, "Desktop start requested (boot -- nethunter-desktop start)")

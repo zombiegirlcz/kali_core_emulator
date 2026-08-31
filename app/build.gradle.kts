@@ -182,6 +182,9 @@ dependencies {
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.androidx.biometric)
 
+    // Linux-X11 module dependency
+    implementation(project(":linux-x11"))
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
