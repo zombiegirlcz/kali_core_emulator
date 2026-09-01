@@ -23,7 +23,7 @@
 set -e
 set -o pipefail
 
-SRC="${KALI_PROJECT_DIR:-/root/core/kali_core_emulator}"
+SRC="${KALI_PROJECT_DIR:-$PWD}"
 CMD="${1:-}"
 
 cd "$SRC"
@@ -31,19 +31,19 @@ cd "$SRC"
 # ── Pull celého assets z Volume do lokálního app/src/main/assets ──
 pull_full_assets() {
     echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
-    if modal volume get --force -v kali-build-data "src/app/src/main/assets" "app/src/main/" >/dev/null 2>&1; then
-        echo "    [OK] assets/ ($(du -sh app/src/main/assets 2>/dev/null | cut -f1))"
-        echo "    [OK] su_daemon ($(stat -c%s app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
-        echo "    [OK] su_wrapper ($(stat -c%s app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
-        echo "    [OK] usb_bridge ($(stat -c%s app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
-        echo "    [OK] linux-x11 ($(stat -c%s app/src/main/assets/usr/bin/linux-x11 2>/dev/null || echo '?') B)"
+    if modal volume get --force  kali-build-data src/app/src/main/assets $SRC/app/src/main/ >/dev/null 2>&1; then
+        echo "    [OK] assets/ ($(du -sh $SRC/app/src/main/assets 2>/dev/null | cut -f1))"
+        echo "    [OK] su_daemon ($(stat -c%s $SRC/app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
+        echo "    [OK] su_wrapper ($(stat -c%s $SRC/app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
+        echo "    [OK] usb_bridge ($(stat -c%s $SRC/app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
+        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/bin/linux-x11 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi
     echo "  -> pull magisk-modules z Volume -> magisk-modules/"
-    if modal volume get --force -v kali-build-data "src/magisk-modules" "magisk-modules/" >/dev/null 2>&1; then
-        echo "    [OK] magisk-modules/ ($(du -sh magisk-modules 2>/dev/null | cut -f1))"
-        echo "    [OK] custom_usb_g2_setup ($(stat -c%s magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
+    if modal volume get --force  kali-build-data src/magisk-modules $SRC/magisk-modules/ >/dev/null 2>&1; then
+        echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
+        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] magisk-modules nenalezen na Volume"
     fi
@@ -91,7 +91,10 @@ case "$CMD" in
         modal run modal_build.py::build > build.log | cat
         modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
         ;;
-   # usrtools)
+     pull)
+	pull_full_assets
+	;;
+# usrtools)
     #    echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
      #   echo "  -> native build (usrtools)"
       #  modal run modal_build.py::build_native > build.log | cat

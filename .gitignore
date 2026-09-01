@@ -142,6 +142,10 @@ app/src/main/assets/certs/google_attestation_root.key
 # — zdroj pravdy je Volume (build_native); lokálně se stahuji přes
 # pull_full_assets. Necommitovat build artefakty.
 # VÝJIMKA (boot refactor fáze 1): repo-owned soubory přesunuté z assets/bin/:
+!app/src/main/ 
+!app/src/main/**
+!app/src/main/assets/**
+!app/src/main/assets/
 !app/src/main/assets/usr/**
 !app/src/main/assets/usr/bin/
 !app/src/main/assets/usr/bin/**
