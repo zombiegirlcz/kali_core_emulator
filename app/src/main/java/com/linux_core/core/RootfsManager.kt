@@ -786,6 +786,20 @@ object RootfsManager {
      * Security: HTTPS only + host whitelist (same policy as downloadRootfs).
      * Emits progress 0..100 (Pair<Int, String> status text like pullDockerImage).
      */
+    private fun findCurlExecutable(context: Context): String? {
+        val appCurl = File(context.filesDir, "usr/bin/curl")
+        if (appCurl.exists() && appCurl.canExecute()) return appCurl.absolutePath
+        val sysCurl = File("/system/bin/curl")
+        if (sysCurl.exists() && sysCurl.canExecute()) return sysCurl.absolutePath
+        return try {
+            val p = ProcessBuilder("which", "curl").start()
+            val path = p.inputStream.bufferedReader().use { it.readLine()?.trim() }
+            if (p.waitFor() == 0 && !path.isNullOrEmpty() && File(path).exists()) path else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun pullRootfsFromUrl(
         context: Context,
         url: String,
@@ -796,23 +810,17 @@ object RootfsManager {
     ): Flow<Pair<Int, String>> = flow {
         emit(0 to "Resolving URL: $url")
 
-        // ── Validate URL (HTTPS only + host whitelist) ──
+        // ── Validate URL (HTTP and HTTPS allowed, any host permitted) ──
         val parsedUrl = try {
             java.net.URL(url)
         } catch (e: java.net.MalformedURLException) {
             throw IOException("Invalid download URL: $url")
         }
-        if (parsedUrl.protocol != "https") {
-            throw IOException("Only HTTPS downloads are allowed (URL: $url)")
+        val protocol = parsedUrl.protocol.lowercase()
+        if (protocol != "http" && protocol != "https") {
+            throw IOException("Only HTTP and HTTPS downloads are allowed (URL: $url)")
         }
-        val allowedHosts = listOf(
-            "images.kali.org", "kali.download", "raw.githubusercontent.com", "github.com",
-            "deb.parrot.sh", "archive.parrotsec.org", "downloads.kali.org"
-        )
         val host = parsedUrl.host.lowercase()
-        if (allowedHosts.none { host == it || host.endsWith(".$it") }) {
-            throw IOException("Download from untrusted host blocked: $host")
-        }
 
         // Rootfs dir name: docker-<host>-<filebase> so it appears in UI scan + launcher
         val fileBase = parsedUrl.path.substringAfterLast('/').ifEmpty { "rootfs" }
@@ -832,30 +840,67 @@ object RootfsManager {
         wakeLock.acquire(2 * 60 * 60 * 1000L) // 2 hours max
 
         try {
-            // ── Download to temp file with progress ──
+            // ── Download to temp file using curl (or OkHttp fallback) ──
             emit(5 to "Downloading $url …")
-            val request = okhttp3.Request.Builder().url(url).build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for $url")
-                val responseBody = response.body ?: throw IOException("Response body is null")
-                val totalLength = responseBody.contentLength()
-                val inputStream = responseBody.byteStream()
-                var bytesCopied: Long = 0
-                java.io.FileOutputStream(tempFile).use { outputStream ->
-                    val buffer = ByteArray(8 * 1024)
-                    var bytes = inputStream.read(buffer)
-                    while (bytes >= 0) {
-                        outputStream.write(buffer, 0, bytes)
-                        bytesCopied += bytes
-                        if (totalLength > 0) {
-                            val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
-                            emit(pct.coerceIn(5, 85) to "Downloading… $pct%")
+            val curlBin = findCurlExecutable(context)
+            var downloadSuccess = false
+
+            if (curlBin != null) {
+                try {
+                    Log.i("RootfsManager", "Downloading via curl ($curlBin): $url")
+                    val pb = ProcessBuilder(curlBin, "-sSL", "--fail", "--show-error", "-o", tempFile.absolutePath, url)
+                    pb.redirectErrorStream(true)
+                    val process = pb.start()
+
+                    while (process.isAlive) {
+                        kotlinx.coroutines.delay(300)
+                        val bytes = tempFile.length()
+                        if (bytes > 0) {
+                            emit(10 to "Downloading via curl… (${bytes / (1024 * 1024)} MB)")
                         }
-                        bytes = inputStream.read(buffer)
                     }
+                    val exitCode = process.waitFor()
+                    if (exitCode == 0 && tempFile.exists() && tempFile.length() > 0) {
+                        downloadSuccess = true
+                        Log.i("RootfsManager", "Curl download successful: ${tempFile.length()} bytes")
+                    } else {
+                        val errorOutput = process.inputStream.bufferedReader().use { it.readText() }
+                        Log.w("RootfsManager", "Curl download failed (code $exitCode): $errorOutput")
+                        if (tempFile.exists()) tempFile.delete()
+                    }
+                } catch (e: Exception) {
+                    Log.w("RootfsManager", "Curl execution failed, falling back to OkHttp: ${e.message}")
+                    if (tempFile.exists()) tempFile.delete()
                 }
-                if (totalLength > 0 && bytesCopied != totalLength) {
-                    throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+            }
+
+            if (!downloadSuccess) {
+                Log.i("RootfsManager", "Downloading via OkHttp: $url")
+                val request = okhttp3.Request.Builder().url(url).build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for $url")
+                    val responseBody = response.body ?: throw IOException("Response body is null")
+                    val totalLength = responseBody.contentLength()
+                    val inputStream = responseBody.byteStream()
+                    var bytesCopied: Long = 0
+                    java.io.FileOutputStream(tempFile).use { outputStream ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytes = inputStream.read(buffer)
+                        while (bytes >= 0) {
+                            outputStream.write(buffer, 0, bytes)
+                            bytesCopied += bytes
+                            if (totalLength > 0) {
+                                val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
+                                emit(pct.coerceIn(5, 85) to "Downloading… $pct%")
+                            } else {
+                                emit(10 to "Downloading… (${bytesCopied / (1024 * 1024)} MB)")
+                            }
+                            bytes = inputStream.read(buffer)
+                        }
+                    }
+                    if (totalLength > 0 && bytesCopied != totalLength) {
+                        throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+                    }
                 }
             }
 
@@ -889,6 +934,76 @@ object RootfsManager {
         } finally {
             try { wakeLock.release() } catch (_: Exception) {}
             if (tempFile.exists()) tempFile.delete()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * Imports and extracts a local rootfs archive file (.tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2)
+     * from device storage into a docker rootfs directory.
+     *
+     * Emits progress 0..100 (Pair<Int, String> status text).
+     */
+    suspend fun importLocalRootfsFile(
+        context: Context,
+        archiveFile: File
+    ): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Locating file: ${archiveFile.absolutePath}")
+
+        if (!archiveFile.exists() || !archiveFile.isFile) {
+            throw IOException("File not found or invalid: ${archiveFile.absolutePath}")
+        }
+        if (!archiveFile.canRead()) {
+            throw IOException("Permission denied reading file: ${archiveFile.absolutePath}")
+        }
+
+        val nameLower = archiveFile.name.lowercase()
+        val validExts = listOf(".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar", ".tar.bz2", ".tbz2")
+        if (validExts.none { nameLower.endsWith(it) }) {
+            throw IOException("Unsupported archive format for '${archiveFile.name}'. Supported formats: .tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2")
+        }
+
+        val fileBase = archiveFile.name
+            .removeSuffix(".tar.gz").removeSuffix(".tgz")
+            .removeSuffix(".tar.xz").removeSuffix(".txz")
+            .removeSuffix(".tar.bz2").removeSuffix(".tbz2")
+            .removeSuffix(".tar")
+        val safeName = Regex("[^A-Za-z0-9._-]").replace(fileBase, "-")
+        val rootfsName = "docker/local-$safeName"
+        val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/$rootfsName")
+        rootfsDir.mkdirs()
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:importLocal")
+        wakeLock.acquire(2 * 60 * 60 * 1000L)
+
+        try {
+            emit(10 to "Extracting local rootfs archive…")
+            val isXz = nameLower.endsWith(".tar.xz") || nameLower.endsWith(".txz")
+            if (isXz) {
+                extractTarXz(archiveFile, rootfsDir)
+            } else {
+                extractTarGzip(archiveFile, rootfsDir)
+            }
+
+            try {
+                File(rootfsDir, ".docker_image").writeText(
+                    "image=file://${archiveFile.absolutePath}\n" +
+                    "pulled_at=${System.currentTimeMillis()}\n" +
+                    "source=local-file\n" +
+                    "path=${archiveFile.absolutePath}\n"
+                )
+                File(rootfsDir, "etc/hostname").writeText("$safeName-docker\n")
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to write local import markers: ${e.message}")
+            }
+
+            emit(100 to rootfsDir.absolutePath)
+            Log.i("RootfsManager", "Local rootfs import complete: ${rootfsDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "Local rootfs import failed: ${e.message}", e)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
         }
     }.flowOn(Dispatchers.IO)
 
@@ -936,8 +1051,23 @@ object RootfsManager {
     private fun extractTarGzip(source: File, targetDir: File) {
         java.io.FileInputStream(source).use { fis ->
             BufferedInputStream(fis, 512 * 1024).use { bis ->
-                GzipCompressorInputStream(bis).use { gzIn ->
-                    TarArchiveInputStream(gzIn).use { tarIn ->
+                bis.mark(1024)
+                val isGzip = try {
+                    val gzIn = GzipCompressorInputStream(bis)
+                    gzIn.read()
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+                bis.reset()
+
+                val tarInStream: java.io.InputStream = if (isGzip) {
+                    GzipCompressorInputStream(bis)
+                } else {
+                    bis
+                }
+
+                TarArchiveInputStream(tarInStream).use { tarIn ->
                         val canonicalBase = targetDir.canonicalPath
                         var entry: ArchiveEntry? = tarIn.nextEntry
                         while (entry != null) {
@@ -1004,7 +1134,6 @@ object RootfsManager {
                 }
             }
         }
-    }
 
     // ──────────────────────────────────────────────────────────────────────
     // Layout migration (Fáze 1): old layout → nh/distro + usr/{bin,lib}

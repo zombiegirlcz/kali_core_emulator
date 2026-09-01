@@ -922,10 +922,30 @@ fun MainScreen() {
                                                 dockerPullProgress = 0
                                                 val rawInput = customDockerImage.trim()
                                                 val isWebUrl = rawInput.startsWith("http://") || rawInput.startsWith("https://")
-                                                dockerPullStatus = if (isWebUrl) "Parsing URL…" else "Parsing image reference…"
+                                                    val cleanFilePath = rawInput.removePrefix("file://")
+                                                    val localFile = File(cleanFilePath)
+                                                    val isLocalFile = rawInput.startsWith("file://") ||
+                                                        (rawInput.startsWith("/") && localFile.exists() && localFile.isFile)
+
+                                                    dockerPullStatus = when {
+                                                        isLocalFile -> "Importing local archive…"
+                                                        isWebUrl -> "Parsing URL…"
+                                                        else -> "Parsing image reference…"
+                                                    }
                                                 try {
-                                                    if (isWebUrl) {
-                                                        // Web URL: stáhnout+extrahovat rootfs archive (HTTPS + whitelist)
+                                                        if (isLocalFile) {
+                                                            // Local file import (.tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2)
+                                                            dockerPullStatus = "Importing ${localFile.name}…"
+                                                            RootfsManager.importLocalRootfsFile(context, localFile).collect { (progress, status) ->
+                                                                dockerPullProgress = progress
+                                                                dockerPullStatus = status
+                                                                if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                    selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                                }
+                                                            }
+                                                            Toast.makeText(context, "Local rootfs imported successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                        } else if (isWebUrl) {
+                                                            // Web URL: stáhnout+extrahovat rootfs archive (HTTP/HTTPS)
                                                         dockerPullStatus = "Pulling rootfs from URL…"
                                                         RootfsManager.pullRootfsFromUrl(context, rawInput).collect { (progress, status) ->
                                                             dockerPullProgress = progress
@@ -964,7 +984,12 @@ fun MainScreen() {
                                                 } catch (e: Exception) {
                                                     dockerPullProgress = 0
                                                     dockerPullStatus = ""
-                                                    Toast.makeText(context, if (isWebUrl) "URL pull failed: ${e.message}" else "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                        val failPrefix = when {
+                                                            isLocalFile -> "Local import failed"
+                                                            isWebUrl -> "URL pull failed"
+                                                            else -> "Docker pull failed"
+                                                        }
+                                                        Toast.makeText(context, "$failPrefix: ${e.message}", Toast.LENGTH_LONG).show()
                                                 } finally {
                                                     isPullingDocker = false
                                                 }

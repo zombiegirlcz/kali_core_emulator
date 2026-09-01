@@ -224,7 +224,11 @@ class DockerRegistryClient(
     private fun fetchTokenFromAuthServer(imageRef: DockerImageRef): String {
         val scope = imageRef.authScope
         val service = imageRef.authService
-        val realm = "https://${imageRef.authRealm}"
+        val realm = if (imageRef.authRealm.startsWith("http://") || imageRef.authRealm.startsWith("https://")) {
+            imageRef.authRealm
+        } else {
+            "${imageRef.scheme}://${imageRef.authRealm}"
+        }
 
         val url = "$realm?service=$service&scope=$scope"
         Log.d("DockerRegistry", "Requesting token: $url")
@@ -272,8 +276,12 @@ class DockerRegistryClient(
 
         // Parsování: Bearer realm="...",service="...",scope="..."
         // Challenge z registru má přednost (funguje i pro custom registry).
-        val realm = extractAuthParam(authHeader, "realm")
-            ?: "https://${imageRef.authRealm}"
+        val defaultRealm = if (imageRef.authRealm.startsWith("http://") || imageRef.authRealm.startsWith("https://")) {
+            imageRef.authRealm
+        } else {
+            "${imageRef.scheme}://${imageRef.authRealm}"
+        }
+        val realm = extractAuthParam(authHeader, "realm") ?: defaultRealm
         val service = extractAuthParam(authHeader, "service") ?: imageRef.authService
         val scope = extractAuthParam(authHeader, "scope") ?: imageRef.authScope
 

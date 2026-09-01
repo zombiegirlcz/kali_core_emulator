@@ -20,7 +20,8 @@ data class DockerImageRef(
     val repository: String,
     val tag: String,
     val digest: String,
-    val registryHost: String = DEFAULT_REGISTRY_HOST
+    val registryHost: String = DEFAULT_REGISTRY_HOST,
+    val isHttp: Boolean = false
 ) {
     companion object {
         const val DEFAULT_REGISTRY_HOST = "registry-1.docker.io"
@@ -43,6 +44,20 @@ data class DockerImageRef(
         fun parse(input: String): DockerImageRef {
             var trimmed = input.trim()
             require(trimmed.isNotEmpty()) { "Image reference cannot be empty" }
+
+            var isHttp = false
+            if (trimmed.startsWith("http://", ignoreCase = true)) {
+                isHttp = true
+                trimmed = trimmed.substring("http://".length)
+            } else if (trimmed.startsWith("https://", ignoreCase = true)) {
+                trimmed = trimmed.substring("https://".length)
+            }
+
+            val lower = trimmed.lowercase()
+            if (lower.endsWith(".tar.gz") || lower.endsWith(".tar.xz") || lower.endsWith(".tgz") || lower.endsWith(".txz")) {
+                throw IllegalArgumentException("Web archive URLs should be pulled via URL pull: $input")
+            }
+
             require(!trimmed.startsWith("/")) { "Image reference cannot start with /" }
             require(!trimmed.startsWith(":")) { "Image reference cannot start with :" }
 
@@ -118,8 +133,8 @@ data class DockerImageRef(
             }
 
             require(namespace.isNotEmpty()) { "Namespace cannot be empty" }
-            require(repository.isNotEmpty() && !repository.contains('/')) {
-                "Repository name cannot be empty or nested: '$repository'"
+            require(repository.isNotEmpty() && !repository.contains('/') && !repository.contains(':')) {
+                "Repository name cannot be empty, nested, or contain colons: '$repository'"
             }
 
             return DockerImageRef(
@@ -127,7 +142,8 @@ data class DockerImageRef(
                 repository = repository,
                 tag = tagPart,
                 digest = digestPart,
-                registryHost = registryHost
+                registryHost = registryHost,
+                isHttp = isHttp
             )
         }
     }
@@ -142,14 +158,17 @@ data class DockerImageRef(
             "$namespace/$repository"
         }
 
+    val scheme: String
+        get() = if (isHttp) "http" else "https"
+
     /** Host auth serveru pro OAuth2 token exchange. */
     val authRealm: String
         get() = when {
             registryHost == DEFAULT_REGISTRY_HOST ||
             registryHost in DOCKER_HUB_ALIASES -> "$DOCKER_AUTH_HOST/token"
             KNOWN_REGISTRIES.containsKey(registryHost) ->
-                KNOWN_REGISTRIES[registryHost]!!.removePrefix("https://")
-            else -> "https://$registryHost/token"
+                KNOWN_REGISTRIES[registryHost]!!.removePrefix("https://").removePrefix("http://")
+            else -> "$registryHost/token"
         }
 
     /** Service parametr pro token endpoint. */
@@ -168,10 +187,10 @@ data class DockerImageRef(
         val ref = if (hasDigest) {
             if (digest.startsWith("sha256:")) digest else "sha256:$digest"
         } else tag
-        return "https://$registryHost/v2/$fullName/manifests/$ref"
+        return "$scheme://$registryHost/v2/$fullName/manifests/$ref"
     }
 
     fun blobUrl(digestValue: String): String {
-        return "https://$registryHost/v2/$fullName/blobs/$digestValue"
+        return "$scheme://$registryHost/v2/$fullName/blobs/$digestValue"
     }
 }
