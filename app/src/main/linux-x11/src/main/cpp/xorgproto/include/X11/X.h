@@ -50,6 +50,30 @@ SOFTWARE.
 
 ******************************************************************/
 
+/* Missing X.org annotation macros (normally supplied by xorg-macros / configure) */
+#ifndef _X_NORETURN
+# if defined(__GNUC__) && (__GNUC__ >= 4)
+#  define _X_NORETURN __attribute__((noreturn))
+# else
+#  define _X_NORETURN
+# endif
+#endif
+#ifndef _X_ATTRIBUTE_PRINTF
+# if defined(__GNUC__) && (__GNUC__ >= 3)
+#  define _X_ATTRIBUTE_PRINTF(fmt_idx, arg_idx) \
+    __attribute__((format(printf, fmt_idx, arg_idx)))
+# else
+#  define _X_ATTRIBUTE_PRINTF(fmt_idx, arg_idx)
+# endif
+#endif
+#ifndef _X_EXPORT
+# ifdef _WIN32
+#  define _X_EXPORT __declspec(dllexport)
+# else
+#  define _X_EXPORT
+# endif
+#endif
+
 #define X_PROTOCOL	11		/* current protocol version */
 #define X_PROTOCOL_REVISION 0		/* current minor version */
 

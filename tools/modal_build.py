@@ -71,7 +71,7 @@ NDK_DIR = f"/opt/android-ndk-{NDK_VERSION}"
 base_image = (
     modal.Image.from_registry("eclipse-temurin:21-jdk")
     .apt_install("unzip", "wget", "git", "file", "rsync", "python3", "python3-pip", "python-is-python3",
-                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev")
+                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "build-essential")
     .run_commands(
         "mkdir -p /opt/android-sdk/cmdline-tools",
         "wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
