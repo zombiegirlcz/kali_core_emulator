@@ -729,5 +729,7 @@ exaGetPixmapFirstPixel(PixmapPtr pPixmap)
     default:
         FatalError("%s called for invalid bpp %d\n", __func__,
                    pPixmap->drawable.bitsPerPixel);
+        /* NOTREACHED */
     }
+    return 0; /* NOTREACHED */
 }
