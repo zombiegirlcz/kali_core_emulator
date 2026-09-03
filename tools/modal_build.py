@@ -387,6 +387,36 @@ def _build_linux_x11(src_dir):
     os.makedirs(bin_dir, exist_ok=True)
     linux_x11_bin = os.path.join(bin_dir, "linux-x11")
 
+    # libepoxy upstream files missing from repo (gen_dispatch.py + gl.xml)
+    # Fetch them before CMake configure so GL/gl.h can be generated.
+    epoxy_dir = os.path.join(lorie_cpp, "libepoxy")
+    gen_dispatch = os.path.join(epoxy_dir, "src", "gen_dispatch.py")
+    gl_xml = os.path.join(epoxy_dir, "registry", "gl.xml")
+    if not os.path.exists(gen_dispatch) or not os.path.exists(gl_xml):
+        print("  [linux-x11] Fetching missing libepoxy upstream files...")
+        os.makedirs(os.path.dirname(gen_dispatch), exist_ok=True)
+        os.makedirs(os.path.dirname(gl_xml), exist_ok=True)
+        subprocess.run(["wget", "-q",
+                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/src/gen_dispatch.py",
+                        "-O", gen_dispatch], check=True)
+        subprocess.run(["wget", "-q",
+                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/registry/gl.xml",
+                        "-O", gl_xml], check=True)
+        print(f"    ✓ {gen_dispatch}")
+        print(f"    ✓ {gl_xml}")
+    # Apply libepoxy.patch to gen_dispatch.py if not already applied
+    patch_file = os.path.join(lorie_cpp, "patches", "libepoxy.patch")
+    if os.path.exists(patch_file):
+        result = subprocess.run(
+            ["patch", "-p1", "-d", epoxy_dir, "-i", patch_file, "--dry-run"],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            print("  [linux-x11] Applying libepoxy.patch...")
+            subprocess.run(["patch", "-p1", "-d", epoxy_dir, "-i", patch_file], check=True)
+            print("    ✓ libepoxy.patch applied")
+        else:
+            print("  [linux-x11] libepoxy.patch already applied")
+
     print("─" * 60)
     print("[linux-x11] Building X server via CMake (NDK cross-compile)...")
     print(f"  Source: {lorie_cpp}")
