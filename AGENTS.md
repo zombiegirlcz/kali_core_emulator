@@ -1,4 +1,17 @@
-# AGENTS.md — NetHunter AI Operator
+# AGENTS.md — NetHunter AI Operator (aktualizováno 2026-09-03)
+
+## ⚠️ KRITICKÉ ZMĚNY — MĚSÍC SRPEN 2026
+
+- GUI odstraněna (2026-08-29) — WebView/noVNC pryč; X server TCP 6001; externí launcher.
+- su_daemon PTY bridge + fork-per-connection (2026-08-29 / 11.8).
+- Bionic usrtools (2026-08-11) — sed/rsync/nano/rg Bionic; usr/lib prázdné; version gate.
+- SIGBUS fix — `hostShellEnv()` bez `LD_LIBRARY_PATH`.
+- Build: `upload` před `build`; `pull_full_assets()`; `_NATIVE_ASSET_EXCLUDES`.
+- GITHUB_REPO/BRANCH hardcoded; volume `kali-gui-build-data` (core+GUI), `kali-assistant-data`.
+- Open-with/share + PiP + float (versionCode 18, 16.8); verze 4.2-PASTE-FIX / BIONIC-USERTOOLS / FLOAT-SHARE.
+- Security audit aktualizován (cert piny, MITM double-flip fix, attestation).
+- PRoot perf: seccomp aktivní; `--link2symlink` nutné; live vs fresh = žádná degradace.
+- [[AGENTS.md]] [[memory-srpen-2026]] [[daily-2026-08-29]]
 
 ## Sestavení a ověření
 
@@ -13,7 +26,7 @@ nethunter-log [-n line] [-g grep]
 
 
 ```zsh
-cd kali_core_emulator && zsh mbuild #zpousti build na modalu 
+ zsh mbuild [arg] spoušti build. před buildem je nutne provest commit a push na git jinak se změny neprojevy 
 ```
 
 
@@ -74,11 +87,8 @@ Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modal cloudu do `app
 2. **Přidej název výstupu do `_NATIVE_ASSET_EXCLUDES` v `tools/modal_build.py`** — `upload_src` používá `rsync -a --delete` a bez exclude by binárku smazal z Volume (není v baked image) → APK by byl bez ní.
 3. **Stáhni celý assets z Volume** — `zsh mbuild native` nebo `zsh mbuild all` po `build_native` spouští `pull_full_assets()` v `mbuild`, který stáhne **CELÝ `app/src/main/assets/` adresář rekurzivně** z Volume (su_daemon, su_wrapper, usb_bridge, usr/ s nano/rsync/sed/rg + glibc knihovnami, certs, boot, ...) a přepíše lokální verze. Žádný tar.gz.
 
-**Pořadí buildu se nesmí měnit:** `all` = `upload_src` → `build_native` → `pull_full_assets` (ihned po native kompilaci) → gradle `build` → pull APK. `build` sám = `pull_full_assets` (před uploadem, jinak rsync --delete smaže binárky z Volume) → `upload_src` → `build`.
 
-**Známý bug (opraven 2026-08-02):** `mbuild build` spouštěl upload → build BEZ `build_native`; rsync `--delete` smazal binárky z Volume → APK 128 MB bez `su_daemon`/`su_wrapper` (detekováno přes chybějící `assets/` v zipfile a `execvp failed` v su_wrapper). Fix: pull_full_assets + rsync excludes + `_NATIVE_ASSET_EXCLUDES` list.
 
-**Známý bug (opraven 2026-08-11):** starý mbuild stahoval jen `usrtools.tar.gz` + vybrané binárky po souborech — lokální assets zůstávaly zastaralé (APK byl cílový artefakt, ale repo diverzifikoval od skutečného obsahu). Fix: `pull_full_assets()` — celý assets adresář rekurzivně přes `modal volume get <vol> src/app/src/main/assets app/src/main/`.
 
 ### jniLibs struktura
 
@@ -113,7 +123,6 @@ Ostatní architektury (x86, x86_64, armeabi-v7a) obsahují pouze proot/loader/ta
 - Compose BOM `2026.05.01` spravuje všechny verze Compose závislostí
 - ONNX modely: `vpn_brain.onnx` a `vpn_brain_v7.onnx` v assets
 - Modal.com sestavení: `modal_build.py` pro bezserverové Android sestavení na Modal cloudu
-- `.github/copilot-instructions.md` existuje, ale má špatný název balíčku a zastaralé SDK úrovně — nespoléhat se na něj bez ověření proti `app/build.gradle.kts`
 
 ## Bezpečnost (Security Audit — SECURITY_AUDIT.md)
 
@@ -432,8 +441,6 @@ Forwarded initial TLS ClientHello (536B) for port 45406  ← tuhle řádku star�
 passthrough active port=45406 totalForwarded=8804
 ```
 
-⚠️ Důležité: `build` bez předchozího `upload_src` použije starou verzi zdrojáků na Volume.
-Vždy spouštět: `modal run modal_build.py::upload_src && modal run modal_build.py::build`
 
 ## Session 2026-07-06 (b) — VPN outage při MITM ON
 

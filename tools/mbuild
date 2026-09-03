@@ -36,7 +36,7 @@ pull_full_assets() {
         echo "    [OK] su_daemon ($(stat -c%s $SRC/app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
         echo "    [OK] su_wrapper ($(stat -c%s $SRC/app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
         echo "    [OK] usb_bridge ($(stat -c%s $SRC/app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
-        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/bin/linux-x11 2>/dev/null || echo '?') B)"
+        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/lib/linux-x11 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi

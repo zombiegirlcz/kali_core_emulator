@@ -384,8 +384,10 @@ def _build_linux_x11(src_dir):
         return
     assets_dir = os.path.join(src_dir, "app/src/main/assets")
     bin_dir = os.path.join(assets_dir, "usr/bin")
+    lib_dir = os.path.join(assets_dir, "usr/lib")
     os.makedirs(bin_dir, exist_ok=True)
-    linux_x11_bin = os.path.join(bin_dir, "linux-x11")
+    os.makedirs(lib_dir, exist_ok=True)
+    linux_x11_bin = os.path.join(lib_dir, "linux-x11")
 
     # libepoxy upstream files missing from repo (gen_dispatch.py + gl.xml)
     # Fetch them before CMake configure so GL/gl.h can be generated.
@@ -410,12 +412,15 @@ def _build_linux_x11(src_dir):
         result = subprocess.run(
             ["patch", "-p1", "-d", epoxy_dir, "-i", patch_file, "--dry-run"],
             capture_output=True, text=True)
-        if result.returncode != 0:
+        if result.returncode == 0:
             print("  [linux-x11] Applying libepoxy.patch...")
             subprocess.run(["patch", "-p1", "-d", epoxy_dir, "-i", patch_file], check=True)
             print("    ✓ libepoxy.patch applied")
+        elif result.returncode != 0:
+            # Patch was already applied (dry-run failed), skip re-application
+            print("  [linux-x11] libepoxy.patch already applied, skipping")
         else:
-            print("  [linux-x11] libepoxy.patch already applied")
+            print("  [linux-x11] Error applying libepoxy.patch:", result.stderr)
 
     print("─" * 60)
     print("[linux-x11] Building X server via CMake (NDK cross-compile)...")
@@ -1274,7 +1279,7 @@ _NATIVE_COMPONENTS = {
     },
     "linux-x11": {
         "sources": ["app/src/main/linux-x11/src/main/cpp/lorie"],
-        "outputs": ["app/src/main/assets/usr/bin/linux-x11"],
+        "outputs": ["app/src/main/assets/usr/lib/linux-x11"],
         "fn": build_linux_x11,
     },
     "usrtools": {

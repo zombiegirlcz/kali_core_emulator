@@ -901,6 +901,21 @@ object ProotManager {
             }
         }
 
+        // Deploy linux-x11 X server binary to guest usr/lib
+        val linuxX11Guest = File(rootfsDir, "usr/lib/linux-x11")
+        try {
+            context.assets.open("usr/bin/linux-x11").use { input ->
+                linuxX11Guest.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            linuxX11Guest.setExecutable(true, false)
+            linuxX11Guest.setReadable(true, false)
+            Log.i("ProotManager", "Deployed linux-x11 X server to guest usr/lib (${linuxX11Guest.length()} B)")
+        } catch (e: Exception) {
+            Log.e("ProotManager", "Failed to deploy linux-x11 to guest usr/lib: ${e.message}")
+        }
+
         // Initialize USB bridge: create socket path INSIDE rootfs tmp
         // so it's visible from PRoot as /tmp/usb_bridge.sock
         val usbBridgeSocket = File(rootfsDir, "tmp/usb_bridge.sock")
@@ -1284,32 +1299,23 @@ object ProotManager {
         val motdDir = File(rootfsDir, "etc")
         if (!motdDir.exists()) motdDir.mkdirs()
 
+        // Deploy MOTD assets to guest /etc/
+        context.assets.open("motd-kali").use { src -> File(motdDir, "motd-kali").outputStream().use { dst -> src.copyTo(dst) } }
+        context.assets.open("motd-parrot").use { src -> File(motdDir, "motd-parrot").outputStream().use { dst -> src.copyTo(dst) } }
+
         val motd = StringBuilder()
         motd.append(NL)
 
         if (isParrot) {
-            motd.append("  \u001b[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\u001b[0m").append(NL)
-            motd.append("  \u001b[1;32m   NetHunter AI Operator v4.1\u001b[0m").append(NL)
-            motd.append("  \u001b[1;32m      Parrot OS Security\u001b[0m").append(NL)
+            val motdParrot = File(rootfsDir, "etc/motd-parrot").readText()
+            motd.append(NL)
+            motd.append(motdParrot)
         } else {
-            motd.append("  \u001b[1;34m##################################################\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88      a8P         db        88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88    .88'         d88b       88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88   88'          d8''8b      88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88 d88           d8'  '8b     88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88     '88.   d8'        '8b  88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m####  ############# NetHunter ####################\u001b[0m").append(NL)
+            val motdKali = File(rootfsDir, "etc/motd-kali").readText()
+            motd.append(NL)
+            motd.append(motdKali)
         }
+
 
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
