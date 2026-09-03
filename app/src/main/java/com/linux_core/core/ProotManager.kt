@@ -114,7 +114,7 @@ object ProotManager {
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
         deployVpnHelpDocument(context, homeDir)
-        deployWelcomeProfile(rootfsDir, distroId)
+        deployWelcomeProfile(context, rootfsDir, distroId)
         val userHomeDir = File(rootfsDir, "home/$distroId")
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(context, userHomeDir)
@@ -1185,7 +1185,7 @@ object ProotManager {
         }
     }
 
-    private fun deployWelcomeProfile(rootfsDir: File, distroId: String) {
+    private fun deployWelcomeProfile(context: Context, rootfsDir: File, distroId: String) {
         val profileDir = File(rootfsDir, "etc/profile.d")
         if (!profileDir.exists()) profileDir.mkdirs()
 
