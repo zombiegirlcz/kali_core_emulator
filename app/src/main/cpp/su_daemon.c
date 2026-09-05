@@ -79,6 +79,7 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
 
     // Parse payload protocol:
     // [uint32_t target_uid][uint32_t target_gid][uint32_t argc][null-terminated cwd][null-terminated arg0]...
+    // Optional extension (appended at end): [uint32_t term_len][term bytes]
     unsigned char *ptr = (unsigned char *)payload_buf;
     unsigned char *end = (unsigned char *)payload_buf + n;
 
@@ -121,6 +122,20 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
         arg_index++;
     }
     argv[arg_index] = NULL;
+
+    // Parse optional TERM field (new protocol extension, appended after argv)
+    g_term[0] = '\0';
+    size_t remaining = end - ptr;
+    if (remaining >= sizeof(uint32_t)) {
+        uint32_t term_len;
+        memcpy(&term_len, ptr, sizeof(uint32_t));
+        if (term_len > 0 && term_len <= remaining - sizeof(uint32_t) && term_len < sizeof(g_term) - 1) {
+            ptr += sizeof(uint32_t);
+            memcpy(g_term, ptr, term_len);
+            g_term[term_len] = '\0';
+            ptr += term_len;
+        }
+    }
 
     return 0;
 }
@@ -260,6 +275,7 @@ static int  fix_skip_top = 0;
 /* File-scope copies of main()'s config — potřebné ve worker procesech
  * (fork-per-connection), které běží mimo stack main(). */
 static char g_launcher_path[1024] = {0};
+static char g_term[128] = {0};
 static char g_rootfs_path[1024] = {0};
 static uid_t g_app_uid = (uid_t)-1;
 static gid_t g_app_gid = (gid_t)-1;
@@ -768,6 +784,7 @@ static void handle_client(int client_fd) {
             launcher_argv[li] = NULL;
 
             if (cwd[0] != '\0') setenv("NH_CWD", cwd, 1);
+            if (g_term[0] != '\0') setenv("TERM", g_term, 1);
 
             execv(g_launcher_path, launcher_argv);
             dprintf(STDERR_FILENO, "[su_daemon] execv %s failed: %s\n",
@@ -920,6 +937,7 @@ static void handle_client(int client_fd) {
         if (cwd[0] != '\0') {
             setenv("NH_CWD", cwd, 1);
         }
+        if (g_term[0] != '\0') setenv("TERM", g_term, 1);
 
         /* Stay as real root (Magisk su). PRoot confines the filesystem. */
         execv(g_launcher_path, launcher_argv);

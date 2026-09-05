@@ -61,6 +61,17 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
         ptr += arg_len + 1;
     }
 
+    // TERM environment variable (protocol extension — fixes htop/ncurses)
+    const char *term = getenv("TERM");
+    if (!term) term = "xterm-256color";
+    uint32_t term_len = (uint32_t)strlen(term);
+    if ((ptr + sizeof(uint32_t) + term_len) - (unsigned char *)payload_buf < BUFFER_SIZE) {
+        memcpy(ptr, &term_len, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        memcpy(ptr, term, term_len);
+        ptr += term_len;
+    }
+
     size_t payload_size = ptr - (unsigned char *)payload_buf;
 
     struct iovec io = { .iov_base = payload_buf, .iov_len = payload_size };
