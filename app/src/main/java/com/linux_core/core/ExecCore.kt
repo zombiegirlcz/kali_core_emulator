@@ -385,10 +385,10 @@ object ExecCore {
             ?.absolutePath
             ?: return errJson("No rootfs found under files/nh/distro/{kali,parrot}")
 
-        // ── 4. Execute: sh -c "$wrapper $command" s ROOTFS env ─────────
+        // ── 4. Execute: setsid sh -c "$wrapper $command" s ROOTFS env ─────
         return try {
             val startTime = System.currentTimeMillis()
-            val pb = ProcessBuilder("sh", "-c", "$wrapper $command")
+            val pb = ProcessBuilder("setsid", "sh", "-c", "$wrapper $command")
             pb.directory(ctx.filesDir)
             pb.redirectErrorStream(false)
             pb.environment().apply {
@@ -396,20 +396,35 @@ object ExecCore {
             }
             val process = pb.start()
 
-            val stdoutReader = process.inputStream.bufferedReader()
-            val stderrReader = process.errorStream.bufferedReader()
-            val output = stdoutReader.readText()
-            val error = stderrReader.readText()
+            val output = StringBuilder()
+            val stdoutThread = Thread {
+                output.append(process.inputStream.bufferedReader().readText())
+            }
+            stdoutThread.isDaemon = true
+            stdoutThread.start()
+            val error = process.errorStream.bufferedReader().readText()
 
             val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
             val durationMs = System.currentTimeMillis() - startTime
 
             if (!completed) {
+                val pgid = try {
+                    val f = process.javaClass.getDeclaredField("pid")
+                    f.isAccessible = true
+                    f.getInt(process)
+                } catch (_: Exception) { -1 }
+                if (pgid > 0) {
+                    try {
+                        Runtime.getRuntime().exec(arrayOf("kill", "-9", "-$pgid")).waitFor()
+                    } catch (_: Exception) {}
+                }
                 process.destroyForcibly()
-                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
+                stdoutThread.join(2000)
+                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output.toString())},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
             } else {
+                stdoutThread.join(2000)
                 val exitCode = process.exitValue()
-                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(output.toString())},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
             }
         } catch (e: Exception) {
             Log.e(TAG, "elfExec error: ${e.message}", e)
