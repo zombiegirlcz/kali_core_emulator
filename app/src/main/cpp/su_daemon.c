@@ -39,7 +39,17 @@
 #define MAX_ARGS 128
 #define BUFFER_SIZE 8192
 
-extern char g_term[128];
+/* File-scope globals for worker processes (fork-per-connection) */
+static char g_launcher_path[1024] = {0};
+static char g_term[128] = {0};
+static char g_rootfs_path[1024] = {0};
+static uid_t g_app_uid = (uid_t)-1;
+static gid_t g_app_gid = (gid_t)-1;
+static int g_auto_fix = 1;
+
+static uid_t fix_uid = (uid_t)-1;
+static gid_t fix_gid = (gid_t)-1;
+static int  fix_skip_top = 0;
 
 static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
                                 uint32_t *target_uid, uint32_t *target_gid,
@@ -269,19 +279,6 @@ static int is_bind_dir(const char *base) {
         if (strcmp(base, skip[i]) == 0) return 1;
     return 0;
 }
-
-static uid_t fix_uid = (uid_t)-1;
-static gid_t fix_gid = (gid_t)-1;
-static int  fix_skip_top = 0;
-
-/* File-scope copies of main()'s config — potřebné ve worker procesech
- * (fork-per-connection), které běží mimo stack main(). */
-static char g_launcher_path[1024] = {0};
-static char g_term[128] = {0};
-static char g_rootfs_path[1024] = {0};
-static uid_t g_app_uid = (uid_t)-1;
-static gid_t g_app_gid = (gid_t)-1;
-static int g_auto_fix = 1;
 
 static int fix_walk(const char *path, int depth) {
     /* Top-level bind / host-mapped dirs: skip the whole subtree entirely
