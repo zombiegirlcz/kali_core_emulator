@@ -183,35 +183,44 @@ object ExecCore {
                 )
                 setExecutable(true)
             }
-            val pb = if (su != null) {
-                ProcessBuilder(su, "-c", "sh ${wrapper.absolutePath}")
-            } else {
-                ProcessBuilder("sh", wrapper.absolutePath)
-            }
-            pb.directory(ctx.filesDir)
-            pb.redirectErrorStream(false)
-            val process = pb.start()
+            try {
+                val pb = if (su != null) {
+                    ProcessBuilder(su, "-c", "sh ${wrapper.absolutePath}")
+                } else {
+                    ProcessBuilder("sh", wrapper.absolutePath)
+                }
+                pb.directory(ctx.filesDir)
+                pb.redirectErrorStream(false)
+                val process = pb.start()
 
-            // Read stdout and stderr concurrently to prevent pipe deadlock
-            val stdoutReader = process.inputStream.bufferedReader()
-            val stderrReader = process.errorStream.bufferedReader()
+                // Read stdout and stderr concurrently to prevent pipe deadlock
+                var output = ""
+                val stdoutThread = Thread {
+                    output = process.inputStream.bufferedReader().readText()
+                }
+                stdoutThread.isDaemon = true
+                stdoutThread.start()
+                val error = process.errorStream.bufferedReader().readText()
 
-            val output = stdoutReader.readText()
-            val error = stderrReader.readText()
+                val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
+                val durationMs = System.currentTimeMillis() - startTime
 
-            val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
-            val durationMs = System.currentTimeMillis() - startTime
-
-            if (!completed) {
-                process.destroyForcibly()
-                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
-            } else {
-                val exitCode = process.exitValue()
-                // Filter boot diagnostic lines from stdout
-                val cleanOutput = output.lines()
-                    .dropWhile { it.startsWith("[*]") || it.startsWith("[boot]") || it.isBlank() }
-                    .joinToString("\n")
-                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(cleanOutput)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                if (!completed) {
+                    process.destroyForcibly()
+                    stdoutThread.join(2000)
+                    "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
+                } else {
+                    stdoutThread.join(2000)
+                    val exitCode = process.exitValue()
+                    // Filter boot diagnostic lines from stdout
+                    val cleanOutput = output.lines()
+                        .dropWhile { it.startsWith("[*]") || it.startsWith("[boot]") || it.isBlank() }
+                        .joinToString("\n")
+                    "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(cleanOutput)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                }
+            } finally {
+                cmdFile.delete()
+                wrapper.delete()
             }
         } catch (e: Exception) {
             Log.e(TAG, "guestExec error: ${e.message}", e)
