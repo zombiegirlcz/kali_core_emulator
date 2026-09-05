@@ -687,7 +687,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                         )
                     }
                     Icon(
-                        imageVector = Icons.Default.List,
+                        imageVector = Icons.AutoMirrored.Filled.List,
                         contentDescription = "Modules",
                         tint = Color(0xFF00FF41),
                         modifier = Modifier.size(24.dp)

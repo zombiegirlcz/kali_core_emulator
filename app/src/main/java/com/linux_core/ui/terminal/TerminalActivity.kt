@@ -2451,6 +2451,7 @@ class TerminalActivity : ComponentActivity() {
         terminalView.requestFocus()
         terminalView.postDelayed({
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            @Suppress("DEPRECATION")
             val success = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
             Log.d(TAG, "showSoftInput request sent, success=$success")
         }, 300)

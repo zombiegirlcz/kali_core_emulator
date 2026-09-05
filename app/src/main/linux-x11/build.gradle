@@ -22,10 +22,10 @@ def hostProject = hostProjects[0]
 def hostApplicationId = hostProject.android.defaultConfig.applicationId ?: hostProject.android.namespace
 
 android {
-    namespace 'com.linux.x11'
+    namespace = 'com.linux.x11'
     //noinspection GrDeprecatedAPIUsage
-    compileSdkVersion 37
-    ndkVersion linuxX11NdkVersion
+    compileSdkVersion = 37
+    ndkVersion = linuxX11NdkVersion
     defaultConfig {
         minSdkVersion 24
         targetSdkVersion 34
@@ -39,9 +39,9 @@ android {
     compileOptions.sourceCompatibility JavaVersion.VERSION_1_9
     compileOptions.targetCompatibility JavaVersion.VERSION_1_9
     // externalNativeBuild.cmake.path "src/main/cpp/CMakeLists.txt"  # disabled: requires bison/flex not available in Android SDK/NDK
-    packagingOptions.jniLibs.useLegacyPackaging false
-    buildFeatures.aidl true
-    buildFeatures.buildConfig true
+    packagingOptions.jniLibs.useLegacyPackaging = false
+    buildFeatures.aidl = true
+    buildFeatures.buildConfig = true
 }
 
 dependencies {
