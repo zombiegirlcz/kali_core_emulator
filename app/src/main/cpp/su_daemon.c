@@ -39,6 +39,8 @@
 #define MAX_ARGS 128
 #define BUFFER_SIZE 8192
 
+extern char g_term[128];
+
 static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
                                 uint32_t *target_uid, uint32_t *target_gid,
                                 char *cwd, size_t cwd_size,
@@ -125,7 +127,7 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
 
     // Parse optional TERM field (new protocol extension, appended after argv)
     g_term[0] = '\0';
-    size_t remaining = end - ptr;
+    remaining = end - ptr;
     if (remaining >= sizeof(uint32_t)) {
         uint32_t term_len;
         memcpy(&term_len, ptr, sizeof(uint32_t));
