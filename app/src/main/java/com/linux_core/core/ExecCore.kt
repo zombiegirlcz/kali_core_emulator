@@ -185,9 +185,9 @@ object ExecCore {
             }
             try {
                 val pb = if (su != null) {
-                    ProcessBuilder(su, "-c", "sh ${wrapper.absolutePath}")
+                    ProcessBuilder(su, "-c", "setsid sh ${wrapper.absolutePath}")
                 } else {
-                    ProcessBuilder("sh", wrapper.absolutePath)
+                    ProcessBuilder("setsid", "sh", wrapper.absolutePath)
                 }
                 pb.directory(ctx.filesDir)
                 pb.redirectErrorStream(false)
@@ -206,6 +206,10 @@ object ExecCore {
                 val durationMs = System.currentTimeMillis() - startTime
 
                 if (!completed) {
+                    val pgid = process.pid()
+                    try {
+                        Runtime.getRuntime().exec(arrayOf("kill", "-9", "-$pgid")).waitFor()
+                    } catch (_: Exception) {}
                     process.destroyForcibly()
                     stdoutThread.join(2000)
                     "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
