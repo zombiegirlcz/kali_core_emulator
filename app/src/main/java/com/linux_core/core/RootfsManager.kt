@@ -209,6 +209,20 @@ object RootfsManager {
                     tempFile.delete()
                     throw IOException("Failed to finalize download - rename failed")
                 }
+
+                // ── Backup original archive next to docker dir (best-effort) ──
+                try {
+                    val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
+                    if (!backupDir.exists()) backupDir.mkdirs()
+                    val backupFile = File(backupDir, distro.tarFileName)
+                    if (!backupFile.exists()) {
+                        targetFile.copyTo(backupFile, overwrite = false)
+                        Log.i("RootfsManager", "Backed up distro archive to: ${backupFile.absolutePath}")
+                    }
+                } catch (e: Exception) {
+                    Log.w("RootfsManager", "Failed to backup distro archive: ${e.message}")
+                }
+
                 emit(100)
             }
         } finally {
@@ -357,6 +371,20 @@ object RootfsManager {
             }
 
             // rootfsFile.delete() // Keep for reinstall
+
+            // ── Backup original archive next to docker dir (best-effort) ──
+            try {
+                val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
+                if (!backupDir.exists()) backupDir.mkdirs()
+                val backupFile = File(backupDir, distro.tarFileName)
+                if (!backupFile.exists() && rootfsFile.exists()) {
+                    rootfsFile.copyTo(backupFile, overwrite = false)
+                    Log.i("RootfsManager", "Backed up distro archive to: ${backupFile.absolutePath}")
+                }
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to backup distro archive: ${e.message}")
+            }
+
             emit(100)
         } finally {
             try {
@@ -913,6 +941,19 @@ object RootfsManager {
                 extractTarGzip(tempFile, rootfsDir)
             }
 
+            // ── Backup original archive next to docker dir (best-effort) ──
+            try {
+                val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
+                if (!backupDir.exists()) backupDir.mkdirs()
+                val backupFile = File(backupDir, "${safeName}.${tempFile.extension}")
+                if (!backupFile.exists()) {
+                    tempFile.copyTo(backupFile, overwrite = false)
+                    Log.i("RootfsManager", "Backed up rootfs archive to: ${backupFile.absolutePath}")
+                }
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to backup rootfs archive: ${e.message}")
+            }
+
             // ── Markers (same convention as docker pull) ──
             try {
                 File(rootfsDir, ".docker_image").writeText(
@@ -971,6 +1012,19 @@ object RootfsManager {
         val rootfsName = "docker/local-$safeName"
         val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/$rootfsName")
         rootfsDir.mkdirs()
+
+        // ── Backup original archive next to docker dir (best-effort) ──
+        try {
+            val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
+            if (!backupDir.exists()) backupDir.mkdirs()
+            val backupFile = File(backupDir, archiveFile.name)
+            if (!backupFile.exists()) {
+                archiveFile.copyTo(backupFile, overwrite = false)
+                Log.i("RootfsManager", "Backed up local archive to: ${backupFile.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.w("RootfsManager", "Failed to backup local archive: ${e.message}")
+        }
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:importLocal")

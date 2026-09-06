@@ -1117,6 +1117,13 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     print(f"    ✓ loader-static-{suffix} ({os.path.getsize(dest_loader):,} B)")
 
 
+@app.function(
+    image=base_image,
+    volumes={"/vol": build_vol},
+    secrets=[modal.Secret.from_name("build-secrets")],
+    timeout=3600,
+    memory=8192,
+)
 def build_proot_static():
     """Cross-compile static PRoot (Termux fork) + loader for all ABIs."""
     src_dir = "/vol/src"
