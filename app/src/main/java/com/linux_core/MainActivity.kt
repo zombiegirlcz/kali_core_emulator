@@ -340,69 +340,6 @@ fun MainScreen() {
     var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
     val scope = rememberCoroutineScope()
 
-    /** Pull a remote distro script and prepare it for boot. */
-    fun pullRemoteRootfs(entry: RemoteDistroScript) {
-        downloadJob?.cancel()
-        downloadJob = scope.launch {
-            isPullingRemote = true
-            remotePullTarget = entry
-            remotePullProgress = 0
-            remotePullStatus = "Pulling ${entry.distroName}…"
-            try {
-                RootfsManager.pullRootfsFromUrl(context, entry.tarballUrl).collect { (progress, status) ->
-                    remotePullProgress = progress
-                    remotePullStatus = status
-                    if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                        val rootDir = File(status)
-                        // Write bootstrap.sh from the script's heredoc
-                        val bootstrapFile = File(rootDir, "bootstrap.sh")
-                        if (entry.bootstrapScript.isNotEmpty() && !bootstrapFile.exists()) {
-                            bootstrapFile.writeText(entry.bootstrapScript)
-                            bootstrapFile.setExecutable(true, false)
-                        }
-                        // Write entrypoint.sh if not present
-                        val entrypointFile = File(rootDir, "root/entrypoint.sh")
-                        if (!entrypointFile.exists()) {
-                            entrypointFile.parentFile?.mkdirs()
-                            entrypointFile.writeText("#!/bin/sh\nexec /bin/bash --login\n")
-                            entrypointFile.setExecutable(true, false)
-                        }
-                        // Write .docker_image marker
-                        File(rootDir, ".docker_image").writeText(
-                            "image=${entry.scriptName}\n" +
-                            "pulled_at=${System.currentTimeMillis()}\n" +
-                            "source=remote-script\n" +
-                            "script=${entry.scriptName}\n"
-                        )
-                        // Refresh docker image list
-                        selectedDockerDir = File(status).relativeTo(context.filesDir).path
-                        isDockerMode = true
-                        Toast.makeText(
-                            context,
-                            "${entry.distroName} pulled! Boot from DOCKER HUB tab.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                remotePullProgress = 0
-                remotePullStatus = ""
-                Toast.makeText(
-                    context,
-                    "Pull failed: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-            } finally {
-                isPullingRemote = false
-                remotePullTarget = null
-                // Refresh catalog
-                remoteRootfsEntries = RemoteRootfsCatalog.fetchDistroScriptsSync(context)
-            }
-        }
-    }
-
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var backupFiles by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -1206,7 +1143,54 @@ fun MainScreen() {
                                             RoundedCornerShape(8.dp)
                                         )
                                         .clickable(enabled = !isPullingRemote && !isPulled) {
-                                            pullRemoteRootfs(entry)
+                                            downloadJob?.cancel()
+                                            downloadJob = scope.launch {
+                                                isPullingRemote = true
+                                                remotePullTarget = entry
+                                                remotePullProgress = 0
+                                                remotePullStatus = "Pulling ${entry.distroName}…"
+                                                try {
+                                                    RootfsManager.pullRootfsFromUrl(context, entry.tarballUrl).collect { (progress, status) ->
+                                                        remotePullProgress = progress
+                                                        remotePullStatus = status
+                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                            val rootDir = File(status)
+                                                            if (entry.bootstrapScript.isNotEmpty()) {
+                                                                val bootstrapFile = File(rootDir, "bootstrap.sh")
+                                                                if (!bootstrapFile.exists()) {
+                                                                    bootstrapFile.writeText(entry.bootstrapScript)
+                                                                    bootstrapFile.setExecutable(true, false)
+                                                                }
+                                                            }
+                                                            val entrypointFile = File(rootDir, "root/entrypoint.sh")
+                                                            if (!entrypointFile.exists()) {
+                                                                entrypointFile.parentFile?.mkdirs()
+                                                                entrypointFile.writeText("#!/bin/sh\nexec /bin/bash --login\n")
+                                                                entrypointFile.setExecutable(true, false)
+                                                            }
+                                                            File(rootDir, ".docker_image").writeText(
+                                                                "image=${entry.scriptName}\n" +
+                                                                "pulled_at=${System.currentTimeMillis()}\n" +
+                                                                "source=remote-script\n" +
+                                                                "script=${entry.scriptName}\n"
+                                                            )
+                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                            isDockerMode = true
+                                                            Toast.makeText(context, "${entry.distroName} pulled! Boot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                        }
+                                                    }
+                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                    throw e
+                                                } catch (e: Exception) {
+                                                    remotePullProgress = 0
+                                                    remotePullStatus = ""
+                                                    Toast.makeText(context, "Pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                } finally {
+                                                    isPullingRemote = false
+                                                    remotePullTarget = null
+                                                    remoteRootfsEntries = RemoteRootfsCatalog.fetchDistroScriptsSync(context)
+                                                }
+                                            }
                                         }
                                         .padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
