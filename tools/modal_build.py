@@ -165,6 +165,7 @@ def sync():
         subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
         subprocess.run(["git", "fetch", "origin", GITHUB_BRANCH], cwd=dest, check=True)
         subprocess.run(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], cwd=dest, check=True)
+        subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
         # ZÁMĚRNĚ BEZ `git clean`: ponechává postavené build artefakty
         # (proot-static-*, loader-static-*, *.so, binárky v assets/), které NEjsou
         # v gitu (untracked). Díky tomu `smart_build` najde proot/lib/bin na
@@ -178,6 +179,7 @@ def sync():
             ["git", "clone", "--branch", GITHUB_BRANCH, repo_url, dest],
             check=True,
         )
+        subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
 
     # Zamaskovat token v remote URL, kdyby si někdo dal `git remote -v`.
     subprocess.run(
