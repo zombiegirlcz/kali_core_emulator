@@ -7,7 +7,7 @@ shizuku/
 shi/
 arm64/
 .gradle
-
+prompt.md
 /captures
 /platform-tools
 
@@ -91,7 +91,7 @@ window_dump_ok.xml
 window_dump.xml
 *.logcat
 *.apk
-*.tar
+*.tar*
 *.lock
 *.xml
 *.py
@@ -103,9 +103,10 @@ window_dump.xml
 *.json
 *.mdmp
 *.txt
-!app/src/main/linux-x11/src/main/cpp/CMakeLists.txt
+!app/src/main/linux-x11/**
 *.png
 *.log
+*.zip
 # Exemptions
 !app/src/main/res/xml/*.xml
 !windows_app/
@@ -154,7 +155,7 @@ app/src/main/assets/certs/google_attestation_root.key
 !app/src/main/assets/usr/bin/zkill
 !app/src/main/assets/usr/bin/boot
 !tools/modal_build.py
-!magisk-modules/**
+magisk-modules/*.zip
 # Old build artifacts
 app/build_old/
 
