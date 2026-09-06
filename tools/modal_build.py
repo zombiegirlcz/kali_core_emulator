@@ -487,7 +487,7 @@ def _build_linux_x11(src_dir):
             cand_path = os.path.join(d, cand)
             if os.path.isfile(cand_path) and os.access(cand_path, os.X_OK):
                 built_bin = cand_path
-n               break
+                break
         if built_bin:
             break
     if not built_bin:
