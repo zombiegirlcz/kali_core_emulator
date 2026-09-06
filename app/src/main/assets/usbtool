@@ -1,0 +1,82 @@
+#!/bin/sh
+# usbtool — guest wrapper pro Magisk modul custom_usb_g2_setup
+# Spouští skripty z modulu pod real rootem na hostiteli přes LocalApiServer (/usbg2/exec).
+# Vzor: nh / ashell (token z api_security.xml)
+
+API_HOST="${API_HOST:-127.0.0.1}"
+API_PORT="${API_PORT:-1337}"
+API_URL="http://${API_HOST}:${API_PORT}"
+
+get_token() {
+    grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
+        sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1
+}
+
+usage() {
+    echo "Usage: usbtool <command> [args...]"
+    echo ""
+    echo "Ovládání USB gadget modulu (běží na hostiteli pod real rootem):"
+    echo "  status            Stav gadgetů, UDC, USB režimu"
+    echo "  g1 | g2           Přepnutí aktivního gadgetu"
+    echo "  setup             Znovu vytvořit konfiguraci g2 v configfs"
+    echo "  normal|brom|preloader  Režim g2 + setup"
+    echo "  host | device     USB host (OTG) / gadget režim portu"
+    echo "  detect            Výpis připojených USB zařízení"
+    echo "  logs              Logy modulu"
+    exit 1
+}
+
+[ $# -eq 0 ] && usage
+case "$1" in
+    help|--help|-h) usage ;;
+esac
+
+# JSON args pole — argy jsou jednoduchá slova; escapujeme jen uvozovky/backslash
+ARGS=""
+for a in "$@"; do
+    e=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    if [ -z "$ARGS" ]; then ARGS="\"$e\""; else ARGS="$ARGS,\"$e\""; fi
+done
+
+TOKEN=$(get_token)
+if [ -z "$TOKEN" ]; then
+    echo "usbtool: API token nenalezen (api_security.xml)" >&2
+    exit 2
+fi
+
+RESP=""
+if command -v curl >/dev/null 2>&1; then
+    RESP=$(curl -s --max-time 25 -X POST -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"args\":[$ARGS]}" "$API_URL/usbg2/exec" 2>/dev/null)
+elif command -v wget >/dev/null 2>&1; then
+    RESP=$(wget -q -O - --timeout=25 \
+        --header="Authorization: Bearer $TOKEN" --header="Content-Type: application/json" \
+        --post-data="{\"args\":[$ARGS]}" "$API_URL/usbg2/exec" 2>/dev/null)
+fi
+
+if [ -z "$RESP" ]; then
+    echo "usbtool: API nedostupné ($API_URL) — běží aplikace?" >&2
+    exit 3
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$RESP" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(4)
+if "error" in d:
+    sys.stderr.write("usbtool: %s\n" % d["error"])
+    sys.exit(1)
+out = d.get("output", "")
+if out:
+    sys.stdout.write(out if out.endswith("\n") else out + "\n")
+sys.exit(0 if d.get("ok") else (d.get("rc") or 1))
+'
+else
+    # Bez python3 jen surový JSON odpověď
+    printf '%s\n' "$RESP"
+    case "$RESP" in *'"ok":true'*) exit 0 ;; *) exit 1 ;; esac
+fi

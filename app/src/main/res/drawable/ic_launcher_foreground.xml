@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Greater than sign ( > ) -->
+    <path
+        android:strokeColor="#00FF41"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M 30,34 L 54,54 L 30,74" />
+        
+    <!-- Underscore ( _ ) -->
+    <path
+        android:strokeColor="#00FF41"
+        android:strokeWidth="6"
+        android:strokeLineCap="square"
+        android:fillColor="#00000000"
+        android:pathData="M 58,76 L 78,76" />
+</vector>

@@ -1,0 +1,390 @@
+#!/system/bin/sh
+# boot — universal PRoot launcher for NetHunter AI Operator
+# Deployed to: $PREFIX/bin/boot (filesDir/usr/bin/boot)
+# Usage: boot {kali|parrot} [-- cmd args...]
+#        boot docker <image-name> [-- cmd args...]
+#        boot -- cmd args...   (su_daemon re-entry; distro from .active_distro marker)
+#        boot --help
+#
+# Env vars (set by caller or defaulted):
+#   PREFIX      — host usr prefix (default: /data/user/0/com.linux_core/files/usr)
+#   FILES_DIR   — app filesDir    (default: /data/user/0/com.linux_core/files)
+#   NH_MOUNT_STORAGE — "1" to bind /sdcard
+#   NH_EXTRA_MOUNTS  — additional -b flags (from root_settings)
+#   NH_EXTRA_BINDS   — additional -b flags (from nh distro login --bind)
+#   NH_CWD           — working dir override (su_daemon re-entry)
+#   NH_DISTRO        — distro override for "--" re-entry mode (kali|parrot|docker:<image>)
+#   BOOT_DEBUG       — "1" for verbose logging
+
+set -e
+
+PREFIX="${PREFIX:-/data/user/0/com.linux_core/files/usr}"
+FILES_DIR="${FILES_DIR:-/data/user/0/com.linux_core/files}"
+PROOT="$PREFIX/bin/proot"
+# Loader: prefer new path (usr/bin/loader from deployArchBinaries), fallback to old (filesDir/loader)
+LOADER="$PREFIX/bin/loader"
+[ ! -x "$LOADER" ] && LOADER="$FILES_DIR/loader"
+TALLOC="$PREFIX/lib/libtalloc.so.2"
+[ ! -f "$TALLOC" ] && TALLOC="$FILES_DIR/libtalloc.so.2"
+
+export LD_LIBRARY_PATH="$PREFIX/lib:/system/lib64:/system/lib"
+export PROOT_LOADER="$LOADER"
+export PROOT_TMP_DIR="$FILES_DIR/tmp"
+export TMPDIR="$FILES_DIR/tmp"
+
+PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink --sysvipc -L --kernel-release=\\Linux\\localhost\\6.17.0-proot-distro\\6.17.0-proot-distro\\aarch64\\localdomain\\-1\\"
+
+log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
+err() { echo "[boot] ERROR: $*" >&2; }
+
+# ─── Validate proot stack ───────────────────────────────
+if [ ! -x "$PROOT" ]; then
+    err "proot not found or not executable: $PROOT"
+    exit 1
+fi
+
+# ─── Guest shell discovery helper ────────────────────────
+find_sh() {
+    # $1 = ROOTFS path; prints relative shell path or empty
+    local _rootfs="$1" _cand
+    for _cand in "$_rootfs/bin/sh" "$_rootfs/usr/bin/sh" "$_rootfs/bin/bash" "$_rootfs/usr/bin/bash"; do
+        if [ -x "$_cand" ]; then
+            echo "${_cand#"$_rootfs"}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ─── Build guest PATH from rootfs structure ──────────────
+build_path() {
+    local _rootfs="$1" _p _gp=""
+    for _p in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+        [ -d "$_rootfs$_p" ] && _gp="${_gp:+$_gp:}$_p"
+    done
+    echo "$_gp"
+}
+
+# ─── Assemble bind mounts ───────────────────────────────
+build_binds() {
+    local _binds="-b /dev -b /proc -b /sys"
+    _binds="$_binds -b $FILES_DIR/tmp:$FILES_DIR/tmp"
+    _binds="$_binds -b $FILES_DIR/ipc:/run/host_ipc"
+    # ~/share: shared folder between Android app and guest (Termux-style)
+    mkdir -p "$FILES_DIR/share" 2>/dev/null || true
+    _binds="$_binds -b $FILES_DIR/share:/root/share"
+    [ "$NH_MOUNT_STORAGE" = "1" ] && _binds="$_binds -b /sdcard"
+    [ -n "$NH_EXTRA_MOUNTS" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
+    [ -n "$NH_EXTRA_BINDS" ] && _binds="$_binds $NH_EXTRA_BINDS"
+    echo "$_binds"
+}
+
+# ─── boot_classic: kali / parrot ────────────────────────
+boot_classic() {
+    local distro="$1"; shift || true
+    local ROOTFS="$FILES_DIR/nh/distro/$distro"
+
+    if [ ! -d "$ROOTFS" ]; then
+        err "Rootfs not found: $ROOTFS (hint: pull $distro first)"
+        return 1
+    fi
+
+    local GUEST_SH
+    GUEST_SH=$(find_sh "$ROOTFS") || {
+        err "Guest shell not found in $ROOTFS (tried: bin/sh, usr/bin/sh, bin/bash, usr/bin/bash)"
+        return 1
+    }
+    log "distro=$distro rootfs=$ROOTFS shell=$GUEST_SH"
+
+    local BINDS
+    BINDS=$(build_binds)
+
+    # Bootstrap (first run only)
+    if [ -x "$ROOTFS/root/bootstrap.sh" ] && \
+       { [ -f "$ROOTFS/root/.bootstrap_required" ] || [ ! -f "$ROOTFS/root/.setup_done" ]; }; then
+        echo "[boot] First run detected — running bootstrap..." >&2
+        if "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/bash /root/bootstrap.sh'; then
+            rm -f "$ROOTFS/root/.bootstrap_required"
+        else
+            echo "[boot] WARNING: bootstrap failed — keeping .bootstrap_required" >&2
+        fi
+    fi
+
+    # su_daemon re-entry mode: boot <distro> -- <cmd> [args...]
+    if [ "${1:-}" = "--" ]; then
+        shift
+        local NH_CWD="${NH_CWD:-/root}"
+        local GUEST_PATH
+        GUEST_PATH=$(build_path "$ROOTFS") || true
+        export PATH="$GUEST_PATH"
+        log "re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
+        if [ $# -eq 0 ]; then
+            # Bare `su` -> interactive root login shell
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+        else
+            # Map /bin/sh or /system/bin/sh to guest shell
+            if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
+                shift
+                set -- "$GUEST_SH" "$@"
+            fi
+            # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
+            # then exec the exact args verbatim (no shell re-quoting loss)
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+        fi
+    fi
+
+    # Normal boot: entrypoint or login shell
+    if [ -f "$ROOTFS/root/entrypoint.sh" ]; then
+        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/sh /root/entrypoint.sh "$@"' -- "$@"
+    else
+        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; cd /root && exec /bin/bash --login "$@"' -- "$@"
+    fi
+}
+
+# ─── boot_docker: container-style images ────────────────
+boot_docker() {
+    local image_name="${1:-}"
+    [ -z "$image_name" ] && { err "Usage: boot docker <image-name> [-- cmd args...]"; return 1; }
+    shift || true
+
+    local ROOTFS="$FILES_DIR/nh/distro/docker/$image_name"
+    if [ ! -d "$ROOTFS" ]; then
+        err "Docker rootfs not found: $ROOTFS (hint: pull image first)"
+        return 1
+    fi
+
+    # Detect Termux-style image by rootfs structure (NOT host path)
+    local IS_TERMUX_IMAGE=0
+    [ -d "$ROOTFS/data/data/com.termux" ] && IS_TERMUX_IMAGE=1
+
+    # Find guest shell — prefer known paths, fallback to find
+    local GUEST_SH=""
+    if [ "$IS_TERMUX_IMAGE" = "1" ]; then
+        for _cand in "$ROOTFS/data/data/com.termux/files/usr/bin/bash" \
+                     "$ROOTFS/data/data/com.termux/files/usr/bin/sh" \
+                     "$ROOTFS/system/bin/sh"; do
+            [ -x "$_cand" ] && GUEST_SH="${_cand#"$ROOTFS"}" && break
+        done
+    else
+        for _cand in "$ROOTFS/bin/sh" "$ROOTFS/usr/bin/sh" \
+                     "$ROOTFS/bin/bash" "$ROOTFS/usr/bin/bash"; do
+            [ -x "$_cand" ] && GUEST_SH="${_cand#"$ROOTFS"}" && break
+        done
+    fi
+
+    # Fallback: search with find (Alpine busybox, custom layouts)
+    if [ -z "$GUEST_SH" ]; then
+        log "Known shell paths failed, falling back to find"
+        local found
+        found=$(find "$ROOTFS" -maxdepth 6 -type f \( -name 'sh' -o -name 'bash' \) -perm -u+x 2>/dev/null | head -1)
+        [ -n "$found" ] && GUEST_SH="${found#"$ROOTFS"}"
+    fi
+
+    if [ -z "$GUEST_SH" ]; then
+        err "No shell found in $ROOTFS"
+        err "Rootfs structure:"
+        find "$ROOTFS" -maxdepth 2 -type d 2>/dev/null | head -20 >&2
+        return 1
+    fi
+    log "Docker image=$image_name shell=$GUEST_SH termux=$IS_TERMUX_IMAGE"
+
+    # Find entrypoint
+    local ENTRYPOINT=""
+    for _cand in /entrypoint.sh /entrypoint_root.sh /docker-entrypoint.sh \
+                 /start.sh /init.sh /run.sh; do
+        [ -x "$ROOTFS$_cand" ] && ENTRYPOINT="$_cand" && break
+    done
+    log "Entrypoint: ${ENTRYPOINT:-(none, will use login shell)}"
+
+    # Build guest PATH
+    local GUEST_PATH
+    GUEST_PATH=$(build_path "$ROOTFS")
+    [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
+        GUEST_PATH="$GUEST_PATH:/data/data/com.termux/files/usr/bin"
+    [ -z "$GUEST_PATH" ] && GUEST_PATH="/usr/bin:/bin"
+
+    # Binds per image type
+    local BINDS="-b /dev -b /proc -b /sys"
+    if [ "$IS_TERMUX_IMAGE" = "1" ]; then
+        BINDS="$BINDS -b /sdcard"
+        BINDS="$BINDS -b /dev/urandom:/dev/random"
+        [ ! -e /dev/fd ] && BINDS="$BINDS -b /proc/self/fd:/dev/fd"
+        for _p in /apex /odm /product /system /system_ext /vendor; do
+            [ -d "$_p" ] && [ -x "$_p" ] && BINDS="$BINDS -b $_p"
+        done
+        BINDS="$BINDS -b $FILES_DIR/tmp:/data/data/com.termux/files/usr/tmp"
+        mkdir -p "$ROOTFS/tmp" 2>/dev/null || true
+        BINDS="$BINDS -b $ROOTFS/tmp:/dev/shm"
+    else
+        BINDS="$BINDS -b /sdcard"
+        BINDS="$BINDS -b $FILES_DIR/tmp:/tmp"
+        BINDS="$BINDS -b $FILES_DIR/ipc:/run/host_ipc"
+        mkdir -p "$FILES_DIR/share" 2>/dev/null || true
+        BINDS="$BINDS -b $FILES_DIR/share:/root/share"
+    fi
+    [ -n "$NH_EXTRA_MOUNTS" ] && BINDS="$BINDS $NH_EXTRA_MOUNTS"
+    [ -n "$NH_EXTRA_BINDS" ] && BINDS="$BINDS $NH_EXTRA_BINDS"
+
+    # Working directory
+    local PROOT_CWD="/root"
+    [ ! -d "$ROOTFS/root" ] && PROOT_CWD="/"
+
+    # su_daemon re-entry mode
+    if [ "${1:-}" = "--" ]; then
+        shift
+        local NH_CWD="${NH_CWD:-$PROOT_CWD}"
+        export PATH="$GUEST_PATH"
+        log "docker re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
+        if [ $# -eq 0 ]; then
+            # Bare `su` -> interactive root login shell
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+        else
+            # Map /bin/sh or /system/bin/sh to guest shell
+            if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
+                shift
+                set -- "$GUEST_SH" "$@"
+            fi
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+        fi
+    fi
+
+    # Normal docker boot
+    if [ -n "$ENTRYPOINT" ]; then
+        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+    else
+        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
+    fi
+}
+
+# ─── Re-entry dispatch: boot -- cmd args... (su_daemon) ──
+# Distro resolution order: NH_DISTRO env > .active_distro marker > auto-scan.
+boot_reentry() {
+    local spec="${NH_DISTRO:-}"
+    if [ -z "$spec" ] && [ -f "$FILES_DIR/nh/.active_distro" ]; then
+        spec=$(head -n1 "$FILES_DIR/nh/.active_distro" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [ -z "$spec" ]; then
+        # Auto-scan fallback: prefer kali, then parrot, then first docker image
+        if [ -d "$FILES_DIR/nh/distro/kali" ]; then
+            spec="kali"
+        elif [ -d "$FILES_DIR/nh/distro/parrot" ]; then
+            spec="parrot"
+        else
+            local _d
+            for _d in "$FILES_DIR"/nh/distro/docker/*/; do
+                [ -d "$_d" ] && spec="docker:$(basename "$_d")" && break
+            done
+        fi
+    fi
+    if [ -z "$spec" ]; then
+        err "Re-entry mode: no distro found (set NH_DISTRO or create nh/.active_distro)"
+        return 1
+    fi
+    log "re-entry spec=$spec"
+    case "$spec" in
+        docker:*)
+            boot_docker "${spec#docker:}" "$@"
+            ;;
+        kali|parrot)
+            boot_classic "$spec" "$@"
+            ;;
+        *)
+            err "Re-entry mode: unknown distro spec '$spec'"
+            return 1
+            ;;
+    esac
+}
+
+# ─── Main dispatch ──────────────────────────────────────
+main() {
+    # Pre-parse --bind options from anywhere in args
+    local _newargs=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bind)
+                shift
+                [ $# -gt 0 ] || { err "--bind requires a src:dest argument"; return 1; }
+                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b $1"
+                shift
+                continue
+                ;;
+            --bind=*)
+                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b ${1#--bind=}"
+                shift
+                continue
+                ;;
+        esac
+        _newargs="$_newargs '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+        shift
+    done
+    [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
+    eval "set -- $_newargs"
+
+    case "${1:-}" in
+        kali|parrot)
+            boot_classic "$@"
+            ;;
+        docker)
+            shift
+            boot_docker "$@"
+            ;;
+        --)
+            boot_reentry "$@"
+            ;;
+        --help|-h)
+            echo "Usage: boot {kali|parrot} [--bind src:dest] [-- cmd args...]"
+            echo "       boot docker <image-name> [--bind src:dest] [-- cmd args...]"
+            echo "       boot -- cmd args...   (su_daemon re-entry, auto-detect distro)"
+            echo "       boot [--bind src:dest]  (auto-detect active distro)"
+            echo ""
+            echo "Options:"
+            echo "  --bind src:dest    Extra bind mount (repeatable)"
+            echo "  --bind=src:dest    Same, equals-sign form"
+            echo ""
+            echo "Env vars: PREFIX, FILES_DIR, NH_MOUNT_STORAGE, NH_EXTRA_MOUNTS,"
+            echo "          NH_EXTRA_BINDS, NH_CWD, NH_DISTRO, BOOT_DEBUG"
+            ;;
+        "")
+            # No distro specified — auto-detect and boot interactively
+            local _spec=""
+            if [ -f "$FILES_DIR/nh/.active_distro" ]; then
+                _spec=$(head -n1 "$FILES_DIR/nh/.active_distro" 2>/dev/null | tr -d '[:space:]')
+            fi
+            if [ -z "$_spec" ]; then
+                if [ -d "$FILES_DIR/nh/distro/kali" ]; then _spec="kali"
+                elif [ -d "$FILES_DIR/nh/distro/parrot" ]; then _spec="parrot"
+                else
+                    local _d
+                    for _d in "$FILES_DIR"/nh/distro/docker/*/; do
+                        [ -d "$_d" ] && _spec="docker:$(basename "$_d")" && break
+                    done
+                fi
+            fi
+            if [ -z "$_spec" ]; then
+                err "No distro found (set NH_DISTRO or create nh/.active_distro)"
+                return 1
+            fi
+            log "auto-detect distro=$_spec"
+            case "$_spec" in
+                docker:*) boot_docker "${_spec#docker:}" ;;
+                *)        boot_classic "$_spec" ;;
+            esac
+            ;;
+        *)
+            err "Unknown command: $1"
+            echo "Usage: boot {kali|parrot|docker} [--bind src:dest] ..." >&2
+            return 1
+            ;;
+    esac
+}
+
+main "$@"

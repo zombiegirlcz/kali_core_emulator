@@ -22,7 +22,7 @@ local.properties
 .idea/runConfigurations.xml
 *.iml
 .idea/
-
+*.out
 # OS specific
 .DS_Store
 Thumbs.db
@@ -59,7 +59,7 @@ docs/prompt.md
 # Local backup archive
 ignore-archi
 v.tar
-
+!tools/**/**
 # IDE, AI tools, and plugin directories
 /.ai/
 /.explyt/
@@ -97,11 +97,8 @@ window_dump.xml
 !*.py
 *.zip
 !*.c
-
-
 !*.h
 !*.am
-
 !app/src/main/assets/*.sh
 *.bat
 *.ps1

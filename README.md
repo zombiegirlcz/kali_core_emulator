@@ -1,0 +1,728 @@
+# Linux Kali NetHunter🐉 and ParrotOS security🦜 proot-distro emulator
+                       _ROOT && UNROOT_
+A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency Termux terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
+
+---
+
+## ⚡ Key Highlights & Architecture
+
+### 🚀 Up to 50x Faster Package & File Operations
+- **Automated Optimizations:** During the initial bootstrap process, the app automatically configures both `dpkg` and `apt` package managers with disk write optimizations (`force-unsafe-io`).
+- **Performance Boost:** File operations, package installations (`apt install`), and overall system upgrades run **up to 50x faster** than standard Android emulators, avoiding severe Android storage bottlenecking.
+
+### 🔌 Premium SMART JNI VPN & DNS Proxy Sniffer
+- **Native C++ Engine:** Powered by a direct native integration of AdGuard’s C++ stack (`libadguard-core.so` & `libadguard-dns.so`). Handles high-throughput userspace packet translation and local DNS resolution.
+- **Interactive Telemetry Dashboard:** Includes a futuristic graphic visualizer under the "VPN Center" tab:
+  - **Segmented Timeframes:** Instantly toggle between 24 Hours (Hourly), 7 Days, and 30 Days (Daily) traffic curves.
+  - **Glowing Canvas Chart:** Draws distinct glowing curves for Download (green) and Upload (cyan) streams.
+  - **Touch-Drag Cursor Overlay:** Tapping or dragging on the Canvas draws a vertical cyber-yellow highlight cursor, updating a floating detailed badge with exact data points in real time.
+  - **Aggregate Metrics:** Calculates Peak Speeds, Average Rates, and Total Bandwidth transferred.
+  - **History Breakdown:** Scrollable chronological log of all traffic logs with double-colored ratio progress bars.
+
+### ⛓️ Session-Isolated VPN Bypass
+- **BFS Socket Resolution:** Integrates a high-efficiency background socket-to-process crawler. When a TCP connection is established, the VPN service traverses `/proc` using a custom Breadth-First Search (BFS) process-tree resolver to determine if the local socket is owned by a bypassed chroot terminal session.
+- **Dynamic Bypass Controls:** Execute `nh vpn ignore on` or `nh vpn ignore off` directly inside a terminal tab to instantly bypass VPN routing (e.g., for local network scans) without stopping global VPN protection.
+  - *Legacy:* `ignore-vpn on` / `ignore-vpn off` still works via compatibility symlink.
+- **Visual Status Badging:** Ignored sessions are dynamically color-coded inside the drawer menu using distinct Orange-Gold text and `[VPN IGNORED]` badges.
+
+### 🐉 Multi-Distro Sessions Drawer
+- **Distro Category Tabs:** The session manager drawer is equipped with a premium horizontal tab selector (**ALL**, **KALI**, **PARROT**) to filter sessions on the fly.
+- **Aesthetic Emojis:** Each relacio card is prepended with visual badges representing the distro:
+  - **🐉** for Kali NetHunter sessions.
+  - **🦜** for ParrotOS Security sessions.
+- **Persisted Custom Naming:** Long-pressing any card displays a custom native `AlertDialog`, allowing you to input a friendly name that persists perfectly across application restarts and switches.
+- **Thicker Tap Targets:** Extended with a thick vertical `18dp` and horizontal `16dp` card layout, maximizing clicking accuracy on high-DPI screens.
+
+### 📝 System-Wide Editor Integration (Nano)
+- **File Intent Interceptor:** Registered as a system-wide document editor (`ACTION_VIEW` / `ACTION_EDIT`) in the Android Manifest.
+- **Auto-Buffer chroot /tmp:** When you click "Open with NetHunter AI Operator" on any text or script file from external file managers, the app automatically:
+  - Switches to CLI mode if currently in GUI desktop.
+  - Copies the source stream safely to `/tmp/nethunter_edit_<filename>` inside the active guest rootfs.
+  - Commands the active session shell (or boots a new one with a safe delay) to execute `nano /tmp/nethunter_edit_<filename>` using control sequences (`Ctrl+C` and `Ctrl+U`) to safely wipe the terminal line first.
+
+### 🔍 Pinch-to-Zoom Precision & Memory
+- **Dampened Font Scaling:** Pinch gestures are dampened by a custom factor of `0.15f` (making size adjustments ~6.6x slower and smoother) for micro-adjustments.
+- **Size Persistence:** Saves your preferred font size to Android `SharedPreferences` instantly, restoring it automatically across fresh starts and new sessions.
+
+---
+
+## 🌐 Integrated Android API Bridge & Unified CLI (`nh`)
+
+The application starts a loopback API server listening at `127.0.0.1:1337` on the Android host, exposing native device sensors and hardware features directly to the guest Linux terminal via the unified **`nh`** CLI tool (also accessible as `nethunter`).
+
+> **Note:** The old `nethunter-*` and `vpn-*` standalone commands are **deprecated**. All functionality is now consolidated under `nh <category> <action>`. Legacy names still work via compatibility symlinks, but the unified CLI is the recommended interface.
+
+| Command | Category | Action | Example |
+| :--- | :--- | :--- | :--- |
+| `nh system battery` | system | Retrieve detailed battery status in JSON | `nh system battery` |
+| `nh system volume [N]` | system | Get or set media volume (0-15) | `nh system volume 10` |
+| `nh system torch on\|off` | system | Turn the device flashlight on or off | `nh system torch on` |
+| `nh system vibrate [ms]` | system | Vibrate the device (default 500ms) | `nh system vibrate 1000` |
+| `nh system toast <msg>` | system | Display an Android Toast popup | `nh system toast "Done!"` |
+| `nh system clipboard get\|set [text]` | system | Read/write host clipboard | `nh system clipboard set "pass123"` |
+| `nh system notification -t T -c C` | system | Post a system notification | `nh system notification -t "Alert" -c "Scan done"` |
+| `nh system speech` | system | Start voice recognition input | `nh system speech` |
+| `nh network wifi [on\|off\|scan\|connect]` | network | Manage Wi-Fi interface | `nh network wifi scan` |
+| `nh network cell` | network | Retrieve mobile network info | `nh network cell` |
+| `nh network location` | network | Retrieve GPS coordinates in JSON | `nh network location` |
+| `nh network map` | network | TerminalMap with current location | `nh network map` |
+| `nh network ifconfig [iface]` | network | Show network interfaces | `nh network ifconfig wlan0` |
+| `nh vpn start\|stop\|status` | vpn | Start/stop/check VPN service | `nh vpn status` |
+| `nh vpn on [cmd]` | vpn | Enable VPN (optionally run a command) | `nh vpn on` |
+| `nh vpn off [cmd]` | vpn | Disable VPN (optionally run a command) | `nh vpn off` |
+| `nh vpn logs [-n N] [-g P] [json]` | vpn | Fetch MITM traffic logs | `nh vpn logs -n 50 -g mitm` |
+| `nh vpn mitm on\|off\|status\|ca` | vpn | Control TLS MITM engine | `nh vpn mitm status` |
+| `nh vpn bypass <cmd>` | vpn | Run a command outside VPN tunnel | `nh vpn bypass curl ipinfo.io` |
+| `nh vpn ignore on\|off\|status` | vpn | Toggle VPN bypass for current shell | `nh vpn ignore on` |
+| `nh vpn sni-fallback get\|set\|clear` | vpn | Manage SNI fallback hostname | `nh vpn sni-fallback set example.com` |
+| `nh agent config\|start\|stop\|status` | agent | Manage the AI agent daemon | `nh agent status` |
+| `nh agent ask <question>` | agent | Ask the AI a security question | `nh agent ask "Analyze this pcap"` |
+| `nh agent chat` | agent | Open interactive AI expert console | `nh agent chat` |
+| `nh log [-n N] [-g P]` | log | Colorized logcat viewer (V/D/I/W/E/F) | `nh log -n 50 -g LocalApiServer` |
+| `nh log set <level>` | log | Set log level (1-5) | `nh log set 3` |
+| `nh device admin status\|request\|lock` | device | Manage Device Admin | `nh device admin lock` |
+| `nh device battery-optimize status\|request` | device | Battery optimization settings | `nh device battery-optimize request` |
+| `nh device tap <x> <y>` | device | Tap at screen coordinates | `nh device tap 500 300` |
+| `nh device click <text>` | device | Click by visible text | `nh device click "Submit"` |
+| `nh device longclick <text>` | device | Long-click by visible text | `nh device longclick "App"` |
+| `nh device swipe <x1> <y1> <x2> <y2>` | device | Swipe gesture | `nh device swipe 100 200 300 400` |
+| `nh device text <text>` | device | Insert text at cursor | `nh device text "hello"` |
+| `nh device scroll forward\|backward` | device | Scroll the active view | `nh device scroll forward` |
+| `nh device global back\|home\|recents` | device | Global device action | `nh device global home` |
+| `nh api share on\|off\|status` | api | Expose API externally (0.0.0.0 vs 127.0.0.1) | `nh api share on` |
+| `nh desktop start\|stop\|status` | desktop | Control XFCE4 desktop (rendered by external X11 launcher) | `nh desktop start` |
+| `nh fix pkg <name>` | fix | Fix a stuck post-install script | `nh fix pkg libc6` |
+| `nh fix auto` | fix | Auto-fix all broken packages | `nh fix auto` |
+| `nh fix permission <path>` | fix | Fix file ownership after real-root (su_daemon) commands | `nh fix permission /root/dir` |
+| `nh apps usage` | apps | App usage statistics (24h) | `nh apps usage` |
+| `nh usb list` | usb | List USB devices | `nh usb list` |
+| `nh usb permission <device>` | usb | Request USB device permission | `nh usb permission /dev/bus/usb/001/002` |
+| `nh usb claim <device> [iface]` | usb | Claim USB interface | `nh usb claim /dev/bus/usb/001/002 0` |
+| `nh usb release <device>` | usb | Release USB interface | `nh usb release /dev/bus/usb/001/002` |
+| `nh usb send <device> <file>` | usb | Send raw bulk data to USB device | `nh usb send /dev/bus/usb/001/002 exploit.bin` |
+| `nh usb raw <device> <endpoint> <in|out> [file]` | usb | Raw binary bulk transfer (no Base64/JSON) | `nh usb raw /dev/bus/usb/001/002 2 out exploit.bin` |
+| `nh usb stream <device> <in_ep> <out_ep>` | usb | Persistent BROM/EDL streaming session | `nh usb stream /dev/bus/usb/001/002 1 2` |
+
+### 🚀 USB BROM/EDL Optimization (v4.3+)
+
+Pro časově kritické USB protokoly (Qualcomm BROM/EDL, bootloader flashing) byly přidány dva optimalizované endpointy, které eliminují HTTP/JSON/Base64 režii:
+
+#### `/usb/raw_transfer` — Raw binary bulk transfer
+
+```bash
+# OUT: pošli data na zařízení
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 2' --data-binary @programmer.bin \
+     http://127.0.0.1:1337/usb/raw_transfer
+# Response: 4-byte big-endian transferred count
+
+# IN: přečti data ze zařízení (prázdné body)
+curl -X POST -H 'X-USB-Device: /dev/bus/usb/001/002' \
+     -H 'X-USB-Endpoint: 1' -H 'X-USB-Direction: IN' \
+     http://127.0.0.1:1337/usb/raw_transfer -o response.bin
+```
+
+Parametry se předávají v HTTP hlavičkách (`X-USB-Device`, `X-USB-Endpoint`, `X-USB-Direction`, `X-USB-Timeout`). Response je čistě binární — žádné JSON/Baše64.
+
+**Keep-alive:** Endpoint používá `Connection: keep-alive` pro vícenásobné transfery na jednom TCP spojení.
+
+#### `/usb/stream` — Persistentní BROM/EDL streaming
+
+Po HTTP handshake přepne na raw binární frame protokol bez jakékoli HTTP/JSON/Base64 režie:
+
+**Binární frame formát (vše big-endian):**
+
+| CMD | Význam | Request | Response |
+|-----|--------|---------|----------|
+| `0x01` | OUT (host→device) | `[1B cmd][3B rezerva][4B délka][payload...]` | `[4B zapsáno]` |
+| `0x02` | IN (device→host) | `[1B cmd][3B rezerva][4B max_read]` | `[4B přečteno][data...]` |
+| `0xFF` | CLOSE | `[1B cmd]` | — |
+
+```bash
+# Příklad z PRoot guest (bash TCP socket)
+exec 3<>/dev/tcp/127.0.0.1/1337
+echo -e 'POST /usb/stream HTTP/1.1\r\nContent-Length: 50\r\n\r\n{"device_name":"/dev/bus/usb/001/002","endpoint_in":1,"endpoint_out":2}' >&3
+head -1 <&3  # HTTP 200 OK
+
+# Teď raw binární frames — žádná režie!
+printf '\x01\x00\x00\x00\x00\x00\x10\x00' >&3  # OUT 4096B
+dd if=/dev/zero bs=4096 count=1 >&3
+dd bs=4 count=1 <&3 2>/dev/null | od -An -tu4  # read transferred count
+
+# Uzavření
+printf '\xff' >&3
+exec 3>&-
+```
+
+**64KB buffer:** Všechny IN transfery používají 64KB buffer (oproti původním 4KB) pro minimální počet USB čtení.
+
+---
+
+## 🔌 USB Magisk Module — `custom_usb_g2_setup` (gadget g2)
+
+Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
+
+> **Důležité:** Modul g2 **nikdy není** připojen k UDC — aktivaci/deaktivaci nechává na aplikaci (`UsbGadgetManager` / `/usbg2` API). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
+
+### Instalace
+- Flash přes Magisk (zip), vyžaduje **Magisk ≥ 20400**.
+- Po rebootu najdeš v `/system/bin` CLI: `usbtool` (alias `switch-usb-gadget`), `show-gadgets`, `show-udcs`, `lsusb`, `usbrelay`, `gadget-hid`, `gadget-ms`, `gadget-rndis-os-desc`, `gadget-uvc`, `gadget-acm-ecm`, `gadget-ffs`, `gadget-import`, `gadget-export`, `gadget-midi`, `gadget-printer`, `gadget-vid-pid-remove`.
+
+### Co modul obsahuje
+| Soubor (`/system/bin` / `/system/lib`) | Účel |
+|---|---|
+| `usbtool` / `switch-usb-gadget` | Přepnutí aktivního gadgetu g1 ↔ g2 |
+| `gadget-hid` | HID keyboard/mouse gadget skript |
+| `gadget-ms` | mass_storage (USB disk) gadget |
+| `gadget-rndis-os-desc` | RNDIS + OS descriptor (auto-driver na Windows) |
+| `gadget-uvc` | USB Video Class (webcam) gadget |
+| `gadget-acm-ecm` | CDC ACM / ECM (serial / ethernet) gadget |
+| `gadget-ffs` / `gadget-import` / `gadget-export` | FunctionFS bridge pro custom funkce |
+| `gadget-midi` / `gadget-printer` | MIDI / printer gadget |
+| `gadget-vid-pid-remove` | Odebrání VID/PID z configfs |
+| `usbrelay` / `usbrelayd` | ovládání USB relay (hardware) |
+| `show-gadgets` / `show-udcs` | dump aktuálního gadget stavu |
+| `lsusb` | seznam USB zařízení (host strana) |
+| `libusbgx.so*`, `libusb-1.0.so*`, `libhidapi-libusb.so`, `libusbrelay.so`, `usb.ids` | nativní knihovny pro gadget/tools |
+
+### Použití z aplikace
+- Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
+- HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
+- **Spuštění skriptů z modulu přes API:** `POST /usbg2/exec` s body `{"args":["g2"]}` — spustí `/system/bin/usbtool <args>` pod real rootem (Magisk su). Argumenty se validují (jen `[a-zA-Z0-9_.-]`), `watch` je blokovaný (streamuje donekonečna).
+- **Z prootu:** `usbtool status|g1|g2|setup|host|device|detect|logs` (wrapper v `/usr/local/bin`, volá API) nebo `nh usb gadget <cmd>`.
+- Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
+
+---
+
+## 🧠 AI Brain Integration (The Brain of the VPN)
+
+NetHunter AI Operator features an embedded **AI Inference Engine** (`AIBrain.kt`) that sits directly in the packet pathway:
+- **Packet Classification:** Every intercepted TCP/UDP session metadata is analyzed in real-time by a locally running lightweight neural network.
+- **Features Tracked:** Classifies flows based on packet size, protocol number, delta-time intervals, source/destination ports, and payload entropy (to detect hidden encrypted tunnels).
+- **Audit Logging:** Categorizes packets into `ALLOWED`, `VERBOSE`, `SUSPICIOUS`, or `CRITICAL` network anomalies.
+- **Hacker Console Interaction:** Users can execute `nh agent chat` to open a local AI Expert console or run `nh agent start` to spawn a background daemon that monitors connection streams and triggers Android toasts/alerts if high-risk intrusions or security anomalies are detected.
+
+---
+
+## 🛡️ Chroot Environment Protection & Process Control
+
+### 🧟 Zombie Process Resolution
+To prevent ghost background processes and memory leakages, the terminal session manager has been hardened to trace process hierarchies. When a terminal session is closed or restarted, the app automatically traverses `/proc/$pid/fd` and `/proc/$pid/stat` to discover all child/descendant processes spawned by the session. It sends termination signals to clean up the entire descendant tree, ensuring no zombie processes are left running on the Android host.
+
+### 📦 APT Installation Protection
+Under unrooted PRoot environments, packages using systemd or low-level capabilities (`setcap`, `sysctl`, `resolvconf`, etc.) often fail to install, causing packages to remain half-configured. NetHunter AI Operator intercepts these operations using wrapper scripts (`apt`, `apt-get`):
+- **Mock Helpers:** Redirects systemd controls to `/bin/true` to bypass failing service configurations.
+- **Post-Install Repair:** `nh fix pkg <name>` mocks corrupted debian configuration scripts to `/bin/true`, unblocking stuck `dpkg --configure -a`.
+- **Auto-Fix All:** `nh fix auto` scans and repairs all broken packages automatically.
+
+### 🚀 PRoot Container Startup & Setup Lifecycle
+
+Every time a terminal session is launched, `ProotManager.kt` ensures the virtualized environment is fully prepared, configured, and bridged to the Android host services.
+
+#### 1. Directory Structure Creation
+Before booting PRoot, the manager verifies and creates the following critical directories inside the guest `rootfs`:
+- System mounts: `system`, `dev`, `proc`, `sys`
+- User environments: `root`, `home/kali` (or `home/parrot`)
+- Temporary and shared files: `tmp`, `sdcard` (if storage mounting is enabled)
+- Unix standard paths: `bin`, `usr/bin`, `usr/sbin`, `sbin`, `lib`, `lib64`, `usr/lib`, `etc`
+
+#### 2. Startup Sentinel Files
+To track the state of the guest container, the following sentinel files are managed in `/root/`:
+- `.hushlogin`: Automatically created to silence default login shell banners.
+- `.bootstrap_required`: Created on fresh installations to flag that the system needs to run `bootstrap.sh`. Removed once the first initialization completes.
+- `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
+
+#### 3. Execution Entrypoints & Scripts
+- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, and launches the guest shell with flag mounts (`-v 0 --kill-on-exit -0 --link2symlink --sysvipc`). It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
+- **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
+- **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
+
+#### 4. Shared Library & Dynamic Linker Fixes
+To prevent core dump or execution crashes in the sandboxed chroot:
+- The system loader is copied into the guest `lib/ld-linux-aarch64.so.1` and `lib64/ld-linux-aarch64.so.1`.
+- The helper library `libtalloc.so.2` is deployed into guest `lib/libtalloc.so.2`.
+- Any broken symbolic links for `bin/sh` and `bin/bash` in the guest OS are automatically dereferenced and replaced with solid binaries to prevent loader failures.
+
+#### 5. Deployed Helper Scripts — Unified `nh` CLI (Guest `/usr/local/bin/`)
+At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked as `nethunter`) into `/usr/local/bin/`. This replaces all legacy `nethunter-*`, `vpn-*`, and `ignore-vpn` scripts. Legacy names are kept as compatibility symlinks but all functionality is consolidated under `nh <category> <action>`:
+
+| Category | Available Actions |
+| :--- | :--- |
+| `nh system` | `battery`, `volume`, `torch`, `vibrate`, `toast`, `clipboard`, `notification`, `speech` |
+| `nh network` | `wifi`, `cell`, `location`, `map`, `ifconfig` |
+| `nh vpn` | `start`, `stop`, `status`, `on`, `off`, `logs`, `mitm`, `bypass`, `ignore`, `sni-fallback` |
+| `nh agent` | `config`, `start`, `stop`, `status`, `ask`, `chat` |
+| `nh log` | `[-n N] [-g P]`, `set <level>` |
+| `nh device` | `admin`, `battery-optimize`, `accessibility`, `tap`, `click`, `longclick`, `swipe`, `text`, `scroll`, `global` |
+| `nh api` | `share on/off/status` |
+| `nh desktop` | `start`, `stop`, `status` |
+| `nh fix` | `pkg <name>`, `auto`, `permission <path>` |
+| `nh apps` | `usage` |
+| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control` |
+
+> Legacy scripts (`nethunter-*`, `vpn-on`, `vpn-off`, `vpn-cli`, `vpn-bypass`, `ignore-vpn`, `nethunter-agent-cli`, `nethunter-desktop`) are still present as **compatibility symlinks** pointing to `nh`. All new development and documentation should use the unified `nh` syntax.
+
+---
+
+## 🔑 Root Bridge — `sudo` / `su` přes host Magisk daemon
+
+Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `sudo` a `su` uvnitř hostovaného OS (Kali/Parrot) nevolají PRoot fake-root (`-0`), ale komunikují s **hostitelským Magisk/root daemonem**, který je spouští jako skutečný root **uvnitř PRoot sandboxu** (2026-08-14: bezpečnostní re-entry model — nikdy přímo na hostu).
+
+### Architektura
+
+| Komponenta | Cesta | Popis |
+|---|---|---|
+| Daemon | `assets/su_daemon` | Hostitelský root daemon (poslouchá na Unix socketu, spouští příkazy jako root) |
+| Wrapper | `assets/su_wrapper` | Statická binárka v guestu; `sudo`/`su` symlinky na ni |
+| Socket | `/run/host_ipc/magisk_daemon.sock` | Bind z `filesDir/ipc` do guestu (živý bind vytvořen PŘED startem kontejneru) |
+| PID | `filesDir/ipc/su_daemon.pid` | PID soubor daemona (zapisuje a čistí `su_daemon.c`) |
+| UI | `RootBridgeTab.kt` + `RootBridgeManager.kt` | Master switch, status, bind toggles |
+| Log | `filesDir/ipc/su_daemon.log` | Daemon log (místo `/dev/null`) |
+
+### Jak to funguje
+
+1. `ProotManager.deploySuBridge` symlinkuje `/usr/local/bin/su` a `/usr/local/bin/sudo` → `su_wrapper` (fallback: kopie; `ln` → `/system/bin/ln`) a přejmenuje původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` na `.orig` zálohy.
+2. `su_wrapper` detekuje invoked name (`sudo`/`su`/`su_wrapper`), odešle skutečné argumenty (nikdy svůj argv[0]) přes Unix socket daemonovi.
+3. **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli** (dříve `chroot` + `setresuid` + `execvp` — při chybějícím rootfs běžel bez confinementu, což mohlo zasáhnout host). Místo toho **znovu vstupuje do PRoot sandboxu jako skutečný root** přes `boot -- <příkaz>` (univerzální launcher v `assets/usr/bin/boot`; raw-exec režim; tokeny předané verbatim, žádný shell re-quoting). Bez launcheru → **fail-closed** (exit 126). `deny_command` blocklist zůstává.
+4. `startDaemon` nejdřív dělá `pkill -f su_daemon` (vyčištění stale instancí), smaže staré socket/pid soubory a loguje do `ipc/su_daemon.log`; `stopDaemon` dělá `pkill -f su_daemon`.
+
+### CLI
+
+```bash
+sudo id                        # uid=0(root) — real root uvnitř PRoot guestu
+su -c 'whoami'                 # root shell / příkaz
+su                             # interaktivní root login shell
+nh fix permission /root/dir    # oprava vlastnictví po real-root příkazech
+```
+
+### Bezpečnost
+
+- Wrapper posílá jen reálné argumenty, nikdy vlastní argv[0].
+- Socket bind je živý (vytvořen před startem kontejneru) — eliminuje mrtvý `/run/host_ipc`.
+- Vše zůstává v rozsahu app sandboxu; SELinux a limited permissions zachovány.
+- **Fail-closed:** bez launcheru daemon exit 126 — příkaz se nikdy nespustí na hostu.
+- **Oprava vlastnictví (2 vrstvy):** soubory vytvořené pod real rootem mají UID 0, který app nemůže číst. Po každém příkazu běží **auto-fix** (`nftw` + `lchown`, přeskakuje bind dirs `dev proc sys run sdcard mnt system vendor product apex storage data`, default ON — vypínatelný v Root Bridge UI), a manuálně přes `nh fix permission <cesta>` (payload `@FIX`, `realpath` containment proti symlink escape). Obě vrstvy běží **mimo proot** — uvnitř prootu jsou bindy, rekurzivní chown by zasáhl /sdcard.
+
+---
+
+## ⏰ Background Auto-Start & Cron (2026-08-14)
+
+Aplikace se umí **sama spustit na pozadí po restartu zařízení** kvůli **cron automatizaci** uvnitř PRoot guestu. (Permise `RECEIVE_BOOT_COMPLETED` dříve v manifestu chyběla — nyní je přidaná i s receiverem, který ji volá.)
+
+### Jak to funguje
+
+- **`RECEIVE_BOOT_COMPLETED`** + manifest receiver `.core.BootReceiver` (`BOOT_COMPLETED` + `MY_PACKAGE_REPLACED`).
+- `BootReceiver` → `BackgroundBoot` → **headless proot session** (`TerminalView = null`) s `root/.nh_boot.sh` — spustí cron daemon (`cron`/`crond`) a drží kontejner naživu (`while true sleep 60`).
+- `TerminalService` běží jako **foreground service** se `START_STICKY` — systém app nezabije; i kdyby ji zabil, po restartu se cron session automaticky obnoví.
+- Po aktualizaci APK (`MY_PACKAGE_REPLACED`) se cron restartuje taky.
+
+### Ovládání
+
+- Přepínač **„Auto-start po restartu“** v MainActivity (pref `boot_autostart`, default ON).
+- Spolehlivost v úsporném režimu: `nh device battery-optimize request`.
+- Log bootu: `/var/log/nethunter-boot.log` v guestu.
+- Rootfs je na credential-encrypted storage → auto-start běží až po odemčení (záměrně bez `LOCKED_BOOT_COMPLETED`).
+
+```bash
+crontab -e                      # upravit úlohy (uvnitř guestu)
+0 * * * * /root/backup.sh       # příklad: záloha každou hodinu
+```
+
+---
+
+## 💻 ashell s `-c <prikaz>` (host execution)
+
+Terminálový helper `ashell` kromě otevření host `TerminalActivity` podporuje vykonání příkazu na hostu s vrácením výstupu do terminálu:
+
+```bash
+ashell -c 'id'                 # vykoná na hostu, vrátí stdout/stderr + exit code
+ashell --cmd 'ls /'            # totéž
+```
+
+Technicky POSTuje na `http://127.0.0.1:1337/shell` (bearer token), chráněno allowlistem + blokem destruktivních vzorů (žádné nové nechráněné endpointy).
+
+## 📡 ifconfig bez su (wlan0 + tun0)
+
+Síťová rozhraní hostitelského Androidu získáte i bez zapnutého root daemonu:
+
+```bash
+ifconfig            # wlan0 (IP/netmask/gateway/mac) + tun0 (VPN IP, i při STOPPED)
+nh network ifconfig # totéž
+```
+
+`network_ifconfig` v `nh` čte raw JSON `api_get "/wifi"` + `api_get "/vpn"` (ne textový emoji výstup) a `tun0` zobrazuje i když je VPN STOPPED (IP config + `nh vpn start` hint).
+
+## 🔌 USB Attach bez přerušení terminálu
+
+Připojení USB zařízení už **nepřeruší** běžící terminálovou relaci:
+
+- **Bug:** `MainActivity` měla intent-filter na `android.hardware.usb.action.USB_DEVICE_ATTACHED` + `device_filter` → Android při připojení USB spustil MainActivity na popředí a přerušil `TerminalActivity` (singleTask) → session skončila.
+- **Fix:** Dedikovaný `UsbAttachReceiver` (manifest-deklarovaný BroadcastReceiver) zpracovává attach/detach **na pozadí** — žádná aktivita se nespouští, terminál zůstává, ale `device_filter` garantuje automatický USB permission grant (`has_permission: true`) a `UsbHostManager.onDeviceAttached/Detached` udržují runtime cache.
+
+---
+
+## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+
+Wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
+
+```bash
+nh distro list                          # seznam distro + stav
+nh distro status                        # alias list
+nh distro ps                            # aktivní session (ID, distro, vpn-ignored)
+nh distro kill <session_id> [--force]   # ukončit session
+nh distro remove <id> [--force]         # smazat rootfs (kali|parrot)
+nh distro backup [id]                   # záloha rootfs do Downloads (default kali)
+nh distro restore <soubor> [--force]    # obnova rootfs ze souboru v Downloads
+nh distro help                          # nápověda
+```
+
+**Bezpečnostní pojistka:** `kill`, `remove`, `restore` vyžadují `--force` (jinak 409 `confirmation_required`).
+
+**Z hostitele bez rootu:**
+```bash
+curl http://127.0.0.1:1337/distro/ps
+curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
+```
+
+**Endpoints** (`LocalApiServer.kt`): `GET /distro/list`, `GET /distro/ps`, `POST /distro/kill` (`session_id`+`force`), `POST /distro/remove` (`id`+`force`); `backup`/`restore` sdílejí existující `/rootfs/*`. Citlivé ops (`/distro/kill`, `/distro/remove`) jsou v `sensitiveEndpoints` — auth jen pro vzdálené.
+
+> **Fáze 2:** `install`, `progress`, `reset`, `login` (download+extract s progresem, spuštění shellu z hostitele).
+
+---
+
+## ⌨️ Premium Hacker Keyboard
+
+The application integrates an advanced, fully customizable, and responsive overlay keypad split into 5 tabs for maximum efficiency:
+1. **🎛️ Control**: Essential terminal controllers (`ESC`, `TAB`, `ENTER`, `DELETE`, `⌫`, `Shift+Tab`, and a system clipboard `PASTE` action).
+2. **🔣 Symbols**: Fast access to 30 of the most frequently used special terminal characters (`\`, `|`, `~`, `$`, `*`, etc.).
+3. **🧭 Navigation**: Navigational arrows, `Home`, `End`, `Page Up`, and `Page Down` (directly mapped to match guest zsh bindings).
+4. **⚡ Combos**: 19 prepackaged Ctrl combinations (`^C`, `^Z`, `^X`, `^S`, etc.) sent directly as ASCII control bytes.
+5. **🛠️ F-Keys**: Function keys F1 through F20 (including standard xterm mappings for higher-order keys F13–F20).
+
+---
+
+## 📈 Major Version 4.1 Changelog
+
+This release introduces UI modularity improvements and advanced resource monitoring metrics for both virtualization and networking components:
+
+### 1. Draggable & Minimized Session Drawer
+- **Clean CLI View:** Automatically hides the top navigation bar in CLI mode to maximize vertical terminal space. Added a floating corner hamburger button (`☰`) to open the session panel.
+- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast launcher for the external X11 desktop. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
+
+### 2. Live Resource & RAM Telemetry
+- **Total System RAM:** Displays real-time total and used system memory in the expanded drawer header (e.g. `[RAM: 3.4 GB / 8.0 GB]`).
+- **Chroot Session RSS:** Loops through session descendant processes inside `/proc` and aggregates their resident set size (`VmRSS` from `/proc/$pid/status`) to show per-session RAM footprints (e.g. `Session 1 (12.4 MB)`). Updates every 3 seconds when the drawer is open.
+- **VPN Core & AI footprint:** Shows separate real-time memory stats in the VPN Gateway card: native heap allocation size for the C++ AdGuard engine, and the ONNX session memory footprint for the AI Brain.
+
+---
+
+## 📈 Major Version 4.0 Changelog (NetHunter App Store v4)
+
+This release introduces the fully integrated **AI Brain Telemetry & Neural Classifier**, transforming the VPN into an intelligent, autonomous firewall capable of detecting and blocking advanced persistent threats (APTs) in real-time.
+
+### 1. Embedded AI Inference Engine (LightGBM ONNX)
+- **Live Packet Classification:** Connected the `AIBrain.kt` ONNX runtime to the live AdGuard JNI network flow. Extracted 14-dimensional features (size, delta-time, protocol, entropy, etc.) are fed into the neural network for every TCP/UDP session.
+- **Evasion-Hardened Detection:** The AI model is trained on a balanced synthetic dataset, specifically hardened against stealth evasion techniques (Low-and-Slow Scans, Stealthy HTTPS C2 Beacons, and DNS Tunneling Data Exfiltration).
+- **Zero Memory Leaks:** Implemented strict native JNI pointer garbage collection (`use` blocks for `OnnxTensor` and `OrtSession.Result`) to ensure the VPN runs endlessly without memory overflow during high-frequency packet interception.
+
+### 2. Conversational AI Network Agent
+- **ReAct Log Analysis:** Added `analyze_network` tool to the local `ai-agent.py`. The AI agent can now fetch, filter, and break down network telemetry directly from the host.
+- **Hacker Console Integration:** Execute `nh agent chat` to open a local AI Expert console or run `nh agent start` for background monitoring and automated system toasts upon critical anomaly detection.
+
+### 3. App-level Attribution & Premium Dashboard
+- **Process Traversal:** Socket-to-process tracker using BFS `/proc` traversal to attribute network flows to specific chroot binaries.
+- **Real-time Flow Visualizer:** Interactive scatter diagrams for entropy metrics and real-time active socket connection cards with immediate block actions.
+- **Threat Intelligence:** Resolved GeoIP lookups and integrated country flag emojis directly into the traffic logs.
+
+---
+
+## ⚡ Shizuku Integration — Privilege Escalation Bridge
+
+Shizuku umožňuje spouštět příkazy s vyššími právy (root/shell UID) přímo
+z PRoot terminálu, bez nutnosti rootovat zařízení.
+
+### Jak to funguje
+
+1. **Shizuku server** běží na pozadí s root/shell UID
+2. **Rish shell** (`/usr/local/bin/shizuku`) uvnitř PRootu se k němu připojuje
+3. Příkazy jdou přes `app_process` → Shizuku Binder → system_server
+
+### Services Panel v Terminálu
+
+V terminálovém topBaru (vedle distro názvu jako `🐉 KALI`) je tlačítko `▼`,
+které rozbalí services panel:
+
+```┌─────────────────────────────────────────────────────────┐
+│ [☰] [🏠]         🐉 KALI ▼       [touch] [🐚CLI|🖥GUI] │
+├─────────────────────────────────────────────────────────┤
+│ ⚡SHIZU ●  [code] CODE ○  🔥 PHOENIX ○  [▶ ALL] [↻]  │
+├─────────────────────────────────────────────────────────┤
+```
+
+- **⚡ SHIZU** — Shizuku server status a ovládání
+- **[code] CODE** — code-server (VS Code v prohlížeči, :8443)
+- **🔥 PHOENIX** — Phoenix OTLP exportér
+- **▶ ALL** — spustí všechny služby
+- **↻** — refresh statusů (automaticky každých 5s)
+
+### Status indikátory
+
+| Indikátor | Význam |
+|-----------|--------|
+| `●` zelená | Služba běží |
+| `○` šedá | Služba zastavena |
+| `su available` | Root přes `su` k dispozici |
+| `Shizuku APK ready` | Shizuku app nainstalována v systému |
+
+### Detail panelu
+
+Kliknutím na službu se rozbalí detail s akčními tlačítky:
+
+```
+│ ⚡ SHIZUKU SERVER ●  pid:12345  self                    │
+│                                      [⏹ STOP]          │
+│ [code] CODE-SERVER ●  :8443                             │
+│                    [⏹ STOP]              [🌐 OPEN]      │
+```
+
+### Spuštění Shizuku serveru
+
+Automatická strategie `startServer()`:
+
+1. **Už běží?** → return true
+2. **`su` + Shizuku APK?** → `su -c "libshizuku.so --apk=<apk>"` → server běží jako **root**
+3. **`su` bez Shizuku APK?** → raw `su -c` fallback pro příkazy
+4. **ADB?** → pokus o start přes ADB shell
+5. **Nic?** → tlačítko **⚙ SETUP** otevře dialog s instrukcemi
+
+### CLI v PRootu
+
+Automaticky nasazeno do `/usr/local/bin/shizuku`:
+
+```bash
+# Spuštění příkazu s vyššími právy
+shizuku -c "pm list packages"
+shizuku -c "settings put global airplane_mode 1"
+shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
+shizuku -c "svc wifi disable"
+shizuku -c "dumpsys battery set level 15"
+
+# Interaktivní shell
+shizuku
+```
+
+### Architektura
+
+| Komponenta | Cesta | Popis |
+|---|---|---|
+| Server binárka | `assets/shizuku/libshizuku.so` | PIE executable (native starter) |
+| ADB knihovna | `assets/shizuku/libadb.so` | Native ADB klient |
+| Rish script | `assets/shizuku/rish.sh` | Rish wrapper pro PRoot |
+| Rish dex | `assets/shizuku/rish_shizuku.dex` | Rish Java třídy |
+| Manager | `ShizukuManager.kt` | Server lifecycle, status, exec |
+| ProotManager | `ProotManager.kt` | Nasazení rish do guestu |
+
+### Podmínky
+
+- **Shizuku app** nainstalovaná (Play Store / F-Droid) + spuštěný server (root nebo ADB)
+- **Nebo root** (Magisk, `su`)
+- **Nebo ADB** (wireless debugging)
+
+---
+
+## 📂 Open-with & `~/share` (Termux-style)
+
+Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
+
+- **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
+- Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+
+> Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
+
+## 🖼️ Picture-in-Picture (PiP)
+
+- Manifest: `SYSTEM_ALERT_WINDOW` + `TerminalActivity` má `supportsPictureInPicture` / `resizeableActivity`.
+- Odejdeš z appky s běžící session → **auto PiP** (16:9), terminál běží v okně nad ostatními aplikacemi.
+- Při vstupu do PiP se schová veškerý chrome (topBar, panely, lišty, keypad, drawer); při návratu se obnoví uložená viditelnost.
+- Limitace Androidu: v PiP se terminál **renderuje, ale nejde do něj psát** (vstup jen v plné aktivitě).
+
+## 🪟 Plovoucí terminál (`nh float`)
+
+Terminál jako Messenger chat-head nad ostatními aplikacemi.
+
+- **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
+
+### Session režimy
+| Příkaz | Chování |
+|---|---|
+| `nh float` | **Nová** session aktivního distro v plovoucím okně |
+| `nh float here` | **Přesun** aktuální session do plovoucího okna (terminál se přepne na jinou/novou) |
+| `nh float close` | Zavře; vypůjčená session se **vrátí** do hlavního terminálu |
+
+- **API:** `POST /terminal/float` `{"mode":"new|here|close","session_id":...}`; bez oprávnění „Zobrazit přes ostatní aplikace" otevře systémové nastavení.
+- Při prvním použití Android vyzve k povolení overlay — `nh float` ho sám otevře, povol a spusť znovu.
+- `nh float here` používá `$NETHUNTER_SESSION_ID` (stejný mechanismus jako `nh vpn ignore`).
+
+## 📈 Version 4.4 Changelog (FLOAT-SHARE)
+
+Tento release přidává „Open with" / share do `~/share`, Picture-in-Picture režim terminálu a plovoucí terminálové okno (`nh float`):
+
+### 1. Open-with & `~/share` (Termux-style)
+- **`ShareReceiverActivity`** (exported, translucent) s filtry `ACTION_VIEW`/`ACTION_SEND`/`ACTION_SEND_MULTIPLE` pro `*/*` → appka viditelná v systémovém „Otevřít v aplikaci" i share sheetu.
+- Kopírování přijatých souborů do `filesDir/share/` (sanitizace jména, kolize `nazev (1).ext`), toast + otevření terminálu s `cd /root/share`.
+- `boot` skript binduje `$FILES_DIR/share → /root/share` (i non-termux docker) → guest vidí `~/share`.
+
+### 2. Picture-in-Picture (PiP)
+- Manifest `SYSTEM_ALERT_WINDOW` + `TerminalActivity` `supportsPictureInPicture`/`resizeableActivity`.
+- `onUserLeaveHint()` → auto-PiP 16:9 při běžící session; `onPictureInPictureModeChanged()` schová chrome a při návratu obnoví visibilitu.
+
+### 3. Plovoucí terminál (`FloatingTerminalService`)
+- Foreground service + `WindowManager` `TYPE_APPLICATION_OVERLAY` (focusable → IME funguje).
+- Rozbalené okno: titulková lišta (drag, ◐ průhlednost 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + `TerminalView` + rohová resize úchytka.
+- Minimalizováno: 56dp chat-head bublina (tap = obnovit, dlouhý stisk = zavřít); geometrie + alpha v `SharedPreferences` `float_terminal`.
+- Session režimy: `nh float` (nová session), `nh float here` (přesun aktuální), `nh float close` (vrátí vypůjčenou session). API: `POST /terminal/float`.
+
+---
+
+## 📈 Root Bridge Update Changelog (4.2-MITM-LOG-FIX, post-4.3)
+
+Tento update přidává **root bridge** (host Magisk su), opravuje USB attach, vyčišťuje build pipeline a přesouvá dokumentaci do assets:
+
+### 1. Root Bridge (`sudo`/`su` → host Magisk daemon)
+- `/usr/local/bin/su` + `/usr/local/bin/sudo` jsou symlinky na `su_wrapper` (původní Kali binary přejmenovány na `.orig`).
+- `su_wrapper.c` kompletně přepsán: detekuje invoked name, odebírá wrapper argv[0], řeší `su -c 'cmd'` i bare `sudo`/`su` → root shell, fallback `execvp(argv[1], ...)`.
+- `su_daemon.c` spisuje PID soubor a čistí ho; `startDaemon` dělá `pkill -f su_daemon` proti stale instancím, loguje do `su_daemon.log`.
+- **Dead bind fix:** `filesDir/ipc/` se vytvoří PŘED startem kontejneru → `-b $FILES_DIR/ipc:/run/host_ipc` je živý.
+
+### 2. ifconfig bez su (wlan0 + tun0)
+- `handleWifi` vrací i `ip`/`netmask`/`gateway`/`mac`; `network_ifconfig` v `nh` čte raw JSON `/wifi` + `/vpn` a zobrazuje `tun0` i při VPN STOPPED.
+
+### 3. ashell `-c <prikaz>`
+- POST na `http://127.0.0.1:1337/shell` (bearer token, allowlist, destruktivní vzory), vrací stdout/stderr + exit code.
+
+### 4. USB attach bez přerušení terminálu
+- Odstraněn intent-filter `USB_DEVICE_ATTACHED` z `MainActivity` (spouštěl ji na popredí a ubil session); dedikovaný `UsbAttachReceiver` zpracovává attach/detach na pozadí s `device_filter` (permission grant zůstává).
+
+### 5. Native build pipeline fix (binárky vždy v APK)
+- `mbuild build` spouštěl upload→build bez `build_native` → rsync `--delete` binárky sma zal → APK bez `su_daemon`/`su_wrapper`.
+- Fix: `pull_binaries()` v `mbuild` (binárky → lokální assets), rsync excludes v `modal_build.py` (`_NATIVE_ASSET_EXCLUDES`), `NATIVE_BINARIES` list. Postup pro nové native moduly je v AGENTS.md „Native build pipeline“.
+
+### 6. Dokumentace přesunuta do assets
+- `nethunter_docs.md` se generuje z `assets/nethunter_docs.md` (obnovovat asset + restart kontejneru místo rekompilace Kotlin zdroje).
+- MOTD + welcome profil dostávý sekce ROOT BRIDGE s `sudo id`, `su -c`, `ifconfig`.
+
+---
+
+## 📈 Version 4.2 Changelog
+
+This release fixes critical TLS MITM proxy issues, adds Root CA management, and introduces diagnostic CLI tools:
+
+### 1. TLS MITM Engine Fixes
+- **Fixed Client→Server Encryption:** Client plaintext is now correctly encrypted via `serverEngine.wrap()` before forwarding to the remote server. Previously, raw decrypted data was sent directly, breaking all MITM-proxied connections.
+- **Removed Redundant Unwrap Block:** Eliminated a duplicate `clientEngine.unwrap` + `writeToServer` block that contained a double-flip ByteBuffer bug, causing zero bytes to be written.
+- **Adaptive CPU Backoff:** `proxyLoop` now sleeps 1ms during active data transfer and 15ms when idle, reducing CPU usage dramatically (previously a constant 1ms busy-loop).
+
+### 2. Root CA Certificate Management
+- **New API Endpoint:** `GET /vpn/mitm/ca` returns the bundled MITM Root CA certificate in PEM format.
+- **New CLI Command:** `nh vpn mitm ca` fetches and displays the Root CA for easy export and installation.
+- **Installation Guide:** Documentation for installing the CA into Kali/PRoot trust store and Android system trust store.
+
+### 3. Diagnostic CLI Tools
+- **`nh log`:** Unified logcat viewer with level-based coloring (V=gray, D=blue, I=green, W=yellow, E/F=red bold), automatic keyword highlighting, and grep filtering.
+- **`/app/logs` API Endpoint:** New LocalApiServer endpoint serving raw logcat output for `nh log`.
+
+---
+
+## 📈 Major Version 3.1 Changelog
+
+This release stabilizes the native AdGuard JNI bridge layer, addressing security vulnerabilities, JNI contract mismatches, and memory management invariants:
+
+### 1. SSL/TLS Certificate Verification & Parity Restored
+- **Trust Store Integration:** Restored full X.509 chain verification inside `EventsAdapter` utilizing `CertificateFactory` and `TrustManagerFactory` backed by the default Android KeyStore / CA trust store. This closes a critical MITM vulnerability where invalid/self-signed certificates were accepted by default.
+- **JNI Contract Parity:** Refactored `CertificateVerificationEvent` to use raw DER byte arrays (`ByteArray?`) and added the missing `@JvmField var chain: List<ByteArray>?` field, along with getter methods expected by the native library to prevent class-loading/method lookup exceptions.
+- **Search Domain Bootstrap:** Restored local search domain suffix discovery via `ConnectivityManager` and `LinkProperties` parsing, registering wildcard suffixes (e.g. `*.local`) to prevent local network hostname leaks to public resolvers.
+
+### 2. Native Stack Lifecycle & Memory Safety
+- **Kernel File Descriptor Leak Guard:** Added validation checks in `NativeTcpIpStackImpl` constructor to prevent detaching the `ParcelFileDescriptor` using `pfd.detachFd()` when native `init()` fails, avoiding permanent file descriptor leaks.
+- **JNI Callback Exception Safety:** Wrapped all TCP and UDP callback dispatches in `NativeTcpIpStackImpl.Callbacks` inside `try-catch (e: Throwable)` blocks, catching `RejectedExecutionException` during shutdowns and completing requests with `REJECT` to prevent JNI process-level crashes.
+- **Teardown Thread-Safety:** Synchronized `DnsProxy.close()` to prevent double-free SEGFAULTs and guaranteed `nativePtr` resets to `0L` after deallocation.
+- **ABI Filters Guard:** Implemented `ndk.abiFilters` for `arm64-v8a` inside `defaultConfig` in Gradle configurations to prevent runtime loading crashes on non-arm64 devices.
+
+---
+
+## 📈 Major Version 3.0 Changelog (NetHunter App Store v3)
+
+This release implements secure peer-to-peer overlay capabilities, geo-proxy loop enhancements, and visual dashboard upgrades:
+
+### 1. Peer-to-Peer Mesh VPN
+- **Overlay Networking:** Added a virtual subnet (`10.9.0.0/24`) mapped to custom P2P interfaces.
+- **STUN Hole Punching:** Queries public STUN servers (`stun.l.google.com:19302`) dynamically to resolve WAN sockets and punches holes through CGNAT routers.
+- **ECDH Cryptography:** Secures communications between peers using AES-128-GCM, with keys derived on-the-fly via native Elliptic Curve Diffie-Hellman (ECDH) key agreements.
+- **Serverless Pairing:** Allows direct peer pairing by pasting simple connection strings containing Node IDs, names, public keys, and resolved WAN addresses.
+
+### 2. High-Performance SOCKS5 Proxy Loop (original)
+- **Interval Control:** Replaced unstable sleep-modulo logic with a volatile timestamp-tracking loop to guarantee exact rotation intervals.
+- **Interactive Geolocation Nodes:** Upgraded the "Worldwide Rotating Proxy" card to display country flags, resolved IP details, and segmented seg-selectors.
+- **Concurrent Ping Latency Checker:** Added a "PING ALL" diagnostics button, resolving all proxy nodes' latencies concurrently and displaying color-coded speed tags.
+
+### 3. Custom IP Proxy (v4.2+)
+- **Removed SOCKS5 Pool & Rotation:** Replaced 6 hardcoded SOCKS5 proxy nodes with rotation modes (Static/Random/Time-loop) with a single **custom IP:Port** field.
+- **Simplified Tunnel:** All TCP traffic can be forwarded directly to a user-specified endpoint (e.g. a personal VPS) via raw TCP tunnel — no SOCKS5 handshake, no rotation logic.
+- **Fallback to Direct:** Proxy is completely optional. When no custom IP is set, traffic goes direct. When proxy fails, it falls back to direct connection automatically.
+- **UI Cleanup:** Settings tab now shows a simple text input (`IP:Port`) instead of dropdowns for rotation mode, node selection, and interval slider.
+
+**Motivation:** The SOCKS5 rotation was overengineered for most use cases. Users who need a static proxy (their own VPS, a VPN gateway, etc.) just enter the IP:Port and all traffic tunnels through it. Everyone else gets direct connection — zero configuration needed.
+
+---
+
+## 📈 Version 4.3 Changelog
+
+This release adds Shizuku privilege escalation, the services dashboard, replaces SOCKS5 rotation with custom IP proxy, and adds various MITM stability fixes:
+
+### 1. Custom IP Proxy (replaces SOCKS5 rotation)
+- **Removed:** 6 hardcoded SOCKS5 proxies, 3 rotation modes (Static/Random/Time-loop), interval timer, latency checker
+- **Added:** Single text field for custom `IP:Port` — all TCP traffic tunnels directly to that endpoint
+- **Simplified Engine:** Removed SOCKS5 greeting/connect/response handshake from VpnNatEngine — replaced with raw TCP forward
+- **Graceful Fallback:** If custom proxy connection fails, traffic automatically falls back to direct
+- **Cleaner UI:** Proxy settings reduced from 3 dropdowns + slider to a single text input
+
+### 2. Shizuku + Services Dashboard
+- **Self-contained Shizuku server:** Bundled `libshizuku.so` native server binary + ADB pairing + rish shell
+- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku, code-server, and Phoenix
+- **`shizuku` CLI in PRoot:** Auto-deployed to `/usr/local/bin/shizuku` — `shizuku -c "pm list packages"`
+- **Start strategies:** Existing Shizuku server → `su -c` → ADB shell → interactive setup dialog
+- **ShizukuManager.kt:** New module for server lifecycle, status checks, and privileged `exec()`
+- **Permissions:** `moe.shizuku.manager.permission.API_V23` + `MANAGER` added to manifest
+
+### 3. MITM & Stability Fixes
+- (existing fixes from 4.2 — see below)
+
+---
+
+## 📈 Major Version 2.0 Changelog
+- **AdGuard7 JNI C++ VPN Engine Integration:** Built native AdGuard TCP/IP C++ stack (`libadguard-core.so` & `libadguard-dns.so`) with precise JNI structural mapping.
+- **High-Fidelity Telemetry:** Upgraded the VPN traffic tracker to draw Download/Upload charts on Canvas.
+- **Session-Specific SOCKS5 Proxy Bypass:** Traversing `/proc` via BFS to map socket inodes to sessions and toggle VPN ignore modes.
+- **Nano Document Editor:** Spawns `nano` safely via view/edit intents from outer storage managers.
+
+---
+
+## ⚙️ Technology Stack
+- **Kotlin & Jetpack Compose** for a modern, responsive UI.
+- **PRoot** for user-space chroot virtualization without root privileges.
+- **Termux Libraries** for low-latency terminal rendering.
+- **AdGuard NatLibs** for secure network diagnostic intercepting.
+- **OkHttp & Apache Commons Compress** for robust rootfs downloads and extraction.
+
+---
+
+## ☕ Support the Developer & Feedback
+
+If you find this project useful or want to support ongoing development, consider buying the developer a coffee:
+
+- **Buy me a coffee:** [https://revolut.me/tomaspetrpayme](https://revolut.me/tomaspetrpayme)
+- **Feedback & Support:** [zombiegirlcz@gmail.com](mailto:zombiegirlcz@gmail.com)
+- **GitHub Repository:** [https://github.com/zombiegirlcz/kali_core_emulator.git](https://github.com/zombiegirlcz/kali_core_emulator.git)

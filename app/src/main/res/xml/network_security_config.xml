@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    <domain-config>
+        <domain includeSubdomains="true">kali.org</domain>
+        <domain includeSubdomains="true">kali.download</domain>
+        <domain includeSubdomains="true">images.kali.org</domain>
+        <pin-set expiration="2027-12-31">
+            <pin digest="SHA-256">vxHMRAr73HgUyGzWLG8C4xtO/qsK9nkPG59jH3i/mqc=</pin>
+            <pin digest="SHA-256">xAu7m0o10HbvBkBpvcS7+PYtxxX1rdUN8FHEI2Kg0Fo=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+            <pin digest="SHA-256">mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=</pin>
+        </pin-set>
+    </domain-config>
+    <domain-config>
+        <domain includeSubdomains="true">parrot.sh</domain>
+        <domain includeSubdomains="true">deb.parrot.sh</domain>
+        <domain includeSubdomains="true">raw.githubusercontent.com</domain>
+        <pin-set expiration="2027-12-31">
+            <pin digest="SHA-256">lkI2NEknt/oq8INt5aiW7TriA18Z1mMNvvT6tjZjghs=</pin>
+            <pin digest="SHA-256">PaZDXCM44SEEkf5qy7PN/gi0Z1u+nhGbRcKHSZQxhmA=</pin>
+            <pin digest="SHA-256">nWN7PSep5XDQdge5zK24CnCRXHr3KvzhKEGxsdqCX9E=</pin>
+            <pin digest="SHA-256">fk6IOKit1ild5647BH06ujSIq5XbCgqlbYl6ANhhi88=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>
