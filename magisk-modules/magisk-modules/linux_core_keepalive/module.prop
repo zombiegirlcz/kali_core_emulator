@@ -1,6 +1,0 @@
-id=nethunter_keepalive
-name=NetHunter Keepalive
-version=v1.0
-versionCode=1
-author=zombiegirlcz
-description=Applies AOSP-level Doze/App-Standby/appops exemptions for com.linux_core (NetHunter AI Operator) so the process is not soft-killed early by lmkd/Doze while running background rootfs/Docker operations. Re-applies on every boot. Does NOT touch MIUI PowerKeeper - that layer needs a separate, device-verified step (see NOTES.md).
