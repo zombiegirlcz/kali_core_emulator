@@ -144,18 +144,16 @@ app/src/main/assets/certs/google_attestation_root.key
 # Usr tools generated binaries (nano/rsync/sed/rg, usb tools, static proot)
 # — zdroj pravdy je Volume (build_native); lokálně se stahuji přes
 # pull_full_assets. Necommitovat build artefakty.
-# VÝJIMKA (boot refactor fáze 1): repo-owned soubory přesunuté z assets/bin/:
-!app/src/main/ 
-!app/src/main/**
 !app/src/main/assets/**
 !app/src/main/assets/
 !app/src/main/assets/usr/**
-!app/src/main/assets/usr/bin/
 !app/src/main/assets/usr/bin/**
 !app/src/main/assets/usr/bin/terminalmap
 !app/src/main/assets/usr/bin/ifconfig
 !app/src/main/assets/usr/bin/zkill
 !app/src/main/assets/usr/bin/boot
+!app/src/main/assets/usr/lib/linux-x11
+!app/src/main/assets/usr/bin/linux-x11
 !tools/modal_build.py
 magisk-modules/*.zip
 !magisk-modules/*.sh
