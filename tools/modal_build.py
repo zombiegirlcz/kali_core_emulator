@@ -479,7 +479,8 @@ def _build_linux_x11(src_dir):
     print(f"  ✓ CMake build OK")
 
     # Najít výstupní binárku — lorie obvykle produkuje 'lorie'/'Xlorie', Xorg 'Xserver'
-    candidates = ["lorie", "Xlorie", "linux-x11", "xserver", "Xserver"]
+    # Najít výstupní binárku — lorie obvykle produkuje 'libXlorie.so', případně 'lorie'/'Xlorie'
+    candidates = ["libXlorie.so", "lorie", "Xlorie", "linux-x11", "xserver", "Xserver"]
     search_dirs = [build_dir] + [os.path.join(build_dir, d) for d in ("xserver", "X11", "src", "bin")]
     built_bin = None
     for cand in candidates:
@@ -496,10 +497,9 @@ def _build_linux_x11(src_dir):
                 if f in ("makekeys",):
                     continue
                 fp = os.path.join(root, f)
-                if os.access(fp, os.X_OK) and os.path.getsize(fp) > 50000:
-                    if not f.endswith((".so", ".a", ".o", ".cmake", ".txt", ".json", ".ninja", ".ninja_log", ".ninja_deps")):
-                        built_bin = fp
-                        break
+                if os.path.isfile(fp) and fp.endswith(".so") and os.path.getsize(fp) > 50000:
+                    built_bin = fp
+                    break
             if built_bin:
                 break
 
