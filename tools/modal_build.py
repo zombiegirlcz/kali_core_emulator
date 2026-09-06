@@ -493,7 +493,7 @@ def _build_linux_x11(src_dir):
                 fp = os.path.join(root, f)
                 if os.access(fp, os.X_OK) and os.path.getsize(fp) > 10000:
                     # skip knihovny (.so, .a)
-                    if not f.endswith(('.so', '.a', '.o', '.cmake', '.txt', '.json', '.ninja', '.ninja_log', '.ninja_deps')):
+                    if not f.endswith(('.so', '.a', '.o', '.cmake', '.txt', '.json', '.ninja', '.ninja_log', '.ninja_deps')) and f not in ('makekeys',):
                         built_bin = fp
                         break
             if built_bin:
