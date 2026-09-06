@@ -491,7 +491,6 @@ def _build_linux_x11(src_dir):
         if built_bin:
             break
     if not built_bin:
-        # Rekurzivní fallback: hledej spustitelný soubor > 50KB, přeskoč utility
         for root, _dirs, files in os.walk(build_dir):
             for f in files:
                 if f in ("makekeys",):
