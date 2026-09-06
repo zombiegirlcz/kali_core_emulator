@@ -393,12 +393,6 @@ fun MainScreen() {
     var remoteRootfsEntries by remember { mutableStateOf<List<RemoteDistroScript>>(emptyList()) }
     var isLoadingRemoteCatalog by remember { mutableStateOf(false) }
     var remoteCatalogError by remember { mutableStateOf<String?>(null) }
-    var isPullingRemote by remember { mutableStateOf(false) }
-    var remotePullProgress by remember { mutableStateOf(0) }
-    var remotePullStatus by remember { mutableStateOf("") }
-    var remotePullTarget by remember { mutableStateOf<RemoteDistroScript?>(null) }
-    var latestCommitMessage by remember { mutableStateOf<String?>(null) }
-    var latestCommitDate by remember { mutableStateOf<String?>(null) }
 
     var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
     var currentTab by remember { mutableStateOf("home") }
@@ -428,15 +422,12 @@ fun MainScreen() {
                     isDockerMode = true
                 }
                 // Fetch latest distro scripts from zombiegirlcz/ROOTFS-for-proot
-                if (latestCommitMessage == null && !isLoadingRemoteCatalog) {
+                if (remoteRootfsEntries.isEmpty() && !isLoadingRemoteCatalog && remoteCatalogError == null) {
                     isLoadingRemoteCatalog = true
-                    remoteCatalogError = null
                     scope.launch {
                         try {
                             val entries = RemoteRootfsCatalog.fetchDistroScripts(context).first()
                             remoteRootfsEntries = entries
-                            latestCommitMessage = entries.firstOrNull()?.let { "${it.distroName} (${it.commitSha.take(7)})" }
-                            latestCommitDate = entries.firstOrNull()?.commitSha?.take(7)
                         } catch (e: Exception) {
                             remoteCatalogError = e.message ?: "GitHub fetch failed"
                         } finally {
@@ -1118,75 +1109,26 @@ fun MainScreen() {
                                     if (allRemote.isNotEmpty()) {
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
                                             allRemote.forEach { entry ->
-                                                val isPullingThis = isPullingRemote && remotePullTarget?.scriptName == entry.scriptName
                                                 val isPulled = File(context.filesDir, "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}").exists()
                                                 Row(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(vertical = 2.dp)
-                                                        .clip(RoundedCornerShape(8.dp))
-                                                        .background(if (isPulled) Color(0x2600FF66) else Color(0xFF0D0E12))
-                                                        .border(
-                                                            1.dp,
-                                                            when {
-                                                                isPulled -> Color(0xFF00FF66)
-                                                                isPullingThis -> Color(0xFF00FF41)
-                                                                else -> Color(0xFF1E2026)
-                                                            },
-                                                            RoundedCornerShape(8.dp)
-                                                        )
-                                                        .clickable(enabled = !isPullingRemote && !isPulled) {
-                                                            downloadJob?.cancel()
-                                                            downloadJob = scope.launch {
-                                                                isPullingRemote = true
-                                                                remotePullTarget = entry
-                                                                remotePullProgress = 0
-                                                                remotePullStatus = "Pulling ${entry.distroName}…"
-                                                                try {
-                                                                    RootfsManager.pullRootfsFromUrl(context, entry.tarballUrl).collect { (progress, status) ->
-                                                                        remotePullProgress = progress
-                                                                        remotePullStatus = status
-                                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                                            val rootDir = File(status)
-                                                                            if (entry.bootstrapScript.isNotEmpty()) {
-                                                                                val bootstrapFile = File(rootDir, "bootstrap.sh")
-                                                                                if (!bootstrapFile.exists()) {
-                                                                                    bootstrapFile.writeText(entry.bootstrapScript)
-                                                                                    bootstrapFile.setExecutable(true, false)
-                                                                                }
-                                                                            }
-                                                                            val entrypointFile = File(rootDir, "root/entrypoint.sh")
-                                                                            if (!entrypointFile.exists()) {
-                                                                                entrypointFile.parentFile?.mkdirs()
-                                                                                entrypointFile.writeText("#!/bin/sh\nexec /bin/bash --login\n")
-                                                                                entrypointFile.setExecutable(true, false)
-                                                                            }
-                                                                            File(rootDir, ".docker_image").writeText(
-                                                                                "image=${entry.scriptName}\n" +
-                                                                                "pulled_at=${System.currentTimeMillis()}\n" +
-                                                                                "source=remote-script\n" +
-                                                                                "script=${entry.scriptName}\n"
-                                                                            )
-                                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
-                                                                            isDockerMode = true
-                                                                            Toast.makeText(context, "${entry.distroName} pulled! Boot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
-                                                                        }
-                                                                    }
-                                                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                                                    throw e
-                                                                } catch (e: Exception) {
-                                                                    remotePullProgress = 0
-                                                                    remotePullStatus = ""
-                                                                    Toast.makeText(context, "Pull failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                                                } finally {
-                                                                    isPullingRemote = false
-                                                                    remotePullTarget = null
-                                                                    remoteRootfsEntries = RemoteRootfsCatalog.fetchDistroScriptsSync(context)
-                                                                }
+                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .background(Color(0xFF0D0E12))
+                                                        .border(1.dp, Color(0xFF1E2026), RoundedCornerShape(6.dp))
+                                                        .clickable {
+                                                            val scriptUrl = "https://raw.githubusercontent.com/zombiegirlcz/ROOTFS-for-proot/main/${entry.scriptName}"
+                                                            val command = "curl -sSL \"$scriptUrl\" -o /tmp/preset.sh && bash /tmp/preset.sh && boot docker ${entry.slug}"
+                                                            val intent = Intent(context, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
+                                                                putExtra("rootfsDirName", "nh/distro/docker/${entry.slug}")
+                                                                putExtra("mountStorage", false)
+                                                                putExtra("isDockerImage", true)
+                                                                putExtra("customCommand", command)
                                                             }
+                                                            context.startActivity(intent)
                                                         }
                                                         .padding(10.dp),
                                                     verticalAlignment = Alignment.CenterVertically
@@ -1211,21 +1153,13 @@ fun MainScreen() {
                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                                         )
                                                     }
-                                                    if (isPullingThis) {
-                                                        CircularProgressIndicator(
-                                                            modifier = Modifier.size(16.dp),
-                                                            strokeWidth = 2.dp,
-                                                            color = Color(0xFF00FF41)
-                                                        )
-                                                    } else if (!isPulled) {
-                                                        Text(
-                                                            text = "PULL",
-                                                            fontSize = 9.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = Color(0xFF00FF41),
-                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                                        )
-                                                    }
+                                                    Text(
+                                                        text = if (isPulled) "BOOT" else "RUN",
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isPulled) Color(0xFF00FF41) else Color(0xFF00FF41),
+                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                    )
                                                 }
                                             }
                                         }

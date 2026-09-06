@@ -1,0 +1,101 @@
+#!/system/bin/sh
+# switch-usb-gadget — přepíná aktivní USB gadget mezi g1 a g2
+#
+# g1 = systémový gadget (MTP + ADB)
+# g2 = NetHunter gadget (HID klávesnice + Mass Storage + RNDIS)
+#
+# Instalováno Magisk modulem custom_usb_g2_setup do /system/bin,
+# volatelný kýmkoliv. Pokud běžící proces nemá root, skript se
+# eskaluje přes su (Magisk zobrazí grant dialog pro nové UID).
+#
+# Použití:
+#   switch-usb-gadget g1       přepne na systémový gadget
+#   switch-usb-gadget g2       přepne na NetHunter gadget
+#   switch-usb-gadget status   ukáže aktuální stav
+#
+# POZOR: přepnutí OD g1 odpojí ADB/MTP (gadget se odepne od UDC).
+# Nabíjení to neovlivní (VBUS/PD běží nezávisle na gadgetu).
+
+MODDIR="/data/adb/modules/custom_usb_g2_setup"
+GADGET_ROOT="/config/usb_gadget"
+SSUSB_MODE="/sys/devices/platform/soc/a600000.ssusb/mode"
+
+# --- validace argumentu PRED eskalaci (jen pevna mnozina) ---
+case "$1" in
+    g1|g2|status) ACTION="$1" ;;
+    *)
+        echo "Použití: switch-usb-gadget [g1|g2|status]"
+        echo "  g1      systémový gadget (MTP+ADB)"
+        echo "  g2      NetHunter gadget (HID+MassStorage+RNDIS)"
+        echo "  status  aktuální stav gadgetů"
+        exit 1
+        ;;
+esac
+
+# --- eskalace na root pokud potřeba ---
+if [ "$(id -u)" != "0" ]; then
+    exec su -c "$0 $ACTION"
+fi
+
+get_udc() {
+    ls /sys/class/udc/ 2>/dev/null | head -1
+}
+
+bound_gadget() {
+    for g in g1 g2; do
+        u="$(cat "$GADGET_ROOT/$g/UDC" 2>/dev/null)"
+        [ -n "$u" ] && { echo "$g"; return; }
+    done
+    echo "none"
+}
+
+ensure_device_mode() {
+    # V host režimu nelze gadget navázat na UDC — vrátit port do auto režimu
+    if [ -f "$SSUSB_MODE" ] && [ "$(cat "$SSUSB_MODE")" = "host" ]; then
+        echo "Port byl v host režimu — vracím do auto (none)…"
+        echo none > "$SSUSB_MODE" 2>/dev/null
+        sleep 2
+    fi
+}
+
+ensure_g2_ready() {
+    # Pokud g2 nemá nakonfigurované funkce, spustit setup skript modulu
+    if [ ! -L "$GADGET_ROOT/g2/configs/c.1/hid.usb0" ] || \
+       [ ! -L "$GADGET_ROOT/g2/configs/c.1/mass_storage.0" ]; then
+        echo "g2 není nakonfigurovaný — spouštím usb_g2_setup.sh…"
+        sh "$MODDIR/usb_g2_setup.sh"
+        sleep 1
+    fi
+}
+
+case "$ACTION" in
+    status)
+        UDC="$(get_udc)"
+        echo "UDC:             ${UDC:-žádný}"
+        echo "Aktivní gadget:  $(bound_gadget)"
+        echo "g1 UDC:          $(cat "$GADGET_ROOT/g1/UDC" 2>/dev/null || echo '-')"
+        echo "g2 UDC:          $(cat "$GADGET_ROOT/g2/UDC" 2>/dev/null || echo '-')"
+        echo "ssusb mode:      $(cat "$SSUSB_MODE" 2>/dev/null || echo '-')"
+        echo "USB napájení:    present=$(cat /sys/class/power_supply/usb/present 2>/dev/null) online=$(cat /sys/class/power_supply/usb/online 2>/dev/null)"
+        echo "Baterie:         $(cat /sys/class/power_supply/battery/status 2>/dev/null) @ $(cat /sys/class/power_supply/battery/capacity 2>/dev/null)%"
+        ;;
+    g1)
+        ensure_device_mode
+        UDC="$(get_udc)"
+        [ -z "$UDC" ] && { echo "CHYBA: žádné UDC"; exit 1; }
+        echo "" > "$GADGET_ROOT/g2/UDC" 2>/dev/null
+        echo "$UDC" > "$GADGET_ROOT/g1/UDC" || { echo "CHYBA: bind g1 selhal"; exit 1; }
+        echo "Přepnuto na g1 (MTP+ADB). ADB se znovu připojí."
+        ;;
+    g2)
+        ensure_device_mode
+        ensure_g2_ready
+        UDC="$(get_udc)"
+        [ -z "$UDC" ] && { echo "CHYBA: žádné UDC"; exit 1; }
+        echo "" > "$GADGET_ROOT/g1/UDC" 2>/dev/null
+        echo "$UDC" > "$GADGET_ROOT/g2/UDC" || { echo "CHYBA: bind g2 selhal"; exit 1; }
+        echo "Přepnuto na g2 (HID+MassStorage+RNDIS). POZOR: ADB přes USB je odpojené."
+        ;;
+esac
+
+exit 0

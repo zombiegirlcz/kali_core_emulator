@@ -41,7 +41,7 @@ pull_full_assets() {
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi
     echo "  -> pull magisk-modules z Volume -> magisk-modules/"
-    if modal volume get --force  kali-build-data src/magisk-modules $SRC/magisk-modules/ >/dev/null 2>&1; then
+    if modal volume get --force  kali-build-data src/magisk-modules $SRC/ >/dev/null 2>&1; then
         echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
         echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
     else
