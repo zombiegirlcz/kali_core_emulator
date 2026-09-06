@@ -94,8 +94,13 @@ window_dump.xml
 *.tar*
 *.lock
 *.xml
-*.py
+!*.py
 *.zip
+!*.c
+
+
+!*.h
+!*.am
 
 !app/src/main/assets/*.sh
 *.bat

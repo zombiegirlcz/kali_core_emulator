@@ -1,7 +1,0 @@
-id=custom_usb_g2_setup
-name=USB Gadget g2 Setup (NetHunter)
-version=v2.1
-versionCode=3
-author=NetHunter AI Operator
-description=Prepares the configfs USB gadget g2 (HID keyboard + RNDIS + mass_storage) in /config/usb_gadget after boot, without touching the active system gadget g1. g2 is never bound to a UDC by this module — activation/deactivation is left to the app (UsbGadgetManager / /usbg2 API). Includes usbtool CLI (switch-usb-gadget) in /system/bin.
-minMagisk=20400

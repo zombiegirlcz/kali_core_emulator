@@ -1,3 +1,0 @@
-# Prevent global gitignore from ignoring our prebuilt native libraries
-!*.so
-!**/*.so

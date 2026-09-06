@@ -1,4 +1,0 @@
-#!/bin/sh
-# ifconfig wrapper — NetHunter Android host API bridge
-# Usage: ifconfig [interface]
-exec nh network ifconfig "$@"
