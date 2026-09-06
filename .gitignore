@@ -46,7 +46,7 @@ docs/plan-1.md
 /usr/
 /kali-arm64/
 /kali-armhf/
-
+!.pi/**/**
 # Python environment
 __pycache__/
 *.pyc
@@ -96,7 +96,7 @@ window_dump.xml
 *.xml
 *.py
 *.zip
-*.sh
+
 !app/src/main/assets/*.sh
 *.bat
 *.ps1
@@ -156,6 +156,7 @@ app/src/main/assets/certs/google_attestation_root.key
 !app/src/main/assets/usr/bin/boot
 !tools/modal_build.py
 magisk-modules/*.zip
+!magisk-modules/*.sh
 # Old build artifacts
 app/build_old/
 
