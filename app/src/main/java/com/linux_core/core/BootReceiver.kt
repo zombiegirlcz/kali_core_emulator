@@ -10,9 +10,7 @@ import android.util.Log
  * update) so the PRoot guest + cron automation keep running without the user
  * having to open the app.
  *
- * Requires RECEIVE_BOOT_COMPLETED. Controlled by the "boot_autostart" pref
- * (default ON, toggle in MainActivity). The actual boot work runs on a
- * background thread inside BackgroundBoot.
+ * Also schedules the midnight remote distro catalog refresh.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -23,6 +21,9 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         Log.i(TAG, "Received $action")
+
+        // Schedule midnight refresh of remote distro scripts
+        RemoteRootfsSyncReceiver.scheduleDaily(context)
 
         val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("boot_autostart", true)) {
