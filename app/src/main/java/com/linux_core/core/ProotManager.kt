@@ -3,7 +3,9 @@ package com.linux_core.core
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.InputStream
 import java.nio.file.Files
+import java.security.MessageDigest
 
 class ProotConfig(
     val command: Array<String>,
@@ -213,18 +215,8 @@ object ProotManager {
 
         for (name in names) {
             val target = File(targetDir, name)
-            // Už existuje (deploynuto nebo ručně umístěno) — přeskoč, nepřepisuj.
-            if (target.exists() && target.length() > 0L) {
-                if (executable) target.setExecutable(true, false)
-                continue
-            }
             try {
-                context.assets.open("$assetDir/$name").use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                if (executable) target.setExecutable(true, false)
-                target.setReadable(true, false)
-                Log.i(TAG, "Deployed host tool $assetDir/$name (${target.length()} B)")
+                deployIfChanged(context, "$assetDir/$name", target, executable)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to deploy host tool $assetDir/$name: ${e.message}")
             }
@@ -232,6 +224,47 @@ object ProotManager {
         if (version.isNotEmpty()) {
             File(targetDir, ".version").writeText(version)
         }
+    }
+
+    private fun assetMd5(context: Context, assetPath: String): String {
+        val md = MessageDigest.getInstance("MD5")
+        context.assets.open(assetPath).use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } >= 0) {
+                md.update(buffer, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Deploy asset only if its hash changed (skip overwrite when identical).
+     * Sidecar file `<target>.md5` stores last deployed hash.
+     */
+    private fun deployIfChanged(
+        context: Context,
+        assetPath: String,
+        target: File,
+        executable: Boolean = false
+    ) {
+        val newHash = assetMd5(context, assetPath)
+        val hashFile = File(target.absolutePath + ".md5")
+        val currentHash = if (hashFile.exists()) hashFile.readText().trim() else ""
+
+        if (currentHash == newHash && target.exists() && target.length() > 0L) {
+            Log.i(TAG, "Skip $target (hash unchanged)")
+            return
+        }
+
+        target.delete()
+        context.assets.open(assetPath).use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        if (executable) target.setExecutable(true, false)
+        target.setReadable(true, false)
+        hashFile.writeText(newHash)
+        Log.i(TAG, "Deployed $target ($assetPath, md5=$newHash, ${target.length()} B)")
     }
 
     /**
@@ -902,19 +935,13 @@ object ProotManager {
         }
 
         // Deploy linux-x11 X server binary to guest usr/lib
-        val linuxX11Guest = File(rootfsDir, "usr/lib/linux-x11")
-        try {
-            context.assets.open("usr/bin/linux-x11").use { input ->
-                linuxX11Guest.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-            linuxX11Guest.setExecutable(true, false)
-            linuxX11Guest.setReadable(true, false)
-            Log.i("ProotManager", "Deployed linux-x11 X server to guest usr/lib (${linuxX11Guest.length()} B)")
-        } catch (e: Exception) {
-            Log.e("ProotManager", "Failed to deploy linux-x11 to guest usr/lib: ${e.message}")
-        }
+        // Force overwrite: assets may contain updated arch (e.g. x86 -> arm64).
+        deployIfChanged(
+            context,
+            "usr/bin/linux-x11",
+            File(rootfsDir, "usr/lib/linux-x11"),
+            executable = true
+        )
 
         // Initialize USB bridge: create socket path INSIDE rootfs tmp
         // so it's visible from PRoot as /tmp/usb_bridge.sock

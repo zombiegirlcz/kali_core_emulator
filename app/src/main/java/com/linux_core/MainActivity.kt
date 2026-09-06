@@ -812,7 +812,8 @@ fun MainScreen() {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(16.dp),
+                                    .padding(16.dp)
+                                    .verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 // Header + close
@@ -1063,184 +1064,184 @@ fun MainScreen() {
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                     )
                                 }
-                            }
-                        }
-                    }
-                }
 
-                // ── Daily distro scripts from zombiegirlcz/ROOTFS-for-proot ──
-                if (remoteRootfsEntries.isNotEmpty() || remoteCatalogError != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 4.dp),
-                        color = Color(0x3300FF41)
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudDownload,
-                            contentDescription = "Remote distros",
-                            tint = Color(0xFF00FF41),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "DAILY DISTROS",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF00FF41),
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        )
-                        if (isLoadingRemoteCatalog) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = Color(0xFF00FF41)
-                            )
-                        }
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            text = "${remoteRootfsEntries.size} scripts",
-                            fontSize = 9.sp,
-                            color = Color.Gray,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        )
-                    }
-                    if (remoteCatalogError != null) {
-                        Text(
-                            text = "⚠ ${remoteCatalogError}",
-                            fontSize = 9.sp,
-                            color = Color(0xFFFFAA33),
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                        )
-                    }
-                    val allRemote = remoteRootfsEntries
-                    if (allRemote.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            allRemote.forEach { entry ->
-                                val isPullingThis = isPullingRemote && remotePullTarget?.scriptName == entry.scriptName
-                                val isPulled = File(context.filesDir, "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}").exists()
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isPulled) Color(0x2600FF66) else Color(0xFF0D0E12))
-                                        .border(
-                                            1.dp,
-                                            when {
-                                                isPulled -> Color(0xFF00FF66)
-                                                isPullingThis -> Color(0xFF00FF41)
-                                                else -> Color(0xFF1E2026)
-                                            },
-                                            RoundedCornerShape(8.dp)
-                                        )
-                                        .clickable(enabled = !isPullingRemote && !isPulled) {
-                                            downloadJob?.cancel()
-                                            downloadJob = scope.launch {
-                                                isPullingRemote = true
-                                                remotePullTarget = entry
-                                                remotePullProgress = 0
-                                                remotePullStatus = "Pulling ${entry.distroName}…"
-                                                try {
-                                                    RootfsManager.pullRootfsFromUrl(context, entry.tarballUrl).collect { (progress, status) ->
-                                                        remotePullProgress = progress
-                                                        remotePullStatus = status
-                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
-                                                            val rootDir = File(status)
-                                                            if (entry.bootstrapScript.isNotEmpty()) {
-                                                                val bootstrapFile = File(rootDir, "bootstrap.sh")
-                                                                if (!bootstrapFile.exists()) {
-                                                                    bootstrapFile.writeText(entry.bootstrapScript)
-                                                                    bootstrapFile.setExecutable(true, false)
-                                                                }
-                                                            }
-                                                            val entrypointFile = File(rootDir, "root/entrypoint.sh")
-                                                            if (!entrypointFile.exists()) {
-                                                                entrypointFile.parentFile?.mkdirs()
-                                                                entrypointFile.writeText("#!/bin/sh\nexec /bin/bash --login\n")
-                                                                entrypointFile.setExecutable(true, false)
-                                                            }
-                                                            File(rootDir, ".docker_image").writeText(
-                                                                "image=${entry.scriptName}\n" +
-                                                                "pulled_at=${System.currentTimeMillis()}\n" +
-                                                                "source=remote-script\n" +
-                                                                "script=${entry.scriptName}\n"
-                                                            )
-                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
-                                                            isDockerMode = true
-                                                            Toast.makeText(context, "${entry.distroName} pulled! Boot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
-                                                        }
-                                                    }
-                                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                                    throw e
-                                                } catch (e: Exception) {
-                                                    remotePullProgress = 0
-                                                    remotePullStatus = ""
-                                                    Toast.makeText(context, "Pull failed: ${e.message}", Toast.LENGTH_LONG).show()
-                                                } finally {
-                                                    isPullingRemote = false
-                                                    remotePullTarget = null
-                                                    remoteRootfsEntries = RemoteRootfsCatalog.fetchDistroScriptsSync(context)
-                                                }
-                                            }
-                                        }
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (isPulled) "\u2713" else "\u25CB",
-                                        color = if (isPulled) Color(0xFF00FF66) else Color.Gray,
-                                        fontSize = 12.sp
+                                // ── Daily distro scripts from zombiegirlcz/ROOTFS-for-proot ──
+                                if (remoteRootfsEntries.isNotEmpty() || remoteCatalogError != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = Color(0x3300FF41)
                                     )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(bottom = 4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudDownload,
+                                            contentDescription = "Remote distros",
+                                            tint = Color(0xFF00FF41),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = entry.distroName,
+                                            text = "DAILY DISTROS",
                                             fontSize = 11.sp,
-                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF00FF41),
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                         )
+                                        if (isLoadingRemoteCatalog) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(14.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Color(0xFF00FF41)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.weight(1f))
                                         Text(
-                                            text = "${entry.distroComment.ifEmpty { entry.scriptName }} · arch: ${entry.sizeHint}",
+                                            text = "${remoteRootfsEntries.size} scripts",
                                             fontSize = 9.sp,
                                             color = Color.Gray,
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                         )
                                     }
-                                    if (isPullingThis) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = Color(0xFF00FF41)
-                                        )
-                                    } else if (!isPulled) {
+                                    if (remoteCatalogError != null) {
                                         Text(
-                                            text = "PULL",
+                                            text = "⚠ ${remoteCatalogError}",
                                             fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF00FF41),
+                                            color = Color(0xFFFFAA33),
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                    val allRemote = remoteRootfsEntries
+                                    if (allRemote.isNotEmpty()) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            allRemote.forEach { entry ->
+                                                val isPullingThis = isPullingRemote && remotePullTarget?.scriptName == entry.scriptName
+                                                val isPulled = File(context.filesDir, "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}").exists()
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(vertical = 2.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .background(if (isPulled) Color(0x2600FF66) else Color(0xFF0D0E12))
+                                                        .border(
+                                                            1.dp,
+                                                            when {
+                                                                isPulled -> Color(0xFF00FF66)
+                                                                isPullingThis -> Color(0xFF00FF41)
+                                                                else -> Color(0xFF1E2026)
+                                                            },
+                                                            RoundedCornerShape(8.dp)
+                                                        )
+                                                        .clickable(enabled = !isPullingRemote && !isPulled) {
+                                                            downloadJob?.cancel()
+                                                            downloadJob = scope.launch {
+                                                                isPullingRemote = true
+                                                                remotePullTarget = entry
+                                                                remotePullProgress = 0
+                                                                remotePullStatus = "Pulling ${entry.distroName}…"
+                                                                try {
+                                                                    RootfsManager.pullRootfsFromUrl(context, entry.tarballUrl).collect { (progress, status) ->
+                                                                        remotePullProgress = progress
+                                                                        remotePullStatus = status
+                                                                        if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                            val rootDir = File(status)
+                                                                            if (entry.bootstrapScript.isNotEmpty()) {
+                                                                                val bootstrapFile = File(rootDir, "bootstrap.sh")
+                                                                                if (!bootstrapFile.exists()) {
+                                                                                    bootstrapFile.writeText(entry.bootstrapScript)
+                                                                                    bootstrapFile.setExecutable(true, false)
+                                                                                }
+                                                                            }
+                                                                            val entrypointFile = File(rootDir, "root/entrypoint.sh")
+                                                                            if (!entrypointFile.exists()) {
+                                                                                entrypointFile.parentFile?.mkdirs()
+                                                                                entrypointFile.writeText("#!/bin/sh\nexec /bin/bash --login\n")
+                                                                                entrypointFile.setExecutable(true, false)
+                                                                            }
+                                                                            File(rootDir, ".docker_image").writeText(
+                                                                                "image=${entry.scriptName}\n" +
+                                                                                "pulled_at=${System.currentTimeMillis()}\n" +
+                                                                                "source=remote-script\n" +
+                                                                                "script=${entry.scriptName}\n"
+                                                                            )
+                                                                            selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                                            isDockerMode = true
+                                                                            Toast.makeText(context, "${entry.distroName} pulled! Boot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                                        }
+                                                                    }
+                                                                } catch (e: kotlinx.coroutines.CancellationException) {
+                                                                    throw e
+                                                                } catch (e: Exception) {
+                                                                    remotePullProgress = 0
+                                                                    remotePullStatus = ""
+                                                                    Toast.makeText(context, "Pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                                } finally {
+                                                                    isPullingRemote = false
+                                                                    remotePullTarget = null
+                                                                    remoteRootfsEntries = RemoteRootfsCatalog.fetchDistroScriptsSync(context)
+                                                                }
+                                                            }
+                                                        }
+                                                        .padding(10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = if (isPulled) "\u2713" else "\u25CB",
+                                                        color = if (isPulled) Color(0xFF00FF66) else Color.Gray,
+                                                        fontSize = 12.sp
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = entry.distroName,
+                                                            fontSize = 11.sp,
+                                                            color = Color.White,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                        )
+                                                        Text(
+                                                            text = "${entry.distroComment.ifEmpty { entry.scriptName }} · arch: ${entry.sizeHint}",
+                                                            fontSize = 9.sp,
+                                                            color = Color.Gray,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                        )
+                                                    }
+                                                    if (isPullingThis) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(16.dp),
+                                                            strokeWidth = 2.dp,
+                                                            color = Color(0xFF00FF41)
+                                                        )
+                                                    } else if (!isPulled) {
+                                                        Text(
+                                                            text = "PULL",
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color(0xFF00FF41),
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (allRemote.isEmpty() && !isLoadingRemoteCatalog) {
+                                        Text(
+                                            text = "No distro scripts available yet.",
+                                            fontSize = 10.sp,
+                                            color = Color.Gray,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            modifier = Modifier.padding(vertical = 4.dp)
                                         )
                                     }
                                 }
                             }
                         }
-                    }
-                    if (allRemote.isEmpty() && !isLoadingRemoteCatalog) {
-                        Text(
-                            text = "No distro scripts available yet.",
-                            fontSize = 10.sp,
-                            color = Color.Gray,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
                     }
                 }
 
