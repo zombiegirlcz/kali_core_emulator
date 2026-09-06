@@ -121,27 +121,27 @@ fun VpnDnsTab() {
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Text(
-                                            text = "$count requests",
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = Color(0xFF00E5FF)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    LinearProgressIndicator(
-                                        progress = { progress },
-                                        color = Color(0xFF00FF41),
-                                        trackColor = Color(0x11FFFFFF),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(4.dp)
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
-                                }
+                                    Text(
+                                        text = "$count requests",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Color(0xFF00E5FF)
+                                    )
+                            }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    color = Color(0xFF00FF41),
+                                    trackColor = Color(0x11FFFFFF),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                )
+                            }
                             }
                         }
                     }
@@ -220,35 +220,33 @@ fun VpnDnsTab() {
                                 .fillMaxWidth()
                                 .heightIn(max = 140.dp)
                         ) {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(blocklistRules) { rule ->
-                                    Row(
+                            blocklistRules.forEach { rule ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0x11FFFFFF), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = rule,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Color.LightGray
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete Rule",
+                                        tint = Color(0xFFFF3333),
                                         modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0x11FFFFFF), RoundedCornerShape(4.dp))
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = rule,
-                                            fontSize = 11.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = Color.LightGray
-                                        )
-                                        Icon(
-                                            imageVector = Icons.Default.Delete,
-                                            contentDescription = "Delete Rule",
-                                            tint = Color(0xFFFF3333),
-                                            modifier = Modifier
-                                                .size(16.dp)
-                                                .clickable {
-                                                    VpnLogManager.removeBlocklistRule(context, rule)
-                                                    blocklistRules = VpnLogManager.getBlocklistRules()
-                                                    Toast.makeText(context, "Removed rule: $rule", Toast.LENGTH_SHORT).show()
-                                                }
-                                        )
-                                    }
+                                            .size(16.dp)
+                                            .clickable {
+                                                VpnLogManager.removeBlocklistRule(context, rule)
+                                                blocklistRules = VpnLogManager.getBlocklistRules()
+                                                Toast.makeText(context, "Removed rule: $rule", Toast.LENGTH_SHORT).show()
+                                            }
+                                    )
                                 }
                             }
                         }
@@ -315,95 +313,93 @@ fun VpnDnsTab() {
                                 .fillMaxWidth()
                                 .heightIn(max = 400.dp)
                         ) {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(filteredDnsLogs) { entry ->
-                                    val isBlocked = entry.category == VpnLogManager.AuditCategory.BLOCKED
-                                    val timeStr = timeFormat.format(Date(entry.timestamp))
+                            filteredDnsLogs.forEach { entry ->
+                                val isBlocked = entry.category == VpnLogManager.AuditCategory.BLOCKED
+                                val timeStr = timeFormat.format(Date(entry.timestamp))
 
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color(0x08FFFFFF), RoundedCornerShape(6.dp))
-                                            .border(1.dp, Color(0x11FFFFFF), RoundedCornerShape(6.dp))
-                                            .padding(10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(
-                                                    text = entry.domain,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color.White,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                Text(
-                                                    text = timeStr,
-                                                    fontSize = 9.sp,
-                                                    color = Color.Gray,
-                                                    fontFamily = FontFamily.Monospace
-                                                )
-                                                Text(
-                                                    text = entry.type,
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF00E5FF),
-                                                    fontFamily = FontFamily.Monospace
-                                                )
-                                                Text(
-                                                    text = if (isBlocked) "BLOCKED" else "ALLOWED",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Black,
-                                                    color = if (isBlocked) Color(0xFFFF3333) else Color(0xFF00FF41),
-                                                    fontFamily = FontFamily.Monospace
-                                                )
-                                            }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0x08FFFFFF), RoundedCornerShape(6.dp))
+                                        .border(1.dp, Color(0x11FFFFFF), RoundedCornerShape(6.dp))
+                                        .padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = entry.domain,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
-
-                                        Spacer(modifier = Modifier.width(8.dp))
-
-                                        Button(
-                                            onClick = {
-                                                if (isBlocked) {
-                                                    VpnLogManager.removeBlocklistRule(context, entry.domain)
-                                                    Toast.makeText(context, "Allowed domain: ${entry.domain}", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    VpnLogManager.addBlocklistRule(context, entry.domain)
-                                                    Toast.makeText(context, "Blocked domain: ${entry.domain}", Toast.LENGTH_SHORT).show()
-                                                }
-                                                blocklistRules = VpnLogManager.getBlocklistRules()
-                                            },
-                                            shape = RoundedCornerShape(4.dp),
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (isBlocked) Color(0x3300FF41) else Color(0x33FF3333)
-                                            ),
-                                            border = BorderStroke(
-                                                1.dp,
-                                                if (isBlocked) Color(0xFF00FF41) else Color(0xFFFF3333)
-                                            ),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(26.dp)
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             Text(
-                                                text = if (isBlocked) "ALLOW" else "BLOCK",
+                                                text = timeStr,
+                                                fontSize = 9.sp,
+                                                color = Color.Gray,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = entry.type,
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (isBlocked) Color(0xFF00FF41) else Color(0xFFFF3333)
+                                                color = Color(0xFF00E5FF),
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Text(
+                                                text = if (isBlocked) "BLOCKED" else "ALLOWED",
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = if (isBlocked) Color(0xFFFF3333) else Color(0xFF00FF41),
+                                                fontFamily = FontFamily.Monospace
                                             )
                                         }
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Button(
+                                        onClick = {
+                                            if (isBlocked) {
+                                                VpnLogManager.removeBlocklistRule(context, entry.domain)
+                                                Toast.makeText(context, "Allowed domain: ${entry.domain}", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                VpnLogManager.addBlocklistRule(context, entry.domain)
+                                                Toast.makeText(context, "Blocked domain: ${entry.domain}", Toast.LENGTH_SHORT).show()
+                                            }
+                                            blocklistRules = VpnLogManager.getBlocklistRules()
+                                        },
+                                        shape = RoundedCornerShape(4.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isBlocked) Color(0x3300FF41) else Color(0x33FF3333)
+                                        ),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isBlocked) Color(0xFF00FF41) else Color(0xFFFF3333)
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isBlocked) "ALLOW" else "BLOCK",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isBlocked) Color(0xFF00FF41) else Color(0xFFFF3333)
+                                        )
+                                    }
                                 }
+                                Spacer(modifier = Modifier.height(4.dp))
                             }
-                        }
+                            }
                     }
                 }
             }

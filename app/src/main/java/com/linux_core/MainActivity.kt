@@ -855,10 +855,7 @@ fun MainScreen() {
                                     )
                                 } else {
                                     Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .weight(1f, fill = false)
-                                            .verticalScroll(rememberScrollState())
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
                                         dockerImageDirs.forEach { dir ->
                                             val isSelected = dir == selectedDockerDir
@@ -1123,9 +1120,7 @@ fun MainScreen() {
                     val allRemote = remoteRootfsEntries
                     if (allRemote.isNotEmpty()) {
                         Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState()),
+                            modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             allRemote.forEach { entry ->
