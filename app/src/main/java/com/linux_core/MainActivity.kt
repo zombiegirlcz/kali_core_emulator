@@ -1119,17 +1119,6 @@ fun MainScreen() {
                                                         .clip(RoundedCornerShape(6.dp))
                                                         .background(Color(0xFF0D0E12))
                                                         .border(1.dp, Color(0xFF1E2026), RoundedCornerShape(6.dp))
-                                                        .clickable {
-                                                            val scriptUrl = "https://raw.githubusercontent.com/zombiegirlcz/ROOTFS-for-proot/main/${entry.scriptName}"
-                                                            val command = "curl -sSL \"$scriptUrl\" -o /tmp/preset.sh && bash /tmp/preset.sh && boot docker ${entry.slug}"
-                                                            val intent = Intent(context, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
-                                                                putExtra("rootfsDirName", "nh/distro/docker/${entry.slug}")
-                                                                putExtra("mountStorage", false)
-                                                                putExtra("isDockerImage", true)
-                                                                putExtra("customCommand", command)
-                                                            }
-                                                            context.startActivity(intent)
-                                                        }
                                                         .padding(10.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
