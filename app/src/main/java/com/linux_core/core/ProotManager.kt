@@ -136,7 +136,7 @@ object ProotManager {
      * Vytvoří fake sysdata a shm adresáře pro daný distro (proot-distro style).
      * Boot skript je následně binduje do /proc a /dev/shm.
      */
-    private fun setupFakeSysdata(context: Context, rootfsDir: File, distroId: String) {
+    fun setupFakeSysdata(context: Context, rootfsDir: File, distroId: String) {
         val sysdataDir = File(context.filesDir, "nh/sysdata/$distroId")
         val shmDir = File(context.filesDir, "nh/shm/$distroId")
         sysdataDir.mkdirs()
@@ -162,7 +162,7 @@ object ProotManager {
      * - resolv.conf, hosts jsou čitelné/zapisovatelné
      * - passwd/group/shadow jsou writable (pro UID/GID fixupy)
      */
-    private fun fixRootfsPermissions(context: Context, rootfsDir: File) {
+    fun fixRootfsPermissions(context: Context, rootfsDir: File) {
         val etcDir = File(rootfsDir, "etc")
         if (!etcDir.exists()) {
             etcDir.mkdirs()
@@ -210,9 +210,9 @@ object ProotManager {
      * typically has root (0:0) ownership. Without this fix, guest-created files
      * would be owned by root and inaccessible from the host.
      */
-    private fun fixUidGidMapping(context: Context, rootfsDir: File) {
+    fun fixUidGidMapping(context: Context, rootfsDir: File) {
         val appUid = android.os.Process.myUid()
-        val appGid = android.os.Process.myGid()
+        val appGid = appUid
         val etcDir = File(rootfsDir, "etc")
         if (!etcDir.exists()) return
 
@@ -233,7 +233,7 @@ object ProotManager {
      * group format:  name:passwd:GID:user_list
      * shadow format: name:passwd:UID:...
      */
-    private fun fixUidGidFile(file: File, appUid: Int, appGid: Int, isGroup: Boolean, isShadow: Boolean = false) {
+    fun fixUidGidFile(file: File, appUid: Int, appGid: Int, isGroup: Boolean, isShadow: Boolean = false) {
         if (!file.exists()) return
         val text = file.readText().trim()
         if (text.isEmpty()) return

@@ -155,6 +155,14 @@ private fun extractTarPlain(source: File, targetDir: File) {
 
 /** Extract a .tar.gz archive into targetDir (streaming, progress-free variant used by pull). */
 private fun extractTarGzip(source: File, targetDir: File) {
+    java.io.FileInputStream(source).use { fis ->
+        BufferedInputStream(fis, 512 * 1024).use { bis ->
+            GzipCompressorInputStream(bis).use { gz ->
+                TarArchiveInputStream(gz).use { it.processEntries(targetDir) }
+            }
+        }
+    }
+}
 
 data class Distro(
     val id: String,

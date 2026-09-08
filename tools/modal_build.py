@@ -71,7 +71,8 @@ NDK_DIR = f"/opt/android-ndk-{NDK_VERSION}"
 base_image = (
     modal.Image.from_registry("eclipse-temurin:21-jdk")
     .apt_install("unzip", "wget", "git", "git-lfs", "file", "rsync", "python3", "python3-pip", "python-is-python3",
-                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "build-essential")
+                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "build-essential",
+                  "gcc-aarch64-linux-gnu", "g++-aarch64-linux-gnu", "libc6-dev-arm64-cross")
     .run_commands(
         "mkdir -p /opt/android-sdk/cmdline-tools",
         "wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
@@ -424,10 +425,21 @@ def _build_linux_x11(src_dir):
         else:
             print("  [linux-x11] Error applying libepoxy.patch:", result.stderr)
 
-    print("─" * 60)
-    print("[linux-x11] Building X server via CMake (NDK cross-compile)...")
-    print(f"  Source: {lorie_cpp}")
-    print(f"  Output: {linux_x11_bin}")
+    # Build linux-x11 X server via CMake.
+    # Prefer glibc cross-compiler for PRoot rootfs; fallback to NDK Bionic.
+    use_glibc = shutil.which("aarch64-linux-gnu-gcc") is not None
+    if use_glibc:
+        print("  [linux-x11] Using glibc cross-compiler (aarch64-linux-gnu-gcc)")
+        ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
+        if not os.path.exists(ndk_toolchain):
+            print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
+            return
+    else:
+        print("  [linux-x11] Using NDK Bionic toolchain (android-24/arm64-v8a)")
+        ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
+        if not os.path.exists(ndk_toolchain):
+            print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
+            return
 
     # CMake build dir (mimo /vol/src, aby se necetoval do APK)
     build_dir = "/tmp/linux-x11-build"
@@ -436,26 +448,30 @@ def _build_linux_x11(src_dir):
         _sh.rmtree(build_dir)
     os.makedirs(build_dir, exist_ok=True)
 
-    # NDK toolchain file
-    ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
-    if not os.path.exists(ndk_toolchain):
-        print(f"[linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
-        return
-
-    # CMake configure
-    # Cílíme na Android API 24+ (minSdk 24), arch arm64-v8a
-    cmake_cmd = [
-        "cmake",
-        "-G", "Ninja",
-        "-S", lorie_cpp,
-        "-B", build_dir,
-        f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
-        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-        "-DANDROID_ABI=arm64-v8a",
-        "-DANDROID_PLATFORM=android-24",
-        "-DANDROID_STL=c++_static",
-        "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
-    ]
+    if use_glibc:
+        cmake_cmd = [
+            "cmake",
+            "-G", "Ninja",
+            "-S", lorie_cpp,
+            "-B", build_dir,
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
+            "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
+            "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
+        ]
+    else:
+        cmake_cmd = [
+            "cmake",
+            "-G", "Ninja",
+            "-S", lorie_cpp,
+            "-B", build_dir,
+            f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            "-DANDROID_ABI=arm64-v8a",
+            "-DANDROID_PLATFORM=android-24",
+            "-DANDROID_STL=c++_static",
+            "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
+        ]
     print(f"  $ {' '.join(cmake_cmd)}")
     proc = subprocess.run(cmake_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
