@@ -1079,12 +1079,13 @@ object ProotManager {
             }
         }
 
-        // Deploy linux-x11 X server binary to guest usr/lib
-        // Force overwrite: assets may contain updated arch (e.g. x86 -> arm64).
+        // Deploy linux-x11 X server binary to guest usr/bin
+        // Asset path: usr/lib/linux-x11 (20 MB libXlorie.so)
+        // Target: usr/bin/linux-x11 (in PATH for nh desktop start)
         deployIfChanged(
             context,
-            "usr/bin/linux-x11",
-            File(rootfsDir, "usr/lib/linux-x11"),
+            "usr/lib/linux-x11",
+            File(rootfsDir, "usr/bin/linux-x11"),
             executable = true
         )
 
