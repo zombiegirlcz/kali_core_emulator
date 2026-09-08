@@ -32,10 +32,54 @@ export PROOT_LOADER="$LOADER"
 export PROOT_TMP_DIR="$FILES_DIR/tmp"
 export TMPDIR="$FILES_DIR/tmp"
 
+# link2symlink support (proot-distro pattern)
+# Note: actual path is set per-container in setup_sysdata_shm()
+
 PROOT_FLAGS="-v 0 --kill-on-exit -0 --link2symlink --sysvipc -L --kernel-release=\\Linux\\localhost\\6.17.0-proot-distro\\6.17.0-proot-distro\\aarch64\\localdomain\\-1\\"
 
 log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
 err() { echo "[boot] ERROR: $*" >&2; }
+
+# ─── Session tracking ───────────────────────────────────
+nh_session_start() {
+    # $1 = distro name
+    local distro="$1"
+    local SESSION_DIR="$FILES_DIR/nh/sessions"
+    mkdir -p "$SESSION_DIR"
+    # JSON session metadata (proot-distro compatible format)
+    cat > "$SESSION_DIR/$$.json" << SESSIONEOF
+{"pid": $$, "container": "$distro", "kind": "login", "command": [], "user": "root", "start_time": $(date +%s), "isolated": ${NH_ISOLATED:-0}, "minimal": ${NH_MINIMAL:-0}, "detach": false}
+SESSIONEOF
+}
+
+nh_session_stop() {
+    local distro="$1"
+    rm -f "$FILES_DIR/nh/sessions/$distro.pid" "$FILES_DIR/nh/sessions/$distro.info" 2>/dev/null || true
+}
+
+nh_lock() {
+    # $1 = lock name (e.g. "pull", "bootstrap")
+    local lock="$1"
+    local LOCK_DIR="$FILES_DIR/nh/locks"
+    mkdir -p "$LOCK_DIR"
+    local lockfile="$LOCK_DIR/$lock.lock"
+    if [ -f "$lockfile" ]; then
+        local pid
+        pid=$(cat "$lockfile" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            err "Operation '$lock' already in progress (PID $pid)"
+            return 1
+        fi
+        # Stale lock — remove
+        rm -f "$lockfile"
+    fi
+    echo "$$" > "$lockfile"
+    return 0
+}
+
+nh_unlock() {
+    rm -f "$FILES_DIR/nh/locks/$1.lock" 2>/dev/null || true
+}
 
 # ─── Validate proot stack ───────────────────────────────
 if [ ! -x "$PROOT" ]; then
@@ -43,40 +87,176 @@ if [ ! -x "$PROOT" ]; then
     exit 1
 fi
 
+# ─── Mode flags (set by UI or env) ───────────────────────
+# NH_ISOLATED=1 → no host binds, only /dev /proc /sys
+# NH_MINIMAL=1  → isolated + minimal proot config (no sysvipc, no fake sysdata)
+NH_ISOLATED="${NH_ISOLATED:-0}"
+NH_MINIMAL="${NH_MINIMAL:-0}"
+[ "$NH_ISOLATED" = "1" ] && NH_MINIMAL="1"  # isolated implies minimal
+
+# ─── sysdata + shm setup (proot-distro style) ───────────
+setup_sysdata_shm() {
+    # $1 = distro name (kali|parrot|docker/<image>)
+    local distro="${1:-kali}"
+    local SYSROOT="$FILES_DIR/nh"
+    local SYSDATA_DIR="$SYSROOT/sysdata/$distro"
+    local SHM_DIR="$SYSROOT/shm/$distro"
+
+    mkdir -p "$SYSDATA_DIR" "$SHM_DIR"
+
+    # Set PROOT_L2S_DIR to a safe location inside rootfs (proot-distro pattern)
+    # This avoids race conditions when multiple sessions start simultaneously.
+    local L2S_DIR="$ROOTFS/.l2s"
+    mkdir -p "$L2S_DIR" 2>/dev/null || true
+    export PROOT_L2S_DIR="$L2S_DIR"
+
+    # Skip fake sysdata in minimal mode (proot-distro behavior)
+    if [ "$NH_MINIMAL" = "1" ]; then
+        log "minimal mode: skipping fake sysdata"
+        return 0
+    fi
+
+    # Fake /proc files (Android blocks/limits these)
+    echo "0.0 0 0 0 0" > "$SYSDATA_DIR/loadavg"
+    echo "cpu  0 0 0 0 0 0 0 0 0 0" > "$SYSDATA_DIR/stat"
+    echo "$(date +%s) 0" > "$SYSDATA_DIR/uptime"
+    echo "" > "$SYSDATA_DIR/vmstat"
+
+    # Fake /proc/sys/* directory structure
+    mkdir -p "$SYSDATA_DIR/sysctl"
+    for d in net kernel fs; do
+        mkdir -p "$SYSDATA_DIR/sysctl/$d"
+    done
+
+    log "sysdata/shm prepared: $SYSDATA_DIR $SHM_DIR"
+}
+
 # ─── Guest shell discovery helper ────────────────────────
 find_sh() {
     # $1 = ROOTFS path; prints relative shell path or empty
-    local _rootfs="$1" _cand
-    for _cand in "$_rootfs/bin/sh" "$_rootfs/usr/bin/sh" "$_rootfs/bin/bash" "$_rootfs/usr/bin/bash"; do
-        if [ -x "$_cand" ]; then
-            echo "${_cand#"$_rootfs"}"
-            return 0
-        fi
+    local _rootfs="$1"
+    for _cand in "$_rootfs/bin/sh" "$_rootfs/usr/bin/sh"; do
+        if [ -x "$_cand" ]; then echo "${_cand#"$_rootfs"}"; return 0; fi
     done
     return 1
 }
 
-# ─── Build guest PATH from rootfs structure ──────────────
-build_path() {
-    local _rootfs="$1" _p _gp=""
-    for _p in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
-        [ -d "$_rootfs$_p" ] && _gp="${_gp:+$_gp:}$_p"
-    done
-    echo "$_gp"
-}
-
 # ─── Assemble bind mounts ───────────────────────────────
 build_binds() {
+    # $1 = distro name for sysdata/shm
+    local distro="${1:-kali}"
     local _binds="-b /dev -b /proc -b /sys"
-    _binds="$_binds -b $FILES_DIR/tmp:$FILES_DIR/tmp"
-    _binds="$_binds -b $FILES_DIR/ipc:/run/host_ipc"
-    # ~/share: shared folder between Android app and guest (Termux-style)
-    mkdir -p "$FILES_DIR/share" 2>/dev/null || true
-    _binds="$_binds -b $FILES_DIR/share:/root/share"
-    [ "$NH_MOUNT_STORAGE" = "1" ] && _binds="$_binds -b /sdcard"
-    [ -n "$NH_EXTRA_MOUNTS" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
-    [ -n "$NH_EXTRA_BINDS" ] && _binds="$_binds $NH_EXTRA_BINDS"
+    local SYSROOT="$FILES_DIR/nh"
+
+    # sysdata + shm (skip in minimal mode)
+    if [ "$NH_MINIMAL" = "0" ]; then
+        _binds="$_binds -b $SYSROOT/sysdata/$distro/loadavg:/proc/loadavg"
+        _binds="$_binds -b $SYSROOT/sysdata/$distro/stat:/proc/stat"
+        _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"
+        _binds="$_binds -b $SYSROOT/sysdata/$distro/vmstat:/proc/vmstat"
+        _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl:/proc/sys"
+        _binds="$_binds -b $SYSROOT/shm/$distro:/dev/shm"
+    fi
+
+    # Standard /dev fixes (Android lacks /dev/random, /dev/fd, etc.)
+    [ -e /dev/random ] || _binds="$_binds -b /dev/urandom:/dev/random"
+    [ -e /dev/fd ] || _binds="$_binds -b /proc/self/fd:/dev/fd"
+    [ -e /dev/stdin ] || _binds="$_binds -b /proc/self/fd/0:/dev/stdin"
+    [ -e /dev/stdout ] || _binds="$_binds -b /proc/self/fd/1:/dev/stdout"
+    [ -e /dev/stderr ] || _binds="$_binds -b /proc/self/fd/2:/dev/stderr"
+
+    # Android system paths
+    for _p in /apex /odm /product /system /system_ext /vendor; do
+        [ -d "$_p" ] && [ -x "$_p" ] && _binds="$_binds -b $_p"
+    done
+    [ -f /linkerconfig/ld.config.txt ] && _binds="$_binds -b /linkerconfig/ld.config.txt"
+    [ -f /linkerconfig/com.android.art/ld.config.txt ] && _binds="$_binds -b /linkerconfig/com.android.art/ld.config.txt"
+    [ -f /plat_property_contexts ] && _binds="$_binds -b /plat_property_contexts"
+    [ -f /property_contexts ] && _binds="$_binds -b /property_contexts"
+
+    # Storage + Termux data
+    [ -d /storage ] && _binds="$_binds -b /storage"
+    [ -d /storage/emulated/0 ] && _binds="$_binds -b /storage/emulated/0"
+    [ -d /sdcard ] && _binds="$_binds -b /sdcard"
+    [ -d /mnt/sdcard ] && _binds="$_binds -b /mnt/sdcard"
+    [ -d /data/app ] && _binds="$_binds -b /data/app"
+    [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
+    # NOTE: Host is com.linux_core, not Termux.
+    # Host-side tools are already deployed to $FILES_DIR/usr/{bin,lib} by ProotManager.
+    # We do NOT bind /data/data/com.termux/files/* because those paths do not exist on this host.
+    # If a Termux-style guest image is used, its own Termux prefix lives INSIDE the rootfs
+    # at /data/data/com.termux/files/... and is accessible via guest PATH.
+
+    # App-managed dirs (skip in isolated/minimal mode)
+    if [ "$NH_ISOLATED" = "0" ]; then
+        _binds="$_binds -b $FILES_DIR/tmp:$FILES_DIR/tmp"
+        _binds="$_binds -b $FILES_DIR/ipc:/run/host_ipc"
+        mkdir -p "$FILES_DIR/share" 2>/dev/null || true
+        _binds="$_binds -b $FILES_DIR/share:/root/share"
+    fi
+    [ "$NH_MOUNT_STORAGE" = "1" ] && [ "$NH_ISOLATED" = "0" ] && _binds="$_binds -b /sdcard"
+
+    # Extra binds from preferences / CLI
+    [ -n "${NH_EXTRA_MOUNTS:-}" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
+    [ -n "${NH_EXTRA_BINDS:-}" ] && _binds="$_binds $NH_EXTRA_BINDS"
+
     echo "$_binds"
+}
+
+# ─── Termux-type detection ──────────────────────────────
+is_termux_image() {
+    # $1 = ROOTFS
+    [ -f "$1/data/data/com.termux/files/usr/bin/login" ]
+}
+
+# ─── Profile injection for Termux/non-Termux images ─────
+inject_profile() {
+    # $1 = ROOTFS
+    local ROOTFS="$1"
+    local PROFILE_DIR="$ROOTFS/etc/profile.d"
+    mkdir -p "$PROFILE_DIR"
+    cat > "$PROFILE_DIR/termux-profile.sh" << 'PROF'
+#!/bin/sh
+# NetHunter: obnovení PATH a env proměnných při každém login shellu
+# These paths are INSIDE the guest rootfs (for Termux-style images), not host paths.
+export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/sbin:$PATH"
+export HOME="${HOME:-/root}"
+export PREFIX="/data/data/com.termux/files/usr"
+export LD_LIBRARY_PATH="/system/lib64:/system/lib:$PREFIX/lib:$LD_LIBRARY_PATH"
+export USER="${USER:-root}"
+export SHELL="${SHELL:-/bin/bash}"
+export TERM="${TERM:-xterm-256color}"
+export MOZ_FAKE_NO_SANDBOX=1
+PROF
+    chmod 644 "$PROFILE_DIR/termux-profile.sh" 2>/dev/null || true
+}
+
+# ─── inject_env: guest-wide environment ─────────────────
+inject_env() {
+    # $1 = ROOTFS
+    local ROOTFS="$1"
+    local ETC_DIR="$ROOTFS/etc"
+
+    # /etc/environment (PAM reads this)
+    mkdir -p "$ETC_DIR"
+    cat > "$ETC_DIR/environment" << 'ENVEOF'
+PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+HOME="/root"
+LANG="en_US.UTF-8"
+LC_ALL="en_US.UTF-8"
+ENVEOF
+
+    # /etc/profile.d/env.sh — additional vars for login shells
+    mkdir -p "$ETC_DIR/profile.d"
+    cat > "$ETC_DIR/profile.d/env.sh" << 'ENVEOF'
+#!/bin/sh
+# NetHunter: host-forwarded environment
+export USER="root"
+export SHELL="/bin/bash"
+export TERM="${TERM:-xterm-256color}"
+export MOZ_FAKE_NO_SANDBOX=1
+ENVEOF
+    chmod 644 "$ETC_DIR/profile.d/env.sh" 2>/dev/null || true
 }
 
 # ─── boot_classic: kali / parrot ────────────────────────
@@ -91,13 +271,21 @@ boot_classic() {
 
     local GUEST_SH
     GUEST_SH=$(find_sh "$ROOTFS") || {
-        err "Guest shell not found in $ROOTFS (tried: bin/sh, usr/bin/sh, bin/bash, usr/bin/bash)"
+        err "Guest shell not found in $ROOTFS (tried: bin/sh, usr/bin/sh)"
         return 1
     }
     log "distro=$distro rootfs=$ROOTFS shell=$GUEST_SH"
+    nh_session_start "$distro"
+    trap 'nh_session_stop "$distro"' EXIT
+
+    # Prepare sysdata/shm before binds
+    setup_sysdata_shm "$distro"
 
     local BINDS
-    BINDS=$(build_binds)
+    BINDS=$(build_binds "$distro")
+
+    # Inject environment variables into guest
+    inject_env "$ROOTFS"
 
     # Bootstrap (first run only)
     if [ -x "$ROOTFS/root/bootstrap.sh" ] && \
@@ -160,7 +348,12 @@ boot_docker() {
 
     # Detect Termux-style image by rootfs structure (NOT host path)
     local IS_TERMUX_IMAGE=0
-    [ -d "$ROOTFS/data/data/com.termux" ] && IS_TERMUX_IMAGE=1
+    if is_termux_image "$ROOTFS"; then
+        IS_TERMUX_IMAGE=1
+    fi
+
+    # Inject environment variables
+    inject_env "$ROOTFS"
 
     # Find guest shell — prefer known paths, fallback to find
     local GUEST_SH=""
@@ -171,10 +364,7 @@ boot_docker() {
             [ -x "$_cand" ] && GUEST_SH="${_cand#"$ROOTFS"}" && break
         done
     else
-        for _cand in "$ROOTFS/bin/sh" "$ROOTFS/usr/bin/sh" \
-                     "$ROOTFS/bin/bash" "$ROOTFS/usr/bin/bash"; do
-            [ -x "$_cand" ] && GUEST_SH="${_cand#"$ROOTFS"}" && break
-        done
+        GUEST_SH=$(find_sh "$ROOTFS") || true
     fi
 
     # Fallback: search with find (Alpine busybox, custom layouts)
@@ -187,11 +377,25 @@ boot_docker() {
 
     if [ -z "$GUEST_SH" ]; then
         err "No shell found in $ROOTFS"
+        return 1
+    fi
+
+    # Track this session
+    nh_session_start "$image_name"
+    trap 'nh_session_stop "$image_name"' EXIT
+
+    if [ -z "$GUEST_SH" ]; then
         err "Rootfs structure:"
         find "$ROOTFS" -maxdepth 2 -type d 2>/dev/null | head -20 >&2
         return 1
     fi
     log "Docker image=$image_name shell=$GUEST_SH termux=$IS_TERMUX_IMAGE"
+
+    # Prepare sysdata/shm before binds
+    setup_sysdata_shm "docker/$image_name"
+
+    local BINDS
+    BINDS=$(build_binds "docker/$image_name")
 
     # Find entrypoint
     local ENTRYPOINT=""
@@ -207,28 +411,6 @@ boot_docker() {
     [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
         GUEST_PATH="$GUEST_PATH:/data/data/com.termux/files/usr/bin"
     [ -z "$GUEST_PATH" ] && GUEST_PATH="/usr/bin:/bin"
-
-    # Binds per image type
-    local BINDS="-b /dev -b /proc -b /sys"
-    if [ "$IS_TERMUX_IMAGE" = "1" ]; then
-        BINDS="$BINDS -b /sdcard"
-        BINDS="$BINDS -b /dev/urandom:/dev/random"
-        [ ! -e /dev/fd ] && BINDS="$BINDS -b /proc/self/fd:/dev/fd"
-        for _p in /apex /odm /product /system /system_ext /vendor; do
-            [ -d "$_p" ] && [ -x "$_p" ] && BINDS="$BINDS -b $_p"
-        done
-        BINDS="$BINDS -b $FILES_DIR/tmp:/data/data/com.termux/files/usr/tmp"
-        mkdir -p "$ROOTFS/tmp" 2>/dev/null || true
-        BINDS="$BINDS -b $ROOTFS/tmp:/dev/shm"
-    else
-        BINDS="$BINDS -b /sdcard"
-        BINDS="$BINDS -b $FILES_DIR/tmp:/tmp"
-        BINDS="$BINDS -b $FILES_DIR/ipc:/run/host_ipc"
-        mkdir -p "$FILES_DIR/share" 2>/dev/null || true
-        BINDS="$BINDS -b $FILES_DIR/share:/root/share"
-    fi
-    [ -n "$NH_EXTRA_MOUNTS" ] && BINDS="$BINDS $NH_EXTRA_MOUNTS"
-    [ -n "$NH_EXTRA_BINDS" ] && BINDS="$BINDS $NH_EXTRA_BINDS"
 
     # Working directory
     local PROOT_CWD="/root"
@@ -256,12 +438,25 @@ boot_docker() {
     fi
 
     # Normal docker boot
-    if [ -n "$ENTRYPOINT" ]; then
-        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-            "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+    if [ "$IS_TERMUX_IMAGE" = "1" ]; then
+        # Termux image: inject profile + use login binary
+        inject_profile "$ROOTFS"
+        if [ -n "$ENTRYPOINT" ]; then
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+        else
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
+        fi
     else
-        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-            "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
+        # Normal image: entrypoint or login shell
+        if [ -n "$ENTRYPOINT" ]; then
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+        else
+            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
+        fi
     fi
 }
 

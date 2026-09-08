@@ -46,13 +46,16 @@ object BackgroundBoot {
                 bootScript.setExecutable(true, false)
 
                 // Build the proot config (normal container boot + custom command).
+                val distroId = rootfsDir.relativeTo(context.filesDir).path.substringAfterLast("/")
+                val bootMode = loadBootMode(context, distroId, "M")
                 val config = ProotManager.setupProotEnvironment(
                     context = context,
                     rootfsDirName = rootfsDir.relativeTo(context.filesDir).path,
                     mountStorage = false,
                     customCommand = "bash /root/.nh_boot.sh",
                     hasRoot = false,
-                    isDockerImage = false
+                    isDockerImage = false,
+                    bootMode = bootMode
                 )
 
                 // Headless session: view = null, output goes to the session buffer.

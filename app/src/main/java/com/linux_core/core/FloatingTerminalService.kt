@@ -148,8 +148,10 @@ class FloatingTerminalService : Service() {
             try {
                 val distro = activeDistroRootfsDirName()
                 val isDocker = distro.startsWith("nh/distro/docker/")
+                val distroId = distro.substringAfterLast("/")
+                val bootMode = loadBootMode(applicationContext, distroId, "M")
                 val cfg = ProotManager.setupProotEnvironment(
-                    applicationContext, distro, false, null, false, isDocker
+                    applicationContext, distro, false, null, false, isDocker, bootMode
                 )
                 mainHandler.post {
                     try {

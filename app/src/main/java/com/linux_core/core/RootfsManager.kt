@@ -36,10 +36,114 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import org.apache.compress.compressors.bzip2.BZip2CompressorInputStream
+
 import com.linux_core.core.DockerImageRef
 import com.linux_core.core.DockerLayer
 import com.linux_core.core.DockerManifest
 import com.linux_core.core.DockerRegistryClient
+import com.linux_core.core.RemoteDistroScript
+
+/** Common tar entry handling (whiteouts, symlinks, permissions). */
+private fun processTarEntry(entryFile: File, tarEntry: TarArchiveEntry?, name: String, targetDir: File) {
+    when {
+        tarEntry != null && tarEntry.name.contains("/.wh.") -> {
+            val baseName = name.substringAfterLast("/")
+            val parentDir = entryFile.parentFile ?: targetDir
+            if (baseName == ".wh..wh..opq") {
+                parentDir.listFiles()?.forEach { it.deleteRecursively() }
+                Log.d("RootfsManager", "Opaque whiteout: cleared ${parentDir.path}")
+            } else {
+                val victim = java.io.File(parentDir, baseName.removePrefix(".wh."))
+                if (victim.exists()) {
+                    victim.deleteRecursively()
+                    Log.d("RootfsManager", "Whiteout: removed ${victim.path}")
+                }
+            }
+        }
+        tarEntry?.isLink == true -> {
+            entryFile.parentFile?.mkdirs()
+            try {
+                entryFile.delete()
+                android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+            } catch (_: Exception) {}
+        }
+        tarEntry?.isSymbolicLink == true -> {
+            entryFile.parentFile?.mkdirs()
+            try {
+                entryFile.delete()
+                android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
+            } catch (_: Exception) {}
+        }
+        tarEntry?.isDirectory == true -> entryFile.mkdirs()
+        else -> {
+            entryFile.parentFile?.mkdirs()
+            if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
+            FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+            if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
+                entryFile.setExecutable(true, false)
+            }
+            entryFile.setReadable(true, false)
+            entryFile.setWritable(true, false)
+        }
+    }
+}
+
+private fun TarArchiveInputStream.processEntries(targetDir: File) {
+    val canonicalBase = targetDir.canonicalPath
+    var entry: ArchiveEntry? = nextEntry
+    while (entry != null) {
+        val entryFile = File(targetDir, entry.name)
+        val canonicalDest = entryFile.canonicalPath
+        if (!canonicalDest.startsWith(canonicalBase + java.io.File.separator) && canonicalDest != canonicalBase) {
+            entry = nextEntry
+            continue
+        }
+        val tarEntry = entry as? TarArchiveEntry
+        val name = tarEntry?.name ?: entry.name
+        processTarEntry(entryFile, tarEntry, name, targetDir)
+        entry = nextEntry
+    }
+}
+
+/** Detect tar format from filename/URL: gzip|xz|bzip2|plain|auto. */
+private fun detectTarFormat(name: String): String {
+    val lower = name.lowercase()
+    return when {
+        lower.endsWith(".tar.xz") || lower.endsWith(".txz") -> "xz"
+        lower.endsWith(".tar.bz2") || lower.endsWith(".tbz2") -> "bzip2"
+        lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> "gzip"
+        lower.endsWith(".tar") -> "plain"
+        else -> "auto"
+    }
+}
+
+/** Extract a .tar.bz2 archive into targetDir. */
+private fun extractTarBzip2(source: File, targetDir: File) {
+    java.io.FileInputStream(source).use { fis ->
+        BufferedInputStream(fis, 512 * 1024).use { bis ->
+            bis.mark(1024)
+            val isBz2 = try {
+                BZip2CompressorInputStream(bis).use { it.read(); true }
+            } catch (_: Exception) { false }
+            bis.reset()
+            val stream: java.io.InputStream = if (isBz2) BZip2CompressorInputStream(bis) else bis
+            TarArchiveInputStream(stream).use { it.processEntries(targetDir) }
+        }
+    }
+}
+
+/** Extract a plain .tar archive into targetDir (no compression). */
+private fun extractTarPlain(source: File, targetDir: File) {
+    java.io.FileInputStream(source).use { fis ->
+        BufferedInputStream(fis, 512 * 1024).use { bis ->
+            TarArchiveInputStream(bis).use { it.processEntries(targetDir) }
+        }
+    }
+}
+
+/** Extract a .tar.gz archive into targetDir (streaming, progress-free variant used by pull). */
+private fun extractTarGzip(source: File, targetDir: File) {
 
 data class Distro(
     val id: String,
@@ -932,13 +1036,14 @@ object RootfsManager {
                 }
             }
 
-            // ── Extract (tar.gz or tar.xz) ──
+            // ── Extract (all tar* formats) ──
             emit(88 to "Extracting rootfs…")
-            val isXz = url.lowercase().contains(".tar.xz") || url.lowercase().endsWith(".txz")
-            if (isXz) {
-                extractTarXz(tempFile, rootfsDir)
-            } else {
-                extractTarGzip(tempFile, rootfsDir)
+            when (detectTarFormat(url)) {
+                "xz" -> extractTarXz(tempFile, rootfsDir)
+                "bzip2" -> extractTarBzip2(tempFile, rootfsDir)
+                "gzip" -> extractTarGzip(tempFile, rootfsDir)
+                "plain" -> extractTarPlain(tempFile, rootfsDir)
+                else -> extractTarGzip(tempFile, rootfsDir) // auto-detect fallback
             }
 
             // ── Backup original archive next to docker dir (best-effort) ──
@@ -1032,11 +1137,11 @@ object RootfsManager {
 
         try {
             emit(10 to "Extracting local rootfs archive…")
-            val isXz = nameLower.endsWith(".tar.xz") || nameLower.endsWith(".txz")
-            if (isXz) {
-                extractTarXz(archiveFile, rootfsDir)
-            } else {
-                extractTarGzip(archiveFile, rootfsDir)
+            when (detectTarFormat(archiveFile.name)) {
+                "xz" -> extractTarXz(archiveFile, rootfsDir)
+                "bzip2" -> extractTarBzip2(archiveFile, rootfsDir)
+                "plain" -> extractTarPlain(archiveFile, rootfsDir)
+                else -> extractTarGzip(archiveFile, rootfsDir)
             }
 
             try {
@@ -1313,6 +1418,150 @@ object RootfsManager {
             false
         }
     }
+
+    private fun countFiles(f: File): Int =
+        if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1
+}
+
+    /**
+     * Pulls a distro using a [RemoteDistroScript] from the remote catalog.
+     * Downloads the tarball from the script's URL, extracts it, and writes
+     * the script's bootstrap.sh and entrypoint.sh into the rootfs.
+     */
+    suspend fun pullRemoteDistroScript(
+        context: Context,
+        script: RemoteDistroScript,
+        client: OkHttpClient = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    ): Flow<Pair<Int, String>> = flow {
+        emit(0 to "Pulling ${script.distroName} from remote script...")
+
+        val rootfsDir = File(context.filesDir, "$NH_DISTRO_DIR/docker/${script.slug}")
+        rootfsDir.mkdirs()
+
+        val cacheDir = File(context.filesDir, "remote-pull")
+        cacheDir.mkdirs()
+        val tempFile = File(cacheDir, "${script.slug}.tmp")
+        if (tempFile.exists()) tempFile.delete()
+
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RootfsManager:pullRemoteScript")
+        wakeLock.acquire(2 * 60 * 60 * 1000L)
+
+        try {
+            // Download tarball
+            emit(5 to "Downloading ${script.distroName} rootfs...")
+            val request = okhttp3.Request.Builder().url(script.tarballUrl).build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Unexpected code ${response.code} for ${script.tarballUrl}")
+                val responseBody = response.body ?: throw IOException("Response body is null")
+                val totalLength = responseBody.contentLength()
+                val inputStream = responseBody.byteStream()
+                var bytesCopied: Long = 0
+                java.io.FileOutputStream(tempFile).use { outputStream ->
+                    val buffer = ByteArray(8 * 1024)
+                    var bytes = inputStream.read(buffer)
+                    while (bytes >= 0) {
+                        outputStream.write(buffer, 0, bytes)
+                        bytesCopied += bytes
+                        if (totalLength > 0) {
+                            val pct = 5 + ((bytesCopied * 80) / totalLength).toInt()
+                            emit(pct.coerceIn(5, 85) to "Downloading... $pct%")
+                        } else {
+                            emit(10 to "Downloading... (${bytesCopied / (1024 * 1024)} MB)")
+                        }
+                        bytes = inputStream.read(buffer)
+                    }
+                }
+                if (totalLength > 0 && bytesCopied != totalLength) {
+                    throw IOException("Download incomplete: expected $totalLength bytes, got $bytesCopied")
+                }
+            }
+
+            // Verify SHA256
+            if (script.tarballSha256.isNotEmpty()) {
+                emit(85 to "Verifying checksum...")
+                val digest = MessageDigest.getInstance("SHA-256")
+                tempFile.inputStream().use { input ->
+                    val buffer = ByteArray(8 * 1024)
+                    var bytes = input.read(buffer)
+                    while (bytes >= 0) {
+                        digest.update(buffer, 0, bytes)
+                        bytes = input.read(buffer)
+                    }
+                }
+                val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+                if (!actualSha.equals(script.tarballSha256, ignoreCase = true)) {
+                    throw IOException("SHA256 mismatch: expected ${script.tarballSha256}, got $actualSha")
+                }
+                Log.i("RootfsManager", "SHA256 verified for ${script.distroName}")
+            }
+
+            // Extract
+            emit(88 to "Extracting rootfs...")
+            when (detectTarFormat(script.tarballUrl)) {
+                "xz" -> extractTarXz(tempFile, rootfsDir)
+                "bzip2" -> extractTarBzip2(tempFile, rootfsDir)
+                "gzip" -> extractTarGzip(tempFile, rootfsDir)
+                "plain" -> extractTarPlain(tempFile, rootfsDir)
+                else -> extractTarGzip(tempFile, rootfsDir)
+            }
+
+            // Write bootstrap.sh from script
+            if (script.bootstrapScript.isNotEmpty()) {
+                File(rootfsDir, "bootstrap.sh").writeText(script.bootstrapScript)
+                File(rootfsDir, "bootstrap.sh").setExecutable(true, false)
+                Log.i("RootfsManager", "Wrote bootstrap.sh from remote script")
+            }
+
+            // Write entrypoint.sh from script
+            if (script.entrypointScript.isNotEmpty()) {
+                val entryDir = File(rootfsDir, "root")
+                entryDir.mkdirs()
+                File(entryDir, "entrypoint.sh").writeText(script.entrypointScript)
+                File(entryDir, "entrypoint.sh").setExecutable(true, false)
+                Log.i("RootfsManager", "Wrote entrypoint.sh from remote script")
+            }
+
+            // Backup original archive
+            try {
+                val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
+                if (!backupDir.exists()) backupDir.mkdirs()
+                val backupFile = File(backupDir, "${script.slug}.${tempFile.extension}")
+                if (!backupFile.exists()) {
+                    tempFile.copyTo(backupFile, overwrite = false)
+                    Log.i("RootfsManager", "Backed up rootfs archive to: ${backupFile.absolutePath}")
+                }
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to backup rootfs archive: ${e.message}")
+            }
+
+            // Markers
+            try {
+                File(rootfsDir, ".docker_image").writeText(
+                    "image=${script.tarballUrl}\n" +
+                    "pulled_at=${System.currentTimeMillis()}\n" +
+                    "source=remote-script\n" +
+                    "script=${script.scriptName}\n" +
+                    "commit=${script.commitSha}\n"
+                )
+                File(rootfsDir, "etc/hostname").writeText("${script.slug}-docker\n")
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Failed to write markers: ${e.message}")
+            }
+
+            emit(100 to rootfsDir.absolutePath)
+            Log.i("RootfsManager", "Remote script pull complete: ${rootfsDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("RootfsManager", "Remote script pull failed: ${e.message}", e)
+            throw e
+        } finally {
+            try { wakeLock.release() } catch (_: Exception) {}
+            if (tempFile.exists()) tempFile.delete()
+        }
+    }.flowOn(Dispatchers.IO)
 
     private fun countFiles(f: File): Int =
         if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1

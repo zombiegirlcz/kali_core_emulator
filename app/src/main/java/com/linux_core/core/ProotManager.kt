@@ -1,6 +1,7 @@
 package com.linux_core.core
 
 import android.content.Context
+import android.os.Process
 import android.util.Log
 import java.io.File
 import java.io.InputStream
@@ -38,7 +39,8 @@ object ProotManager {
         mountStorage: Boolean = false,
         customCommand: String? = null,
         hasRoot: Boolean = false,
-        isDockerImage: Boolean = false
+        isDockerImage: Boolean = false,
+        bootMode: String = "M"  // M=default, I=isolated, D=minimal
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -87,14 +89,19 @@ object ProotManager {
 
         updateResolvConf(context, rootfsDir)
 
-        File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
-
         val setupDoneFile = File(homeDir, ".setup_done")
         val distroId = when {
             isDockerImage -> "docker:${rootfsDirName.substringAfterLast("/")}"
             rootfsDirName.contains("parrot") -> "parrot"
             else -> "kali"
         }
+
+        // Fáze 2: sysdata/shm + rootfs permission fixupy
+        setupFakeSysdata(context, rootfsDir, distroId)
+        fixRootfsPermissions(context, rootfsDir)
+        fixUidGidMapping(context, rootfsDir)
+
+        File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
         
         deployZshrc(context, rootfsDir, distroId)
         
@@ -125,12 +132,153 @@ object ProotManager {
 
         fixLdLinuxSymlinks(context, rootfsDir)
 
-        // Univerzální boot skript (assets/usr/bin/boot → filesDir/usr/bin/boot)
-        // nasazuje deployDir("usr/bin", ...) výše. Zde jen ověříme existenci.
-        val bootScript = File(rootDir, "usr/bin/boot")
-        if (!bootScript.exists() || !bootScript.canExecute()) {
-            Log.e(TAG, "Boot script missing after deploy: ${bootScript.absolutePath}")
+    /**
+     * Vytvoří fake sysdata a shm adresáře pro daný distro (proot-distro style).
+     * Boot skript je následně binduje do /proc a /dev/shm.
+     */
+    private fun setupFakeSysdata(context: Context, rootfsDir: File, distroId: String) {
+        val sysdataDir = File(context.filesDir, "nh/sysdata/$distroId")
+        val shmDir = File(context.filesDir, "nh/shm/$distroId")
+        sysdataDir.mkdirs()
+        shmDir.mkdirs()
+
+        // Fake /proc files (Android blocks/limits these)
+        File(sysdataDir, "loadavg").writeText("0.0 0 0 0 0\n")
+        File(sysdataDir, "stat").writeText("cpu  0 0 0 0 0 0 0 0 0 0\n")
+        File(sysdataDir, "uptime").writeText("${System.currentTimeMillis() / 1000} 0\n")
+        File(sysdataDir, "vmstat").writeText("")
+
+        // Fake /proc/sys/* directory structure
+        File(sysdataDir, "sysctl/net").mkdirs()
+        File(sysdataDir, "sysctl/kernel").mkdirs()
+        File(sysdataDir, "sysctl/fs").mkdirs()
+
+        Log.i(TAG, "Prepared sysdata/shm: $sysdataDir $shmDir")
+    }
+
+    /**
+     * Opraví běžné rootfs permission/problémy:
+     * - /etc je adresář (ne symlink)
+     * - resolv.conf, hosts jsou čitelné/zapisovatelné
+     * - passwd/group/shadow jsou writable (pro UID/GID fixupy)
+     */
+    private fun fixRootfsPermissions(context: Context, rootfsDir: File) {
+        val etcDir = File(rootfsDir, "etc")
+        if (!etcDir.exists()) {
+            etcDir.mkdirs()
+            return
         }
+
+        // Ensure /etc is a directory (not a symlink)
+        if (Files.isSymbolicLink(etcDir.toPath())) {
+            Log.w(TAG, "/etc is a symlink, removing and recreating as directory")
+            etcDir.delete()
+            etcDir.mkdirs()
+        }
+
+        // Fix resolv.conf
+        val resolvConf = File(etcDir, "resolv.conf")
+        if (resolvConf.exists()) {
+            resolvConf.setReadable(true, false)
+            resolvConf.setWritable(true, false)
+        }
+
+        // Fix hosts
+        val hosts = File(etcDir, "hosts")
+        if (hosts.exists()) {
+            hosts.setReadable(true, false)
+            hosts.setWritable(true, false)
+        }
+
+        // Ensure passwd/group/shadow are writable (for UID/GID fixup)
+        for (name in listOf("passwd", "group", "shadow", "gshadow")) {
+            val f = File(etcDir, name)
+            if (f.exists()) {
+                f.setReadable(true, false)
+                f.setWritable(true, false)
+            }
+        }
+
+        Log.i(TAG, "Fixed rootfs permissions: resolv.conf, hosts, passwd/group")
+    }
+
+    /**
+     * Map all guest UIDs/GIDs to the app's UID/GID so files created inside proot
+     * have the same ownership as files on the host (com.linux_core).
+     *
+     * This is necessary because proot runs as the app's UID, but the guest rootfs
+     * typically has root (0:0) ownership. Without this fix, guest-created files
+     * would be owned by root and inaccessible from the host.
+     */
+    private fun fixUidGidMapping(context: Context, rootfsDir: File) {
+        val appUid = android.os.Process.myUid()
+        val appGid = android.os.Process.myGid()
+        val etcDir = File(rootfsDir, "etc")
+        if (!etcDir.exists()) return
+
+        // /etc/passwd — replace all UIDs and GIDs with app's
+        fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
+        // /etc/group — replace all GIDs with app's
+        fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
+        // /etc/shadow — replace all UIDs with app's (for passwd field)
+        fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
+
+        Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
+    }
+
+    /**
+     * Replace UID/GID values in passwd/group/shadow files.
+     *
+     * passwd format: name:passwd:UID:GID:GECOS:home:shell
+     * group format:  name:passwd:GID:user_list
+     * shadow format: name:passwd:UID:...
+     */
+    private fun fixUidGidFile(file: File, appUid: Int, appGid: Int, isGroup: Boolean, isShadow: Boolean = false) {
+        if (!file.exists()) return
+        val text = file.readText().trim()
+        if (text.isEmpty()) return
+
+        val lines = text.split("
+")
+        val fixed = lines.map { line ->
+            // Skip comments and empty lines
+            if (line.startsWith("#") || line.trim().isEmpty()) return@map line
+
+            val parts = line.split(":")
+            if (parts.isEmpty()) return@map line
+
+            if (isGroup) {
+                // group: name:passwd:GID:user_list
+                if (parts.size >= 3) {
+                    val fixedParts = parts.toMutableList()
+                    fixedParts[2] = appGid.toString()
+                    return@map fixedParts.joinToString(":")
+                }
+            } else if (isShadow) {
+                // shadow: name:passwd:UID:...
+                if (parts.size >= 3) {
+                    val fixedParts = parts.toMutableList()
+                    fixedParts[2] = appUid.toString()
+                    return@map fixedParts.joinToString(":")
+                }
+            } else {
+                // passwd: name:passwd:UID:GID:GECOS:home:shell
+                if (parts.size >= 4) {
+                    val fixedParts = parts.toMutableList()
+                    fixedParts[2] = appUid.toString()
+                    fixedParts[3] = appGid.toString()
+                    return@map fixedParts.joinToString(":")
+                }
+            }
+            line
+        }
+
+        file.writeText(fixed.joinToString("
+") + "
+")
+        file.setReadable(true, false)
+        file.setWritable(true, false)
+    }
 
         // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
         // když NH_DISTRO env není nastavený.
@@ -154,10 +302,18 @@ object ProotManager {
             if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
         }
 
+        val (nhIsolated, nhMinimal) = when (bootMode) {
+            "I" -> "1" to "0"
+            "D" -> "1" to "1"
+            else -> "0" to "0"
+        }
         val envVars = mutableListOf(
             "NH_MOUNT_STORAGE=${if (mountStorage) "1" else "0"}",
             "NH_EXTRA_MOUNTS=$extraMounts",
-            "NH_DISTRO=$distroId"
+            "NH_DISTRO=$distroId",
+            "NH_ISOLATED=$nhIsolated",
+            "NH_MINIMAL=$nhMinimal",
+            "NH_BOOT_MODE=$bootMode"
         )
 
         // Příkaz: boot <distro> [-- <customCommand>]
@@ -279,42 +435,31 @@ object ProotManager {
     }
 
     /**
-     * Deploy arch-specific binárek pod KANONICKÝM jménem do usr/bin / usr/lib.
-     * Primární: STATIC proot/loader (assets/usr/bin/proot-static-$suffix).
-     * Fallback: dynamické (assets/proot-$suffix) jen pokud static asset chybí.
-     * Běží AŽ PO deployDir(usr/bin)/deployDir(usr/lib) — nikdy nemaže, jen dopisuje.
+     * Deploy arch-specific binárek do usr/bin.
+     * Jen STATICKÉ buildy: assets/proot-static-$suffix a assets/loader-static-$suffix.
+     * Dynamické fallbacky (proot-$suffix, loader-$suffix, libtalloc-$suffix.so)
+     byly odstraněny z repa 2026-09-08.
      */
     private fun deployArchBinaries(context: Context, suffix: String) {
         val usrBin = File(context.filesDir, "usr/bin")
-        val usrLib = File(context.filesDir, "usr/lib")
         usrBin.mkdirs()
-        usrLib.mkdirs()
 
-        // 1) proot: static primární
+        // 1) proot: jen static z kořenu assets/
         deployFirstAvailable(
             context,
             listOf(
-                "usr/bin/proot-static-$suffix" to "STATIC",
-                "proot-$suffix" to "DYNAMIC-FALLBACK"
+                "proot-static-$suffix" to "STATIC"
             ),
             File(usrBin, "proot")
         )
 
-        // 2) loader: static primární (pár k static proot kvůli seccomp akceleraci)
+        // 2) loader: jen static z kořenu assets/
         deployFirstAvailable(
             context,
             listOf(
-                "usr/bin/loader-static-$suffix" to "STATIC",
-                "loader-$suffix" to "DYNAMIC-FALLBACK"
+                "loader-static-$suffix" to "STATIC"
             ),
             File(usrBin, "loader")
-        )
-
-        // 3) libtalloc: jen pro dynamický fallback (static proot ho nepotřebuje)
-        deployFirstAvailable(
-            context,
-            listOf("libtalloc-$suffix.so" to "DYNAMIC-FALLBACK"),
-            File(usrLib, "libtalloc.so.2")
         )
     }
 

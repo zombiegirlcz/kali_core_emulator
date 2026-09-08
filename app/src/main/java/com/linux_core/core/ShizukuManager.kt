@@ -340,12 +340,18 @@ object ShizukuManager {
      */
     private fun tryTermuxAdbStart(context: Context, adbCmd: String): Boolean {
         return try {
-            // Check if Termux with android-tools is installed
-            val termuxAdb = File("/data/data/com.termux/files/usr/bin/adb")
-            if (!termuxAdb.exists() || !termuxAdb.canExecute()) return false
+            // Check for adb in system PATH (host is com.linux_core, not Termux)
+            val adbPaths = listOf(
+                "/system/bin/adb",
+                "/system/xbin/adb",
+                "/data/local/tmp/adb",
+                "/data/data/com.linux_core/files/usr/bin/adb"
+            )
+            val adbFile = adbPaths.firstOrNull { File(it).exists() && File(it).canExecute() }
+                ?: return false
 
-            // Run adb locally from Termux
-            val proc = Runtime.getRuntime().exec(arrayOf(termuxAdb.absolutePath, "shell", adbCmd.substringAfter("adb shell ")))
+            // Run adb from system
+            val proc = Runtime.getRuntime().exec(arrayOf(adbFile, "shell", adbCmd.substringAfter("adb shell ")))
             proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
             proc.exitValue() == 0
         } catch (e: Exception) {

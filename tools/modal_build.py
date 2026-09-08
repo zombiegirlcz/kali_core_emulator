@@ -40,7 +40,7 @@ import shutil
 import subprocess
 import sys
 
-APP_NAME = "kali-gui-build"
+APP_NAME = "kali-core_emulator"
 VOLUME_NAME = "kali-build-data"
 APK_OUTPUT = "app-debug.apk"
 
@@ -61,7 +61,7 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-GITHUB_BRANCH = "master"
+GITHUB_BRANCH = "dev"
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────

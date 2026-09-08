@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit
  * - DISTRO_NAME / DISTRO_COMMENT
  * - TARBALL_URL[arch] / TARBALL_SHA256[arch]
  * - bootstrap.sh heredoc (inline)
+ * - root/entrypoint.sh heredoc (inline)
  */
 data class RemoteDistroScript(
     val scriptName: String,           // e.g. "kali.sh"
@@ -32,6 +33,7 @@ data class RemoteDistroScript(
     val tarballSha256: String,        // resolved for current arch
     val architectures: List<String>,  // available archs in the script
     val bootstrapScript: String,      // full bootstrap.sh content from heredoc
+    val entrypointScript: String,     // full root/entrypoint.sh content from heredoc
     val commitSha: String             // latest commit SHA when fetched
 ) {
     /** Slug for directory naming: "kali", "debian-12-bookworm", etc. */
@@ -61,7 +63,8 @@ data class RemoteDistroScript(
                 val archs = urls.keys.toList()
                 val resolvedUrl = urls[currentArch] ?: urls.values.firstOrNull() ?: ""
                 val resolvedSha = sha256s[currentArch] ?: sha256s.values.firstOrNull() ?: ""
-                val bootstrap = extractBootstrapHeredoc(scriptContent)
+                val bootstrap = extractHeredoc(scriptContent, "bootstrap.sh")
+                val entrypoint = extractHeredoc(scriptContent, "root/entrypoint.sh")
 
                 RemoteDistroScript(
                     scriptName = scriptName,
@@ -71,6 +74,7 @@ data class RemoteDistroScript(
                     tarballSha256 = resolvedSha,
                     architectures = archs,
                     bootstrapScript = bootstrap,
+                    entrypointScript = entrypoint,
                     commitSha = commitSha
                 )
             } catch (e: Exception) {
@@ -252,17 +256,22 @@ private fun extractTarballMap(script: String, mapName: String): Map<String, Stri
     return result
 }
 
-private fun extractBootstrapHeredoc(script: String): String {
-    // Find the heredoc: cat <<'EOF' > bootstrap.sh ... EOF
-    val startMarker = "cat <<'EOF' > bootstrap.sh"
-    val endMarker = "EOF"
-    
-    val startIndex = script.indexOf(startMarker)
-    if (startIndex == -1) return ""
-    
-    val contentStart = script.indexOf('\n', startIndex) + 1
-    val endIndex = script.indexOf(endMarker, contentStart)
-    if (endIndex == -1) return ""
-    
-    return script.substring(contentStart, endIndex).trim()
+/**
+ * Extracts a heredoc content from the script.
+ * Scripts use patterns like:
+ *   cat <<'BOOTSTRAP_EOF' > "$DISTRO_ROOTFS/bootstrap.sh"
+ *   ...content...
+ *   BOOTSTRAP_EOF
+ * 
+ * The marker name varies (BOOTSTRAP_EOF, ENTRYPOINT_EOF, etc.).
+ * We match: cat <<'MARKER' > "$DISTRO_ROOTFS/<target>" ... MARKER
+ */
+private fun extractHeredoc(script: String, targetPath: String): String {
+    val escapedTarget = targetPath.replace("/", "\/")
+    // Match: cat <<'MARKER' > "$DISTRO_ROOTFS/<target>" ... MARKER
+    // Scripts use: cat <<'BOOTSTRAP_EOF' > "$DISTRO_ROOTFS/bootstrap.sh"
+    val pattern = """cat <<'([A-Z_]+)' > "\$DISTRO_ROOTFS/$escapedTarget" .*?\n(.*?)\n\1"""
+    val regex = Regex(pattern, RegexOption.DOT_ALL)
+    val match = regex.find(script)
+    return match?.groupValues?.getOrNull(1)?.trim() ?: ""
 }

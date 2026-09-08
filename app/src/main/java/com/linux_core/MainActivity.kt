@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
@@ -387,6 +388,8 @@ fun MainScreen() {
     var selectedDockerDir by remember { mutableStateOf<String?>(null) }
     var isDockerMode by remember { mutableStateOf(false) }
     var showDockerDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var activeSessions by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     // Seznam všech existujících Docker/OCI image dirů (pro výběr v UI)
     var dockerImageDirs by remember { mutableStateOf<List<String>>(emptyList()) }
     // Remote distro scripts from zombiegirlcz/ROOTFS-for-proot (daily quick-start)
@@ -780,6 +783,37 @@ fun MainScreen() {
                                 color = Color.Gray,
                                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                             )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            // Boot mode toggle for Docker
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                BootModeChip(
+                                    label = "M",
+                                    selected = dockerBootMode == "M",
+                                    onClick = {
+                                        dockerBootMode = "M"
+                                        saveBootMode(context, "docker", "M")
+                                    }
+                                )
+                                BootModeChip(
+                                    label = "I",
+                                    selected = dockerBootMode == "I",
+                                    onClick = {
+                                        dockerBootMode = "I"
+                                        saveBootMode(context, "docker", "I")
+                                    }
+                                )
+                                BootModeChip(
+                                    label = "D",
+                                    selected = dockerBootMode == "D",
+                                    onClick = {
+                                        dockerBootMode = "D"
+                                        saveBootMode(context, "docker", "D")
+                                    }
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.weight(0.5f))
@@ -1119,7 +1153,33 @@ fun MainScreen() {
                                                         .clip(RoundedCornerShape(6.dp))
                                                         .background(Color(0xFF0D0E12))
                                                         .border(1.dp, Color(0xFF1E2026), RoundedCornerShape(6.dp))
-                                                        .padding(10.dp),
+                                                        .padding(10.dp)
+                                                        .clickable(enabled = !isPulled && !isDownloading && !isPullingDocker) {
+                                                            if (!isPulled) {
+                                                                downloadJob?.cancel()
+                                                                downloadJob = scope.launch {
+                                                                    isPullingDocker = true
+                                                                    dockerPullProgress = 0
+                                                                    dockerPullStatus = "Pulling ${entry.distroName}..."
+                                                                    try {
+                                                                        RootfsManager.pullRemoteDistroScript(context, entry).collect { (progress, status) ->
+                                                                            dockerPullProgress = progress
+                                                                            dockerPullStatus = status
+                                                                            if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                                selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                                            }
+                                                                        }
+                                                                        Toast.makeText(context, "${entry.distroName} pulled successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                                    } catch (e: Exception) {
+                                                                        Toast.makeText(context, "Pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                                    } finally {
+                                                                        isPullingDocker = false
+                                                                        dockerPullProgress = 0
+                                                                        dockerPullStatus = ""
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Text(
@@ -1165,6 +1225,41 @@ fun MainScreen() {
                                 }
                             }
                         }
+                    }
+                }
+
+                // Backup Manager dialog
+                if (showBackupDialog) {
+                    androidx.compose.ui.window.Dialog(
+                        onDismissRequest = { showBackupDialog = false },
+                        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+                    ) {
+                        com.linux_core.ui.backup.BackupManagerScreen(
+                            onDismiss = { showBackupDialog = false },
+                            onRestoreSelected = { backupFile ->
+                                showBackupDialog = false
+                                downloadJob = scope.launch {
+                                    isDownloading = true
+                                    statusText = "Restoring from ${backupFile.name}..."
+                                    downloadProgress = 0
+                                    try {
+                                        RootfsManager.restoreRootfs(context, backupFile, selectedDistro).collect { (progress, status) ->
+                                            downloadProgress = progress
+                                            statusText = status
+                                        }
+                                        isExtracted = true
+                                        Toast.makeText(context, "Restore complete!", Toast.LENGTH_LONG).show()
+                                    } catch (e: Exception) {
+                                        isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                        Toast.makeText(context, "Restore failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                    } finally {
+                                        isDownloading = false
+                                        statusText = ""
+                                        downloadProgress = 0
+                                    }
+                                }
+                            }
+                        )
                     }
                 }
 
@@ -1258,6 +1353,181 @@ fun MainScreen() {
                                 uncheckedTrackColor = Color(0xFF1E2026)
                             )
                         )
+                    }
+                }
+
+                // Backup Manager card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 20.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0x3300FF41)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isDownloading) {
+                                showBackupDialog = true
+                            }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(Color(0x1A00FF41), CircleShape)
+                                    .border(1.dp, Color(0x3300FF41), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Backup,
+                                    contentDescription = "Backup",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Backup Manager",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                                Text(
+                                    text = "Restore / delete rootfs backups from nh/distro/backup/",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = "Open Backup Manager",
+                            tint = Color(0xFF00FF41),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // Active sessions
+                val sessionsDir = File(context.filesDir, "nh/sessions")
+                val sessionFiles = sessionsDir.listFiles { f -> f.extension == "pid" } ?: emptyArray()
+                val sessions = sessionFiles.mapNotNull { pidFile ->
+                    val distro = pidFile.nameWithoutExtension
+                    val pid = pidFile.readText().trim()
+                    val infoFile = File(sessionsDir, "$distro.info")
+                    val info = if (infoFile.exists()) infoFile.readText().trim() else "unknown"
+                    // Check if process is still alive
+                    val alive = try {
+                        val proc = Runtime.getRuntime().exec(arrayOf("kill", "-0", pid))
+                        proc.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)
+                        proc.exitValue() == 0
+                    } catch (e: Exception) { false }
+
+                    if (alive) distro to info else null
+                }
+
+                if (sessions.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 20.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0x33FFA500)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(Color(0x1AFFA500), CircleShape)
+                                            .border(1.dp, Color(0x33FFA500), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Active Sessions",
+                                            tint = Color(0xFFFFA500),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Active Sessions",
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                        Text(
+                                            text = "${sessions.size} running",
+                                            color = Color(0xFFFFA500),
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                }
+                                androidx.compose.material3.IconButton(
+                                    onClick = {
+                                        sessions.forEach { (distro, _) ->
+                                            try {
+                                                val proc = Runtime.getRuntime().exec(arrayOf("kill", "-9", context.filesDir.resolve("nh/sessions/$distro.pid").readText().trim()))
+                                                proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                                            } catch (e: Exception) { /* ignore */ }
+                                        }
+                                        sessionsDir.listFiles()?.forEach { it.delete() }
+                                        // Re-read after cleanup
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Kill All Sessions",
+                                        tint = Color(0xFFFF3333),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            sessions.forEach { (distro, info) ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = distro,
+                                        color = Color(0xFFFFA500),
+                                        fontSize = 12.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = info,
+                                        color = Color.Gray,
+                                        fontSize = 10.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1991,4 +2261,43 @@ fun MainScreen() {
             }
         }
     }
+}
+
+@Composable
+fun BootModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    androidx.compose.material3.Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(6.dp),
+        color = if (selected) Color(0xFF00FF41).copy(alpha = 0.2f) else Color(0xFF12131A),
+        border = BorderStroke(
+            1.dp,
+            if (selected) Color(0xFF00FF41) else Color(0xFF333333)
+        )
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Color(0xFF00FF41) else Color.Gray,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+// Boot mode persistence helpers
+fun saveBootMode(context: android.content.Context, distroId: String, mode: String) {
+    context.getSharedPreferences("boot_modes", android.content.Context.MODE_PRIVATE)
+        .edit()
+        .putString("mode_$distroId", mode)
+        .apply()
+}
+
+fun loadBootMode(context: android.content.Context, distroId: String, default: String = "M"): String {
+    return context.getSharedPreferences("boot_modes", android.content.Context.MODE_PRIVATE)
+        .getString("mode_$distroId", default) ?: default
 }
