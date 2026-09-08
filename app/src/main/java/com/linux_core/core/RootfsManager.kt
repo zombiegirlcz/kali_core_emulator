@@ -1446,7 +1446,6 @@ object RootfsManager {
 
     private fun countFiles(f: File): Int =
         if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1
-}
 
     /**
      * Pulls a distro using a [RemoteDistroScript] from the remote catalog.

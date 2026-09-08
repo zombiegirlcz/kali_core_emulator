@@ -457,6 +457,7 @@ def _build_linux_x11(src_dir):
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
             "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
             "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
+            "-DCMAKE_C_FLAGS=-Ugetdtablesize -D_GNU_SOURCE",
             "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
         ]
     else:

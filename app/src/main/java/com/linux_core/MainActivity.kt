@@ -344,6 +344,7 @@ fun MainScreen() {
     var downloadJob by remember { mutableStateOf<Job?>(null) }
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
     var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
+    var dockerBootMode by remember { mutableStateOf("M") }
     val scope = rememberCoroutineScope()
 
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
@@ -363,8 +364,6 @@ fun MainScreen() {
                 RootfsManager.restoreRootfs(context, uri, selectedDistro).collect { pair ->
                     downloadProgress = pair.first
                     statusText = pair.second
-                    downloadProgress = progress
-                    statusText = status
                 }
                 isExtracted = true
                 Toast.makeText(context, "Restore complete!", Toast.LENGTH_LONG).show()
@@ -2264,11 +2263,8 @@ fun MainScreen() {
             }
         }
     }
-}
 
 
-
-}
 
 
 
