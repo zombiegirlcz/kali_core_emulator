@@ -99,6 +99,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.linux_core.core.Distro
 import com.linux_core.core.RootfsManager
+import com.linux_core.ui.components.BootModeChip
 import com.linux_core.core.DockerImageRef
 import com.linux_core.core.RemoteRootfsCatalog
 import com.linux_core.core.RemoteDistroScript
@@ -359,7 +360,9 @@ fun MainScreen() {
                 statusText = "Restoring from selected file..."
                 downloadProgress = 0
                 isExtracted = false
-                RootfsManager.restoreRootfs(context, uri, selectedDistro).collect { (progress, status) ->
+                RootfsManager.restoreRootfs(context, uri, selectedDistro).collect { pair ->
+                    downloadProgress = pair.first
+                    statusText = pair.second
                     downloadProgress = progress
                     statusText = status
                 }

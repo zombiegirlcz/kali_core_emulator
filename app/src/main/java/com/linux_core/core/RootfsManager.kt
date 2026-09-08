@@ -24,6 +24,7 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.BufferedInputStream
+import java.io.InputStream
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -45,7 +46,7 @@ import com.linux_core.core.DockerRegistryClient
 import com.linux_core.core.RemoteDistroScript
 
 /** Common tar entry handling (whiteouts, symlinks, permissions). */
-private fun processTarEntry(entryFile: File, tarEntry: TarArchiveEntry?, name: String, targetDir: File) {
+private fun processTarEntry(entryFile: File, tarEntry: TarArchiveEntry?, name: String, targetDir: File, inputStream: InputStream? = null) {
     when {
         tarEntry != null && tarEntry.name.contains("/.wh.") -> {
             val baseName = name.substringAfterLast("/")
@@ -79,7 +80,9 @@ private fun processTarEntry(entryFile: File, tarEntry: TarArchiveEntry?, name: S
         else -> {
             entryFile.parentFile?.mkdirs()
             if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
-            FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+            FileOutputStream(entryFile).use { fos ->
+                inputStream?.copyTo(fos)
+            }
             if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
                 entryFile.setExecutable(true, false)
             }
@@ -101,7 +104,7 @@ private fun TarArchiveInputStream.processEntries(targetDir: File) {
         }
         val tarEntry = entry as? TarArchiveEntry
         val name = tarEntry?.name ?: entry.name
-        processTarEntry(entryFile, tarEntry, name, targetDir)
+        processTarEntry(entryFile, tarEntry, name, targetDir, entry)
         entry = nextEntry
     }
 }
@@ -173,7 +176,7 @@ object RootfsManager {
     fun backupDir(context: Context): File =
         File(context.filesDir, "$NH_DISTRO_DIR/backup")
 
-    val DISTROS = listOf(
+    val DISTROS: List<Distro> = listOf(
         Distro(
             id = "kali",
             name = "Kali NetHunter",
@@ -753,7 +756,9 @@ object RootfsManager {
                                 tarEntry?.isDirectory == true -> entryFile.mkdirs()
                                 else -> {
                                     entryFile.parentFile?.mkdirs()
-                                    FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    FileOutputStream(entryFile).use { fos ->
+                inputStream?.copyTo(fos)
+            }
                                     if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
                                         entryFile.setExecutable(true, false)
                                     }
@@ -1200,7 +1205,9 @@ object RootfsManager {
                                 tarEntry?.isDirectory == true -> entryFile.mkdirs()
                                 else -> {
                                     entryFile.parentFile?.mkdirs()
-                                    java.io.FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    java.io.FileOutputStream(entryFile).use { fos ->
+                inputStream?.copyTo(fos)
+            }
                                     if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
                                         entryFile.setExecutable(true, false)
                                     }
@@ -1287,7 +1294,9 @@ object RootfsManager {
                                     // Přepis existujícího souboru: pokud je to symlink, smaž ho
                                     // (FileOutputStream by psal SKRZ symlink do cíle mimo rootfs!")
                                     if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
-                                    FileOutputStream(entryFile).use { tarIn.copyTo(it) }
+                                    FileOutputStream(entryFile).use { fos ->
+                inputStream?.copyTo(fos)
+            }
                                     if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
                                         entryFile.setExecutable(true, false)
                                     }

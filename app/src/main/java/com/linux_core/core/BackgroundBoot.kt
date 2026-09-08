@@ -1,5 +1,6 @@
 package com.linux_core.core
 
+import com.linux_core.core.RootfsManager
 import android.content.Context
 import android.util.Log
 import java.io.File

@@ -270,7 +270,9 @@ private fun extractHeredoc(script: String, targetPath: String): String {
     val escapedTarget = targetPath.replace("/", "\/")
     // Match: cat <<'MARKER' > "$DISTRO_ROOTFS/<target>" ... MARKER
     // Scripts use: cat <<'BOOTSTRAP_EOF' > "$DISTRO_ROOTFS/bootstrap.sh"
-    val pattern = """cat <<'([A-Z_]+)' > "\$DISTRO_ROOTFS/$escapedTarget" .*?\n(.*?)\n\1"""
+    val pattern = """cat <<'([A-Z_]+)' > "\$DISTRO_ROOTFS/$escapedTarget" .*?
+(.*?)
+"""
     val regex = Regex(pattern, RegexOption.DOT_ALL)
     val match = regex.find(script)
     return match?.groupValues?.getOrNull(1)?.trim() ?: ""
