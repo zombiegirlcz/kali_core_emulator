@@ -2263,31 +2263,11 @@ fun MainScreen() {
     }
 }
 
-@Composable
-fun BootModeChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    androidx.compose.material3.Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(6.dp),
-        color = if (selected) Color(0xFF00FF41).copy(alpha = 0.2f) else Color(0xFF12131A),
-        border = BorderStroke(
-            1.dp,
-            if (selected) Color(0xFF00FF41) else Color(0xFF333333)
-        )
-    ) {
-        Text(
-            text = label,
-            color = if (selected) Color(0xFF00FF41) else Color.Gray,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
-    }
+
+
 }
+
+
 
 // Boot mode persistence helpers
 fun saveBootMode(context: android.content.Context, distroId: String, mode: String) {

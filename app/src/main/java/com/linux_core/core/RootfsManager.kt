@@ -131,6 +131,14 @@ private fun extractTarBzip2(source: File, targetDir: File) {
             TarArchiveInputStream(stream).use { it.processEntries(targetDir) }
         }
     }
+    // TarArchiveInputStream preserves original tar permissions, which may not match
+    // the app UID/GID on Android. Ensure extracted files are readable/writable
+    // by the app so subsequent operations (bootstrap, entrypoint, etc.) can write.
+    targetDir.walk().forEach { f ->
+        f.setReadable(true, false)
+        f.setWritable(true, false)
+        if (f.isDirectory) f.setExecutable(true, false)
+    }
 }
 
 /** Extract a plain .tar archive into targetDir (no compression). */
