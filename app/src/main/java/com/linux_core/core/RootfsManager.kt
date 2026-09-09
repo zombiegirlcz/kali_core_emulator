@@ -1568,7 +1568,7 @@ object RootfsManager {
         dst.parentFile?.mkdirs()
         if (src.renameTo(dst)) return true
         return try {
-            src.copyRecursively(dst, overwrite = false)
+            src.copyRecursively(dst as java.io.File, overwrite = false)
             val ok =
                 if (src.isDirectory) {
                     countFiles(src) == countFiles(dst)
