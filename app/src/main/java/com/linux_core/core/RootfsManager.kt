@@ -424,7 +424,7 @@ object RootfsManager {
         val tempFile = File(cacheDir, distro.tarFileName + TEMP_SUFFIX)
 
         var success = true
-        if (rootfsDir.exists()) success = kotlinDeleteRecursively(rootfsDir) && success
+        if (rootfsDir.exists()) success = rootfsDir.kotlinDeleteRecursively() && success
         if (archiveFile.exists()) success = archiveFile.delete() && success
         if (tempFile.exists()) success = java.io.File(tempFile.absolutePath).delete() && success
         return success
@@ -792,7 +792,7 @@ object RootfsManager {
             try {
                 // Rename existing rootfs as .bak safety net
                 if (rootfsDir.exists()) {
-                    if (oldBackupDir.exists()) kotlinDeleteRecursively(oldBackupDir)
+                    if (oldBackupDir.exists()) oldBackupDir.kotlinDeleteRecursively()
                     rootfsDir.renameTo(oldBackupDir)
                     Log.i("RootfsManager", "Existing rootfs moved to ${oldBackupDir.absolutePath}")
                 }
@@ -893,7 +893,7 @@ object RootfsManager {
 
                 // Remove .bak only on success
                 if (oldBackupDir.exists()) {
-                    kotlinDeleteRecursively(oldBackupDir)
+                    oldBackupDir.kotlinDeleteRecursively()
                     Log.i("RootfsManager", "Old rootfs .bak removed")
                 }
 
@@ -902,7 +902,7 @@ object RootfsManager {
             } catch (e: Exception) {
                 // Rollback — move .bak back
                 Log.e("RootfsManager", "Restore failed, rolling back: ${e.message}")
-                if (rootfsDir.exists()) kotlinDeleteRecursively(rootfsDir)
+                if (rootfsDir.exists()) rootfsDir.kotlinDeleteRecursively()
                 if (oldBackupDir.exists()) oldBackupDir.renameTo(rootfsDir)
                 throw e
             } finally {
@@ -1577,13 +1577,13 @@ object RootfsManager {
                     dst.exists() && dst.length() == src.length()
                 }
             if (ok) {
-                kotlinDeleteRecursively(src)
+                src.kotlinDeleteRecursively()
                 true
             } else {
                 Log.e("RootfsManager", "safeMove: verification failed, keeping source: $src")
                 // Smaž částečný cíl, aby příští pokus mohl začít znovu
                 try {
-                    if (dst.exists()) kotlinDeleteRecursively(dst)
+                    if (dst.exists()) dst.kotlinDeleteRecursively()
                 } catch (_: Exception) {
                 }
                 false
@@ -1593,7 +1593,7 @@ object RootfsManager {
             // Částečný cíl smaž, aby další pokus začínal z čistého stavu
             // (jinak by existující neprázdný dst blokoval migraci navždy)
             try {
-                if (dst.exists()) kotlinDeleteRecursively(dst)
+                if (dst.exists()) dst.kotlinDeleteRecursively()
             } catch (_: Exception) {
             }
             false
