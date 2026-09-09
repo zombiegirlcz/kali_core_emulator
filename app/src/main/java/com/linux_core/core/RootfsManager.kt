@@ -1574,7 +1574,7 @@ object RootfsManager {
                 Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
             } else {
                 dst.mkdirs()
-                Files.walk(src.toPath()).forEach { source ->
+                Files.walk(src.toPath()).asSequence().forEach { source ->
                     val target = dst.toPath().resolve(src.toPath().relativize(source))
                     if (source.toFile().isDirectory) {
                         target.toFile().mkdirs()
