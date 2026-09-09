@@ -2501,24 +2501,3 @@ fun MainScreen() {
         }
     }
 }
-
-// Boot mode persistence helpers
-fun saveBootMode(
-    context: android.content.Context,
-    distroId: String,
-    mode: String,
-) {
-    context.getSharedPreferences("boot_modes", android.content.Context.MODE_PRIVATE)
-        .edit()
-        .putString("mode_$distroId", mode)
-        .apply()
-}
-
-fun loadBootMode(
-    context: android.content.Context,
-    distroId: String,
-    default: String = "M",
-): String {
-    return context.getSharedPreferences("boot_modes", android.content.Context.MODE_PRIVATE)
-        .getString("mode_$distroId", default) ?: default
-}
