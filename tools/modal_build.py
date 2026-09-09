@@ -71,7 +71,7 @@ NDK_DIR = f"/opt/android-ndk-{NDK_VERSION}"
 base_image = (
     modal.Image.from_registry("eclipse-temurin:21-jdk")
     .apt_install("unzip", "wget", "git", "git-lfs", "file", "rsync", "python3", "python3-pip", "python-is-python3",
-                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "build-essential",
+                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "zlib1g-dev", "build-essential",
                   "gcc-aarch64-linux-gnu", "g++-aarch64-linux-gnu", "libc6-dev-arm64-cross")
     .run_commands(
         "mkdir -p /opt/android-sdk/cmdline-tools",
