@@ -1547,6 +1547,16 @@ object RootfsManager {
      * Bezpečný přesun: nikdy nepřepíše existující neprázdný cíl,
      * zdroj maže až po ověření úspěchu.
      */
+
+    private fun copyRecursive(src: File, dst: File) {
+        if (src.isDirectory) {
+            dst.mkdirs()
+            src.listFiles()?.forEach { copyRecursive(it, File(dst, it.name)) }
+        } else {
+            src.copyTo(dst, overwrite = false)
+        }
+    }
+
     private fun safeMove(
         src: File,
         dst: File,
@@ -1568,7 +1578,7 @@ object RootfsManager {
         dst.parentFile?.mkdirs()
         if (src.renameTo(dst)) return true
         return try {
-            kotlin.io.copyRecursively(src, dst, false)
+            copyRecursive(src, dst)
             val ok =
                 if (src.isDirectory) {
                     countFiles(src) == countFiles(dst)
