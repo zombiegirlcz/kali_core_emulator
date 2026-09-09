@@ -1549,17 +1549,6 @@ object RootfsManager {
      * zdroj maže až po ověření úspěchu.
      */
 
-    private fun copyDirectory(src: File, dst: File) {
-        src.listFiles()?.forEach { child ->
-            val childDst = File(dst, child.name)
-            if (child.isDirectory) {
-                copyDirectory(child, childDst)
-            } else {
-                Files.copy(child.toPath(), childDst.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }
-    }
-
     private fun safeMove(
         src: File,
         dst: File,
@@ -1585,7 +1574,14 @@ object RootfsManager {
                 Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
             } else {
                 dst.mkdirs()
-                copyDirectory(src, dst)
+                Files.walk(src.toPath()).forEach { source ->
+                    val target = dst.toPath().resolve(src.toPath().relativize(source))
+                    if (source.toFile().isDirectory) {
+                        target.toFile().mkdirs()
+                    } else {
+                        Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+                    }
+                }
             }
             val ok =
                 if (src.isDirectory) {
