@@ -1568,7 +1568,7 @@ object RootfsManager {
         dst.parentFile?.mkdirs()
         if (src.renameTo(dst)) return true
         return try {
-            src.copyRecursively(dst as java.io.File, overwrite = false)
+            src.copyRecursively(dst, overwrite = false)
             val ok =
                 if (src.isDirectory) {
                     countFiles(src) == countFiles(dst)
@@ -1576,13 +1576,13 @@ object RootfsManager {
                     dst.exists() && dst.length() == src.length()
                 }
             if (ok) {
-                kotlin.io.deleteRecursively(src)
+                src.walkTopDown().forEach { it.delete() }
                 true
             } else {
                 Log.e("RootfsManager", "safeMove: verification failed, keeping source: $src")
                 // Smaž částečný cíl, aby příští pokus mohl začít znovu
                 try {
-                    if (dst.exists()) kotlin.io.deleteRecursively(dst)
+                    if (dst.exists()) dst.walkTopDown().forEach { it.delete() }
                 } catch (_: Exception) {
                 }
                 false
@@ -1592,7 +1592,7 @@ object RootfsManager {
             // Částečný cíl smaž, aby další pokus začínal z čistého stavu
             // (jinak by existující neprázdný dst blokoval migraci navždy)
             try {
-                if (dst.exists()) kotlin.io.deleteRecursively(dst)
+                if (dst.exists()) dst.walkTopDown().forEach { it.delete() }
             } catch (_: Exception) {
             }
             false
