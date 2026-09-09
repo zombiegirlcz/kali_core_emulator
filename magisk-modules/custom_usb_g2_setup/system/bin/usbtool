@@ -98,7 +98,13 @@ ensure_g2_ready() {
     if [ ! -L "$GADGET_ROOT/g2/configs/c.1/hid.usb0" ] || \
        [ ! -L "$GADGET_ROOT/g2/configs/c.1/mass_storage.0" ]; then
         echo "g2 není nakonfigurovaný — spouštím usb_g2_setup.sh…"
-        sh "$MODDIR/usb_g2_setup.sh"
+        SETUP_SCRIPT="$MODDIR/usb_g2_setup.sh"
+        if [ -f "$SETUP_SCRIPT" ]; then
+            sh "$SETUP_SCRIPT"
+        else
+            echo "CHYBA: $SETUP_SCRIPT nenalezen" >&2
+            exit 1
+        fi
         sleep 1
     fi
 }
