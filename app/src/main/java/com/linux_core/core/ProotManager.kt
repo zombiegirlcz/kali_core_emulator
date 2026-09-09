@@ -195,32 +195,6 @@ object ProotManager {
          * typically has root (0:0) ownership. Without this fix, guest-created files
          * would be owned by root and inaccessible from the host.
          */
-        fun fixUidGidMapping(
-            context: Context,
-            rootfsDir: File,
-        ) {
-            val appUid = android.os.Process.myUid()
-            val appGid = appUid
-            val etcDir = File(rootfsDir, "etc")
-            if (!etcDir.exists()) return
-
-            // /etc/passwd — replace all UIDs and GIDs with app's
-            fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
-            // /etc/group — replace all GIDs with app's
-            fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
-            // /etc/shadow — replace all UIDs with app's (for passwd field)
-            fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
-
-            Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
-        }
-
-        /**
-         * Replace UID/GID values in passwd/group/shadow files.
-         *
-         * passwd format: name:passwd:UID:GID:GECOS:home:shell
-         * group format:  name:passwd:GID:user_list
-         * shadow format: name:passwd:UID:...
-         */
         fun fixUidGidFile(
             file: File,
             appUid: Int,
@@ -254,6 +228,32 @@ object ProotManager {
             file.setReadable(true, false)
             file.setWritable(true, false)
         }
+        fun fixUidGidMapping(
+            context: Context,
+            rootfsDir: File,
+        ) {
+            val appUid = android.os.Process.myUid()
+            val appGid = appUid
+            val etcDir = File(rootfsDir, "etc")
+            if (!etcDir.exists()) return
+
+            // /etc/passwd — replace all UIDs and GIDs with app's
+            fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
+            // /etc/group — replace all GIDs with app's
+            fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
+            // /etc/shadow — replace all UIDs with app's (for passwd field)
+            fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
+
+            Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
+        }
+
+        /**
+         * Replace UID/GID values in passwd/group/shadow files.
+         *
+         * passwd format: name:passwd:UID:GID:GECOS:home:shell
+         * group format:  name:passwd:GID:user_list
+         * shadow format: name:passwd:UID:...
+         */
         // Fáze 2: sysdata/shm + rootfs permission fixupy
         setupFakeSysdata(context, rootfsDir, distroId)
         fixRootfsPermissions(context, rootfsDir)
