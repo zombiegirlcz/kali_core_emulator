@@ -2,25 +2,28 @@
 # mbuild — NetHunter build pipeline
 # Usage: zsh mbuild <command>
 #
-# UPLOAD (vždy samostatně, před buildem):
-#   upload       = rsync bez --delete (jen přidá/aktualizuje)
-#   upload_force = rsync --delete (plná synchronizace, smaže co není lokálně)
-#   upload_clean = smaže src + gradle-cache na Volume (builds zůstávají)
+# SYNC (vždy samostatně, před buildem):
+#   sync  = git clone/pull PŘÍMO Z GITHUBU na Modal straně (žádný upload z telefonu)
+#   clean = smaže src + gradle-cache na Volume (builds zůstávají)
 #
-# BUILD (předpokládá, že upload už proběhl):
-#   all       = native compile + pull assets + APK build
+# Než spustíš sync, musíš mít lokální commity na GitHubu:
+#   git add -A && git commit -m "..." && git push
+#
+# BUILD (předpokládá, že sync už proběhl):
+#   all       = sync + SMART inkrementální build (proot/native/gradle, -f=force)
 #   native    = native compile + pull assets
 #   build     = APK build + pull APK
 #   usrtools  = native compile (usrtools) + pull assets
 #   proot     = proot static build + pull assets
 #
-# PRAVIDLO: Upload se VŽDY dělá zvlášť. Build nikdy nevolá upload.
-# Zdroj pravdy pro native binárky je Volume (build_native je tam kompiluje).
-# Po native buildu se dělá pull_full_assets zpět do lokálního repa.
+# PRAVIDLO: Sync se VŽDY dělá zvlášť. Build nikdy nevolá sync.
+# Zdroj pravdy je teď GitHub, ne lokální disk. Native binárky se po
+# build_native pořád stahují zpět do lokálního repa (pull_full_assets),
+# musíš je jen commitnout + pushnout, ať je má i GitHub.
 set -e
 set -o pipefail
 
-SRC="${KALI_PROJECT_DIR:-.}"
+SRC="${KALI_PROJECT_DIR:-$PWD}"
 CMD="${1:-}"
 
 cd "$SRC"
@@ -28,46 +31,56 @@ cd "$SRC"
 # ── Pull celého assets z Volume do lokálního app/src/main/assets ──
 pull_full_assets() {
     echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
-    if modal volume get --force -v kali-build-data "src/app/src/main/assets" "app/src/main/" >/dev/null 2>&1; then
-        echo "    [OK] assets/ ($(du -sh app/src/main/assets 2>/dev/null | cut -f1))"
-        echo "    [OK] su_daemon ($(stat -c%s app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
-        echo "    [OK] su_wrapper ($(stat -c%s app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
-        echo "    [OK] usb_bridge ($(stat -c%s app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
+    if modal volume get --force  kali-build-data src/app/src/main/assets $SRC/app/src/main/ >/dev/null 2>&1; then
+        echo "    [OK] assets/ ($(du -sh $SRC/app/src/main/assets 2>/dev/null | cut -f1))"
+        echo "    [OK] su_daemon ($(stat -c%s $SRC/app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
+        echo "    [OK] su_wrapper ($(stat -c%s $SRC/app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
+        echo "    [OK] usb_bridge ($(stat -c%s $SRC/app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
+        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/lib/linux-x11 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
+    fi
+    echo "  -> pull magisk-modules z Volume -> magisk-modules/"
+    if modal volume get --force  kali-build-data src/magisk-modules $SRC/ >/dev/null 2>&1; then
+        echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
+        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
+    else
+        echo "    [WARN] magisk-modules nenalezen na Volume"
     fi
 }
 
 case "$CMD" in
-    # ── UPLOAD příkazy ──
-    upload)
-        echo "=== UPLOAD (basic, bez --delete) ==="
-        modal run modal_build.py::upload_basic 2>&1 | tail -5
+    # ── SYNC příkazy ──
+    sync)
+        echo "=== SYNC (git clone/pull z GitHubu) ==="
+        modal run modal_build.py::sync 2>&1 | tail -10
         ;;
-    upload_force)
-        echo "=== UPLOAD FORCE (rsync --delete) ==="
-        modal run modal_build.py::upload_force 2>&1 | tail -5
-        ;;
-    upload_clean)
-        echo "=== UPLOAD CLEAN (smaže src + gradle-cache) ==="
-        modal run modal_build.py::upload_clean 2>&1 | tail -5
+    clean)
+        echo "=== CLEAN (smaže src + gradle-cache na Volume) ==="
+        modal run modal_build.py::clean 2>&1 | tail -5
         ;;
 
-    # ── BUILD příkazy (předpokládají, že upload proběhl) ──
+    # ── BUILD příkazy (předpokládají, že sync proběhl) ──
     all)
-        echo "=== FULL BUILD (native + APK) ==="
-        echo "  -> NDK compile"
-	modal run modal_build.py::build_proot_static > build.log | cat
-        modal run modal_build.py::build_native >> build.log | cat
-        echo "  -> pull CELÝ assets ihned po enviroment buildu"
+        FORCE=""
+        for a in "$@"; do
+            case "$a" in -f|--force) FORCE="--force";; esac
+        done
+        echo "=== SMART BUILD (sync + inkrementální proot/native/gradle)${FORCE:+ [FORCE]} ==="
+        modal run modal_build.py::sync > build.log | cat
+        if [ -n "$FORCE" ]; then
+            modal run modal_build.py::smart_build --force >> build.log | cat
+        else
+            modal run modal_build.py::smart_build >> build.log | cat
+        fi
+        echo "  -> pull CELÝ assets"
         pull_full_assets
-        echo "  -> Gradle build"
-        modal run modal_build.py::build >> build.log | cat
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1
+        echo "  -> APK download"
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
         ;;
+
     native)
-        echo "=== NATIVE BUILD ==="
-        echo "  -> NDK compile"
+        echo "=== NATIVE BUILD ==="        echo "  -> NDK compile"
         modal run modal_build.py::build_native > build.log | cat
         echo "  -> pull CELÝ assets"
         pull_full_assets
@@ -76,9 +89,21 @@ case "$CMD" in
         echo "=== APK BUILD ==="
         echo "  -> Gradle build"
         modal run modal_build.py::build > build.log | cat
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download 2>&1 || true
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
         ;;
-   # usrtools)
+
+    smart)
+        echo "=== SMART BUILD (inkrementální proot/native/gradle) ==="
+        modal run modal_build.py::smart_build > build.log | cat
+        echo "  -> pull CELÝ assets"
+        pull_full_assets
+        echo "  -> APK download"
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
+        ;;
+     pull)
+	pull_full_assets
+	;;
+# usrtools)
     #    echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
      #   echo "  -> native build (usrtools)"
       #  modal run modal_build.py::build_native > build.log | cat
@@ -93,7 +118,7 @@ case "$CMD" in
        # pull_full_assets
         #;;
     *)
-        echo "Usage: zsh mbuild [upload|upload_force|upload_clean|all|native|build|usrtools|proot]"
+        echo "Usage: zsh mbuild [sync|clean|all|native|build|usrtools|proot]"
         exit 1
         ;;
 esac

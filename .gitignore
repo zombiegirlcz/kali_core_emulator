@@ -7,7 +7,7 @@ shizuku/
 shi/
 arm64/
 .gradle
-
+prompt.md
 /captures
 /platform-tools
 
@@ -22,7 +22,7 @@ local.properties
 .idea/runConfigurations.xml
 *.iml
 .idea/
-
+*.out
 # OS specific
 .DS_Store
 Thumbs.db
@@ -46,7 +46,7 @@ docs/plan-1.md
 /usr/
 /kali-arm64/
 /kali-armhf/
-
+!.pi/**/**
 # Python environment
 __pycache__/
 *.pyc
@@ -59,7 +59,7 @@ docs/prompt.md
 # Local backup archive
 ignore-archi
 v.tar
-
+!tools/**/**
 # IDE, AI tools, and plugin directories
 /.ai/
 /.explyt/
@@ -91,20 +91,24 @@ window_dump_ok.xml
 window_dump.xml
 *.logcat
 *.apk
-*.tar
+*.tar*
 *.lock
 *.xml
-*.py
+!*.py
 *.zip
-*.sh
+!*.c
+!*.h
+!*.am
 !app/src/main/assets/*.sh
 *.bat
 *.ps1
 *.json
 *.mdmp
 *.txt
+!app/src/main/linux-x11/**
 *.png
 *.log
+*.zip
 # Exemptions
 !app/src/main/res/xml/*.xml
 !windows_app/
@@ -140,16 +144,19 @@ app/src/main/assets/certs/google_attestation_root.key
 # Usr tools generated binaries (nano/rsync/sed/rg, usb tools, static proot)
 # — zdroj pravdy je Volume (build_native); lokálně se stahuji přes
 # pull_full_assets. Necommitovat build artefakty.
-# VÝJIMKA (boot refactor fáze 1): repo-owned soubory přesunuté z assets/bin/:
+!app/src/main/assets/**
+!app/src/main/assets/
 !app/src/main/assets/usr/**
-!app/src/main/assets/usr/bin/
 !app/src/main/assets/usr/bin/**
 !app/src/main/assets/usr/bin/terminalmap
 !app/src/main/assets/usr/bin/ifconfig
 !app/src/main/assets/usr/bin/zkill
 !app/src/main/assets/usr/bin/boot
-!tools/**
-!magisk-modules/**
+!app/src/main/assets/usr/lib/linux-x11
+!app/src/main/assets/usr/bin/linux-x11
+!tools/modal_build.py
+magisk-modules/*.zip
+!magisk-modules/*.sh
 # Old build artifacts
 app/build_old/
 
@@ -159,3 +166,6 @@ format_raw_commands.py
 refactor_motd_table.py
 .worktrees/
 .reď/
+
+# Stray launcher stage (canonical copy lives in /tmp/launcher_stage)
+_launcher_stage/

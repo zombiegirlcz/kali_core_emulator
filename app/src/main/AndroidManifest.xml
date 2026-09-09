@@ -293,6 +293,11 @@
             </intent-filter>
         </receiver>
 
+        <!-- Midnight auto-pull of daily rootfs + retry on failure -->
+        <receiver
+            android:name=".core.RemoteRootfsSyncReceiver"
+            android:exported="false" />
+
         <!-- App-to-app Binder most pro kali_ai_assistant (signature permission).
          !   Volající musí být podepsán stejným klíčem, jinak SecurityException. -->
         <service

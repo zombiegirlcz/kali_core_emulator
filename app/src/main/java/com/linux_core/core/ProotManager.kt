@@ -3,7 +3,9 @@ package com.linux_core.core
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.InputStream
 import java.nio.file.Files
+import java.security.MessageDigest
 
 class ProotConfig(
     val command: Array<String>,
@@ -16,6 +18,13 @@ class ProotConfig(
 object ProotManager {
     private const val TAG = "ProotManager"
     private const val NL = "\n" // Force Unix line endings
+
+    // (findSu/SU_PATHS removed: com.linux_core and com.kali.aiassistant declare
+    // the same android:sharedUserId and are signed with the same key, so they
+    // already share a Linux UID. The guest therefore launches as the app UID
+    // with PRoot `-0` fake-root and binds /data/user/0/com.kali.aiassistant
+    // directly -- no host root (su -c) needed. PRoot bind mounts run inside the
+    // app's own mount namespace and do not require CAP_SYS_ADMIN.)
 
     // Host-side usr tools (sed/rsync/nano/rg + libncursesw + zkill) — verze deploye.
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
@@ -107,7 +116,7 @@ object ProotManager {
         createMasterScript(homeDir, distroId, hasRoot)
         createEntrypointScript(homeDir)
         deployVpnHelpDocument(context, homeDir)
-        deployWelcomeProfile(rootfsDir, distroId)
+        deployWelcomeProfile(context, rootfsDir, distroId)
         val userHomeDir = File(rootfsDir, "home/$distroId")
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(context, userHomeDir)
@@ -142,6 +151,7 @@ object ProotManager {
             if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
             if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
             if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
+            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
         }
 
         val envVars = mutableListOf(
@@ -168,8 +178,15 @@ object ProotManager {
         }
 
         val prootBin = File(context.filesDir, "usr/bin/proot")
+        // Cross-app bind (bind_aiapp): com.linux_core and com.kali.aiassistant
+        // share a UID via android:sharedUserId, so the app already has access to
+        // that data dir and PRoot binds it inside the app's mount namespace --
+        // NO host root (su -c) needed. The guest stays in the app UID (PRoot `-0`
+        // fake-root). If the bind source is ever inaccessible, PRoot warns
+        // ("can't sanitize binding") and continues without it.
+        val finalCommand = fullCommand
         return ProotConfig(
-            command = fullCommand.toTypedArray(),
+            command = finalCommand.toTypedArray(),
             cwd = rootDir.absolutePath,
             env = envVars.toTypedArray(),
             prootPath = prootBin.absolutePath,
@@ -198,18 +215,8 @@ object ProotManager {
 
         for (name in names) {
             val target = File(targetDir, name)
-            // Už existuje (deploynuto nebo ručně umístěno) — přeskoč, nepřepisuj.
-            if (target.exists() && target.length() > 0L) {
-                if (executable) target.setExecutable(true, false)
-                continue
-            }
             try {
-                context.assets.open("$assetDir/$name").use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                if (executable) target.setExecutable(true, false)
-                target.setReadable(true, false)
-                Log.i(TAG, "Deployed host tool $assetDir/$name (${target.length()} B)")
+                deployIfChanged(context, "$assetDir/$name", target, executable)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to deploy host tool $assetDir/$name: ${e.message}")
             }
@@ -217,6 +224,47 @@ object ProotManager {
         if (version.isNotEmpty()) {
             File(targetDir, ".version").writeText(version)
         }
+    }
+
+    private fun assetMd5(context: Context, assetPath: String): String {
+        val md = MessageDigest.getInstance("MD5")
+        context.assets.open(assetPath).use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } >= 0) {
+                md.update(buffer, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Deploy asset only if its hash changed (skip overwrite when identical).
+     * Sidecar file `<target>.md5` stores last deployed hash.
+     */
+    private fun deployIfChanged(
+        context: Context,
+        assetPath: String,
+        target: File,
+        executable: Boolean = false
+    ) {
+        val newHash = assetMd5(context, assetPath)
+        val hashFile = File(target.absolutePath + ".md5")
+        val currentHash = if (hashFile.exists()) hashFile.readText().trim() else ""
+
+        if (currentHash == newHash && target.exists() && target.length() > 0L) {
+            Log.i(TAG, "Skip $target (hash unchanged)")
+            return
+        }
+
+        target.delete()
+        context.assets.open(assetPath).use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        if (executable) target.setExecutable(true, false)
+        target.setReadable(true, false)
+        hashFile.writeText(newHash)
+        Log.i(TAG, "Deployed $target ($assetPath, md5=$newHash, ${target.length()} B)")
     }
 
     /**
@@ -886,6 +934,15 @@ object ProotManager {
             }
         }
 
+        // Deploy linux-x11 X server binary to guest usr/lib
+        // Force overwrite: assets may contain updated arch (e.g. x86 -> arm64).
+        deployIfChanged(
+            context,
+            "usr/bin/linux-x11",
+            File(rootfsDir, "usr/lib/linux-x11"),
+            executable = true
+        )
+
         // Initialize USB bridge: create socket path INSIDE rootfs tmp
         // so it's visible from PRoot as /tmp/usb_bridge.sock
         val usbBridgeSocket = File(rootfsDir, "tmp/usb_bridge.sock")
@@ -1155,7 +1212,7 @@ object ProotManager {
         }
     }
 
-    private fun deployWelcomeProfile(rootfsDir: File, distroId: String) {
+    private fun deployWelcomeProfile(context: Context, rootfsDir: File, distroId: String) {
         val profileDir = File(rootfsDir, "etc/profile.d")
         if (!profileDir.exists()) profileDir.mkdirs()
 
@@ -1236,7 +1293,7 @@ object ProotManager {
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;33m   🖥️  DESKTOP\\033[0m\"")
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (noVNC :6080)\"")
+            appendLine("echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (X server :1 → external X11 launcher)\"")
             appendLine()
             appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
             appendLine("echo \"  \\033[1;33m   </>  EDITOR (VS Code)\\033[0m\"")
@@ -1269,32 +1326,23 @@ object ProotManager {
         val motdDir = File(rootfsDir, "etc")
         if (!motdDir.exists()) motdDir.mkdirs()
 
+        // Deploy MOTD assets to guest /etc/
+        context.assets.open("motd-kali").use { src -> File(motdDir, "motd-kali").outputStream().use { dst -> src.copyTo(dst) } }
+        context.assets.open("motd-parrot").use { src -> File(motdDir, "motd-parrot").outputStream().use { dst -> src.copyTo(dst) } }
+
         val motd = StringBuilder()
         motd.append(NL)
 
         if (isParrot) {
-            motd.append("  \u001b[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\u001b[0m").append(NL)
-            motd.append("  \u001b[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\u001b[0m").append(NL)
-            motd.append("  \u001b[1;32m   NetHunter AI Operator v4.1\u001b[0m").append(NL)
-            motd.append("  \u001b[1;32m      Parrot OS Security\u001b[0m").append(NL)
+            val motdParrot = File(rootfsDir, "etc/motd-parrot").readText()
+            motd.append(NL)
+            motd.append(motdParrot)
         } else {
-            motd.append("  \u001b[1;34m##################################################\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88      a8P         db        88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88    .88'         d88b       88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88   88'          d8''8b      88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88 d88           d8'  '8b     88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88     '88.   d8'        '8b  88        88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m##                                              ##\u001b[0m").append(NL)
-            motd.append("  \u001b[1;34m####  ############# NetHunter ####################\u001b[0m").append(NL)
+            val motdKali = File(rootfsDir, "etc/motd-kali").readText()
+            motd.append(NL)
+            motd.append(motdKali)
         }
+
 
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
@@ -1338,7 +1386,7 @@ object ProotManager {
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;33m   🖥️  DESKTOP\u001b[0m").append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     nh desktop start|stop|status\u001b[0m  XFCE4 GUI (noVNC :6080)").append(NL)
+        motd.append("  \u001b[0;33m     nh desktop start|stop|status\u001b[0m  XFCE4 GUI (X server :1 → external X11 launcher)").append(NL)
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
         motd.append("  \u001b[1;33m   </>  EDITOR (VS Code)\u001b[0m").append(NL)

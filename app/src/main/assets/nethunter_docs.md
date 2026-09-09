@@ -55,6 +55,8 @@ nh <kategorie> <akce> [argumenty]
 
 **Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `usb`, `distro`, `help`, `list`
 
+> **Desktop (XFCE4):** hostitelská appka (`com.linux_core`) pouze spouští X server (`nh desktop start`, display `:1` na TCP 6000). Samotné vykreslování GUI běží v samostatné X11 launcher aplikaci (`com.linux_core.xlauncher`) — in-app WebView/noVNC renderoval byl odstraněn.
+
 **Příklady:**
 ```bash
 nh list                          # seznam všech příkazů
@@ -101,7 +103,7 @@ Od verze 4.2-MITM-LOG-FIX je implementován **root bridge** přes hostitelský M
 - `/usr/local/bin/su` a `/usr/local/bin/sudo` jsou symlinky (nebo kopie) na `su_wrapper`.
 - `su_wrapper` komunikuje přes Unix socket s `su_daemon` (běží na hostu jako root v `filesDir/ipc/magisk_daemon.sock`, s bind do `/run/host_ipc`).
 - Původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` jsou přejmenovány na `.orig` zálohy.
-- **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli**. Místo toho znovu vstupuje do PRoot sandboxu jako skutečný root: `launcher.sh -- <příkaz>` (raw-exec režim, tokeny předané verbatim) → příkaz běží uvnitř guestu s UID 0. Pokud daemon nemá launcher path → **fail-closed** (exit 126), nikdy se nic nespustí na hostu.
+- **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli**. Místo toho znovu vstupuje do PRoot sandboxu jako skutečný root: `boot -- <příkaz>` (univerzální launcher `assets/usr/bin/boot`; raw-exec režim, tokeny předané verbatim) → příkaz běží uvnitř guestu s UID 0. Pokud daemon nemá launcher path → **fail-closed** (exit 126), nikdy se nic nespustí na hostu.
 - Po dokončení příkazu daemon automaticky opraví vlastnictví vytvořených souborů (viz níže).
 
 ### CLI

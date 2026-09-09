@@ -231,6 +231,7 @@ class FloatingTerminalService : Service() {
         }
         session = null
         isShowing = false
+        @Suppress("DEPRECATION")
         stopForeground(true)
         stopSelf()
     }
@@ -264,6 +265,7 @@ class FloatingTerminalService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = prefs.getInt("x", 20)
             y = prefs.getInt("y", 120)
+            @Suppress("DEPRECATION")
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
         windowParams = params
@@ -525,6 +527,7 @@ class FloatingTerminalService : Service() {
             terminalView?.let { v ->
                 v.requestFocus()
                 val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                @Suppress("DEPRECATION")
                 imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
             }
         }

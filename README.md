@@ -90,7 +90,7 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh device scroll forward\|backward` | device | Scroll the active view | `nh device scroll forward` |
 | `nh device global back\|home\|recents` | device | Global device action | `nh device global home` |
 | `nh api share on\|off\|status` | api | Expose API externally (0.0.0.0 vs 127.0.0.1) | `nh api share on` |
-| `nh desktop start\|stop\|status` | desktop | Control noVNC XFCE4 desktop | `nh desktop start` |
+| `nh desktop start\|stop\|status` | desktop | Control XFCE4 desktop (rendered by external X11 launcher) | `nh desktop start` |
 | `nh fix pkg <name>` | fix | Fix a stuck post-install script | `nh fix pkg libc6` |
 | `nh fix auto` | fix | Auto-fix all broken packages | `nh fix auto` |
 | `nh fix permission <path>` | fix | Fix file ownership after real-root (su_daemon) commands | `nh fix permission /root/dir` |
@@ -233,7 +233,7 @@ To track the state of the guest container, the following sentinel files are mana
 - `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
 
 #### 3. Execution Entrypoints & Scripts
-- **`launcher.sh`** (Android Host): A shell script generated dynamically in the app's files directory. It sets environment variables (`HOME=/root`, `USER=root`, `PATH`, `TERM=xterm-256color`, `LANG=C.UTF-8`), performs diagnostics, checks for dynamic loader combinations (`proot` + `loader` + `libtalloc.so.2` vs. standalone), and launches the guest shell with appropriate flag mounts (`-v 0 --kill-on-exit --link2symlink -0`).
+- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, and launches the guest shell with flag mounts (`-v 0 --kill-on-exit -0 --link2symlink --sysvipc`). It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
 - **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
 - **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
 
@@ -283,7 +283,7 @@ Od verze **4.2-MITM-LOG-FIX** implementuje aplikace **root bridge**: příkazy `
 
 1. `ProotManager.deploySuBridge` symlinkuje `/usr/local/bin/su` a `/usr/local/bin/sudo` → `su_wrapper` (fallback: kopie; `ln` → `/system/bin/ln`) a přejmenuje původní `/usr/bin/su`, `/bin/su`, `/usr/bin/sudo` na `.orig` zálohy.
 2. `su_wrapper` detekuje invoked name (`sudo`/`su`/`su_wrapper`), odešle skutečné argumenty (nikdy svůj argv[0]) přes Unix socket daemonovi.
-3. **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli** (dříve `chroot` + `setresuid` + `execvp` — při chybějícím rootfs běžel bez confinementu, což mohlo zasáhnout host). Místo toho **znovu vstupuje do PRoot sandboxu jako skutečný root** přes `launcher.sh -- <příkaz>` (raw-exec režim; tokeny předané verbatim, žádný shell re-quoting). Bez launcheru → **fail-closed** (exit 126). `deny_command` blocklist zůstává.
+3. **Bezpečnostní model (2026-08-14):** daemon příkaz **NIKDY nespouští přímo na hostiteli** (dříve `chroot` + `setresuid` + `execvp` — při chybějícím rootfs běžel bez confinementu, což mohlo zasáhnout host). Místo toho **znovu vstupuje do PRoot sandboxu jako skutečný root** přes `boot -- <příkaz>` (univerzální launcher v `assets/usr/bin/boot`; raw-exec režim; tokeny předané verbatim, žádný shell re-quoting). Bez launcheru → **fail-closed** (exit 126). `deny_command` blocklist zůstává.
 4. `startDaemon` nejdřív dělá `pkill -f su_daemon` (vyčištění stale instancí), smaže staré socket/pid soubory a loguje do `ipc/su_daemon.log`; `stopDaemon` dělá `pkill -f su_daemon`.
 
 ### CLI
@@ -407,7 +407,7 @@ This release introduces UI modularity improvements and advanced resource monitor
 
 ### 1. Draggable & Minimized Session Drawer
 - **Clean CLI View:** Automatically hides the top navigation bar in CLI mode to maximize vertical terminal space. Added a floating corner hamburger button (`☰`) to open the session panel.
-- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast VNC GUI launcher. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
+- **Peek & Expand Gesture:** Launches the drawer in a minimized `70dp` view containing only distro emojis (`🐉`/`🦜`) and a fast launcher for the external X11 desktop. Resizing is handled by dragging a right-edge handle, expanding the drawer to a full `280dp` layout with auto-snapping on release.
 
 ### 2. Live Resource & RAM Telemetry
 - **Total System RAM:** Displays real-time total and used system memory in the expanded drawer header (e.g. `[RAM: 3.4 GB / 8.0 GB]`).

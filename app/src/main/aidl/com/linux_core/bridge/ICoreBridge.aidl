@@ -17,4 +17,7 @@ interface ICoreBridge {
     String getWifi();
     String getLocation();
     String getStatus(); // {"bridge_version":1,"core_version":"..."}
+
+    /** Vrací JSON pole nainstalovaných distrí (podadresáře nh/distro/, docker jako "docker/<image>"). */
+    String listDistros();
 }

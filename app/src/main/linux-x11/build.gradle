@@ -1,0 +1,53 @@
+import org.gradle.api.artifacts.ProjectDependency
+
+apply plugin: 'com.android.library'
+apply from: 'version.gradle'
+
+rootProject.subprojects.each { p -> if (p != project) project.evaluationDependsOn(p.path) }
+
+// The application module that actually ships this library, found by real
+// dependency relationship rather than "has the application plugin" (e.g.
+// shell-loader also applies com.android.application, but isn't our host).
+def hostProjects = rootProject.subprojects.findAll { p ->
+    p != project && p.plugins.hasPlugin('com.android.application') &&
+    p.configurations.findByName('implementation')?.dependencies?.any {
+        it instanceof ProjectDependency && it.path == project.path
+    }
+}
+if (hostProjects.isEmpty())
+    throw new GradleException("No application module depends on :${project.name}; cannot determine APPLICATION_ID")
+if (hostProjects.size() > 1)
+    throw new GradleException("Multiple application modules depend on :${project.name} (${hostProjects.collect { it.path }}); cannot determine which one is the real host")
+def hostProject = hostProjects[0]
+def hostApplicationId = hostProject.android.defaultConfig.applicationId ?: hostProject.android.namespace
+
+android {
+    namespace = 'com.linux.x11'
+    //noinspection GrDeprecatedAPIUsage
+    compileSdkVersion = 37
+    ndkVersion = linuxX11NdkVersion
+    defaultConfig {
+        minSdkVersion 24
+        targetSdkVersion 34
+        buildConfigField "String", "VERSION_NAME", "\"${linuxX11VersionName}\""
+        buildConfigField "String", "COMMIT", "\"" + ("git rev-parse HEAD\n".execute().getText().trim() ?: (System.getenv('CURRENT_COMMIT') ?: "NO_COMMIT")) + "\""
+        buildConfigField "String", "APPLICATION_ID", "\"${hostApplicationId}\""
+
+        consumerProguardFiles 'proguard-rules.pro'
+    }
+
+    compileOptions.sourceCompatibility JavaVersion.VERSION_1_9
+    compileOptions.targetCompatibility JavaVersion.VERSION_1_9
+    // externalNativeBuild.cmake.path "src/main/cpp/CMakeLists.txt"  # disabled: requires bison/flex not available in Android SDK/NDK
+    packagingOptions.jniLibs.useLegacyPackaging = false
+    buildFeatures.aidl = true
+    buildFeatures.buildConfig = true
+}
+
+dependencies {
+    //noinspection DifferentStdlibGradleVersion
+
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.4.10"
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0'
+    implementation 'androidx.preference:preference:1.2.1'
+}

@@ -1306,34 +1306,69 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     echo "[*] Checking desktop dependencies..."
-    if ! command -v vncserver >/dev/null 2>&1 || ! command -v websockify >/dev/null 2>&1 || ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
-        echo "[*] Installing XFCE4, VNC and noVNC..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal tigervnc-standalone-server dbus-x11 novnc websockify curl procps </dev/null
+    if ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
+        echo "[*] Installing XFCE4 and DBUS..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal dbus-x11 curl procps </dev/null
+    fi
+    
+    if ! command -v adb >/dev/null 2>&1; then
+        echo "[*] Installing ADB..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" adb </dev/null
+    fi
+    
+    if ! command -v linux-x11 >/dev/null 2>&1; then
+        echo "[!] linux-x11 binary NOT found."
+        echo "    The X11 server (lorie/Termux-X11) is not installed in this PRoot container."
+        echo "    Build it via: mbuild native  (or deploy linux-x11 binary manually)"
+        echo ""
+        read -p "Setup ADB reverse tunnel for X11? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo "[*] Checking ADB connection..."
+            adb start-server >/dev/null 2>&1
+            if ! adb devices | grep -q -w "device"; then
+                echo "[!] ADB is not connected. We need it to disable Phantom Process Killer."
+                read -p "Zadej ADB <IP> <PORT> [PAIRING CODE] (nech prazdne pro preskoceni): " adb_ip adb_port adb_code
+                if [ -n "$adb_ip" ] && [ -n "$adb_port" ]; then
+                    if [ -n "$adb_code" ]; then
+                        adb pair "$adb_ip:$adb_port" "$adb_code"
+                    else
+                        adb connect "$adb_ip:$adb_port"
+                    fi
+                    sleep 2
+                fi
+            fi
+            if adb devices | grep -q -w "device"; then
+                echo "[*] Setting up ADB reverse tunnel for X11 (tcp:6000 -> localabstract:/x11)..."
+                adb reverse tcp:6000 localabstract:/x11
+                echo "[+] ADB reverse tunnel established."
+                echo "[*] Disabling Phantom Process Killer via ADB..."
+                adb shell "device_config put activity_manager max_phantom_processes 2147483647 && settings put global max_phantom_processes 2147483647"
+                echo "[+] Phantom Process Killer disabled!"
+            else
+                echo "[-] ADB not connected. Skipping ADB setup."
+            fi
+        else
+            echo "[-] Skipping ADB setup. X11 will not be reachable from host without ADB tunnel."
+        fi
+        echo "[!] WARNING: linux-x11 binary is missing. X server cannot start."
+        echo "    Install it first, then run: nh desktop start"
+        return 0
     fi
     echo "[*] Stopping existing sessions..."
-    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f linux-x11 2>/dev/null || true
     pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
     rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    echo "[*] Configuring VNC..."
-    mkdir -p ~/.vnc
-    echo "kali_operator" | vncpasswd -f > ~/.vnc/passwd
-    chmod 600 ~/.vnc/passwd
-    cat > ~/.vnc/xstartup << 'EOF'
-#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-startxfce4 &
-EOF
-    chmod +x ~/.vnc/xstartup
-    echo "[*] Starting VNC server :1 (5901)..."
-    vncserver :1 -geometry 1280x720 -depth 24 2>&1 | tee /tmp/vnc.log
-    echo "[*] Starting noVNC on :6080..."
-    websockify --web=/usr/share/novnc/ 6080 127.0.0.1:5901 >/dev/null 2>&1 &
-    echo "[+] Desktop ready! http://127.0.0.1:6080/vnc.html"
+    echo "[*] Starting X server (Linux-X11) ..."
+    # The desktop is rendered by the separate X11 launcher app
+    # (com.linux_core.xlauncher), which connects to this X server over TCP.
+    # This launches Linux-X11 inside the PRoot container, providing DISPLAY=:1 to X11 clients.
+    linux-x11 :1 -xstartup "dbus-launch --exit-with-session xfce4-session" &
+    echo "[+] X server (Linux-X11) ready on DISPLAY=:1 — open the NetHunter X11 Launcher."
 }
 
 desktop_stop() {
-    vncserver -kill :1 2>/dev/null || true
+    pkill -9 -f linux-x11 2>/dev/null || true
     pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
     rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
     echo "[-] Desktop stopped."
@@ -1341,8 +1376,27 @@ desktop_stop() {
 
 desktop_status() {
     echo "=== DESKTOP STATUS ==="
-    if pgrep -f "Xvnc|Xtightvnc|Xtigervnc" >/dev/null 2>&1; then echo "[+] VNC Server: RUNNING"; else echo "[-] VNC Server: STOPPED"; fi
-    if pgrep -f "websockify" >/dev/null 2>&1; then echo "[+] noVNC: RUNNING"; else echo "[-] noVNC: STOPPED"; fi
+    if command -v linux-x11 >/dev/null 2>&1; then
+        echo "[+] linux-x11 binary: FOUND"
+    else
+        echo "[-] linux-x11 binary: MISSING (build via: mbuild native)"
+    fi
+    if pgrep -f "linux-x11" >/dev/null 2>&1; then
+        echo "[+] X Server (Linux-X11): RUNNING"
+    else
+        echo "[-] X Server (Linux-X11): STOPPED"
+    fi
+    if adb devices 2>/dev/null | grep -q -w "device"; then
+        echo "[+] ADB device: CONNECTED"
+        if adb reverse --list 2>/dev/null | grep -q "tcp:6000"; then
+            echo "[+] ADB reverse tunnel: ESTABLISHED (tcp:6000 -> localabstract:/x11)"
+        else
+            echo "[-] ADB reverse tunnel: NOT SET (run: nh desktop start)"
+        fi
+    else
+        echo "[-] ADB device: NOT CONNECTED"
+    fi
+    echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)."
 }
 
 # ─── FIX ───────────────────────────────────────────────────

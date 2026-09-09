@@ -14,7 +14,7 @@ plugins {
 
 android {
     namespace = "com.linux_core"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.linux_core"
@@ -181,6 +181,9 @@ dependencies {
     implementation(libs.bouncycastle.bcpkix)
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.androidx.biometric)
+
+    // Linux-X11 module dependency
+    implementation(project(":linux-x11"))
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

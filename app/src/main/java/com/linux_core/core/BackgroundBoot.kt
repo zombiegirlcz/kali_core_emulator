@@ -63,6 +63,8 @@ object BackgroundBoot {
                 TerminalService.backgroundBootReloads = 0
                 TerminalService.backgroundBootStartedAt = System.currentTimeMillis()
                 Log.i(TAG, "Background boot started (cron session in ${rootfsDir.name})")
+                // Also schedule midnight remote rootfs sync
+                RemoteRootfsSyncReceiver.scheduleDaily(context)
             } catch (e: Exception) {
                 Log.e(TAG, "Background boot failed: ${e.message}")
             } finally {

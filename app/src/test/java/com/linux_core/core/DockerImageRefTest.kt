@@ -55,6 +55,16 @@ class DockerImageRefTest {
     }
 
     @Test
+    fun `rejects local absolute path in docker reference`() {
+        try {
+            DockerImageRef.parse("/sdcard/myrootfs.tar.gz")
+            assertTrue("Should throw for local file path", false)
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+
+    @Test
     fun `rejects image with no repository part`() {
         try {
             DockerImageRef.parse("user/")
@@ -137,5 +147,17 @@ class DockerImageRefTest {
         } catch (e: IllegalArgumentException) {
             // expected
         }
+    }
+
+    @Test
+    fun `parses http custom registry reference`() {
+        val ref = DockerImageRef.parse("http://myregistry.local:5000/myuser/myapp:v1")
+        assertEquals("myuser", ref.namespace)
+        assertEquals("myapp", ref.repository)
+        assertEquals("v1", ref.tag)
+        assertEquals("myregistry.local:5000", ref.registryHost)
+        assertTrue(ref.isHttp)
+        assertEquals("http", ref.scheme)
+        assertEquals("http://myregistry.local:5000/v2/myuser/myapp/manifests/v1", ref.manifestUrl())
     }
 }

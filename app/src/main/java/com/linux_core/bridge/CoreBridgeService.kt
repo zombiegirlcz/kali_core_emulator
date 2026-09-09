@@ -62,6 +62,9 @@ class CoreBridgeService : Service() {
             checkCaller("getStatus")
             return """{"bridge_version":1,"core_version":"${BuildConfig.VERSION_NAME}"}"""
         }
+
+        override fun listDistros(): String =
+            ExecCore.listDistros(applicationContext)
     }
 
     /**

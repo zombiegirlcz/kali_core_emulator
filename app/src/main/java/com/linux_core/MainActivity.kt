@@ -43,6 +43,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material.icons.Icons
@@ -62,6 +64,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -96,11 +99,14 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.linux_core.core.Distro
 import com.linux_core.core.RootfsManager
 import com.linux_core.core.DockerImageRef
+import com.linux_core.core.RemoteRootfsCatalog
+import com.linux_core.core.RemoteDistroScript
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
 import com.linux_core.ui.vpn.VpnCenterScreen
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlin.random.Random
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -383,6 +389,10 @@ fun MainScreen() {
     var showDockerDialog by remember { mutableStateOf(false) }
     // Seznam všech existujících Docker/OCI image dirů (pro výběr v UI)
     var dockerImageDirs by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Remote distro scripts from zombiegirlcz/ROOTFS-for-proot (daily quick-start)
+    var remoteRootfsEntries by remember { mutableStateOf<List<RemoteDistroScript>>(emptyList()) }
+    var isLoadingRemoteCatalog by remember { mutableStateOf(false) }
+    var remoteCatalogError by remember { mutableStateOf<String?>(null) }
 
     var hasStoragePermission by remember { mutableStateOf(hasAllFilesAccess(context)) }
     var currentTab by remember { mutableStateOf("home") }
@@ -407,11 +417,23 @@ fun MainScreen() {
                     ?: emptyList()
                 val dirs = (newDockerDirs + legacyDockerDirs).sortedDescending()
                 dockerImageDirs = dirs
-                // Pokud není vybrán žádný Docker dir a existuje alespoň jeden, vyber první
                 if (selectedDockerDir == null && dirs.isNotEmpty()) {
                     selectedDockerDir = dirs.first()
-                    // Automaticky přepnout do Docker módu, aby BOOT tlačítko bootovalo Docker
                     isDockerMode = true
+                }
+                // Fetch latest distro scripts from zombiegirlcz/ROOTFS-for-proot
+                if (remoteRootfsEntries.isEmpty() && !isLoadingRemoteCatalog && remoteCatalogError == null) {
+                    isLoadingRemoteCatalog = true
+                    scope.launch {
+                        try {
+                            val entries = RemoteRootfsCatalog.fetchDistroScripts(context).first()
+                            remoteRootfsEntries = entries
+                        } catch (e: Exception) {
+                            remoteCatalogError = e.message ?: "GitHub fetch failed"
+                        } finally {
+                            isLoadingRemoteCatalog = false
+                        }
+                    }
                 }
             }
         }
@@ -781,7 +803,8 @@ fun MainScreen() {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(16.dp),
+                                    .padding(16.dp)
+                                    .verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 // Header + close
@@ -824,10 +847,7 @@ fun MainScreen() {
                                     )
                                 } else {
                                     Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .weight(1f, fill = false)
-                                            .verticalScroll(rememberScrollState())
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
                                         dockerImageDirs.forEach { dir ->
                                             val isSelected = dir == selectedDockerDir
@@ -922,10 +942,30 @@ fun MainScreen() {
                                                 dockerPullProgress = 0
                                                 val rawInput = customDockerImage.trim()
                                                 val isWebUrl = rawInput.startsWith("http://") || rawInput.startsWith("https://")
-                                                dockerPullStatus = if (isWebUrl) "Parsing URL…" else "Parsing image reference…"
+                                                    val cleanFilePath = rawInput.removePrefix("file://")
+                                                    val localFile = File(cleanFilePath)
+                                                    val isLocalFile = rawInput.startsWith("file://") ||
+                                                        (rawInput.startsWith("/") && localFile.exists() && localFile.isFile)
+
+                                                    dockerPullStatus = when {
+                                                        isLocalFile -> "Importing local archive…"
+                                                        isWebUrl -> "Parsing URL…"
+                                                        else -> "Parsing image reference…"
+                                                    }
                                                 try {
-                                                    if (isWebUrl) {
-                                                        // Web URL: stáhnout+extrahovat rootfs archive (HTTPS + whitelist)
+                                                        if (isLocalFile) {
+                                                            // Local file import (.tar.gz, .tgz, .tar.xz, .txz, .tar, .tar.bz2)
+                                                            dockerPullStatus = "Importing ${localFile.name}…"
+                                                            RootfsManager.importLocalRootfsFile(context, localFile).collect { (progress, status) ->
+                                                                dockerPullProgress = progress
+                                                                dockerPullStatus = status
+                                                                if (progress >= 100 && status.isNotEmpty() && File(status).exists()) {
+                                                                    selectedDockerDir = File(status).relativeTo(context.filesDir).path
+                                                                }
+                                                            }
+                                                            Toast.makeText(context, "Local rootfs imported successfully!\nBoot from DOCKER HUB tab.", Toast.LENGTH_LONG).show()
+                                                        } else if (isWebUrl) {
+                                                            // Web URL: stáhnout+extrahovat rootfs archive (HTTP/HTTPS)
                                                         dockerPullStatus = "Pulling rootfs from URL…"
                                                         RootfsManager.pullRootfsFromUrl(context, rawInput).collect { (progress, status) ->
                                                             dockerPullProgress = progress
@@ -964,7 +1004,12 @@ fun MainScreen() {
                                                 } catch (e: Exception) {
                                                     dockerPullProgress = 0
                                                     dockerPullStatus = ""
-                                                    Toast.makeText(context, if (isWebUrl) "URL pull failed: ${e.message}" else "Docker pull failed: ${e.message}", Toast.LENGTH_LONG).show()
+                                                        val failPrefix = when {
+                                                            isLocalFile -> "Local import failed"
+                                                            isWebUrl -> "URL pull failed"
+                                                            else -> "Docker pull failed"
+                                                        }
+                                                        Toast.makeText(context, "$failPrefix: ${e.message}", Toast.LENGTH_LONG).show()
                                                 } finally {
                                                     isPullingDocker = false
                                                 }
@@ -1009,6 +1054,125 @@ fun MainScreen() {
                                         color = Color(0xFF00FF41),
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                     )
+                                }
+
+                                // ── Daily distro scripts from zombiegirlcz/ROOTFS-for-proot ──
+                                if (remoteRootfsEntries.isNotEmpty() || remoteCatalogError != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = Color(0x3300FF41)
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(bottom = 4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudDownload,
+                                            contentDescription = "Remote distros",
+                                            tint = Color(0xFF00FF41),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "DAILY DISTROS",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF00FF41),
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                        if (isLoadingRemoteCatalog) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(14.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Color(0xFF00FF41)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        Text(
+                                            text = "${remoteRootfsEntries.size} scripts",
+                                            fontSize = 9.sp,
+                                            color = Color.Gray,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                    if (remoteCatalogError != null) {
+                                        Text(
+                                            text = "⚠ ${remoteCatalogError}",
+                                            fontSize = 9.sp,
+                                            color = Color(0xFFFFAA33),
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                    }
+                                    val allRemote = remoteRootfsEntries
+                                    if (allRemote.isNotEmpty()) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            allRemote.forEach { entry ->
+                                                val isPulled = File(context.filesDir, "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}").exists()
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .background(Color(0xFF0D0E12))
+                                                        .border(1.dp, Color(0xFF1E2026), RoundedCornerShape(6.dp))
+                                                        .clickable {
+                                                            val scriptUrl = "https://raw.githubusercontent.com/zombiegirlcz/ROOTFS-for-proot/main/${entry.scriptName}"
+                                                            val command = "curl -sSL \"$scriptUrl\" -o /tmp/preset.sh && bash /tmp/preset.sh && boot docker ${entry.slug}"
+                                                            val intent = Intent(context, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
+                                                                putExtra("rootfsDirName", "nh/distro/docker/${entry.slug}")
+                                                                putExtra("mountStorage", false)
+                                                                putExtra("isDockerImage", true)
+                                                                putExtra("customCommand", command)
+                                                            }
+                                                            context.startActivity(intent)
+                                                        }
+                                                        .padding(10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = if (isPulled) "\u2713" else "\u25CB",
+                                                        color = if (isPulled) Color(0xFF00FF66) else Color.Gray,
+                                                        fontSize = 12.sp
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = entry.distroName,
+                                                            fontSize = 11.sp,
+                                                            color = Color.White,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                        )
+                                                        Text(
+                                                            text = "${entry.distroComment.ifEmpty { entry.scriptName }} · arch: ${entry.sizeHint}",
+                                                            fontSize = 9.sp,
+                                                            color = Color.Gray,
+                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = if (isPulled) "BOOT" else "RUN",
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isPulled) Color(0xFF00FF41) else Color(0xFF00FF41),
+                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (allRemote.isEmpty() && !isLoadingRemoteCatalog) {
+                                        Text(
+                                            text = "No distro scripts available yet.",
+                                            fontSize = 10.sp,
+                                            color = Color.Gray,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            modifier = Modifier.padding(vertical = 4.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

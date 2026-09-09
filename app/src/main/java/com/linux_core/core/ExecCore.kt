@@ -25,6 +25,25 @@ object ExecCore {
 
     private const val TAG = "ExecCore"
 
+    // Cesty k su binárce (root). Bind cross-app adresáře vyžaduje root.
+    private val SU_PATHS = listOf(
+        "/product/bin/su",
+        "/system/xbin/su",
+        "/system/bin/su",
+        "/data/adb/ksu/bin/su",
+        "/apex/com.android.runtime/bin/su",
+        "/sbin/su",
+        "/data/adb/magisk/su"
+    )
+
+    private fun findSu(ctx: Context): String? {
+        for (path in SU_PATHS) {
+            val f = File(path)
+            if (f.exists() && f.canExecute()) return path
+        }
+        return null
+    }
+
     // Destructive patterns — checked across the entire command string, so they
     // catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
     val DESTRUCTIVE_PATTERNS = listOf(
@@ -111,8 +130,14 @@ object ExecCore {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 2048) return errJson("Command too long (max 2048 chars)")
         val distroLower = distro.trim().lowercase()
-        if (distroLower !in listOf("kali", "parrot")) {
-            return errJson("Invalid distro: '$distro'. Use 'kali' or 'parrot'.")
+        val (bootSub, bootImage) = if (distroLower.startsWith("docker/")) {
+            "docker" to distroLower.substringAfter("docker/")
+        } else {
+            distroLower to null
+        }
+        val distroRoot = File(ctx.filesDir, "nh/distro/$distroLower")
+        if (!distroRoot.exists() || !distroRoot.isDirectory) {
+            return errJson("Distro '$distro' not found under nh/distro/. Use listDistros() to see installed distros.")
         }
 
         // ── 1. Destructive patterns guard (allowlist zrušen 2026-08-26) ──
@@ -129,38 +154,104 @@ object ExecCore {
             return errJson("Boot script not found. Please open a terminal session first to initialize PRoot.")
         }
 
+        // Jen cross-app bind (bind_aiapp) — agentův guest dřív žádné extra mouny
+        // neměl, takže neměníme jeho chování. Vyžaduje root -> guest pod su.
+        val rootPrefs = ctx.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        val extraMounts = buildString {
+            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+        }
+        // Root jen pokud je zapnutý cross-app bind A zároveň dostupné su — jinak
+        // zůstává guest v app sandboxu (bezpečnější, bez SELinux rizika na rootfs).
+        val su = if (rootPrefs.getBoolean("bind_aiapp", false)) findSu(ctx) else null
+
         return try {
             val startTime = System.currentTimeMillis()
-            val pb = ProcessBuilder("sh", bootScript.absolutePath, distroLower, "--", "sh", "-c", command)
-            pb.directory(ctx.filesDir)
-            pb.redirectErrorStream(false)
-            val process = pb.start()
+            // Příkaz i wrapper píšeme do souborů — vyhneme se quoting problému a
+            // pod su funguje i příkaz s mezerami/uvozovkami. NH_EXTRA_MOUNTS se
+            // předá přes export uvnitř wrapperu (čte ho boot skript).
+            val cmdFile = File(ctx.cacheDir, "aiexec_cmd_${System.currentTimeMillis()}.sh").apply {
+                writeText(command)
+                setExecutable(true)
+            }
+            val wrapper = File(ctx.cacheDir, "aiexec_wrap_${System.currentTimeMillis()}.sh").apply {
+                writeText(
+                    "#!/system/bin/sh\n" +
+                    "export NH_EXTRA_MOUNTS='$extraMounts'\n" +
+                    "exec sh ${bootScript.absolutePath} $bootSub" +
+                    (if (bootImage != null) " $bootImage" else "") +
+                    " -- sh -c 'sh ${cmdFile.absolutePath}'\n"
+                )
+                setExecutable(true)
+            }
+            try {
+                val pb = if (su != null) {
+                    ProcessBuilder(su, "-c", "setsid sh ${wrapper.absolutePath}")
+                } else {
+                    ProcessBuilder("setsid", "sh", wrapper.absolutePath)
+                }
+                pb.directory(ctx.filesDir)
+                pb.redirectErrorStream(false)
+                val process = pb.start()
 
-            // Read stdout and stderr concurrently to prevent pipe deadlock
-            val stdoutReader = process.inputStream.bufferedReader()
-            val stderrReader = process.errorStream.bufferedReader()
+                // Read stdout and stderr concurrently to prevent pipe deadlock
+                var output = ""
+                val stdoutThread = Thread {
+                    output = process.inputStream.bufferedReader().readText()
+                }
+                stdoutThread.isDaemon = true
+                stdoutThread.start()
+                val error = process.errorStream.bufferedReader().readText()
 
-            val output = stdoutReader.readText()
-            val error = stderrReader.readText()
+                val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
+                val durationMs = System.currentTimeMillis() - startTime
 
-            val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
-            val durationMs = System.currentTimeMillis() - startTime
-
-            if (!completed) {
-                process.destroyForcibly()
-                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
-            } else {
-                val exitCode = process.exitValue()
-                // Filter boot diagnostic lines from stdout
-                val cleanOutput = output.lines()
-                    .dropWhile { it.startsWith("[*]") || it.startsWith("[boot]") || it.isBlank() }
-                    .joinToString("\n")
-                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(cleanOutput)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                if (!completed) {
+                    val pgid = try {
+                        val f = process.javaClass.getDeclaredField("pid")
+                        f.isAccessible = true
+                        f.getInt(process)
+                    } catch (_: Exception) { -1 }
+                    if (pgid > 0) {
+                        try {
+                            Runtime.getRuntime().exec(arrayOf("kill", "-9", "-$pgid")).waitFor()
+                        } catch (_: Exception) {}
+                    }
+                    process.destroyForcibly()
+                    stdoutThread.join(2000)
+                    "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
+                } else {
+                    stdoutThread.join(2000)
+                    val exitCode = process.exitValue()
+                    // Filter boot diagnostic lines from stdout
+                    val cleanOutput = output.lines()
+                        .dropWhile { it.startsWith("[*]") || it.startsWith("[boot]") || it.isBlank() }
+                        .joinToString("\n")
+                    "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(cleanOutput)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                }
+            } finally {
+                cmdFile.delete()
+                wrapper.delete()
             }
         } catch (e: Exception) {
             Log.e(TAG, "guestExec error: ${e.message}", e)
             errJson(e.message ?: "internal error")
         }
+    }
+
+    /** Vrátí JSON pole nainstalovaných distrí (podadresáře nh/distro/, docker jako "docker/<image>"). */
+    fun listDistros(ctx: Context): String {
+        val distroDir = File(ctx.filesDir, "nh/distro")
+        val ids = mutableListOf<String>()
+        distroDir.listFiles()?.forEach { f ->
+            if (f.isDirectory) {
+                when (f.name) {
+                    "docker" -> f.listFiles()?.forEach { if (it.isDirectory) ids.add("docker/${it.name}") }
+                    "backup" -> { /* přeskočit */ }
+                    else -> ids.add(f.name)
+                }
+            }
+        }
+        return "[" + ids.joinToString(",") { JSONObject.quote(it) } + "]"
     }
 
     // ── ashell config cluster — přesunuto z LocalApiServer ───────────────
@@ -294,10 +385,10 @@ object ExecCore {
             ?.absolutePath
             ?: return errJson("No rootfs found under files/nh/distro/{kali,parrot}")
 
-        // ── 4. Execute: sh -c "$wrapper $command" s ROOTFS env ─────────
+        // ── 4. Execute: setsid sh -c "$wrapper $command" s ROOTFS env ─────
         return try {
             val startTime = System.currentTimeMillis()
-            val pb = ProcessBuilder("sh", "-c", "$wrapper $command")
+            val pb = ProcessBuilder("setsid", "sh", "-c", "$wrapper $command")
             pb.directory(ctx.filesDir)
             pb.redirectErrorStream(false)
             pb.environment().apply {
@@ -305,20 +396,35 @@ object ExecCore {
             }
             val process = pb.start()
 
-            val stdoutReader = process.inputStream.bufferedReader()
-            val stderrReader = process.errorStream.bufferedReader()
-            val output = stdoutReader.readText()
-            val error = stderrReader.readText()
+            val output = StringBuilder()
+            val stdoutThread = Thread {
+                output.append(process.inputStream.bufferedReader().readText())
+            }
+            stdoutThread.isDaemon = true
+            stdoutThread.start()
+            val error = process.errorStream.bufferedReader().readText()
 
             val completed = process.waitFor(timeoutMs.coerceAtLeast(1), TimeUnit.MILLISECONDS)
             val durationMs = System.currentTimeMillis() - startTime
 
             if (!completed) {
+                val pgid = try {
+                    val f = process.javaClass.getDeclaredField("pid")
+                    f.isAccessible = true
+                    f.getInt(process)
+                } catch (_: Exception) { -1 }
+                if (pgid > 0) {
+                    try {
+                        Runtime.getRuntime().exec(arrayOf("kill", "-9", "-$pgid")).waitFor()
+                    } catch (_: Exception) {}
+                }
                 process.destroyForcibly()
-                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
+                stdoutThread.join(2000)
+                "{\"exit_code\":-1,\"stdout\":${JSONObject.quote(output.toString())},\"stderr\":${JSONObject.quote("Command timed out after ${timeoutMs}ms")},\"duration_ms\":$durationMs,\"timed_out\":true}"
             } else {
+                stdoutThread.join(2000)
                 val exitCode = process.exitValue()
-                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(output)},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
+                "{\"exit_code\":$exitCode,\"stdout\":${JSONObject.quote(output.toString())},\"stderr\":${JSONObject.quote(error)},\"duration_ms\":$durationMs}"
             }
         } catch (e: Exception) {
             Log.e(TAG, "elfExec error: ${e.message}", e)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -446,6 +447,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindUsb by remember { mutableStateOf(prefs.getBoolean("bind_usb", true)) }
     var bindBluetooth by remember { mutableStateOf(prefs.getBoolean("bind_bluetooth", false)) }
     var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", false)) }
+    var bindAiApp by remember { mutableStateOf(prefs.getBoolean("bind_aiapp", false)) }
 
     // Auto-fix ownership after sudo commands (layer 1)
     var autoFixPermissions by remember { mutableStateOf(prefs.getBoolean("auto_fix_permissions", true)) }
@@ -466,8 +468,9 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
 
     val scrollState = rememberScrollState()
 
+    SelectionContainer(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 12.dp)
             .verticalScroll(scrollState)
@@ -683,6 +686,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                             fontFamily = FontFamily.Monospace
                         )
                     }
+@Suppress("DEPRECATION")
                     Icon(
                         imageVector = Icons.Default.List,
                         contentDescription = "Modules",
@@ -746,7 +750,8 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
                     Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
                     Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
-                    Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp)
+                    Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
+                    Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp)
                 )
 
                 items.forEach { (label, mountPath, statePair) ->
@@ -768,6 +773,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                     "bind_usb" -> bindUsb = checked
                                     "bind_bluetooth" -> bindBluetooth = checked
                                     "bind_app" -> bindApp = checked
+                                    "bind_aiapp" -> bindAiApp = checked
                                 }
                             },
                             colors = CheckboxDefaults.colors(
@@ -813,6 +819,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     )
                 }
             }
+        }
         }
     }
 
