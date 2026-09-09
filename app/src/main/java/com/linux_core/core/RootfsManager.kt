@@ -1553,7 +1553,11 @@ object RootfsManager {
             dst.mkdirs()
             src.listFiles()?.forEach { copyFilesRecursive(src = it, dst = File(dst, it.name)) }
         } else {
-            src.copyTo(dst, overwrite = false)
+            src.inputStream().use { input ->
+                java.io.FileOutputStream(dst).use { output ->
+                    input.copyTo(output)
+                }
+            }
         }
     }
 
