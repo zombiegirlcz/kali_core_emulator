@@ -222,12 +222,12 @@ Xvscnprintf(char *s, int n, const char *format, va_list args)
  */
 int Xscnprintf(char *s, int n, const char *format, ...)
 {
-    int x;
+    int _x;
     va_list ap;
     va_start(ap, format);
-    x = Xvscnprintf(s, n, format, ap);
+    _x = Xvscnprintf(s, n, format, ap);
     va_end(ap);
-    return x;
+    return _x;
 }
 
 /* Old api, now deprecated, may be removed in the future */
