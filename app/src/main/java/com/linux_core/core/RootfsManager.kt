@@ -1586,7 +1586,9 @@ object RootfsManager {
             }
             val ok =
                 if (src.isDirectory) {
-                    countFiles(src) == countFiles(dst)
+                    val srcCount = countFiles(src)
+                    val dstCount = countFiles(dst)
+                    srcCount == dstCount
                 } else {
                     dst.exists() && dst.length() == src.length()
                 }
