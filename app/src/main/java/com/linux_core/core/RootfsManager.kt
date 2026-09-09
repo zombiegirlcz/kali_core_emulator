@@ -1574,12 +1574,13 @@ object RootfsManager {
                 Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
             } else {
                 dst.mkdirs()
-                Files.walk(src.toPath()).asSequence().forEach { source: java.nio.file.Path ->
-                    val target = dst.toPath().resolve(src.toPath().relativize(source))
-                    if (source.toFile().isDirectory) {
-                        target.toFile().mkdirs()
+                src.walkTopDown().forEach { child ->
+                    val relativePath = src.toPath().relativize(child.toPath())
+                    val target = File(dst, relativePath.toString())
+                    if (child.isDirectory) {
+                        target.mkdirs()
                     } else {
-                        Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+                        Files.copy(child.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
                     }
                 }
             }
