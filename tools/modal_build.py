@@ -430,10 +430,6 @@ def _build_linux_x11(src_dir):
     use_glibc = shutil.which("aarch64-linux-gnu-gcc") is not None
     if use_glibc:
         print("  [linux-x11] Using glibc cross-compiler (aarch64-linux-gnu-gcc)")
-        ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
-        if not os.path.exists(ndk_toolchain):
-            print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
-            return
     else:
         print("  [linux-x11] Using NDK Bionic toolchain (android-24/arm64-v8a)")
         ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")

@@ -214,6 +214,8 @@ OsSignal(int sig, OsSigHandlerPtr handler)
 {
 #if defined(WIN32) && !defined(__CYGWIN__)
     return signal(sig, handler);
+#elif defined(__ANDROID__)
+    return SIG_DFL;
 #else
     struct sigaction act, oact;
 
@@ -234,7 +236,7 @@ OsSignal(int sig, OsSigHandlerPtr handler)
  * server at a time.  This keeps the servers from stomping on each other
  * if the user forgets to give them different display numbers.
  */
-#define LOCK_DIR "/tmp"
+#define LOCK_DIR (getenv("TMPDIR") ?: "/tmp")
 #define LOCK_TMP_PREFIX "/.tX"
 #define LOCK_PREFIX "/.X"
 #define LOCK_SUFFIX "-lock"
@@ -326,7 +328,7 @@ LockServer(void)
     i = 0;
     haslock = 0;
     while ((!haslock) && (i++ < 3)) {
-        haslock = (link(tmp, LockFile) == 0);
+        haslock = (rename(tmp, LockFile) == 0);
         if (haslock) {
             /*
              * We're done.
@@ -1421,12 +1423,51 @@ static struct pid {
     int pid;
 } *pidlist;
 
+#include <fcntl.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+extern char* xkbcomp_argv[];
+extern int xkbcomp_argc;
+int xkbcomp_main(int argc, char *argv[]);
+
+static int xkbcomp_output_fd = -1;
+
+/* xkbcomp complains about every keysym missing from the xorgproto it was built with, and
+ * the client never sees those keys anyway, so only a failed keymap reaches the terminal. */
+static void
+ReportXkbcompOutput(Bool failed)
+{
+    static char output[65536];
+    int cap = sizeof(output) - 1, len = 0, r;
+
+    if (xkbcomp_output_fd < 0)
+        return;
+
+    while (len < cap && (r = read(xkbcomp_output_fd, output + len, cap - len)) > 0)
+        len += r;
+    output[len] = 0;
+    close(xkbcomp_output_fd);
+    xkbcomp_output_fd = -1;
+
+    if (failed)
+        fputs(output, stderr);
+    else
+        for (char *line = strtok(output, "\n"); line; line = strtok(NULL, "\n"))
+#ifdef __ANDROID__
+            __android_log_write(ANDROID_LOG_DEBUG, "xkbcomp", line);
+#else
+            fprintf(stderr, "[xkbcomp] %s\n", line);
+#endif
+}
+
 void *
 Popen(const char *command, const char *type)
 {
     struct pid *cur;
     FILE *iop;
-    int pdes[2], pid;
+    int pdes[2], odes[2] = { -1, -1 }, pid;
 
     if (command == NULL || type == NULL)
         return NULL;
@@ -1441,6 +1482,10 @@ Popen(const char *command, const char *type)
         free(cur);
         return NULL;
     }
+
+    if (pipe(odes) == 0)
+        /* Nothing drains this one until xkbcomp is done, so a full pipe must not block it. */
+        fcntl(odes[1], F_SETFL, O_NONBLOCK);
 
     /* Ignore the smart scheduler while this is going on */
 #ifdef HAVE_SETITIMER
@@ -1457,6 +1502,8 @@ Popen(const char *command, const char *type)
     case -1:                   /* error */
         close(pdes[0]);
         close(pdes[1]);
+        close(odes[0]);
+        close(odes[1]);
         free(cur);
 #ifdef HAVE_SETITIMER
         if (SmartScheduleEnable() < 0)
@@ -1484,14 +1531,29 @@ Popen(const char *command, const char *type)
             }
             close(pdes[1]);
         }
-        execl("/bin/sh", "sh", "-c", command, (char *) NULL);
-        _exit(127);
+
+        if (odes[1] >= 0) {
+            close(odes[0]);
+            dup2(odes[1], 1);
+            dup2(odes[1], 2);
+            close(odes[1]);
+        }
+
+        for(int j=1; j<= SIGUNUSED; j++)
+            signal(j, SIG_DFL);
+
+        _exit(xkbcomp_main(xkbcomp_argc, xkbcomp_argv));
     }
 
     /* Avoid EINTR during stdio calls */
     OsBlockSignals();
 
     /* parent */
+    if (odes[1] >= 0) {
+        close(odes[1]);
+        xkbcomp_output_fd = odes[0];
+    }
+
     if (*type == 'r') {
         iop = fdopen(pdes[0], type);
         close(pdes[1]);
@@ -1627,6 +1689,8 @@ Pclose(void *iop)
     do {
         pid = waitpid(cur->pid, &pstat, 0);
     } while (pid == -1 && errno == EINTR);
+
+    ReportXkbcompOutput(pid == -1 || !WIFEXITED(pstat) || WEXITSTATUS(pstat) != 0);
 
     if (last == NULL)
         pidlist = cur->next;
