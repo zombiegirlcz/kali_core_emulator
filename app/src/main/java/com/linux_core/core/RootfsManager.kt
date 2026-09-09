@@ -33,6 +33,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1554,11 +1555,7 @@ object RootfsManager {
             if (child.isDirectory) {
                 copyDirectory(child, childDst)
             } else {
-                child.inputStream().use { input ->
-                    java.io.FileOutputStream(childDst).use { output ->
-                        input.copyTo(output)
-                    }
-                }
+                Files.copy(child.toPath(), childDst.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
         }
     }
@@ -1585,11 +1582,7 @@ object RootfsManager {
         if (src.renameTo(dst)) return true
         return try {
             if (src.isFile) {
-                src.inputStream().use { input ->
-                    java.io.FileOutputStream(dst).use { output ->
-                        input.copyTo(output)
-                    }
-                }
+                Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
             } else {
                 dst.mkdirs()
                 copyDirectory(src, dst)
