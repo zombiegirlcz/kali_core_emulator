@@ -1616,7 +1616,13 @@ object RootfsManager {
         }
     }
 
-    private fun countFiles(f: File): Int = if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1
+    private fun countFiles(f: File): Int = if (f.isDirectory) {
+        var count = 0
+        f.walkTopDown().forEach { if (it.isFile) count++ }
+        count
+    } else {
+        1
+    }
 
     /**
      * Pulls a distro using a [RemoteDistroScript] from the remote catalog.
@@ -1763,5 +1769,11 @@ object RootfsManager {
             }
         }.flowOn(Dispatchers.IO)
 
-    private fun countFiles(f: File): Int = if (f.isDirectory) f.walkTopDown().count { it.isFile } else 1
+    private fun countFiles(f: File): Int = if (f.isDirectory) {
+        var count = 0
+        f.walkTopDown().forEach { if (it.isFile) count++ }
+        count
+    } else {
+        1
+    }
 }
