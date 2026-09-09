@@ -1548,14 +1548,16 @@ object RootfsManager {
      * zdroj maže až po ověření úspěchu.
      */
 
-    private fun copyFilesRecursive(src: java.io.File, dst: java.io.File) {
-        if (src.isDirectory) {
-            dst.mkdirs()
-            src.listFiles()?.forEach { copyFilesRecursive(src = it, dst = File(dst, it.name)) }
-        } else {
-            src.inputStream().use { input ->
-                java.io.FileOutputStream(dst).use { output ->
-                    input.copyTo(output)
+    private fun copyDirectory(src: File, dst: File) {
+        src.listFiles()?.forEach { child ->
+            val childDst = File(dst, child.name)
+            if (child.isDirectory) {
+                copyDirectory(child, childDst)
+            } else {
+                child.inputStream().use { input ->
+                    java.io.FileOutputStream(childDst).use { output ->
+                        input.copyTo(output)
+                    }
                 }
             }
         }
@@ -1582,7 +1584,16 @@ object RootfsManager {
         dst.parentFile?.mkdirs()
         if (src.renameTo(dst)) return true
         return try {
-            copyFilesRecursive(src = src, dst = dst)
+            if (src.isFile) {
+                src.inputStream().use { input ->
+                    java.io.FileOutputStream(dst).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } else {
+                dst.mkdirs()
+                copyDirectory(src, dst)
+            }
             val ok =
                 if (src.isDirectory) {
                     countFiles(src) == countFiles(dst)
