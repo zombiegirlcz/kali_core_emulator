@@ -45,6 +45,6 @@ add_library(tirpc STATIC
 target_include_directories(tirpc PUBLIC "libtirpc/tirpc")
 target_compile_options(tirpc PRIVATE "-DPORTMAP" "-DINET6=1" "-DHAVE_FEATURES_H=1"
         "-DHAVE_GETRPCBYNAME=1" "-DHAVE_GETRPCBYNUMBER=1" "-DHAVE_SETRPCENT=1" "-DHAVE_ENDRPCENT=1"
-        "-DHAVE_GETRPCENT=1" "-UHAVE_GSSAPI_GSSAPI_EXT_H" "-UAUTHDES_SUPPORT" "-Dquad_t=long long"
-        "-Du_quad_t=unsigned long long" "-Ugetdtablesize" "-D_GNU_SOURCE"
+        "-DHAVE_GETRPCENT=1" "-UHAVE_GSSAPI_GSSAPI_EXT_H" "-UAUTHDES_SUPPORT" "-Uquad_t" "-Uu_quad_t"
+        "-Ugetdtablesize" "-D_GNU_SOURCE"
         "-Wall" "-pipe" "-fPIC" "-DPIC" "-Wno-deprecated-non-prototype" "-Wno-macro-redefined")

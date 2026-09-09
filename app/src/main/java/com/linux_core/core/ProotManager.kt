@@ -238,8 +238,7 @@ object ProotManager {
         val text = file.readText().trim()
         if (text.isEmpty()) return
 
-        val lines = text.split("
-")
+        val lines = text.split("\n")
         val fixed = lines.map { line ->
             // Skip comments and empty lines
             if (line.startsWith("#") || line.trim().isEmpty()) return@map line
@@ -273,9 +272,7 @@ object ProotManager {
             line
         }
 
-        file.writeText(fixed.joinToString("
-") + "
-")
+        file.writeText(fixed.joinToString("\n") + "\n")
         file.setReadable(true, false)
         file.setWritable(true, false)
     }
@@ -318,6 +315,7 @@ object ProotManager {
 
         // Příkaz: boot <distro> [-- <customCommand>]
         // Docker: boot docker <imageName>
+        val bootScript = File(homeDir, "boot")
         val fullCommand = mutableListOf("/system/bin/sh", bootScript.absolutePath)
         if (isDockerImage) {
             fullCommand.add("docker")

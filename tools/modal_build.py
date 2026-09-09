@@ -454,6 +454,7 @@ def _build_linux_x11(src_dir):
             "-G", "Ninja",
             "-S", lorie_cpp,
             "-B", build_dir,
+            "--fresh",
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
             "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
             "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
