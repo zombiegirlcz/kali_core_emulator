@@ -1,6 +1,5 @@
 package com.linux_core.core
 
-import com.linux_core.core.RootfsManager
 import android.content.Context
 import android.util.Log
 import java.io.File
@@ -49,20 +48,22 @@ object BackgroundBoot {
                 // Build the proot config (normal container boot + custom command).
                 val distroId = rootfsDir.relativeTo(context.filesDir).path.substringAfterLast("/")
                 val bootMode = loadBootMode(context, distroId, "M")
-                val config = ProotManager.setupProotEnvironment(
-                    context = context,
-                    rootfsDirName = rootfsDir.relativeTo(context.filesDir).path,
-                    mountStorage = false,
-                    customCommand = "bash /root/.nh_boot.sh",
-                    hasRoot = false,
-                    isDockerImage = false,
-                    bootMode = bootMode
-                )
+                val config =
+                    ProotManager.setupProotEnvironment(
+                        context = context,
+                        rootfsDirName = rootfsDir.relativeTo(context.filesDir).path,
+                        mountStorage = false,
+                        customCommand = "bash /root/.nh_boot.sh",
+                        hasRoot = false,
+                        isDockerImage = false,
+                        bootMode = bootMode,
+                    )
 
                 // Headless session: view = null, output goes to the session buffer.
-                val created = TerminalService.createSession(context, config, null) { err ->
-                    Log.e(TAG, "Headless cron session error: $err")
-                }
+                val created =
+                    TerminalService.createSession(context, config, null) { err ->
+                        Log.e(TAG, "Headless cron session error: $err")
+                    }
                 TerminalService.sessionIds[created]?.let { TerminalService.backgroundBootSessionId = it }
                 TerminalService.backgroundBootReloads = 0
                 TerminalService.backgroundBootStartedAt = System.currentTimeMillis()
@@ -84,9 +85,10 @@ object BackgroundBoot {
         val nhDistroDir = File(filesDir, RootfsManager.NH_DISTRO_DIR)
         if (nhDistroDir.isDirectory) {
             val nhCandidates = nhDistroDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
-            val nhRootfs = nhCandidates.filter { dir ->
-                File(dir, "etc/passwd").exists() && File(dir, "usr/bin").isDirectory
-            }.maxByOrNull { it.lastModified() }
+            val nhRootfs =
+                nhCandidates.filter { dir ->
+                    File(dir, "etc/passwd").exists() && File(dir, "usr/bin").isDirectory
+                }.maxByOrNull { it.lastModified() }
             if (nhRootfs != null) return nhRootfs
         }
 
@@ -98,25 +100,26 @@ object BackgroundBoot {
         }.maxByOrNull { it.lastModified() }
     }
 
-    private fun buildBootScript(): String = buildString {
-        appendLine("#!/bin/bash")
-        appendLine("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-        appendLine("export HOME=/root")
-        appendLine("LOG=/var/log/nethunter-boot.log")
-        appendLine("echo \"[nh-boot] \$(date) starting\" >> \$LOG 2>/dev/null || true")
-        appendLine("")
-        appendLine("# Start the cron daemon (Kali/Debian: /usr/sbin/cron, others: crond)")
-        appendLine("if command -v cron >/dev/null 2>&1; then")
-        appendLine("    echo \"[nh-boot] starting cron\" >> \$LOG 2>/dev/null || true")
-        appendLine("    cron 2>>\$LOG || true")
-        appendLine("elif command -v crond >/dev/null 2>&1; then")
-        appendLine("    echo \"[nh-boot] starting crond\" >> \$LOG 2>/dev/null || true")
-        appendLine("    crond 2>>\$LOG || true")
-        appendLine("else")
-        appendLine("    echo \"[nh-boot] WARNING: cron not installed (apt install cron)\" >> \$LOG 2>/dev/null || true")
-        appendLine("fi")
-        appendLine("")
-        appendLine("# Keep the proot session alive so cron keeps running in the background.")
-        appendLine("while true; do sleep 60; done")
-    }
+    private fun buildBootScript(): String =
+        buildString {
+            appendLine("#!/bin/bash")
+            appendLine("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            appendLine("export HOME=/root")
+            appendLine("LOG=/var/log/nethunter-boot.log")
+            appendLine("echo \"[nh-boot] \$(date) starting\" >> \$LOG 2>/dev/null || true")
+            appendLine("")
+            appendLine("# Start the cron daemon (Kali/Debian: /usr/sbin/cron, others: crond)")
+            appendLine("if command -v cron >/dev/null 2>&1; then")
+            appendLine("    echo \"[nh-boot] starting cron\" >> \$LOG 2>/dev/null || true")
+            appendLine("    cron 2>>\$LOG || true")
+            appendLine("elif command -v crond >/dev/null 2>&1; then")
+            appendLine("    echo \"[nh-boot] starting crond\" >> \$LOG 2>/dev/null || true")
+            appendLine("    crond 2>>\$LOG || true")
+            appendLine("else")
+            appendLine("    echo \"[nh-boot] WARNING: cron not installed (apt install cron)\" >> \$LOG 2>/dev/null || true")
+            appendLine("fi")
+            appendLine("")
+            appendLine("# Keep the proot session alive so cron keeps running in the background.")
+            appendLine("while true; do sleep 60; done")
+        }
 }

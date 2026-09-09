@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Process
 import android.util.Log
 import java.io.File
-import java.io.InputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 
@@ -13,7 +12,7 @@ class ProotConfig(
     val cwd: String,
     val env: Array<String>,
     val prootPath: String,
-    val rootfsDir: String
+    val rootfsDir: String,
 )
 
 object ProotManager {
@@ -40,7 +39,7 @@ object ProotManager {
         customCommand: String? = null,
         hasRoot: Boolean = false,
         isDockerImage: Boolean = false,
-        bootMode: String = "M"  // M=default, I=isolated, D=minimal
+        bootMode: String = "M", // M=default, I=isolated, D=minimal
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -71,11 +70,25 @@ object ProotManager {
         // Migrace layoutu: staré cesty (kali-arm64, filesDir/bin) → nh/distro + usr/bin
         RootfsManager.ensureMigrated(context)
 
-        val criticalDirs = listOf(
-            "system", "dev", "proc", "sys", "tmp", "root", "sdcard",
-            "bin", "usr/bin", "usr/sbin", "sbin", "lib", "lib64", "usr/lib", "etc",
-            "dev/bus/usb"
-        )
+        val criticalDirs =
+            listOf(
+                "system",
+                "dev",
+                "proc",
+                "sys",
+                "tmp",
+                "root",
+                "sdcard",
+                "bin",
+                "usr/bin",
+                "usr/sbin",
+                "sbin",
+                "lib",
+                "lib64",
+                "usr/lib",
+                "etc",
+                "dev/bus/usb",
+            )
         for (dirName in criticalDirs) {
             val dir = File(rootfsDir, dirName)
             if (!dir.exists()) dir.mkdirs()
@@ -90,11 +103,12 @@ object ProotManager {
         updateResolvConf(context, rootfsDir)
 
         val setupDoneFile = File(homeDir, ".setup_done")
-        val distroId = when {
-            isDockerImage -> "docker:${rootfsDirName.substringAfterLast("/")}"
-            rootfsDirName.contains("parrot") -> "parrot"
-            else -> "kali"
-        }
+        val distroId =
+            when {
+                isDockerImage -> "docker:${rootfsDirName.substringAfterLast("/")}"
+                rootfsDirName.contains("parrot") -> "parrot"
+                else -> "kali"
+            }
 
         // Fáze 2: sysdata/shm + rootfs permission fixupy
         setupFakeSysdata(context, rootfsDir, distroId)
@@ -102,9 +116,9 @@ object ProotManager {
         fixUidGidMapping(context, rootfsDir)
 
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
-        
+
         deployZshrc(context, rootfsDir, distroId)
-        
+
         // VZDY vytvorime .bootstrap_required pokud .setup_done neexistuje
         // (stary .setup_done z nekompletniho bootstrapu nesmi blokovat dalsi pokus)
         if (!setupDoneFile.exists()) {
@@ -132,150 +146,150 @@ object ProotManager {
 
         fixLdLinuxSymlinks(context, rootfsDir)
 
-    /**
-     * Vytvoří fake sysdata a shm adresáře pro daný distro (proot-distro style).
-     * Boot skript je následně binduje do /proc a /dev/shm.
-     */
-    fun setupFakeSysdata(context: Context, rootfsDir: File, distroId: String) {
-        val sysdataDir = File(context.filesDir, "nh/sysdata/$distroId")
-        val shmDir = File(context.filesDir, "nh/shm/$distroId")
-        sysdataDir.mkdirs()
-        shmDir.mkdirs()
+        /**
+         * Vytvoří fake sysdata a shm adresáře pro daný distro (proot-distro style).
+         * Boot skript je následně binduje do /proc a /dev/shm.
+         */
+        fun setupFakeSysdata(
+            context: Context,
+            rootfsDir: File,
+            distroId: String,
+        ) {
+            val sysdataDir = File(context.filesDir, "nh/sysdata/$distroId")
+            val shmDir = File(context.filesDir, "nh/shm/$distroId")
+            sysdataDir.mkdirs()
+            shmDir.mkdirs()
 
-        // Fake /proc files (Android blocks/limits these)
-        File(sysdataDir, "loadavg").writeText("0.0 0 0 0 0\n")
-        File(sysdataDir, "stat").writeText("cpu  0 0 0 0 0 0 0 0 0 0\n")
-        File(sysdataDir, "uptime").writeText("${System.currentTimeMillis() / 1000} 0\n")
-        File(sysdataDir, "vmstat").writeText("")
+            // Fake /proc files (Android blocks/limits these)
+            File(sysdataDir, "loadavg").writeText("0.0 0 0 0 0\n")
+            File(sysdataDir, "stat").writeText("cpu  0 0 0 0 0 0 0 0 0 0\n")
+            File(sysdataDir, "uptime").writeText("${System.currentTimeMillis() / 1000} 0\n")
+            File(sysdataDir, "vmstat").writeText("")
 
-        // Fake /proc/sys/* directory structure
-        File(sysdataDir, "sysctl/net").mkdirs()
-        File(sysdataDir, "sysctl/kernel").mkdirs()
-        File(sysdataDir, "sysctl/fs").mkdirs()
+            // Fake /proc/sys/* directory structure
+            File(sysdataDir, "sysctl/net").mkdirs()
+            File(sysdataDir, "sysctl/kernel").mkdirs()
+            File(sysdataDir, "sysctl/fs").mkdirs()
 
-        Log.i(TAG, "Prepared sysdata/shm: $sysdataDir $shmDir")
-    }
-
-    /**
-     * Opraví běžné rootfs permission/problémy:
-     * - /etc je adresář (ne symlink)
-     * - resolv.conf, hosts jsou čitelné/zapisovatelné
-     * - passwd/group/shadow jsou writable (pro UID/GID fixupy)
-     */
-    fun fixRootfsPermissions(context: Context, rootfsDir: File) {
-        val etcDir = File(rootfsDir, "etc")
-        if (!etcDir.exists()) {
-            etcDir.mkdirs()
-            return
+            Log.i(TAG, "Prepared sysdata/shm: $sysdataDir $shmDir")
         }
 
-        // Ensure /etc is a directory (not a symlink)
-        if (Files.isSymbolicLink(etcDir.toPath())) {
-            Log.w(TAG, "/etc is a symlink, removing and recreating as directory")
-            etcDir.delete()
-            etcDir.mkdirs()
-        }
-
-        // Fix resolv.conf
-        val resolvConf = File(etcDir, "resolv.conf")
-        if (resolvConf.exists()) {
-            resolvConf.setReadable(true, false)
-            resolvConf.setWritable(true, false)
-        }
-
-        // Fix hosts
-        val hosts = File(etcDir, "hosts")
-        if (hosts.exists()) {
-            hosts.setReadable(true, false)
-            hosts.setWritable(true, false)
-        }
-
-        // Ensure passwd/group/shadow are writable (for UID/GID fixup)
-        for (name in listOf("passwd", "group", "shadow", "gshadow")) {
-            val f = File(etcDir, name)
-            if (f.exists()) {
-                f.setReadable(true, false)
-                f.setWritable(true, false)
+        /**
+         * Opraví běžné rootfs permission/problémy:
+         * - /etc je adresář (ne symlink)
+         * - resolv.conf, hosts jsou čitelné/zapisovatelné
+         * - passwd/group/shadow jsou writable (pro UID/GID fixupy)
+         */
+        fun fixRootfsPermissions(
+            context: Context,
+            rootfsDir: File,
+        ) {
+            val etcDir = File(rootfsDir, "etc")
+            if (!etcDir.exists()) {
+                etcDir.mkdirs()
+                return
             }
-        }
 
-        Log.i(TAG, "Fixed rootfs permissions: resolv.conf, hosts, passwd/group")
-    }
+            // Ensure /etc is a directory (not a symlink)
+            if (Files.isSymbolicLink(etcDir.toPath())) {
+                Log.w(TAG, "/etc is a symlink, removing and recreating as directory")
+                etcDir.delete()
+                etcDir.mkdirs()
+            }
 
-    /**
-     * Map all guest UIDs/GIDs to the app's UID/GID so files created inside proot
-     * have the same ownership as files on the host (com.linux_core).
-     *
-     * This is necessary because proot runs as the app's UID, but the guest rootfs
-     * typically has root (0:0) ownership. Without this fix, guest-created files
-     * would be owned by root and inaccessible from the host.
-     */
-    fun fixUidGidMapping(context: Context, rootfsDir: File) {
-        val appUid = android.os.Process.myUid()
-        val appGid = appUid
-        val etcDir = File(rootfsDir, "etc")
-        if (!etcDir.exists()) return
+            // Fix resolv.conf
+            val resolvConf = File(etcDir, "resolv.conf")
+            if (resolvConf.exists()) {
+                resolvConf.setReadable(true, false)
+                resolvConf.setWritable(true, false)
+            }
 
-        // /etc/passwd — replace all UIDs and GIDs with app's
-        fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
-        // /etc/group — replace all GIDs with app's
-        fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
-        // /etc/shadow — replace all UIDs with app's (for passwd field)
-        fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
+            // Fix hosts
+            val hosts = File(etcDir, "hosts")
+            if (hosts.exists()) {
+                hosts.setReadable(true, false)
+                hosts.setWritable(true, false)
+            }
 
-        Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
-    }
-
-    /**
-     * Replace UID/GID values in passwd/group/shadow files.
-     *
-     * passwd format: name:passwd:UID:GID:GECOS:home:shell
-     * group format:  name:passwd:GID:user_list
-     * shadow format: name:passwd:UID:...
-     */
-    fun fixUidGidFile(file: File, appUid: Int, appGid: Int, isGroup: Boolean, isShadow: Boolean = false) {
-        if (!file.exists()) return
-        val text = file.readText().trim()
-        if (text.isEmpty()) return
-
-        val lines = text.split("\n")
-        val fixed = lines.map { line ->
-            // Skip comments and empty lines
-            if (line.startsWith("#") || line.trim().isEmpty()) return@map line
-
-            val parts = line.split(":")
-            if (parts.isEmpty()) return@map line
-
-            if (isGroup) {
-                // group: name:passwd:GID:user_list
-                if (parts.size >= 3) {
-                    val fixedParts = parts.toMutableList()
-                    fixedParts[2] = appGid.toString()
-                    return@map fixedParts.joinToString(":")
-                }
-            } else if (isShadow) {
-                // shadow: name:passwd:UID:...
-                if (parts.size >= 3) {
-                    val fixedParts = parts.toMutableList()
-                    fixedParts[2] = appUid.toString()
-                    return@map fixedParts.joinToString(":")
-                }
-            } else {
-                // passwd: name:passwd:UID:GID:GECOS:home:shell
-                if (parts.size >= 4) {
-                    val fixedParts = parts.toMutableList()
-                    fixedParts[2] = appUid.toString()
-                    fixedParts[3] = appGid.toString()
-                    return@map fixedParts.joinToString(":")
+            // Ensure passwd/group/shadow are writable (for UID/GID fixup)
+            for (name in listOf("passwd", "group", "shadow", "gshadow")) {
+                val f = File(etcDir, name)
+                if (f.exists()) {
+                    f.setReadable(true, false)
+                    f.setWritable(true, false)
                 }
             }
-            line
+
+            Log.i(TAG, "Fixed rootfs permissions: resolv.conf, hosts, passwd/group")
         }
 
-        file.writeText(fixed.joinToString("\n") + "\n")
-        file.setReadable(true, false)
-        file.setWritable(true, false)
-    }
+        /**
+         * Map all guest UIDs/GIDs to the app's UID/GID so files created inside proot
+         * have the same ownership as files on the host (com.linux_core).
+         *
+         * This is necessary because proot runs as the app's UID, but the guest rootfs
+         * typically has root (0:0) ownership. Without this fix, guest-created files
+         * would be owned by root and inaccessible from the host.
+         */
+        fun fixUidGidMapping(
+            context: Context,
+            rootfsDir: File,
+        ) {
+            val appUid = android.os.Process.myUid()
+            val appGid = appUid
+            val etcDir = File(rootfsDir, "etc")
+            if (!etcDir.exists()) return
+
+            // /etc/passwd — replace all UIDs and GIDs with app's
+            fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
+            // /etc/group — replace all GIDs with app's
+            fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
+            // /etc/shadow — replace all UIDs with app's (for passwd field)
+            fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
+
+            Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
+        }
+
+        /**
+         * Replace UID/GID values in passwd/group/shadow files.
+         *
+         * passwd format: name:passwd:UID:GID:GECOS:home:shell
+         * group format:  name:passwd:GID:user_list
+         * shadow format: name:passwd:UID:...
+         */
+        fun fixUidGidFile(
+            file: File,
+            appUid: Int,
+            appGid: Int,
+            isGroup: Boolean,
+            isShadow: Boolean = false,
+        ) {
+            if (!file.exists()) return
+            val raw = file.readText().trim()
+            if (raw.isEmpty()) return
+
+            val fixed =
+                raw.lines().map { line ->
+                    if (line.startsWith("#") || line.isBlank()) return@map line
+                    val parts = line.split(":")
+                    if (parts.isEmpty()) return@map line
+
+                    when {
+                        isGroup && parts.size >= 3 -> parts.toMutableList().also { it[2] = appGid.toString() }.joinToString(":")
+                        isShadow && parts.size >= 3 -> parts.toMutableList().also { it[2] = appUid.toString() }.joinToString(":")
+                        !isGroup && !isShadow && parts.size >= 4 ->
+                            parts.toMutableList().also {
+                                it[2] = appUid.toString()
+                                it[3] = appGid.toString()
+                            }.joinToString(":")
+                        else -> line
+                    }
+                }
+
+            file.writeText(fixed.joinToString(separator = System.lineSeparator()) + System.lineSeparator())
+            file.setReadable(true, false)
+            file.setWritable(true, false)
+        }
 
         // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
         // když NH_DISTRO env není nastavený.
@@ -289,29 +303,38 @@ object ProotManager {
 
         // Env proměnné pro boot skript (mount options, extra bindy)
         val rootPrefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
-        val extraMounts = buildString {
-            if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
-            if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
-            if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
-            if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
-            if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
-            if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
-            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
-        }
+        val extraMounts =
+            buildString {
+                if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
+                if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
+                if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
+                if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
+                if (rootPrefs.getBoolean(
+                        "bind_bluetooth",
+                        false,
+                    )
+                ) {
+                    append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
+                }
+                if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
+                if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+            }
 
-        val (nhIsolated, nhMinimal) = when (bootMode) {
-            "I" -> "1" to "0"
-            "D" -> "1" to "1"
-            else -> "0" to "0"
-        }
-        val envVars = mutableListOf(
-            "NH_MOUNT_STORAGE=${if (mountStorage) "1" else "0"}",
-            "NH_EXTRA_MOUNTS=$extraMounts",
-            "NH_DISTRO=$distroId",
-            "NH_ISOLATED=$nhIsolated",
-            "NH_MINIMAL=$nhMinimal",
-            "NH_BOOT_MODE=$bootMode"
-        )
+        val (nhIsolated, nhMinimal) =
+            when (bootMode) {
+                "I" -> "1" to "0"
+                "D" -> "1" to "1"
+                else -> "0" to "0"
+            }
+        val envVars =
+            mutableListOf(
+                "NH_MOUNT_STORAGE=${if (mountStorage) "1" else "0"}",
+                "NH_EXTRA_MOUNTS=$extraMounts",
+                "NH_DISTRO=$distroId",
+                "NH_ISOLATED=$nhIsolated",
+                "NH_MINIMAL=$nhMinimal",
+                "NH_BOOT_MODE=$bootMode",
+            )
 
         // Příkaz: boot <distro> [-- <customCommand>]
         // Docker: boot docker <imageName>
@@ -344,12 +367,23 @@ object ProotManager {
             cwd = rootDir.absolutePath,
             env = envVars.toTypedArray(),
             prootPath = prootBin.absolutePath,
-            rootfsDir = rootfsDir.absolutePath
+            rootfsDir = rootfsDir.absolutePath,
         )
     }
 
-    private fun deployDir(context: Context, assetDir: String, targetDir: File, executable: Boolean, version: String = "") {
-        val names = try { context.assets.list(assetDir) } catch (e: Exception) { null }
+    private fun deployDir(
+        context: Context,
+        assetDir: String,
+        targetDir: File,
+        executable: Boolean,
+        version: String = "",
+    ) {
+        val names =
+            try {
+                context.assets.list(assetDir)
+            } catch (e: Exception) {
+                null
+            }
         val hasAssets = !names.isNullOrEmpty()
 
         // Version gate: při změně verze host nástrojů smaž staré binárky, i když
@@ -380,7 +414,10 @@ object ProotManager {
         }
     }
 
-    private fun assetMd5(context: Context, assetPath: String): String {
+    private fun assetMd5(
+        context: Context,
+        assetPath: String,
+    ): String {
         val md = MessageDigest.getInstance("MD5")
         context.assets.open(assetPath).use { input ->
             val buffer = ByteArray(8192)
@@ -400,7 +437,7 @@ object ProotManager {
         context: Context,
         assetPath: String,
         target: File,
-        executable: Boolean = false
+        executable: Boolean = false,
     ) {
         val newHash = assetMd5(context, assetPath)
         val hashFile = File(target.absolutePath + ".md5")
@@ -425,12 +462,13 @@ object ProotManager {
      * Detekce architektury podle Build.SUPPORTED_ABIS (spolehlivější než
      * odvozování z názvu rootfs adresáře, který se mění s novým layoutem).
      */
-    private fun detectArchSuffix(): String = when {
-        android.os.Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "aarch64"
-        android.os.Build.SUPPORTED_ABIS.any { it == "armeabi-v7a" } -> "arm"
-        android.os.Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
-        else -> "i686"
-    }
+    private fun detectArchSuffix(): String =
+        when {
+            android.os.Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } -> "aarch64"
+            android.os.Build.SUPPORTED_ABIS.any { it == "armeabi-v7a" } -> "arm"
+            android.os.Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
+            else -> "i686"
+        }
 
     /**
      * Deploy arch-specific binárek do usr/bin.
@@ -438,7 +476,10 @@ object ProotManager {
      * Dynamické fallbacky (proot-$suffix, loader-$suffix, libtalloc-$suffix.so)
      byly odstraněny z repa 2026-09-08.
      */
-    private fun deployArchBinaries(context: Context, suffix: String) {
+    private fun deployArchBinaries(
+        context: Context,
+        suffix: String,
+    ) {
         val usrBin = File(context.filesDir, "usr/bin")
         usrBin.mkdirs()
 
@@ -446,18 +487,18 @@ object ProotManager {
         deployFirstAvailable(
             context,
             listOf(
-                "proot-static-$suffix" to "STATIC"
+                "proot-static-$suffix" to "STATIC",
             ),
-            File(usrBin, "proot")
+            File(usrBin, "proot"),
         )
 
         // 2) loader: jen static z kořenu assets/
         deployFirstAvailable(
             context,
             listOf(
-                "loader-static-$suffix" to "STATIC"
+                "loader-static-$suffix" to "STATIC",
             ),
-            File(usrBin, "loader")
+            File(usrBin, "loader"),
         )
     }
 
@@ -468,7 +509,7 @@ object ProotManager {
     private fun deployFirstAvailable(
         context: Context,
         candidates: List<Pair<String, String>>,
-        target: File
+        target: File,
     ) {
         if (target.exists() && target.length() > 0L) {
             target.setExecutable(true, false)
@@ -490,12 +531,15 @@ object ProotManager {
         Log.e(TAG, "deployArchBinaries: ŽÁDNÝ kandidát pro ${target.name} (suffix) neexistuje!")
     }
 
-    private fun updateResolvConf(context: Context, rootfsDir: File) {
+    private fun updateResolvConf(
+        context: Context,
+        rootfsDir: File,
+    ) {
         try {
             val etcDir = File(rootfsDir, "etc")
             if (!etcDir.exists()) etcDir.mkdirs()
             val resolvConf = File(etcDir, "resolv.conf")
-            
+
             val dnsList = mutableListOf<String>()
             val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
             if (connectivityManager != null) {
@@ -512,7 +556,7 @@ object ProotManager {
                     }
                 }
             }
-            
+
             if (dnsList.isEmpty()) {
                 val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
                 val customDns = sharedPrefs.getString("vpn_dns", "8.8.8.8") ?: "8.8.8.8"
@@ -522,7 +566,7 @@ object ProotManager {
                 }
                 dnsList.add("1.1.1.1")
             }
-            
+
             val content = dnsList.joinToString("\n") { "nameserver $it" } + "\n"
             resolvConf.writeText(content)
             resolvConf.setReadable(true, false)
@@ -539,41 +583,42 @@ object ProotManager {
      * /etc/default/locale + /etc/profile.d/nethunter-locale.sh se dotáhnou vždy,
      * aby bash/zsh login shell dostaly LANG/LC_CTYPE=C.UTF-8 (POSIX fallback pryč).
      */
-    private fun buildLocaleFix(): String = buildString {
-        appendLine("# === [NetHunter] UTF-8 locale fix ===")
-        appendLine("mkdir -p /etc /etc/profile.d")
-        appendLine("if [ ! -f /etc/.nethunter_locale_done ]; then")
-        appendLine("    if [ -f /etc/locale.gen ]; then")
-        appendLine("        grep -q 'C.UTF-8' /etc/locale.gen 2>/dev/null || printf 'C.UTF-8 UTF-8\\n' >> /etc/locale.gen")
-        appendLine("        grep -q 'en_US.UTF-8' /etc/locale.gen 2>/dev/null || printf 'en_US.UTF-8 UTF-8\\n' >> /etc/locale.gen")
-        appendLine("    else")
-        appendLine("        printf 'C.UTF-8 UTF-8\\nen_US.UTF-8 UTF-8\\n' > /etc/locale.gen 2>/dev/null || true")
-        appendLine("    fi")
-        appendLine("    if command -v locale-gen >/dev/null 2>&1; then")
-        appendLine("        locale-gen C.UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
-        appendLine("    elif command -v localedef >/dev/null 2>&1; then")
-        appendLine("        localedef -i C -f UTF-8 C.UTF-8 >/dev/null 2>&1 || true")
-        appendLine("        localedef -i en_US -f UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
-        appendLine("    fi")
-        appendLine("    touch /etc/.nethunter_locale_done 2>/dev/null || true")
-        appendLine("fi")
-        appendLine("# /etc/default/locale doplnit jen pokud chybi/je prazdne (neresetujem uzivatelovo nastaveni)")
-        appendLine("if [ ! -s /etc/default/locale ] || ! grep -q '^LANG=' /etc/default/locale 2>/dev/null; then")
-        appendLine("    if command -v update-locale >/dev/null 2>&1; then")
-        appendLine("        update-locale LANG=C.UTF-8 LC_CTYPE=C.UTF-8 >/dev/null 2>&1 || true")
-        appendLine("    else")
-        appendLine("        printf 'LANG=C.UTF-8\\nLC_CTYPE=C.UTF-8\\n' > /etc/default/locale 2>/dev/null || true")
-        appendLine("    fi")
-        appendLine("fi")
-        appendLine("cat > /etc/profile.d/nethunter-locale.sh << 'NLOC_EOF'")
-        appendLine("# NetHunter: UTF-8 locale pro vsechny login shelly (bash/zsh/sh)")
-        appendLine("export LANG=C.UTF-8")
-        appendLine("export LC_CTYPE=C.UTF-8")
-        appendLine("NLOC_EOF")
-        appendLine("chmod 644 /etc/profile.d/nethunter-locale.sh 2>/dev/null || true")
-        appendLine("export LANG=C.UTF-8")
-        appendLine("export LC_CTYPE=C.UTF-8")
-    }
+    private fun buildLocaleFix(): String =
+        buildString {
+            appendLine("# === [NetHunter] UTF-8 locale fix ===")
+            appendLine("mkdir -p /etc /etc/profile.d")
+            appendLine("if [ ! -f /etc/.nethunter_locale_done ]; then")
+            appendLine("    if [ -f /etc/locale.gen ]; then")
+            appendLine("        grep -q 'C.UTF-8' /etc/locale.gen 2>/dev/null || printf 'C.UTF-8 UTF-8\\n' >> /etc/locale.gen")
+            appendLine("        grep -q 'en_US.UTF-8' /etc/locale.gen 2>/dev/null || printf 'en_US.UTF-8 UTF-8\\n' >> /etc/locale.gen")
+            appendLine("    else")
+            appendLine("        printf 'C.UTF-8 UTF-8\\nen_US.UTF-8 UTF-8\\n' > /etc/locale.gen 2>/dev/null || true")
+            appendLine("    fi")
+            appendLine("    if command -v locale-gen >/dev/null 2>&1; then")
+            appendLine("        locale-gen C.UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
+            appendLine("    elif command -v localedef >/dev/null 2>&1; then")
+            appendLine("        localedef -i C -f UTF-8 C.UTF-8 >/dev/null 2>&1 || true")
+            appendLine("        localedef -i en_US -f UTF-8 en_US.UTF-8 >/dev/null 2>&1 || true")
+            appendLine("    fi")
+            appendLine("    touch /etc/.nethunter_locale_done 2>/dev/null || true")
+            appendLine("fi")
+            appendLine("# /etc/default/locale doplnit jen pokud chybi/je prazdne (neresetujem uzivatelovo nastaveni)")
+            appendLine("if [ ! -s /etc/default/locale ] || ! grep -q '^LANG=' /etc/default/locale 2>/dev/null; then")
+            appendLine("    if command -v update-locale >/dev/null 2>&1; then")
+            appendLine("        update-locale LANG=C.UTF-8 LC_CTYPE=C.UTF-8 >/dev/null 2>&1 || true")
+            appendLine("    else")
+            appendLine("        printf 'LANG=C.UTF-8\\nLC_CTYPE=C.UTF-8\\n' > /etc/default/locale 2>/dev/null || true")
+            appendLine("    fi")
+            appendLine("fi")
+            appendLine("cat > /etc/profile.d/nethunter-locale.sh << 'NLOC_EOF'")
+            appendLine("# NetHunter: UTF-8 locale pro vsechny login shelly (bash/zsh/sh)")
+            appendLine("export LANG=C.UTF-8")
+            appendLine("export LC_CTYPE=C.UTF-8")
+            appendLine("NLOC_EOF")
+            appendLine("chmod 644 /etc/profile.d/nethunter-locale.sh 2>/dev/null || true")
+            appendLine("export LANG=C.UTF-8")
+            appendLine("export LC_CTYPE=C.UTF-8")
+        }
 
     /**
      * Shell snippet: smaze automaticky nastavene (uzivateli nezname) hesla
@@ -584,241 +629,276 @@ object ProotManager {
      * se password hash vymaze primo pres sed do /etc/shadow.
      * @param users prostorkem oddeleny seznam uzivatelu (null = root kali parrot)
      */
-    private fun buildPasswordFix(users: String?): String = buildString {
-        appendLine("# === [NetHunter] Password fix: smazat auto-hesla + zapisovatelny /etc/shadow ===")
-        appendLine("chmod 600 /etc/shadow /etc/gshadow 2>/dev/null || true")
-        appendLine("chmod 644 /etc/passwd /etc/group 2>/dev/null || true")
-        appendLine("if [ ! -f /etc/.nethunter_password_reset_done ]; then")
-        appendLine("    for u in ${users ?: "root kali parrot"}; do")
-        appendLine("        if id \"\$u\" >/dev/null 2>&1; then")
-        appendLine("            awk -F: -v u=\"\$u\" 'BEGIN{OFS=\":\"} $1==u{$2=\"\"} {print}' /etc/shadow > /tmp/.nh_shadow 2>/dev/null && cat /tmp/.nh_shadow > /etc/shadow 2>/dev/null; rm -f /tmp/.nh_shadow")
-        appendLine("        fi")
-        appendLine("    done")
-        appendLine("    touch /etc/.nethunter_password_reset_done 2>/dev/null || true")
-        appendLine("fi")
-    }
+    private fun buildPasswordFix(users: String?): String =
+        buildString {
+            appendLine("# === [NetHunter] Password fix: smazat auto-hesla + zapisovatelny /etc/shadow ===")
+            appendLine("chmod 600 /etc/shadow /etc/gshadow 2>/dev/null || true")
+            appendLine("chmod 644 /etc/passwd /etc/group 2>/dev/null || true")
+            appendLine("if [ ! -f /etc/.nethunter_password_reset_done ]; then")
+            appendLine("    for u in ${users ?: "root kali parrot"}; do")
+            appendLine("        if id \"\$u\" >/dev/null 2>&1; then")
+            appendLine(
+                "            awk -F: -v u=\"\$u\" 'BEGIN{OFS=\":\"} $1==u{$2=\"\"} {print}' /etc/shadow > /tmp/.nh_shadow 2>/dev/null && cat /tmp/.nh_shadow > /etc/shadow 2>/dev/null; rm -f /tmp/.nh_shadow",
+            )
+            appendLine("        fi")
+            appendLine("    done")
+            appendLine("    touch /etc/.nethunter_password_reset_done 2>/dev/null || true")
+            appendLine("fi")
+        }
 
-    private fun createMasterScript(homeDir: File, distroId: String, hasRoot: Boolean) {
+    private fun createMasterScript(
+        homeDir: File,
+        distroId: String,
+        hasRoot: Boolean,
+    ) {
         val masterFile = File(homeDir, "bootstrap.sh")
-        val script = StringBuilder().apply {
-            append("#!/bin/bash").append(NL)
-            append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
-            append("export TMPDIR=/tmp").append(NL)
-            append("export DEBIAN_FRONTEND=noninteractive").append(NL)
-            append("export DEBCONF_NOWARNINGS=yes").append(NL)
-            append(buildLocaleFix()).append(NL)
-            append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
-            append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
-            append("chmod 777 /var/cache/apt/archives/partial 2>/dev/null || true").append(NL)
-            append("# Self-heal dpkg stavu: po reinstalaci/chybe muze byt /var/lib/dpkg").append(NL)
-            append("# nepripsatelny (status-old: Permission denied). PRoot fake-root mapuje root->appUID,").append(NL)
-            append("# takze staci zajistit vlastnika + owner-write.").append(NL)
-            append("chown root:root /var/lib/dpkg /var/lib/dpkg/status /var/lib/dpkg/status-old /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true").append(NL)
-            append("chmod u+rw /var/lib/dpkg/status* /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true").append(NL)
-            append("# DNS resolv.conf is dynamically managed by host app").append(NL)
-            append("# Base ParrotOS /usr/bin/perl is a directory, breaking debconf Perl shebang.").append(NL)
-            append("# Replace confmodule with dummy no-op shell functions during bootstrap.").append(NL)
-            append("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then").append(NL)
-            append("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak").append(NL)
-            append("  cat > /usr/share/debconf/confmodule << 'ENDCONF'").append(NL)
-            append("db_version() { return 0; }").append(NL)
-            append("db_input() { return 0; }").append(NL)
-            append("db_go() { return 0; }").append(NL)
-            append("db_get() { RET=''; return 0; }").append(NL)
-            append("db_set() { return 0; }").append(NL)
-            append("db_subst() { return 0; }").append(NL)
-            append("db_fset() { return 0; }").append(NL)
-            append("db_reset() { return 0; }").append(NL)
-            append("db_stop() { return 0; }").append(NL)
-            append("db_metaget() { return 0; }").append(NL)
-            append("db_register() { return 0; }").append(NL)
-            append("db_purge() { return 0; }").append(NL)
-            append("ENDCONF").append(NL)
-            append("  echo '[*] Replaced debconf confmodule with dummy (no Perl needed)'").append(NL)
-            append("fi").append(NL)
-
-            if (distroId == "kali") {
-                append("echo 'deb [trusted=yes] https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list").append(NL)
-            } else {
-                append("echo 'deb [trusted=yes] https://deb.parrot.sh/parrot parrot main contrib non-free' > /etc/apt/sources.list").append(NL)
-                append("mkdir -p /etc/apt/trusted.gpg.d").append(NL)
-                append("if command -v curl >/dev/null 2>&1; then").append(NL)
-                append("  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
-                append("elif command -v wget >/dev/null 2>&1; then").append(NL)
-                append("  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true").append(NL)
+        val script =
+            StringBuilder().apply {
+                append("#!/bin/bash").append(NL)
+                append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
+                append("export TMPDIR=/tmp").append(NL)
+                append("export DEBIAN_FRONTEND=noninteractive").append(NL)
+                append("export DEBCONF_NOWARNINGS=yes").append(NL)
+                append(buildLocaleFix()).append(NL)
+                append("echo '[*] BOOTSTRAP STARTING...'").append(NL)
+                append("rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true").append(NL)
+                append("chmod 777 /var/cache/apt/archives/partial 2>/dev/null || true").append(NL)
+                append("# Self-heal dpkg stavu: po reinstalaci/chybe muze byt /var/lib/dpkg").append(NL)
+                append("# nepripsatelny (status-old: Permission denied). PRoot fake-root mapuje root->appUID,").append(NL)
+                append("# takze staci zajistit vlastnika + owner-write.").append(NL)
+                append(
+                    "chown root:root /var/lib/dpkg /var/lib/dpkg/status /var/lib/dpkg/status-old /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true",
+                ).append(NL)
+                append(
+                    "chmod u+rw /var/lib/dpkg/status* /var/lib/dpkg/available /var/lib/dpkg/diversions /var/lib/dpkg/statoverride 2>/dev/null || true",
+                ).append(NL)
+                append("# DNS resolv.conf is dynamically managed by host app").append(NL)
+                append("# Base ParrotOS /usr/bin/perl is a directory, breaking debconf Perl shebang.").append(NL)
+                append("# Replace confmodule with dummy no-op shell functions during bootstrap.").append(NL)
+                append("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then").append(NL)
+                append("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak").append(NL)
+                append("  cat > /usr/share/debconf/confmodule << 'ENDCONF'").append(NL)
+                append("db_version() { return 0; }").append(NL)
+                append("db_input() { return 0; }").append(NL)
+                append("db_go() { return 0; }").append(NL)
+                append("db_get() { RET=''; return 0; }").append(NL)
+                append("db_set() { return 0; }").append(NL)
+                append("db_subst() { return 0; }").append(NL)
+                append("db_fset() { return 0; }").append(NL)
+                append("db_reset() { return 0; }").append(NL)
+                append("db_stop() { return 0; }").append(NL)
+                append("db_metaget() { return 0; }").append(NL)
+                append("db_register() { return 0; }").append(NL)
+                append("db_purge() { return 0; }").append(NL)
+                append("ENDCONF").append(NL)
+                append("  echo '[*] Replaced debconf confmodule with dummy (no Perl needed)'").append(NL)
                 append("fi").append(NL)
-            }
 
-            if (!hasRoot) {
-                append("for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf dpkg-realpath systemd-sysusers systemd-tmpfiles journalctl; do").append(NL)
-                append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
-                append("    path=\"\$prefix/\$cmd\"").append(NL)
-                append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
-                append("    ln -sf /bin/true \"\$path\" 2>/dev/null || true").append(NL)
-                append("  done").append(NL)
-                append("done").append(NL)
-            }
+                if (distroId == "kali") {
+                    append(
+                        "echo 'deb [trusted=yes] https://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list",
+                    ).append(NL)
+                } else {
+                    append(
+                        "echo 'deb [trusted=yes] https://deb.parrot.sh/parrot parrot main contrib non-free' > /etc/apt/sources.list",
+                    ).append(NL)
+                    append("mkdir -p /etc/apt/trusted.gpg.d").append(NL)
+                    append("if command -v curl >/dev/null 2>&1; then").append(NL)
+                    append(
+                        "  curl -sSL -o /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true",
+                    ).append(NL)
+                    append("elif command -v wget >/dev/null 2>&1; then").append(NL)
+                    append(
+                        "  wget -qO /etc/apt/trusted.gpg.d/parrot-archive-key.asc https://archive.parrotsec.org/parrot/misc/archive.gpg 2>/dev/null || true",
+                    ).append(NL)
+                    append("fi").append(NL)
+                }
 
-            append("mkdir -p /etc/dpkg/dpkg.cfg.d").append(NL)
-            append("echo 'force-unsafe-io' > /etc/dpkg/dpkg.cfg.d/force-unsafe-io").append(NL)
-            append("mkdir -p /etc/apt/apt.conf.d").append(NL)
-            append("echo 'DPkg::options { \"--force-unsafe-io\"; };' > /etc/apt/apt.conf.d/force-unsafe-io").append(NL)
+                if (!hasRoot) {
+                    append(
+                        "for cmd in systemctl service update-rc.d invoke-rc.d dpkg-preconfigure setcap sysctl udevadm modprobe dmidecode systemd-detect-virt resolvconf dpkg-realpath systemd-sysusers systemd-tmpfiles journalctl; do",
+                    ).append(NL)
+                    append("  for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
+                    append("    path=\"\$prefix/\$cmd\"").append(NL)
+                    append("    dpkg-divert --add --local --rename --divert \"\$path.distrib\" \"\$path\" 2>/dev/null || true").append(NL)
+                    append("    ln -sf /bin/true \"\$path\" 2>/dev/null || true").append(NL)
+                    append("  done").append(NL)
+                    append("done").append(NL)
+                }
 
-            append("apt update 2>&1 || true").append(NL)
-            append("# Fix /lib64 -> usr/lib64 before usrmerge, otherwise base-files preinst fails").append(NL)
-            append("if [ -d /lib64 ] && [ -d /usr/lib64 ]; then").append(NL)
-            append("  if cmp -s /lib64/ld-linux-aarch64.so.1 /usr/lib64/ld-linux-aarch64.so.1 2>/dev/null; then").append(NL)
-            append("    rm /lib64/ld-linux-aarch64.so.1 2>/dev/null").append(NL)
-            append("    rmdir /lib64 2>/dev/null").append(NL)
-            append("    ln -sf usr/lib64 /lib64").append(NL)
-            append("    echo '[*] Fixed /lib64 -> usr/lib64 symlink'").append(NL)
-            append("  fi").append(NL)
-            append("fi").append(NL)
-            append("echo '[*] Installing core packages...'").append(NL)
-            append("BOOTSTRAP_CORE_OK=0").append(NL)
-            append("if apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip dropbear dropbear-bin 2>&1; then").append(NL)
-            append("  BOOTSTRAP_CORE_OK=1").append(NL)
-            append("  echo '[*] Core packages installed OK'").append(NL)
-            append("else").append(NL)
-            append("  echo '[!] WARNING: apt install failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
-            append("fi").append(NL)
-            // Restore debconf confmodule (real Perl now installed, debconf should work)
+                append("mkdir -p /etc/dpkg/dpkg.cfg.d").append(NL)
+                append("echo 'force-unsafe-io' > /etc/dpkg/dpkg.cfg.d/force-unsafe-io").append(NL)
+                append("mkdir -p /etc/apt/apt.conf.d").append(NL)
+                append("echo 'DPkg::options { \"--force-unsafe-io\"; };' > /etc/apt/apt.conf.d/force-unsafe-io").append(NL)
 
-            append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
-            append("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
-            append("  echo '[*] Restored debconf confmodule'").append(NL)
-            append("fi").append(NL)
-            append("echo '[*] Fixing any half-configured packages...'").append(NL)
-            append("if dpkg --configure -a 2>&1; then").append(NL)
-            append("  BOOTSTRAP_CORE_OK=1").append(NL)
-            append("else").append(NL)
-            append("  BOOTSTRAP_CORE_OK=0").append(NL)
-            append("  echo '[!] WARNING: dpkg --configure -a failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
-            append("fi").append(NL)
-            append("SHELL_BIN=/bin/bash").append(NL)
-            append("if command -v zsh >/dev/null 2>&1; then SHELL_BIN=/usr/bin/zsh; echo '[*] zsh installed OK'; else echo '[!] WARNING: zsh install failed, using bash fallback'; fi").append(NL)
-            append("echo '[*] Installing Python packages (requests, scapy)...'").append(NL)
-            append("# Try pip3 first, fall back to python3 -m pip, with break-system-packages detection").append(NL)
-            append("PIP_CMD=\"\"").append(NL)
-            append("if command -v pip3 >/dev/null 2>&1; then").append(NL)
-            append("  PIP_CMD=pip3").append(NL)
-            append("elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then").append(NL)
-            append("  PIP_CMD=\"python3 -m pip\"").append(NL)
-            append("fi").append(NL)
-            append("if [ -n \"\$PIP_CMD\" ]; then").append(NL)
-            append("  if \$PIP_CMD install --help 2>&1 | grep -q break-system-packages; then").append(NL)
-            append("    \$PIP_CMD install --break-system-packages requests scapy 2>&1 || true").append(NL)
-            append("  else").append(NL)
-            append("    PIP_REQUIRE_VIRTUALENV=false \$PIP_CMD install requests scapy 2>&1 || true").append(NL)
-            append("  fi").append(NL)
-            append("else").append(NL)
-            append("  echo '[!] WARNING: pip not found, skipping Python packages'").append(NL)
-            append("fi").append(NL)
+                append("apt update 2>&1 || true").append(NL)
+                append("# Fix /lib64 -> usr/lib64 before usrmerge, otherwise base-files preinst fails").append(NL)
+                append("if [ -d /lib64 ] && [ -d /usr/lib64 ]; then").append(NL)
+                append("  if cmp -s /lib64/ld-linux-aarch64.so.1 /usr/lib64/ld-linux-aarch64.so.1 2>/dev/null; then").append(NL)
+                append("    rm /lib64/ld-linux-aarch64.so.1 2>/dev/null").append(NL)
+                append("    rmdir /lib64 2>/dev/null").append(NL)
+                append("    ln -sf usr/lib64 /lib64").append(NL)
+                append("    echo '[*] Fixed /lib64 -> usr/lib64 symlink'").append(NL)
+                append("  fi").append(NL)
+                append("fi").append(NL)
+                append("echo '[*] Installing core packages...'").append(NL)
+                append("BOOTSTRAP_CORE_OK=0").append(NL)
+                append(
+                    "if apt install -y --allow-unauthenticated usrmerge perl zsh zsh-syntax-highlighting zsh-autosuggestions curl git sudo python3 python3-pip dropbear dropbear-bin 2>&1; then",
+                ).append(NL)
+                append("  BOOTSTRAP_CORE_OK=1").append(NL)
+                append("  echo '[*] Core packages installed OK'").append(NL)
+                append("else").append(NL)
+                append("  echo '[!] WARNING: apt install failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
+                append("fi").append(NL)
+                // Restore debconf confmodule (real Perl now installed, debconf should work)
 
-            val defaultUser = distroId
-            append("id -u ${defaultUser} &>/dev/null || useradd -m -s \"\$SHELL_BIN\" ${defaultUser} 2>/dev/null || true").append(NL)
-            append(buildPasswordFix(null)).append(NL)
-            append("usermod -aG sudo ${defaultUser} 2>/dev/null || true").append(NL)
-            append("mkdir -p /etc/sudoers.d").append(NL)
-            append("echo '${defaultUser} ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/${defaultUser}").append(NL)
-            append("chmod 0440 /etc/sudoers.d/${defaultUser}").append(NL)
+                append("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then").append(NL)
+                append("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule").append(NL)
+                append("  echo '[*] Restored debconf confmodule'").append(NL)
+                append("fi").append(NL)
+                append("echo '[*] Fixing any half-configured packages...'").append(NL)
+                append("if dpkg --configure -a 2>&1; then").append(NL)
+                append("  BOOTSTRAP_CORE_OK=1").append(NL)
+                append("else").append(NL)
+                append("  BOOTSTRAP_CORE_OK=0").append(NL)
+                append("  echo '[!] WARNING: dpkg --configure -a failed — bootstrap bude zopakovan pri pristim startu'").append(NL)
+                append("fi").append(NL)
+                append("SHELL_BIN=/bin/bash").append(NL)
+                append(
+                    "if command -v zsh >/dev/null 2>&1; then SHELL_BIN=/usr/bin/zsh; echo '[*] zsh installed OK'; else echo '[!] WARNING: zsh install failed, using bash fallback'; fi",
+                ).append(NL)
+                append("echo '[*] Installing Python packages (requests, scapy)...'").append(NL)
+                append("# Try pip3 first, fall back to python3 -m pip, with break-system-packages detection").append(NL)
+                append("PIP_CMD=\"\"").append(NL)
+                append("if command -v pip3 >/dev/null 2>&1; then").append(NL)
+                append("  PIP_CMD=pip3").append(NL)
+                append("elif command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then").append(NL)
+                append("  PIP_CMD=\"python3 -m pip\"").append(NL)
+                append("fi").append(NL)
+                append("if [ -n \"\$PIP_CMD\" ]; then").append(NL)
+                append("  if \$PIP_CMD install --help 2>&1 | grep -q break-system-packages; then").append(NL)
+                append("    \$PIP_CMD install --break-system-packages requests scapy 2>&1 || true").append(NL)
+                append("  else").append(NL)
+                append("    PIP_REQUIRE_VIRTUALENV=false \$PIP_CMD install requests scapy 2>&1 || true").append(NL)
+                append("  fi").append(NL)
+                append("else").append(NL)
+                append("  echo '[!] WARNING: pip not found, skipping Python packages'").append(NL)
+                append("fi").append(NL)
 
-            append("echo '[*] Restoring clean NetHunter Zshrc configurations...'").append(NL)
-            append("[ -f /etc/skel/.zshrc.nethunter ] && cp /etc/skel/.zshrc.nethunter /etc/skel/.zshrc").append(NL)
-            append("[ -f /root/.zshrc.nethunter ] && cp /root/.zshrc.nethunter /root/.zshrc").append(NL)
-            append("[ -f /etc/skel/.zshrc.nethunter ] && [ -d /home/${defaultUser} ] && cp /etc/skel/.zshrc.nethunter /home/${defaultUser}/.zshrc").append(NL)
-            append("chown -R ${defaultUser}:${defaultUser} /home/${defaultUser}/.zshrc 2>/dev/null || true").append(NL)
+                val defaultUser = distroId
+                append("id -u $defaultUser &>/dev/null || useradd -m -s \"\$SHELL_BIN\" $defaultUser 2>/dev/null || true").append(NL)
+                append(buildPasswordFix(null)).append(NL)
+                append("usermod -aG sudo $defaultUser 2>/dev/null || true").append(NL)
+                append("mkdir -p /etc/sudoers.d").append(NL)
+                append("echo '$defaultUser ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/$defaultUser").append(NL)
+                append("chmod 0440 /etc/sudoers.d/$defaultUser").append(NL)
 
-            append("chsh -s \"\$SHELL_BIN\" root 2>/dev/null || true").append(NL)
-            append("if [ \"\$BOOTSTRAP_CORE_OK\" = 1 ]; then").append(NL)
-            append("  touch /root/.setup_done").append(NL)
-            append("  echo '[+] BOOTSTRAP COMPLETE'").append(NL)
-            append("else").append(NL)
-            append("  echo '[!] BOOTSTRAP FAILED — .setup_done NEVYTVOREN, bootstrap se zopakuje pri pristim startu'").append(NL)
-            append("  exit 1").append(NL)
-            append("fi").append(NL)
-        }.toString()
+                append("echo '[*] Restoring clean NetHunter Zshrc configurations...'").append(NL)
+                append("[ -f /etc/skel/.zshrc.nethunter ] && cp /etc/skel/.zshrc.nethunter /etc/skel/.zshrc").append(NL)
+                append("[ -f /root/.zshrc.nethunter ] && cp /root/.zshrc.nethunter /root/.zshrc").append(NL)
+                append(
+                    "[ -f /etc/skel/.zshrc.nethunter ] && [ -d /home/$defaultUser ] && cp /etc/skel/.zshrc.nethunter /home/$defaultUser/.zshrc",
+                ).append(NL)
+                append("chown -R $defaultUser:$defaultUser /home/$defaultUser/.zshrc 2>/dev/null || true").append(NL)
+
+                append("chsh -s \"\$SHELL_BIN\" root 2>/dev/null || true").append(NL)
+                append("if [ \"\$BOOTSTRAP_CORE_OK\" = 1 ]; then").append(NL)
+                append("  touch /root/.setup_done").append(NL)
+                append("  echo '[+] BOOTSTRAP COMPLETE'").append(NL)
+                append("else").append(NL)
+                append("  echo '[!] BOOTSTRAP FAILED — .setup_done NEVYTVOREN, bootstrap se zopakuje pri pristim startu'").append(NL)
+                append("  exit 1").append(NL)
+                append("fi").append(NL)
+            }.toString()
         masterFile.writeText(script)
         masterFile.setExecutable(true, false)
     }
 
     private fun createEntrypointScript(homeDir: File) {
         val entryFile = File(homeDir, "entrypoint.sh")
-        val script = StringBuilder().apply {
-            append("#!/bin/bash").append(NL)
-            append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
-            append("export TMPDIR=/tmp").append(NL)
-            append("unset LD_PRELOAD").append(NL)
-            append(buildLocaleFix()).append(NL)
-            append(buildPasswordFix(null)).append(NL)
-            append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
-            append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
-            
-            append("# Restore passwd if it was previously diverted by mistake").append(NL)
-            append("for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
-            append("  path=\"\$prefix/passwd\"").append(NL)
-            append("  if [ -L \"\$path\" ] && [ -f \"\$path.distrib\" ]; then").append(NL)
-            append("    rm -f \"\$path\"").append(NL)
-            append("    dpkg-divert --remove --local --rename \"\$path\" 2>/dev/null || true").append(NL)
-            append("  fi").append(NL)
-            append("done").append(NL)
+        val script =
+            StringBuilder().apply {
+                append("#!/bin/bash").append(NL)
+                append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
+                append("export TMPDIR=/tmp").append(NL)
+                append("unset LD_PRELOAD").append(NL)
+                append(buildLocaleFix()).append(NL)
+                append(buildPasswordFix(null)).append(NL)
+                append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
+                append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
 
-            append("setup_user_zsh() {").append(NL)
-            append("    local target_home=\"\$1\"").append(NL)
-            append("    local user_name=\"\$2\"").append(NL)
-            append("    local zrc=\"\$target_home/.zshrc\"").append(NL)
-            append("    [ ! -d \"\$target_home\" ] && return").append(NL)
-            append("    # Zkopiruje se optimalizovany zshrc pouze pokud neexistuje").append(NL)
-            append("    if [ ! -f \"\$zrc\" ]; then").append(NL)
-            append("        if [ -f /etc/skel/.zshrc.nethunter ]; then").append(NL)
-            append("            cp /etc/skel/.zshrc.nethunter \"\$zrc\"").append(NL)
-            append("        elif [ -f /etc/skel/.zshrc ]; then").append(NL)
-            append("            cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
-            append("        fi").append(NL)
-            append("    fi").append(NL)
-            append("    # Clean old fragments").append(NL)
-            append("    grep -v -e 'NetHunter AI Operator' -e 'FORCE_ZSH_' -e 'source /etc/nethunter.zshrc' \"\$zrc\" > /tmp/.nh_zrc 2>/dev/null || true").append(NL)
-            append("    cat /tmp/.nh_zrc > \"\$zrc\" 2>/dev/null || true").append(NL)
-            append("    rm -f /tmp/.nh_zrc 2>/dev/null || true").append(NL)
-            append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$zrc\" 2>/dev/null || true").append(NL)
-            append("}").append(NL)
+                append("# Restore passwd if it was previously diverted by mistake").append(NL)
+                append("for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
+                append("  path=\"\$prefix/passwd\"").append(NL)
+                append("  if [ -L \"\$path\" ] && [ -f \"\$path.distrib\" ]; then").append(NL)
+                append("    rm -f \"\$path\"").append(NL)
+                append("    dpkg-divert --remove --local --rename \"\$path\" 2>/dev/null || true").append(NL)
+                append("  fi").append(NL)
+                append("done").append(NL)
 
-            append("setup_user_zsh /root root").append(NL)
-            append("[ -d /home/parrot ] && setup_user_zsh /home/parrot parrot").append(NL)
-            append("[ -d /home/kali ] && setup_user_zsh /home/kali kali").append(NL)
+                append("setup_user_zsh() {").append(NL)
+                append("    local target_home=\"\$1\"").append(NL)
+                append("    local user_name=\"\$2\"").append(NL)
+                append("    local zrc=\"\$target_home/.zshrc\"").append(NL)
+                append("    [ ! -d \"\$target_home\" ] && return").append(NL)
+                append("    # Zkopiruje se optimalizovany zshrc pouze pokud neexistuje").append(NL)
+                append("    if [ ! -f \"\$zrc\" ]; then").append(NL)
+                append("        if [ -f /etc/skel/.zshrc.nethunter ]; then").append(NL)
+                append("            cp /etc/skel/.zshrc.nethunter \"\$zrc\"").append(NL)
+                append("        elif [ -f /etc/skel/.zshrc ]; then").append(NL)
+                append("            cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
+                append("        fi").append(NL)
+                append("    fi").append(NL)
+                append("    # Clean old fragments").append(NL)
+                append(
+                    "    grep -v -e 'NetHunter AI Operator' -e 'FORCE_ZSH_' -e 'source /etc/nethunter.zshrc' \"\$zrc\" > /tmp/.nh_zrc 2>/dev/null || true",
+                ).append(NL)
+                append("    cat /tmp/.nh_zrc > \"\$zrc\" 2>/dev/null || true").append(NL)
+                append("    rm -f /tmp/.nh_zrc 2>/dev/null || true").append(NL)
+                append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$zrc\" 2>/dev/null || true").append(NL)
+                append("}").append(NL)
 
-            append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
-            append("# Dropbear SSH server (fix for OpenSSH seccomp crash on Android kernel)").append(NL)
-            append("if command -v dropbear >/dev/null 2>&1; then").append(NL)
-            append("  if ! pidof dropbear >/dev/null 2>&1; then").append(NL)
-            append("    mkdir -p /etc/dropbear").append(NL)
-            append("    for keytype in rsa ecdsa ed25519; do").append(NL)
-            append("      KEYFILE=\"/etc/dropbear/dropbear_\${keytype}_host_key\"").append(NL)
-            append("      [ -f \"\$KEYFILE\" ] || dropbearkey -t \"\$keytype\" -f \"\$KEYFILE\" 2>&1 | tail -1").append(NL)
-            append("    done").append(NL)
-            append("    # Use port 2222 (non-privileged — PRoot can't bind to port 22)").append(NL)
-            append("    dropbear -p 2222 2>/dev/null && echo '[*] dropbear SSH server started on port 2222'").append(NL)
-            append("  fi").append(NL)
-            append("fi").append(NL)
-            append("[ -f /etc/motd ] && cat /etc/motd").append(NL)
-            append("echo '[*] Starting session...'").append(NL)
-            append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
-            append("if [ \$# -gt 0 ]; then").append(NL)
-            append("    exec \"\$ENTRY_SHELL\" -c \"\$*\"").append(NL)
-            append("else").append(NL)
-            append("    exec \"\$ENTRY_SHELL\" --login").append(NL)
-            append("fi").append(NL)
-        }.toString()
+                append("setup_user_zsh /root root").append(NL)
+                append("[ -d /home/parrot ] && setup_user_zsh /home/parrot parrot").append(NL)
+                append("[ -d /home/kali ] && setup_user_zsh /home/kali kali").append(NL)
+
+                append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
+                append("# Dropbear SSH server (fix for OpenSSH seccomp crash on Android kernel)").append(NL)
+                append("if command -v dropbear >/dev/null 2>&1; then").append(NL)
+                append("  if ! pidof dropbear >/dev/null 2>&1; then").append(NL)
+                append("    mkdir -p /etc/dropbear").append(NL)
+                append("    for keytype in rsa ecdsa ed25519; do").append(NL)
+                append("      KEYFILE=\"/etc/dropbear/dropbear_\${keytype}_host_key\"").append(NL)
+                append("      [ -f \"\$KEYFILE\" ] || dropbearkey -t \"\$keytype\" -f \"\$KEYFILE\" 2>&1 | tail -1").append(NL)
+                append("    done").append(NL)
+                append("    # Use port 2222 (non-privileged — PRoot can't bind to port 22)").append(NL)
+                append("    dropbear -p 2222 2>/dev/null && echo '[*] dropbear SSH server started on port 2222'").append(NL)
+                append("  fi").append(NL)
+                append("fi").append(NL)
+                append("[ -f /etc/motd ] && cat /etc/motd").append(NL)
+                append("echo '[*] Starting session...'").append(NL)
+                append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
+                append("if [ \$# -gt 0 ]; then").append(NL)
+                append("    exec \"\$ENTRY_SHELL\" -c \"\$*\"").append(NL)
+                append("else").append(NL)
+                append("    exec \"\$ENTRY_SHELL\" --login").append(NL)
+                append("fi").append(NL)
+            }.toString()
         entryFile.writeText(script)
         entryFile.setExecutable(true, false)
     }
 
-    private fun fixLdLinuxSymlinks(context: Context, rootfsDir: File) {
+    private fun fixLdLinuxSymlinks(
+        context: Context,
+        rootfsDir: File,
+    ) {
         // Kanonické umístění tallocu: files/usr/lib/libtalloc.so.2 (deployArchBinaries).
         // Legacy kopie v files rootu už se nenasazuje — fallback pro staré instalace.
-        val tallocFile = File(context.filesDir, "usr/lib/libtalloc.so.2")
-            .takeIf { it.exists() && it.length() > 0L }
-            ?: File(context.filesDir, "libtalloc.so.2")
+        val tallocFile =
+            File(context.filesDir, "usr/lib/libtalloc.so.2")
+                .takeIf { it.exists() && it.length() > 0L }
+                ?: File(context.filesDir, "libtalloc.so.2")
         // Copy talloc into rootfs lib so guest binaries can find it
         val tallocDest = File(rootfsDir, "lib/libtalloc.so.2")
         if (!tallocDest.exists() || tallocDest.length() == 0L) {
@@ -837,7 +917,15 @@ object ProotManager {
             if (linkFile.exists() && Files.isSymbolicLink(linkFile.toPath())) {
                 try {
                     val target = android.system.Os.readlink(linkFile.absolutePath)
-                    val resolvedFile = if (target.startsWith("/")) File(rootfsDir, target.substring(1)).canonicalFile else File(linkFile.parentFile, target).canonicalFile
+                    val resolvedFile =
+                        if (target.startsWith(
+                                "/",
+                            )
+                        ) {
+                            File(rootfsDir, target.substring(1)).canonicalFile
+                        } else {
+                            File(linkFile.parentFile, target).canonicalFile
+                        }
                     if (resolvedFile.exists() && resolvedFile.isFile) {
                         linkFile.delete()
                         resolvedFile.copyTo(linkFile)
@@ -850,127 +938,138 @@ object ProotManager {
         }
     }
 
-    private fun deployApiScripts(context: Context, rootfsDir: File) {
+    private fun deployApiScripts(
+        context: Context,
+        rootfsDir: File,
+    ) {
         val binDir = File(rootfsDir, "usr/local/bin")
         if (!binDir.exists()) binDir.mkdirs()
 
         val NL = "\n"
 
-
-
-                val scripts = mapOf(
-            "apt" to buildString {
-                appendLine("#!/bin/sh")
-                appendLine("# NetHunter AI Operator APT Wrapper")
-                appendLine("export DEBIAN_FRONTEND=noninteractive")
-                appendLine("# Fix debconf syntax error if present")
-                appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
-                appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
-                appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
-                appendLine("#!/bin/sh")
-                appendLine("RET=''")
-                appendLine("eval \"\$RET\"=\"")
-                appendLine("ENDCONF")
-                appendLine("fi")
-                appendLine("# Reinforce diversions for systemd tools if missing")
-                appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
-                appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
-                appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
-                appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
-                appendLine("  fi")
-                appendLine("done")
-                appendLine("# Restore debconf confmodule if backup exists")
-                appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
-                appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
-                appendLine("fi")
-                appendLine("# Fix half-configured packages")
-                appendLine("dpkg --configure -a 2>&1 || true")
-                appendLine("# Run real apt")
-                appendLine("exec /usr/bin/apt \"\$@\"")
-            },
-            "apt-get" to buildString {
-                appendLine("#!/bin/sh")
-                appendLine("# NetHunter AI Operator APT-GET Wrapper")
-                appendLine("export DEBIAN_FRONTEND=noninteractive")
-                appendLine("# Fix debconf syntax error if present")
-                appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
-                appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
-                appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
-                appendLine("#!/bin/sh")
-                appendLine("RET=''")
-                appendLine("eval \"\$RET\"=\"")
-                appendLine("ENDCONF")
-                appendLine("fi")
-                appendLine("# Reinforce diversions for systemd tools if missing")
-                appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
-                appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
-                appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
-                appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
-                appendLine("  fi")
-                appendLine("done")
-                appendLine("# Restore debconf confmodule if backup exists")
-                appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
-                appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
-                appendLine("fi")
-                appendLine("# Fix half-configured packages")
-                appendLine("dpkg --configure -a 2>&1 || true")
-                appendLine("# Run real apt-get")
-                appendLine("exec /usr/bin/apt-get \"\$@\"")
-            },
-            "vpn-bypass" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"Usage: vpn-bypass <command> [arguments...]\"").append(NL)
-                append("  exit 1").append(NL)
-                append("fi").append(NL)
-                append("export http_proxy=http://127.0.0.1:13339").append(NL)
-                append("export https_proxy=http://127.0.0.1:13339").append(NL)
-                append("export all_proxy=http://127.0.0.1:13339").append(NL)
-                append("export HTTP_PROXY=http://127.0.0.1:13339").append(NL)
-                append("export HTTPS_PROXY=http://127.0.0.1:13339").append(NL)
-                append("export ALL_PROXY=http://127.0.0.1:13339").append(NL)
-                append("echo \"[*] Executing in VPN bypass mode: \$@\"").append(NL)
-                append("exec \"\$@\"").append(NL)
-            }.toString(),
-            "terminalmap" to buildString {
-                appendLine("#!/system/bin/sh")
-                appendLine("# terminalmap wrapper — explicitní ld-linux + LD_LIBRARY_PATH pro glibc")
-                appendLine("# Proot nasazuje loader jako ld-linux fallback, ale pro glibc binary")
-                appendLine("# potřebujeme skutečný dynamic linker z rootfs.")
-                appendLine("")
-                appendLine("# Hledat ld-linux v rootfs (Kali/Parrot ho má v /lib/aarch64-linux-gnu/)")
-            appendLine("for ld in \"/lib/ld-linux-aarch64.so.1\" \"/lib64/ld-linux-aarch64.so.1\" \"/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\"; do")
-                appendLine("    if [ -x \"\$ld\" ]; then")
-                appendLine("        LDR=\"\$ld\"")
-                appendLine("        break")
-                appendLine("    fi")
-                appendLine("done")
-                appendLine("")
-                appendLine("if [ -z \"\$LDR\" ] || [ ! -f \"/data/data/com.linux_core/files/terminalmap\" ]; then")
-                appendLine("    echo \"[-] terminalmap: binary or dynamic linker not found\" >&2")
-                appendLine("    exit 1")
-                appendLine("fi")
-                appendLine("")
-                appendLine("# LD_LIBRARY_PATH: host filesDir (pro talloc/proot libs) + rootfs lib")
-                appendLine("export LD_LIBRARY_PATH=\"/data/data/com.linux_core/files:/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"")
-                appendLine("exec \"\$LDR\" \"/data/data/com.linux_core/files/terminalmap\" \"\$@\"")
-            },
-            "dcheck" to StringBuilder().apply {
-                append("#!/bin/sh").append(NL)
-                append("if [ \$# -eq 0 ]; then").append(NL)
-                append("  echo \"Usage: dcheck <command> [arguments...]\"").append(NL)
-                append("  exit 1").append(NL)
-                append("fi").append(NL)
-                append("export http_proxy=http://127.0.0.1:13339").append(NL)
-                append("export https_proxy=http://127.0.0.1:13339").append(NL)
-                append("export all_proxy=http://127.0.0.1:13339").append(NL)
-                append("export HTTP_PROXY=http://127.0.0.1:13339").append(NL)
-                append("export HTTPS_PROXY=http://127.0.0.1:13339").append(NL)
-                append("export ALL_PROXY=http://127.0.0.1:13339").append(NL)
-                append("echo \"[*] Executing in VPN bypass mode (dcheck): \$@\"").append(NL)
-                append("exec \"\$@\"").append(NL)
-            }.toString(),
-        )
+        val scripts =
+            mapOf(
+                "apt" to
+                    buildString {
+                        appendLine("#!/bin/sh")
+                        appendLine("# NetHunter AI Operator APT Wrapper")
+                        appendLine("export DEBIAN_FRONTEND=noninteractive")
+                        appendLine("# Fix debconf syntax error if present")
+                        appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
+                        appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
+                        appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
+                        appendLine("#!/bin/sh")
+                        appendLine("RET=''")
+                        appendLine("eval \"\$RET\"=\"")
+                        appendLine("ENDCONF")
+                        appendLine("fi")
+                        appendLine("# Reinforce diversions for systemd tools if missing")
+                        appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
+                        appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
+                        appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
+                        appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
+                        appendLine("  fi")
+                        appendLine("done")
+                        appendLine("# Restore debconf confmodule if backup exists")
+                        appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
+                        appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
+                        appendLine("fi")
+                        appendLine("# Fix half-configured packages")
+                        appendLine("dpkg --configure -a 2>&1 || true")
+                        appendLine("# Run real apt")
+                        appendLine("exec /usr/bin/apt \"\$@\"")
+                    },
+                "apt-get" to
+                    buildString {
+                        appendLine("#!/bin/sh")
+                        appendLine("# NetHunter AI Operator APT-GET Wrapper")
+                        appendLine("export DEBIAN_FRONTEND=noninteractive")
+                        appendLine("# Fix debconf syntax error if present")
+                        appendLine("if [ -f /usr/share/debconf/confmodule ] && [ ! -f /usr/share/debconf/confmodule.bak ]; then")
+                        appendLine("  cp /usr/share/debconf/confmodule /usr/share/debconf/confmodule.bak")
+                        appendLine("  cat > /usr/share/debconf/confmodule << 'ENDCONF'")
+                        appendLine("#!/bin/sh")
+                        appendLine("RET=''")
+                        appendLine("eval \"\$RET\"=\"")
+                        appendLine("ENDCONF")
+                        appendLine("fi")
+                        appendLine("# Reinforce diversions for systemd tools if missing")
+                        appendLine("for cmd in systemd-sysusers systemd-tmpfiles journalctl systemctl; do")
+                        appendLine("  if [ -f /usr/bin/\$cmd ] && [ ! -L /usr/bin/\$cmd ]; then")
+                        appendLine("    dpkg-divert --add --local --rename --divert /usr/bin/\$cmd.distrib /usr/bin/\$cmd 2>/dev/null")
+                        appendLine("    ln -sf /bin/true /usr/bin/\$cmd 2>/dev/null")
+                        appendLine("  fi")
+                        appendLine("done")
+                        appendLine("# Restore debconf confmodule if backup exists")
+                        appendLine("if [ -f /usr/share/debconf/confmodule.bak ] && [ ! -f /usr/share/debconf/confmodule ]; then")
+                        appendLine("  mv /usr/share/debconf/confmodule.bak /usr/share/debconf/confmodule")
+                        appendLine("fi")
+                        appendLine("# Fix half-configured packages")
+                        appendLine("dpkg --configure -a 2>&1 || true")
+                        appendLine("# Run real apt-get")
+                        appendLine("exec /usr/bin/apt-get \"\$@\"")
+                    },
+                "vpn-bypass" to
+                    StringBuilder().apply {
+                        append("#!/bin/sh").append(NL)
+                        append("if [ \$# -eq 0 ]; then").append(NL)
+                        append("  echo \"Usage: vpn-bypass <command> [arguments...]\"").append(NL)
+                        append("  exit 1").append(NL)
+                        append("fi").append(NL)
+                        append("export http_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export https_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export all_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export HTTP_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("export HTTPS_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("export ALL_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("echo \"[*] Executing in VPN bypass mode: \$@\"").append(NL)
+                        append("exec \"\$@\"").append(NL)
+                    }.toString(),
+                "terminalmap" to
+                    buildString {
+                        appendLine("#!/system/bin/sh")
+                        appendLine("# terminalmap wrapper — explicitní ld-linux + LD_LIBRARY_PATH pro glibc")
+                        appendLine("# Proot nasazuje loader jako ld-linux fallback, ale pro glibc binary")
+                        appendLine("# potřebujeme skutečný dynamic linker z rootfs.")
+                        appendLine("")
+                        appendLine("# Hledat ld-linux v rootfs (Kali/Parrot ho má v /lib/aarch64-linux-gnu/)")
+                        appendLine(
+                            "for ld in \"/lib/ld-linux-aarch64.so.1\" \"/lib64/ld-linux-aarch64.so.1\" \"/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\"; do",
+                        )
+                        appendLine("    if [ -x \"\$ld\" ]; then")
+                        appendLine("        LDR=\"\$ld\"")
+                        appendLine("        break")
+                        appendLine("    fi")
+                        appendLine("done")
+                        appendLine("")
+                        appendLine("if [ -z \"\$LDR\" ] || [ ! -f \"/data/data/com.linux_core/files/terminalmap\" ]; then")
+                        appendLine("    echo \"[-] terminalmap: binary or dynamic linker not found\" >&2")
+                        appendLine("    exit 1")
+                        appendLine("fi")
+                        appendLine("")
+                        appendLine("# LD_LIBRARY_PATH: host filesDir (pro talloc/proot libs) + rootfs lib")
+                        appendLine(
+                            "export LD_LIBRARY_PATH=\"/data/data/com.linux_core/files:/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"",
+                        )
+                        appendLine("exec \"\$LDR\" \"/data/data/com.linux_core/files/terminalmap\" \"\$@\"")
+                    },
+                "dcheck" to
+                    StringBuilder().apply {
+                        append("#!/bin/sh").append(NL)
+                        append("if [ \$# -eq 0 ]; then").append(NL)
+                        append("  echo \"Usage: dcheck <command> [arguments...]\"").append(NL)
+                        append("  exit 1").append(NL)
+                        append("fi").append(NL)
+                        append("export http_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export https_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export all_proxy=http://127.0.0.1:13339").append(NL)
+                        append("export HTTP_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("export HTTPS_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("export ALL_PROXY=http://127.0.0.1:13339").append(NL)
+                        append("echo \"[*] Executing in VPN bypass mode (dcheck): \$@\"").append(NL)
+                        append("exec \"\$@\"").append(NL)
+                    }.toString(),
+            )
 
         for ((name, content) in scripts) {
             val scriptFile = File(binDir, name)
@@ -1022,23 +1121,44 @@ object ProotManager {
         deploySuBridge(context, rootfsDir)
 
         // Create backward-compat symlinks pointing to nh
-        val compatNames = listOf(
-            // nethunter-* compatibility
-            "nethunter",  // full name alias
-            "nethunter-battery-status", "nethunter-toast", "nethunter-vibrate",
-            "nethunter-tts-speak", "nethunter-clipboard-get", "nethunter-clipboard-set",
-            "nethunter-notification", "nethunter-wifi-connectioninfo",
-            "nethunter-wifi-control", "nethunter-cellinfo", "nethunter-location",
-            "nethunter-map", "nethunter-terminalmap", "nethunter-battery-optimize",
-            "nethunter-device-admin", "nethunter-volume", "nethunter-torch",
-            "nethunter-log", "nethunter-speech-input", "nethunter-notifications-active",
-            "nethunter-apps-usage", "nethunter-accessibility-hierarchy",
-            "nethunter-fix-postinst", "nethunter-desktop", "nethunter-api",
-            // VPN compatibility
-            "vpn-cli", "vpn-on", "vpn-off", "vpn-bypass", "ignore-vpn",
-            // old standalone
-            "nethunter-agent-cli"
-        )
+        val compatNames =
+            listOf(
+                // nethunter-* compatibility
+                "nethunter", // full name alias
+                "nethunter-battery-status",
+                "nethunter-toast",
+                "nethunter-vibrate",
+                "nethunter-tts-speak",
+                "nethunter-clipboard-get",
+                "nethunter-clipboard-set",
+                "nethunter-notification",
+                "nethunter-wifi-connectioninfo",
+                "nethunter-wifi-control",
+                "nethunter-cellinfo",
+                "nethunter-location",
+                "nethunter-map",
+                "nethunter-terminalmap",
+                "nethunter-battery-optimize",
+                "nethunter-device-admin",
+                "nethunter-volume",
+                "nethunter-torch",
+                "nethunter-log",
+                "nethunter-speech-input",
+                "nethunter-notifications-active",
+                "nethunter-apps-usage",
+                "nethunter-accessibility-hierarchy",
+                "nethunter-fix-postinst",
+                "nethunter-desktop",
+                "nethunter-api",
+                // VPN compatibility
+                "vpn-cli",
+                "vpn-on",
+                "vpn-off",
+                "vpn-bypass",
+                "ignore-vpn",
+                // old standalone
+                "nethunter-agent-cli",
+            )
         for (name in compatNames) {
             try {
                 val link = File(binDir, name)
@@ -1050,16 +1170,17 @@ object ProotManager {
             }
         }
 
-        val assetsToDeploy = listOf(
-            "nethunter_agent.py" to "nethunter_agent.py",
-            "usr/bin/terminalmap" to "terminalmap",
-            "usr/bin/ifconfig" to "ifconfig",
-            "code-server-ctl" to "code-server-ctl",
-            "scripts/ai-agent.py" to "ai-agent.py",
-            "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
-            "usb_bridge" to "usb_bridge",
-            "usbtool" to "usbtool"
-        )
+        val assetsToDeploy =
+            listOf(
+                "nethunter_agent.py" to "nethunter_agent.py",
+                "usr/bin/terminalmap" to "terminalmap",
+                "usr/bin/ifconfig" to "ifconfig",
+                "code-server-ctl" to "code-server-ctl",
+                "scripts/ai-agent.py" to "ai-agent.py",
+                "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
+                "usb_bridge" to "usb_bridge",
+                "usbtool" to "usbtool",
+            )
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
             try {
@@ -1084,7 +1205,7 @@ object ProotManager {
             context,
             "usr/lib/linux-x11",
             File(rootfsDir, "usr/bin/linux-x11"),
-            executable = true
+            executable = true,
         )
 
         // Initialize USB bridge: create socket path INSIDE rootfs tmp
@@ -1107,7 +1228,10 @@ object ProotManager {
      * Deploy Shizuku rish shell (shizuku command) into the guest filesystem.
      * Shizuku native binaries in assets are arm64 — other archs are not supported.
      */
-    private fun deployShizukuRish(context: Context, rootfsDir: File) {
+    private fun deployShizukuRish(
+        context: Context,
+        rootfsDir: File,
+    ) {
         val binDir = File(rootfsDir, "usr/local/bin")
         if (!binDir.exists()) binDir.mkdirs()
 
@@ -1162,7 +1286,10 @@ object ProotManager {
     /**
      * Deploy su_daemon host binary and su_wrapper guest binary for UNIX-socket privilege escalation.
      */
-    private fun deploySuBridge(context: Context, rootfsDir: File) {
+    private fun deploySuBridge(
+        context: Context,
+        rootfsDir: File,
+    ) {
         // 0. Host ipc dir MUST exist BEFORE the PRoot container starts —
         //    boot script binds $FILES_DIR/ipc to /run/host_ipc. If the dir is
         //    created only later (in startDaemon), the bind is a dead mountpoint
@@ -1239,13 +1366,15 @@ object ProotManager {
                 try {
                     if (wrapperLink.exists()) wrapperLink.delete()
                     // Create symlink relative: su_wrapper
-                    val created = Runtime.getRuntime().exec(
-                        arrayOf(
-                            "/system/bin/ln", "-s",
-                            File(binDir, "su_wrapper").absolutePath,
-                            wrapperLink.absolutePath
-                        )
-                    ).waitFor() == 0
+                    val created =
+                        Runtime.getRuntime().exec(
+                            arrayOf(
+                                "/system/bin/ln",
+                                "-s",
+                                File(binDir, "su_wrapper").absolutePath,
+                                wrapperLink.absolutePath,
+                            ),
+                        ).waitFor() == 0
                     if (created) {
                         Log.i(TAG, "Symlinked /usr/local/bin/$name -> su_wrapper")
                     } else {
@@ -1285,16 +1414,21 @@ object ProotManager {
         }
     }
 
-    private fun deployZshrc(context: Context, rootfsDir: File, distroId: String) {
+    private fun deployZshrc(
+        context: Context,
+        rootfsDir: File,
+        distroId: String,
+    ) {
         val assetName = "zshrc.$distroId"
-        val zshrcContent = try {
-            context.assets.open(assetName).use { input ->
-                input.bufferedReader().use { it.readText() }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read zshrc asset $assetName: ${e.message}")
-            return
-        }.replace("\r\n", "\n").replace("\r", "\n")
+        val zshrcContent =
+            try {
+                context.assets.open(assetName).use { input ->
+                    input.bufferedReader().use { it.readText() }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read zshrc asset $assetName: ${e.message}")
+                return
+            }.replace("\r\n", "\n").replace("\r", "\n")
 
         // 1. Write to /etc/skel
         val skelDir = File(rootfsDir, "etc/skel")
@@ -1334,18 +1468,22 @@ object ProotManager {
         }
     }
 
-    private fun deployVpnHelpDocument(context: Context, targetDir: File) {
+    private fun deployVpnHelpDocument(
+        context: Context,
+        targetDir: File,
+    ) {
         val helpFile = File(targetDir, "nethunter_docs.md")
         // Dokumentace se čte z assets/nethunter_docs.md (editace bez rekompilace
         // Kotlin zdrojáku; stačí obnovit asset a restartovat kontejner).
-        val content: String? = try {
-            context.assets.open("nethunter_docs.md").use { input ->
-                input.readBytes().toString(Charsets.UTF_8)
+        val content: String? =
+            try {
+                context.assets.open("nethunter_docs.md").use { input ->
+                    input.readBytes().toString(Charsets.UTF_8)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read nethunter_docs.md from assets: ${e.message}")
+                null
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to read nethunter_docs.md from assets: ${e.message}")
-            null
-        }
         if (content == null) return
         try {
             helpFile.writeText(content)
@@ -1356,106 +1494,113 @@ object ProotManager {
         }
     }
 
-    private fun deployWelcomeProfile(context: Context, rootfsDir: File, distroId: String) {
+    private fun deployWelcomeProfile(
+        context: Context,
+        rootfsDir: File,
+        distroId: String,
+    ) {
         val profileDir = File(rootfsDir, "etc/profile.d")
         if (!profileDir.exists()) profileDir.mkdirs()
 
         val isParrot = distroId == "parrot"
 
-        val profileScript = buildString {
-            appendLine("#!/bin/sh")
-            appendLine("# NetHunter AI Operator - Welcome (shown once per session)")
-            appendLine("SENTINEL=\$HOME/.nethunter_welcome_shown")
-            appendLine("if [ -f \"\$SENTINEL\" ]; then return 0 2>/dev/null || exit 0; fi")
-            appendLine("touch \"\$SENTINEL\" 2>/dev/null")
-            appendLine()
+        val profileScript =
+            buildString {
+                appendLine("#!/bin/sh")
+                appendLine("# NetHunter AI Operator - Welcome (shown once per session)")
+                appendLine("SENTINEL=\$HOME/.nethunter_welcome_shown")
+                appendLine("if [ -f \"\$SENTINEL\" ]; then return 0 2>/dev/null || exit 0; fi")
+                appendLine("touch \"\$SENTINEL\" 2>/dev/null")
+                appendLine()
 
-            if (isParrot) {
+                if (isParrot) {
+                    appendLine("echo \"\"")
+                    appendLine("echo \"  \\033[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\\033[0m\"")
+                    appendLine("echo \"  \\033[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\\033[0m\"")
+                    appendLine("echo \"  \\033[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\\033[0m\"")
+                    appendLine("echo \"  \\033[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\\033[0m\"")
+                    appendLine("echo \"  \\033[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\\033[0m\"")
+                    appendLine("echo \"  \\033[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\\033[0m\"")
+                    appendLine("echo \"  \\033[1;32m   NetHunter AI Operator v4.1\\033[0m\"")
+                    appendLine("echo \"  \\033[1;32m      Parrot OS Security\\033[0m\"")
+                } else {
+                    appendLine("echo \"\"")
+                    appendLine("echo \"  \\033[1;34m##################################################\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88      a8P         db        88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88    .88'         d88b       88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88   88'          d8''8b      88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88 d88           d8'  '8b     88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88     '88.   d8'        '8b  88        88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
+                    appendLine("echo \"  \\033[1;34m####  ############# NetHunter ####################\\033[0m\"")
+                }
+
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[0;32m     nh network location\\033[0m              GPS + Google Maps\"")
+                appendLine("echo \"  \\033[0;32m     nh network cell\\033[0m                 mobilní síť (5G/4G/3G)\"")
+                appendLine("echo \"  \\033[0;32m     nh network map\\033[0m                  OSM terminálová mapa\"")
+                appendLine("echo \"  \\033[0;32m     nh system battery\\033[0m               stav baterie\"")
+                appendLine("echo \"  \\033[0;32m     nh network wifi\\033[0m                 WiFi info\"")
+                appendLine("echo \"  \\033[0;32m     nh system volume\\033[0m               hlasitost\"")
+                appendLine("echo \"  \\033[0;32m     nh system torch\\033[0m               svítilna\"")
+                appendLine("echo \"  \\033[0;32m     nh system toast\\033[0m                Android toast\"")
+                appendLine("echo \"  \\033[0;32m     nh system vibrate\\033[0m             vibrace\"")
+                appendLine("echo \"  \\033[0;32m     nh system tts-speak\\033[0m           přečíst text nahlas\"")
+                appendLine("echo \"  \\033[0;32m     nh system notification\\033[0m         systémová notifikace\"")
+                appendLine("echo \"  \\033[0;32m     nh system clipboard\\033[0m           schránka (čtení/zápis)\"")
+                appendLine("echo \"  \\033[0;32m     nh log [-n N] [-g P]\\033[0m          logcat viewer\"")
+                appendLine("echo \"  \\033[0;32m     nh usb list\\033[0m                    USB zařízení (OTG)\"")
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m   🛡️  VPN\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn on|off\\033[0m                  VPN zapnout/vypnout\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn mitm on|off\\033[0m            TLS MITM zapnout/vypnout\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn mitm status\\033[0m            MITM stav + session\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn logs\\033[0m                    MITM formátované logy\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn status\\033[0m                  stav VPN\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn bypass\\033[0m                 obejít VPN pro příkaz\"")
+                appendLine("echo \"  \\033[0;33m     nh vpn ignore\\033[0m                VPN bypass pro session\"")
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m   🔑  ROOT BRIDGE (host Magisk su)\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[0;33m     sudo id\\033[0m                       root na hostiteli (uid=0)\"")
+                appendLine("echo \"  \\033[0;33m     su -c 'prikaz'\\033[0m               spustit příkaz jako root\"")
+                appendLine("echo \"  \\033[0;33m     su\\033[0m                          hostitelský root shell\"")
+                appendLine("echo \"  \\033[0;33m     ifconfig\\033[0m                     wlan0 + tun0 (i bez su)\"")
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m   🖥️  DESKTOP\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine(
+                    "echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (X server :1 → external X11 launcher)\"",
+                )
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[1;33m   </>  EDITOR (VS Code)\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[0;33m     code-server-ctl start\\033[0m           VS Code v prohlížeči (:8443)\"")
+                appendLine("echo \"  \\033[0;33m     code-server-ctl status\\033[0m          stav editoru\"")
+                appendLine("echo \"  \\033[0;33m     code-server-ctl password\\033[0m         zobrazit heslo\"")
+                appendLine("echo \"  \\033[0;33m     code-server-ctl install\\033[0m         nainstalovat code-server\"")
+                appendLine()
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
+                appendLine("echo \"  \\033[0;90m     📖 nh list  → seznam všech příkazů\\033[0m\"")
+                appendLine("echo \"  \\033[0;90m     📖 nh help  → nápověda\\033[0m\"")
+                appendLine("echo \"  \\033[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\\033[0m\"")
+                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
                 appendLine("echo \"\"")
-                appendLine("echo \"  \\033[1;33m╭━━━╮╱╱╱╱╱╱╱╱╱╭╮╱╭━━━┳━━━╮\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m┃╭━╮┃╱╱╱╱╱╱╱╱╭╯╰╮┃╭━╮┃╭━╮┃\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m┃╰━╯┣━━┳━┳━┳━┻╮╭╯┃┃╱┃┃╰━━╮\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m┃╭━━┫╭╮┃╭┫╭┫╭╮┃┃╱┃┃╱┃┣━━╮┃\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m┃┃╱╱┃╭╮┃┃┃┃┃╰╯┃╰╮┃╰━╯┃╰━╯┃\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m╰╯╱╱╰╯╰┻╯╰╯╰━━┻━╯╰━━━┻━━━╯\\033[0m\"")
-                appendLine("echo \"  \\033[1;32m   NetHunter AI Operator v4.1\\033[0m\"")
-                appendLine("echo \"  \\033[1;32m      Parrot OS Security\\033[0m\"")
-            } else {
+                appendLine("echo \"  \\033[0;90m     github.com/zombiegirlcz/kali_core_emulator\\033[0m\"")
                 appendLine("echo \"\"")
-                appendLine("echo \"  \\033[1;34m##################################################\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88      a8P         db        88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88    .88'         d88b       88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88   88'          d8''8b      88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88 d88           d8'  '8b     88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  8888'88.        d8YaaaaY8b    88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88P   Y8b      d8''''''''8b   88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88     '88.   d8'        '8b  88        88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##  88       Y8b d8'          '8b 888888888 88  ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m##                                              ##\\033[0m\"")
-                appendLine("echo \"  \\033[1;34m####  ############# NetHunter ####################\\033[0m\"")
             }
-
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;32m     nh network location\\033[0m              GPS + Google Maps\"")
-            appendLine("echo \"  \\033[0;32m     nh network cell\\033[0m                 mobilní síť (5G/4G/3G)\"")
-            appendLine("echo \"  \\033[0;32m     nh network map\\033[0m                  OSM terminálová mapa\"")
-            appendLine("echo \"  \\033[0;32m     nh system battery\\033[0m               stav baterie\"")
-            appendLine("echo \"  \\033[0;32m     nh network wifi\\033[0m                 WiFi info\"")
-            appendLine("echo \"  \\033[0;32m     nh system volume\\033[0m               hlasitost\"")
-            appendLine("echo \"  \\033[0;32m     nh system torch\\033[0m               svítilna\"")
-            appendLine("echo \"  \\033[0;32m     nh system toast\\033[0m                Android toast\"")
-            appendLine("echo \"  \\033[0;32m     nh system vibrate\\033[0m             vibrace\"")
-            appendLine("echo \"  \\033[0;32m     nh system tts-speak\\033[0m           přečíst text nahlas\"")
-            appendLine("echo \"  \\033[0;32m     nh system notification\\033[0m         systémová notifikace\"")
-            appendLine("echo \"  \\033[0;32m     nh system clipboard\\033[0m           schránka (čtení/zápis)\"")
-            appendLine("echo \"  \\033[0;32m     nh log [-n N] [-g P]\\033[0m          logcat viewer\"")
-            appendLine("echo \"  \\033[0;32m     nh usb list\\033[0m                    USB zařízení (OTG)\"")
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[1;33m   🛡️  VPN\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn on|off\\033[0m                  VPN zapnout/vypnout\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn mitm on|off\\033[0m            TLS MITM zapnout/vypnout\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn mitm status\\033[0m            MITM stav + session\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn logs\\033[0m                    MITM formátované logy\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn status\\033[0m                  stav VPN\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn bypass\\033[0m                 obejít VPN pro příkaz\"")
-            appendLine("echo \"  \\033[0;33m     nh vpn ignore\\033[0m                VPN bypass pro session\"")
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[1;33m   🔑  ROOT BRIDGE (host Magisk su)\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     sudo id\\033[0m                       root na hostiteli (uid=0)\"")
-            appendLine("echo \"  \\033[0;33m     su -c 'prikaz'\\033[0m               spustit příkaz jako root\"")
-            appendLine("echo \"  \\033[0;33m     su\\033[0m                          hostitelský root shell\"")
-            appendLine("echo \"  \\033[0;33m     ifconfig\\033[0m                     wlan0 + tun0 (i bez su)\"")
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[1;33m   🖥️  DESKTOP\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (X server :1 → external X11 launcher)\"")
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[1;33m   </>  EDITOR (VS Code)\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;33m     code-server-ctl start\\033[0m           VS Code v prohlížeči (:8443)\"")
-            appendLine("echo \"  \\033[0;33m     code-server-ctl status\\033[0m          stav editoru\"")
-            appendLine("echo \"  \\033[0;33m     code-server-ctl password\\033[0m         zobrazit heslo\"")
-            appendLine("echo \"  \\033[0;33m     code-server-ctl install\\033[0m         nainstalovat code-server\"")
-            appendLine()
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"  \\033[0;90m     📖 nh list  → seznam všech příkazů\\033[0m\"")
-            appendLine("echo \"  \\033[0;90m     📖 nh help  → nápověda\\033[0m\"")
-            appendLine("echo \"  \\033[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\\033[0m\"")
-            appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-            appendLine("echo \"\"")
-            appendLine("echo \"  \\033[0;90m     github.com/zombiegirlcz/kali_core_emulator\\033[0m\"")
-            appendLine("echo \"\"")
-        }
 
         val welcomeFile = File(profileDir, "nethunter-welcome.sh")
         try {
@@ -1486,7 +1631,6 @@ object ProotManager {
             motd.append(NL)
             motd.append(motdKali)
         }
-
 
         motd.append(NL)
         motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)

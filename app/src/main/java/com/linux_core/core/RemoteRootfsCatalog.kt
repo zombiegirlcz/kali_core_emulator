@@ -10,9 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -26,15 +24,15 @@ import java.util.concurrent.TimeUnit
  * - root/entrypoint.sh heredoc (inline)
  */
 data class RemoteDistroScript(
-    val scriptName: String,           // e.g. "kali.sh"
-    val distroName: String,           // e.g. "Kali Linux"
-    val distroComment: String,        // e.g. "Kali Linux official LXC rootfs"
-    val tarballUrl: String,           // resolved for current arch
-    val tarballSha256: String,        // resolved for current arch
-    val architectures: List<String>,  // available archs in the script
-    val bootstrapScript: String,      // full bootstrap.sh content from heredoc
-    val entrypointScript: String,     // full root/entrypoint.sh content from heredoc
-    val commitSha: String             // latest commit SHA when fetched
+    val scriptName: String, // e.g. "kali.sh"
+    val distroName: String, // e.g. "Kali Linux"
+    val distroComment: String, // e.g. "Kali Linux official LXC rootfs"
+    val tarballUrl: String, // resolved for current arch
+    val tarballSha256: String, // resolved for current arch
+    val architectures: List<String>, // available archs in the script
+    val bootstrapScript: String, // full bootstrap.sh content from heredoc
+    val entrypointScript: String, // full root/entrypoint.sh content from heredoc
+    val commitSha: String, // latest commit SHA when fetched
 ) {
     /** Slug for directory naming: "kali", "debian-12-bookworm", etc. */
     val slug: String
@@ -53,7 +51,7 @@ data class RemoteDistroScript(
             scriptName: String,
             scriptContent: String,
             commitSha: String,
-            currentArch: String
+            currentArch: String,
         ): RemoteDistroScript? {
             return try {
                 val name = extractBashVar(scriptContent, "DISTRO_NAME") ?: scriptName.removeSuffix(".sh")
@@ -75,7 +73,7 @@ data class RemoteDistroScript(
                     architectures = archs,
                     bootstrapScript = bootstrap,
                     entrypointScript = entrypoint,
-                    commitSha = commitSha
+                    commitSha = commitSha,
                 )
             } catch (e: Exception) {
                 Log.e("RemoteDistroScript", "Failed to parse $scriptName: ${e.message}")
@@ -102,10 +100,11 @@ object RemoteRootfsCatalog {
     private const val KEY_LAST_SHA = "last_commit_sha"
     private const val CACHE_VALID_MS = 30 * 60 * 1000L // 30 minutes
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val httpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
 
     @Volatile private var cachedScripts: List<RemoteDistroScript> = emptyList()
 
@@ -113,15 +112,16 @@ object RemoteRootfsCatalog {
 
     fun fetchDistroScripts(
         context: Context,
-        forceRefresh: Boolean = false
-    ): Flow<List<RemoteDistroScript>> = flow {
-        val scripts = fetchDistroScriptsSync(context, forceRefresh)
-        emit(scripts)
-    }.flowOn(Dispatchers.IO)
+        forceRefresh: Boolean = false,
+    ): Flow<List<RemoteDistroScript>> =
+        flow {
+            val scripts = fetchDistroScriptsSync(context, forceRefresh)
+            emit(scripts)
+        }.flowOn(Dispatchers.IO)
 
     fun fetchDistroScriptsSync(
         context: Context,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
     ): List<RemoteDistroScript> {
         return try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -153,42 +153,46 @@ object RemoteRootfsCatalog {
 
     private fun fetchFromGitHub(context: Context): List<RemoteDistroScript> {
         // 1. Get latest commit SHA
-        val commitRequest = Request.Builder()
-            .url("https://api.github.com/repos/$GITHUB_REPO/commits?per_page=1")
-            .addHeader("Accept", "application/vnd.github.v3+json")
-            .build()
+        val commitRequest =
+            Request.Builder()
+                .url("https://api.github.com/repos/$GITHUB_REPO/commits?per_page=1")
+                .addHeader("Accept", "application/vnd.github.v3+json")
+                .build()
 
-        val latestCommitSha: String = httpClient.newCall(commitRequest).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("GitHub commits API ${response.code}")
-            val body = response.body?.string() ?: throw IOException("Empty commits response")
-            val arr = JSONArray(body)
-            arr.getJSONObject(0).getString("sha")
-        }
+        val latestCommitSha: String =
+            httpClient.newCall(commitRequest).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("GitHub commits API ${response.code}")
+                val body = response.body?.string() ?: throw IOException("Empty commits response")
+                val arr = JSONArray(body)
+                arr.getJSONObject(0).getString("sha")
+            }
 
         Log.i(TAG, "Latest commit: $latestCommitSha")
 
         // 2. List root files
-        val contentsRequest = Request.Builder()
-            .url(ROOT_CONTENTS_URL)
-            .addHeader("Accept", "application/vnd.github.v3+json")
-            .build()
+        val contentsRequest =
+            Request.Builder()
+                .url(ROOT_CONTENTS_URL)
+                .addHeader("Accept", "application/vnd.github.v3+json")
+                .build()
 
-        val rootShFiles: List<JSONObject> = httpClient.newCall(contentsRequest).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("GitHub contents API ${response.code}")
-            val body = response.body?.string() ?: throw IOException("Empty contents response")
-            val arr = JSONArray(body)
-            val result = mutableListOf<JSONObject>()
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                if (obj.optString("type") == "file" &&
-                    obj.optString("name", "").endsWith(".sh") &&
-                    obj.optString("name", "") != "README.md"
-                ) {
-                    result.add(obj)
+        val rootShFiles: List<JSONObject> =
+            httpClient.newCall(contentsRequest).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("GitHub contents API ${response.code}")
+                val body = response.body?.string() ?: throw IOException("Empty contents response")
+                val arr = JSONArray(body)
+                val result = mutableListOf<JSONObject>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    if (obj.optString("type") == "file" &&
+                        obj.optString("name", "").endsWith(".sh") &&
+                        obj.optString("name", "") != "README.md"
+                    ) {
+                        result.add(obj)
+                    }
                 }
+                result
             }
-            result
-        }
 
         Log.i(TAG, "Found ${rootShFiles.size} distro scripts at repo root")
 
@@ -237,14 +241,20 @@ object RemoteRootfsCatalog {
 
 // ─── Bash parsing helpers ──────────────────────────────────────
 
-private fun extractBashVar(script: String, varName: String): String? {
+private fun extractBashVar(
+    script: String,
+    varName: String,
+): String? {
     // Match: VAR_NAME="value" or VAR_NAME='value'
     val regex = Regex("""^\s*$varName\s*=\s*"([^"]*)"""", RegexOption.MULTILINE)
     val match = regex.find(script)
     return match?.groupValues?.getOrNull(1)
 }
 
-private fun extractTarballMap(script: String, mapName: String): Map<String, String> {
+private fun extractTarballMap(
+    script: String,
+    mapName: String,
+): Map<String, String> {
     val result = mutableMapOf<String, String>()
     // Match: MAP_NAME['arch']="url"
     val regex = Regex("""^\s*$mapName\['([^']+)'\]\s*=\s*"([^"]*)"""", RegexOption.MULTILINE)
@@ -262,11 +272,14 @@ private fun extractTarballMap(script: String, mapName: String): Map<String, Stri
  *   cat <<'BOOTSTRAP_EOF' > "$DISTRO_ROOTFS/bootstrap.sh"
  *   ...content...
  *   BOOTSTRAP_EOF
- * 
+ *
  * The marker name varies (BOOTSTRAP_EOF, ENTRYPOINT_EOF, etc.).
  * We match: cat <<'MARKER' > "$DISTRO_ROOTFS/<target>" ... MARKER
  */
-private fun extractHeredoc(script: String, targetPath: String): String {
+private fun extractHeredoc(
+    script: String,
+    targetPath: String,
+): String {
     val escapedTarget = targetPath.replace("/", "\/")
     // Match: cat <<'MARKER' > "$DISTRO_ROOTFS/<target>" ... MARKER
     // Scripts use: cat <<'BOOTSTRAP_EOF' > "$DISTRO_ROOTFS/bootstrap.sh"
