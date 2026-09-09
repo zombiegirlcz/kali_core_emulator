@@ -491,7 +491,7 @@ def _build_linux_x11(src_dir):
     proc = subprocess.run(build_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         print(f"  CMAKE BUILD FAILED (rc={proc.returncode})")
-        fail_log = "/tmp/linux-x11-build-fail.log"
+        fail_log = "/vol/builds/linux-x11-build-fail.log"
         with open(fail_log, "w") as f:
             f.write("--- STDOUT ---\n")
             f.write(proc.stdout or "")
