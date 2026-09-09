@@ -458,7 +458,7 @@ def _build_linux_x11(src_dir):
             "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
             "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
             "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
-            "-DCMAKE_C_FLAGS=-Ugetdtablesize -D_GNU_SOURCE",
+            "-DCMAKE_C_FLAGS=-Ugetdtablesize -D_GNU_SOURCE -I/opt/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include",
             "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
         ]
     else:
