@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlin.io.CopyAction
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.commons.compress.archivers.ArchiveEntry
@@ -1569,7 +1568,7 @@ object RootfsManager {
         dst.parentFile?.mkdirs()
         if (src.renameTo(dst)) return true
         return try {
-            src.copyRecursively(dst, overwrite = false) { _, _ -> CopyAction.SKIP }
+            kotlin.io.copyRecursively(src, dst, false)
             val ok =
                 if (src.isDirectory) {
                     countFiles(src) == countFiles(dst)
