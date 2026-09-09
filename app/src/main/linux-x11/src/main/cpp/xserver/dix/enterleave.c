@@ -1541,6 +1541,8 @@ DeviceFocusEvents(DeviceIntPtr dev, WindowPtr from, WindowPtr to, int mode)
     }
 }
 
+extern void DDXNotifyFocusChanged(void);
+
 /**
  * Figure out if focus events are necessary and send them to the
  * appropriate windows.
@@ -1551,6 +1553,9 @@ DeviceFocusEvents(DeviceIntPtr dev, WindowPtr from, WindowPtr to, int mode)
 void
 DoFocusEvents(DeviceIntPtr pDev, WindowPtr from, WindowPtr to, int mode)
 {
+    if (from != to)
+        DDXNotifyFocusChanged();
+
     if (!IsKeyboardDevice(pDev))
         return;
 

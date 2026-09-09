@@ -67,6 +67,14 @@ present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc)
     WindowPtr                   window = vblank->window;
     ScreenPtr                   screen = window->drawable.pScreen;
     present_screen_priv_ptr screen_priv = present_screen_priv(screen);
+    /* lorie: screen_x/screen_y is dst's own (0,0) in screen coords; window.xy minus that gives the
+     * window's offset within dst, whether dst is root, itself, or an inherited redirected ancestor. */
+    PixmapPtr                   gpuCopyDst = screen->GetWindowPixmap(window);
+    int16_t                     gpuCopyXOff = (int16_t) (vblank->x_off + window->drawable.x - gpuCopyDst->screen_x);
+    int16_t                     gpuCopyYOff = (int16_t) (vblank->y_off + window->drawable.y - gpuCopyDst->screen_y);
+    /* lorie: renderer can be connected but still unable to ever finish a pending GPU copy
+     * (e.g. activity backgrounded, no surface) - completedSerial won't advance either way. */
+    Bool                         gpuCopyStalled = !lorieConnectionAlive() || !lorieRendererAvailable();
 
     /* If present_flip failed, we may have to requeue for the next MSC */
     if (vblank->exec_msc == crtc_msc + 1 &&
@@ -79,12 +87,59 @@ present_execute_copy(present_vblank_ptr vblank, uint64_t crtc_msc)
         return;
     }
 
-    present_copy_region(&window->drawable, vblank->pixmap, vblank->update, vblank->x_off, vblank->y_off);
+    /* lorie: a GPU copy was already scheduled; poll for completion instead of blocking. */
+    if (vblank->gpu_copy_pending && !lorieGpuCopyIsDone(vblank->gpu_copy_serial) &&
+        !gpuCopyStalled &&
+        Success == screen_priv->queue_vblank(screen, window, vblank->crtc, vblank->event_id, crtc_msc + 1)) {
+        vblank->queued = TRUE;
+        return;
+    }
 
-    /* present_copy_region sticks the region into a scratch GC,
-     * which is then freed, freeing the region
-     */
-    vblank->update = NULL;
+    if (vblank->gpu_copy_pending) {
+        lorieGpuCopyAck(vblank->pixmap, vblank->gpu_copy_dst_buffer);
+        vblank->gpu_copy_pending = FALSE;
+        if (gpuCopyStalled && !lorieGpuCopyIsDone(vblank->gpu_copy_serial)) {
+            /* lorie: the renderer never actually finished this copy - tell the client it was
+             * skipped instead of falsely reporting it as presented. */
+            present_vblank_scrap(vblank);
+            screen_priv->flush(window);
+            return;
+        }
+    } else if (lorieTryScheduleGpuCopy(vblank->pixmap, gpuCopyDst, vblank->update, gpuCopyXOff, gpuCopyYOff,
+                                        &vblank->gpu_copy_serial, &vblank->gpu_copy_dst_buffer)) {
+        /* lorie: our GPU blit writes the destination pixmap directly, bypassing the normal GC
+         * ops that Damage tracking hooks into, so report it manually - same drawable and region
+         * present_scmd.c's flip success path already uses, so this also reaches Composite's
+         * per-window damage for redirected windows, not just lorie's own root damage. */
+        RegionPtr damage = vblank->update ? vblank->update : &window->clipList;
+        if (vblank->update)
+            RegionIntersect(damage, damage, &window->clipList);
+        DamageDamageRegion(&window->drawable, damage);
+
+        /* lorie: copy offloaded to the renderer's GPU context. The region was already
+         * consumed (copied into the shared command queue), so free it like
+         * present_copy_region would have. */
+        if (vblank->update) {
+            RegionDestroy(vblank->update);
+            vblank->update = NULL;
+        }
+        if (Success == screen_priv->queue_vblank(screen, window, vblank->crtc, vblank->event_id, crtc_msc + 1)) {
+            vblank->gpu_copy_pending = TRUE;
+            vblank->queued = TRUE;
+            return;
+        }
+        /* Failed to requeue for polling (e.g. OOM) - release our extra ref and treat the
+         * presumably still in-flight GPU copy as done; same best-effort fallback as above. */
+        lorieGpuCopyAck(vblank->pixmap, vblank->gpu_copy_dst_buffer);
+    } else {
+        present_copy_region(&window->drawable, vblank->pixmap, vblank->update, vblank->x_off, vblank->y_off);
+
+        /* present_copy_region sticks the region into a scratch GC,
+         * which is then freed, freeing the region
+         */
+        vblank->update = NULL;
+    }
+
     screen_priv->flush(window);
 
     present_pixmap_idle(vblank->pixmap, vblank->window, vblank->serial, vblank->idle_fence);

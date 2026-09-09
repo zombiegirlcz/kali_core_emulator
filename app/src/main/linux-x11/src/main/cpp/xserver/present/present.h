@@ -93,6 +93,9 @@ typedef Bool (*present_flip_ptr) (RRCrtcPtr crtc,
                                   uint64_t target_msc,
                                   PixmapPtr pixmap,
                                   Bool sync_flip);
+
+typedef void (*present_after_flip_ptr) (RRCrtcPtr crtc, uint64_t event_id, uint64_t ust, uint64_t target_msc, PixmapPtr pixmap);
+
 /* Flip pixmap for window, return false if it didn't happen.
  *
  * Like present_flip_ptr, additionally with:
@@ -134,6 +137,7 @@ typedef struct present_screen_info {
     uint32_t                            capabilities;
     present_check_flip_ptr              check_flip;
     present_flip_ptr                    flip;
+    present_after_flip_ptr              after_flip;
     present_unflip_ptr                  unflip;
     present_check_flip2_ptr             check_flip2;
 

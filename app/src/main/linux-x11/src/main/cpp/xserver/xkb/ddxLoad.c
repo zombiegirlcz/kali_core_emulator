@@ -56,6 +56,9 @@ THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #define PATHSEPARATOR "/"
 #endif
 
+char* xkbcomp_argv[16] = {0};
+int xkbcomp_argc = 0;
+
 static unsigned
 LoadXKM(unsigned want, unsigned need, const char *keymap, XkbDescPtr *xkbRtrn);
 
@@ -151,6 +154,25 @@ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
                  PRE_ERROR_MSG, ERROR_PREFIX, POST_ERROR_MSG1,
                  xkm_output_dir, keymap) == -1)
         buf = NULL;
+
+    char buf2[256];
+    char buf3[256];
+    sprintf(buf2, "-R%s", XkbBaseDirectory);
+    sprintf(buf3, "%s%s.xkm", xkm_output_dir, keymap);
+    xkbcomp_argv[0] = "xkbcomp";
+    xkbcomp_argv[1] = "-w";
+    xkbcomp_argv[2] = "1";
+    xkbcomp_argv[3] = buf2;
+    xkbcomp_argv[4] = "-xkm";
+    xkbcomp_argv[5] = (char*) xkmfile;
+    xkbcomp_argv[6] = "-em1";
+    xkbcomp_argv[7] = PRE_ERROR_MSG;
+    xkbcomp_argv[8] = "-emp";
+    xkbcomp_argv[9] = ERROR_PREFIX;
+    xkbcomp_argv[10] = "-eml";
+    xkbcomp_argv[11] = POST_ERROR_MSG1;
+    xkbcomp_argv[12] = buf3;
+    xkbcomp_argc = 13;
 
     free(xkbbasedirflag);
 

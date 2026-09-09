@@ -504,6 +504,11 @@ InitBlockAndWakeupHandlers(void)
  * sleeps for input.
  */
 
+#define ClearWorkQueue _ClearWorkQueue
+#define ProcessWorkQueue _ProcessWorkQueue
+#define ProcessWorkQueueZombies _ProcessWorkQueueZombies
+#define QueueWorkProc _QueueWorkProc
+
 WorkQueuePtr workQueue;
 static WorkQueuePtr *workQueueLast = &workQueue;
 
@@ -582,6 +587,11 @@ QueueWorkProc(Bool (*function) (ClientPtr pClient, void *closure),
     workQueueLast = &q->next;
     return TRUE;
 }
+
+#undef ClearWorkQueue
+#undef ProcessWorkQueue
+#undef ProcessWorkQueueZombies
+#undef QueueWorkProc
 
 /*
  * Manage a queue of sleeping clients, awakening them

@@ -202,9 +202,7 @@ XkbAtomGetString(Display *dpy, Atom atm)
 {
     if (atm == None)
         return NULL;
-    if (dpy == NULL)
-        return _XkbNameForAtom(atm);
-    return XGetAtomName(dpy, atm);
+    return _XkbNameForAtom(atm);
 }
 
 /***====================================================================***/
@@ -214,10 +212,7 @@ XkbInternAtom(Display *dpy, const char *name, Bool onlyIfExists)
 {
     if (name == NULL)
         return None;
-    if (dpy == NULL) {
-        return _XkbMakeAtom(name, strlen(name), (!onlyIfExists));
-    }
-    return XInternAtom(dpy, name, onlyIfExists);
+    return _XkbMakeAtom(name, strlen(name), (!onlyIfExists));
 }
 
 /***====================================================================***/

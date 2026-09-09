@@ -223,7 +223,7 @@ SetIndicatorMapField(LEDInfo *led, XkbDescPtr xkb, const char *field,
         if (arrayNdx != NULL)
             return ReportIndicatorNotArray(xkb->dpy, led, field);
         if (!ExprResolveMask
-            (value, &rtrn, SimpleLookup, (XPointer) groupNames))
+            (value, &rtrn, SimpleLookup, (XPointer) xkbcomp_groupNames))
             return ReportIndicatorBadType(xkb->dpy, led, field, "group mask");
         led->groups = rtrn.uval;
         led->defs.defined |= _LED_Groups;

@@ -170,13 +170,11 @@ OsInit(void)
 #endif
 
     if (!been_here) {
-#if !defined(WIN32) || defined(__CYGWIN__)
+#if !defined(WIN32) || defined(__CYGWIN__) || !defined(__ANDROID__)
         struct sigaction act, oact;
         int i;
 
-        int siglist[] = { SIGSEGV, SIGQUIT, SIGILL, SIGFPE, SIGBUS,
-            SIGABRT,
-            SIGSYS,
+        int siglist[] = { SIGQUIT, SIGILL, SIGFPE,
             SIGXCPU,
             SIGXFSZ,
 #ifdef SIGEMT

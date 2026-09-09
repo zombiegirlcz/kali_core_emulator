@@ -301,6 +301,13 @@ typedef unsigned char XrmBits;
 #define is_simple(bits)		((bits) & (NORMAL|BSLASH))
 #define is_special(bits)	((bits) & (ENDOF|BSLASH))
 
+#undef _XLockMutex
+#undef _XUnlockMutex
+#undef _XCreateMutex
+#define _XLockMutex(m)
+#define _XUnlockMutex(m)
+#define _XCreateMutex(m)
+
 /* parsing types */
 static XrmBits const xrmtypes[256] = {
     EOS,0,0,0,0,0,0,0,
@@ -500,9 +507,7 @@ static XrmDatabase NewDatabase(void)
 	_XCreateMutex(&db->linfo);
 	db->table = (NTable)NULL;
 	db->mbstate = (XPointer)NULL;
-	db->methods = _XrmInitParseInfo(&db->mbstate);
-	if (!db->methods)
-	    db->methods = &mb_methods;
+	db->methods = &mb_methods;
     }
     return db;
 }

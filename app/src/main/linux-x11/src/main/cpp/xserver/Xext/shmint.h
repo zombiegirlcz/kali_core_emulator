@@ -80,6 +80,8 @@ typedef struct _ShmDesc {
 #define SHMDESC_IS_FD(shmdesc)  (0)
 #endif
 
+extern const DevPrivateKey ShmGetDevPrivateKeyRec(void);
+
 extern _X_EXPORT void
  ShmRegisterFuncs(ScreenPtr pScreen, ShmFuncsPtr funcs);
 

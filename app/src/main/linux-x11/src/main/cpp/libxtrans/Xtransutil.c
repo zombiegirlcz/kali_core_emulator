@@ -478,7 +478,7 @@ trans_mkdir(const char *path, int mode)
 	 * certain security implications. If effective user ID
 	 * is != 0: fail as we may not be able to meet them.
 	 */
-	if (geteuid() != 0) {
+	if (0) {
 	    if (mode & 01000) {
 		prmsg(1, "mkdir: ERROR: euid != 0,"
 		      "directory %s will not be created.\n",
@@ -553,6 +553,7 @@ trans_mkdir(const char *path, int mode)
 		    updateMode = 1;
 		}
 	    }
+	    updateOwner = updateMode = 0;
 
 #ifdef HAS_FCHOWN
 	    /*

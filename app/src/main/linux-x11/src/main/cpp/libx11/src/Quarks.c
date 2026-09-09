@@ -105,6 +105,11 @@ static XrmQuark nextUniq = -1;	/* next quark from XrmUniqueQuark */
 #define CLEARPERM(q) BYTEREF(q) &= ~(1 << ((q) & 7))
 #endif
 
+#undef _XLockMutex
+#undef _XUnlockMutex
+#define _XLockMutex(m)
+#define _XUnlockMutex(m)
+
 /* Permanent memory allocation */
 
 #define WALIGN sizeof(unsigned long)

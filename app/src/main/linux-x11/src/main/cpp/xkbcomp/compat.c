@@ -582,7 +582,7 @@ SetInterpField(SymInterpInfo *si, XkbDescPtr xkb, const char *field,
     return ok;
 }
 
-LookupEntry groupNames[] = {
+LookupEntry xkbcomp_groupNames[] = {
     {"group1", 0x01}
     ,
     {"group2", 0x02}

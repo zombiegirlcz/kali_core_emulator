@@ -156,6 +156,52 @@ MergeAliases(AliasInfo ** into, AliasInfo ** merge, unsigned how_merge)
     return True;
 }
 
+Bool
+XkbComputeEffectiveMap(XkbDescPtr xkb,
+                       XkbKeyTypePtr type,
+                       unsigned char *map_rtrn)
+{
+    register int i;
+    unsigned tmp;
+    XkbKTMapEntryPtr entry = NULL;
+
+    if ((!xkb) || (!type) || (!xkb->server))
+        return False;
+
+    if (type->mods.vmods != 0) {
+        if (!XkbVirtualModsToReal(xkb, type->mods.vmods, &tmp))
+            return False;
+
+        type->mods.mask = tmp | type->mods.real_mods;
+        entry = type->map;
+        for (i = 0; i < type->map_count; i++, entry++) {
+            tmp = 0;
+            if (entry->mods.vmods != 0) {
+                if (!XkbVirtualModsToReal(xkb, entry->mods.vmods, &tmp))
+                    return False;
+                if (tmp == 0) {
+                    entry->active = False;
+                    continue;
+                }
+            }
+            entry->active = True;
+            entry->mods.mask = (entry->mods.real_mods | tmp) & type->mods.mask;
+        }
+    }
+    else {
+        type->mods.mask = type->mods.real_mods;
+    }
+    if (map_rtrn != NULL) {
+        bzero(map_rtrn, type->mods.mask + 1);
+        for (i = 0; i < type->map_count; i++) {
+            if (entry && entry->active) {
+                map_rtrn[type->map[i].mods.mask] = type->map[i].level;
+            }
+        }
+    }
+    return True;
+}
+
 int
 ApplyAliases(XkbDescPtr xkb, Bool toGeom, AliasInfo ** info_in)
 {

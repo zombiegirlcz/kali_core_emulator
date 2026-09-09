@@ -79,6 +79,36 @@ typedef void (*XkbFileAddOnFunc) (FILE * /* file */ ,
 
 /***====================================================================***/
 
+#define XkbInternAtom XXkbInternAtom
+#define XkbAtomText XXkbAtomText
+#define XkbStringText XXkbStringText
+#define XkbVModIndexText XXkbVModIndexText
+#define XkbVModMaskText XXkbVModMaskText
+#define XkbModMaskText XXkbModMaskText
+#define XkbModIndexText XXkbModIndexText
+#define XkbConfigText XXkbConfigText
+#define XkbKeysymText XXkbKeysymText
+#define XkbKeyNameText XXkbKeyNameText
+#define XkbSIMatchText XXkbSIMatchText
+#define XkbIMWhichStateMaskText XXkbIMWhichStateMaskText
+#define XkbControlsMaskText XXkbControlsMaskText
+#define XkbGeomFPText XXkbGeomFPText
+#define XkbDoodadTypeText XXkbDoodadTypeText
+#define XkbActionTypeText XXkbActionTypeText
+#define XkbActionText XXkbActionText
+#define XkbBehaviorText XXkbBehaviorText
+#define XkbIndentText XXkbIndentText
+#define XkbWriteXKBKeycodes XXkbWriteXKBKeycodes
+#define XkbWriteXKBKeyTypes XXkbWriteXKBKeyTypes
+#define XkbWriteXKBCompatMap XXkbWriteXKBCompatMap
+#define XkbWriteXKBSymbols XXkbWriteXKBSymbols
+#define XkbWriteXKBGeometry XXkbWriteXKBGeometry
+#define XkbWriteXKBKeymapForNames XXkbWriteXKBKeymapForNames
+#define XkbFindKeycodeByName XXkbFindKeycodeByName
+#define XkbConvertGetByNameComponents XXkbConvertGetByNameComponents
+#define XkbNameMatchesPattern XXkbNameMatchesPattern
+#define _XkbKSCheckCase _XXkbKSCheckCase
+
 _XFUNCPROTOBEGIN
 
 extern _X_EXPORT char *XkbIndentText(unsigned   /* size */

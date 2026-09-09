@@ -193,6 +193,10 @@ CheckForShmSyscall(void)
 
 #endif
 
+const DevPrivateKey ShmGetDevPrivateKeyRec(void) {
+    return shmPixmapPrivateKey;
+}
+
 static Bool
 ShmCloseScreen(ScreenPtr pScreen)
 {

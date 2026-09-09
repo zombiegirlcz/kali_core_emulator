@@ -24,6 +24,7 @@
 #define _PRESENT_PRIV_H_
 
 #include "dix-config.h"
+#include <stdbool.h>
 #include <X11/X.h>
 #include "scrnintstr.h"
 #include "misc.h"
@@ -90,7 +91,30 @@ struct present_vblank {
     Bool                abort_flip;     /* aborting this flip */
     PresentFlipReason   reason;         /* reason for which flip is not possible */
     Bool                has_suboptimal; /* whether client can support SuboptimalCopy mode */
+
+    /* lorie: set when present_execute_copy offloaded the copy to the renderer's GPU context;
+     * the vblank stays queued until the copy is acknowledged done. */
+    Bool                gpu_copy_pending;
+    uint64_t            gpu_copy_serial;
+    void                *gpu_copy_dst_buffer; /* opaque LorieBuffer*, held for lorieGpuCopyAck */
 };
+
+/* lorie: hooks implemented in lorie/InitOutput.c, used by present_execute_copy() to offload the
+ * pixmap->dst copy (dst being whatever GetWindowPixmap(window) is - root, or a Composite-redirected
+ * window's own backing pixmap) to the renderer's GPU context instead of a CPU CopyArea. */
+extern Bool lorieTryScheduleGpuCopy(PixmapPtr pixmap, PixmapPtr dst, RegionPtr update, int16_t x_off, int16_t y_off,
+                                     uint64_t *out_serial, void **out_dst_buffer);
+extern Bool lorieGpuCopyIsDone(uint64_t serial);
+extern void lorieGpuCopyAck(PixmapPtr pixmap, void *dst_buffer);
+/* lorie: implemented in lorie/cmdentrypoint.c. Avoids waiting forever on a GPU copy that a dead renderer will never finish. */
+extern bool lorieConnectionAlive(void);
+/* lorie: implemented in lorie/InitOutput.c. Renderer can be connected but still unable to
+ * draw (e.g. activity backgrounded, no surface) - same "give up on this GPU copy" cases as
+ * lorieConnectionAlive() need to check this too. */
+extern bool lorieRendererAvailable(void);
+
+/* lorie: implemented in present_scmd.c; re-executes any vblank whose GPU copy has finished. */
+extern void lorieRecheckGpuCopies(void);
 
 typedef struct present_screen_priv present_screen_priv_rec, *present_screen_priv_ptr;
 typedef struct present_window_priv present_window_priv_rec, *present_window_priv_ptr;
