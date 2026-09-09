@@ -98,6 +98,7 @@ import com.linux_core.core.DockerImageRef
 import com.linux_core.core.RemoteDistroScript
 import com.linux_core.core.RemoteRootfsCatalog
 import com.linux_core.core.RootfsManager
+import com.linux_core.core.saveBootMode
 import com.linux_core.ui.components.BootModeChip
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme

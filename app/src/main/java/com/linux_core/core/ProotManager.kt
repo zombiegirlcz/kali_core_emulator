@@ -110,42 +110,6 @@ object ProotManager {
                 else -> "kali"
             }
 
-        // Fáze 2: sysdata/shm + rootfs permission fixupy
-        setupFakeSysdata(context, rootfsDir, distroId)
-        fixRootfsPermissions(context, rootfsDir)
-        fixUidGidMapping(context, rootfsDir)
-
-        File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
-
-        deployZshrc(context, rootfsDir, distroId)
-
-        // VZDY vytvorime .bootstrap_required pokud .setup_done neexistuje
-        // (stary .setup_done z nekompletniho bootstrapu nesmi blokovat dalsi pokus)
-        if (!setupDoneFile.exists()) {
-            val bootstrapRequired = File(homeDir, ".bootstrap_required")
-            try {
-                if (!bootstrapRequired.exists()) {
-                    bootstrapRequired.createNewFile()
-                    Log.i(TAG, "Fresh install detected, created .bootstrap_required")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to create bootstrap sentinel: ${e.message}")
-            }
-            setupDoneFile.delete()
-        }
-
-        createMasterScript(homeDir, distroId, hasRoot)
-        createEntrypointScript(homeDir)
-        deployVpnHelpDocument(context, homeDir)
-        deployWelcomeProfile(context, rootfsDir, distroId)
-        val userHomeDir = File(rootfsDir, "home/$distroId")
-        if (userHomeDir.exists()) {
-            deployVpnHelpDocument(context, userHomeDir)
-        }
-        deployApiScripts(context, rootfsDir)
-
-        fixLdLinuxSymlinks(context, rootfsDir)
-
         /**
          * Vytvoří fake sysdata a shm adresáře pro daný distro (proot-distro style).
          * Boot skript je následně binduje do /proc a /dev/shm.
@@ -290,7 +254,41 @@ object ProotManager {
             file.setReadable(true, false)
             file.setWritable(true, false)
         }
+        // Fáze 2: sysdata/shm + rootfs permission fixupy
+        setupFakeSysdata(context, rootfsDir, distroId)
+        fixRootfsPermissions(context, rootfsDir)
+        fixUidGidMapping(context, rootfsDir)
 
+        File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
+
+        deployZshrc(context, rootfsDir, distroId)
+
+        // VZDY vytvorime .bootstrap_required pokud .setup_done neexistuje
+        // (stary .setup_done z nekompletniho bootstrapu nesmi blokovat dalsi pokus)
+        if (!setupDoneFile.exists()) {
+            val bootstrapRequired = File(homeDir, ".bootstrap_required")
+            try {
+                if (!bootstrapRequired.exists()) {
+                    bootstrapRequired.createNewFile()
+                    Log.i(TAG, "Fresh install detected, created .bootstrap_required")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create bootstrap sentinel: ${e.message}")
+            }
+            setupDoneFile.delete()
+        }
+
+        createMasterScript(homeDir, distroId, hasRoot)
+        createEntrypointScript(homeDir)
+        deployVpnHelpDocument(context, homeDir)
+        deployWelcomeProfile(context, rootfsDir, distroId)
+        val userHomeDir = File(rootfsDir, "home/$distroId")
+        if (userHomeDir.exists()) {
+            deployVpnHelpDocument(context, userHomeDir)
+        }
+        deployApiScripts(context, rootfsDir)
+
+        fixLdLinuxSymlinks(context, rootfsDir)
         // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
         // když NH_DISTRO env není nastavený.
         val nhDir = File(rootDir, "nh")

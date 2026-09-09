@@ -36,7 +36,7 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import com.linux_core.core.ProotConfig
 import com.linux_core.core.ProotManager
-import com.linux_core.loadBootMode
+import com.linux_core.core.loadBootMode
 import com.linux_core.core.TerminalService
 import com.linux_core.core.KeyType
 import com.linux_core.core.HackerKeyboardRows
