@@ -140,7 +140,10 @@ fun BackupManagerScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                .graphicsLayer {
+            clip = true
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+        }
                                 .background(Color(0xFF0D0E12))
                                 .border(1.dp, Color(0xFF1E2026), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                                 .padding(12.dp),

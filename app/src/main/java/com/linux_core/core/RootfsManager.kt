@@ -1576,13 +1576,13 @@ object RootfsManager {
                     dst.exists() && dst.length() == src.length()
                 }
             if (ok) {
-                src.deleteRecursively()
+                kotlin.io.deleteRecursively(src)
                 true
             } else {
                 Log.e("RootfsManager", "safeMove: verification failed, keeping source: $src")
                 // Smaž částečný cíl, aby příští pokus mohl začít znovu
                 try {
-                    if (dst.exists()) dst.deleteRecursively()
+                    if (dst.exists()) kotlin.io.deleteRecursively(dst)
                 } catch (_: Exception) {
                 }
                 false
@@ -1592,7 +1592,7 @@ object RootfsManager {
             // Částečný cíl smaž, aby další pokus začínal z čistého stavu
             // (jinak by existující neprázdný dst blokoval migraci navždy)
             try {
-                if (dst.exists()) dst.deleteRecursively()
+                if (dst.exists()) kotlin.io.deleteRecursively(dst)
             } catch (_: Exception) {
             }
             false

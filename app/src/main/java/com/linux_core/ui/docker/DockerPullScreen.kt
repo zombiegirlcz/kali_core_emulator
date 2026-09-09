@@ -144,7 +144,10 @@ fun DockerPullScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 2.dp)
-                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                .graphicsLayer {
+            clip = true
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+        }
                                 .background(if (isSelected) Color(0x2600FF41) else Color(0xFF0D0E12))
                                 .border(1.dp, if (isSelected) Color(0xFF00FF41) else Color(0xFF1E2026), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                                 .clickable { onImageSelected(dir) }
