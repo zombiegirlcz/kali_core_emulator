@@ -48,7 +48,7 @@ object BackgroundBoot {
 
                 // Build the proot config (normal container boot + custom command).
                 val distroId = rootfsDir.relativeTo(context.filesDir).path.substringAfterLast("/")
-                val bootMode = loadBootMode(context, distroId, "M")
+                val bootMode = loadBootMode(context, distroId, DEFAULT_BOOT_MODE)
                 val config =
                     ProotManager.setupProotEnvironment(
                         context = context,

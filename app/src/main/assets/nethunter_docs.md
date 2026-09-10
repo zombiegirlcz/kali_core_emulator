@@ -21,18 +21,19 @@ V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
 - **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
 - **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, `dcheck` pro diagnostiku, `vpn-bypass` pro obcházení VPN filtru (port 13339) a sjednocený CLI nástroj `nh` aliasy starších příkazů (zpětná kompatibilita).
 
-### 🎛️ Režimy spouštění kontejneru (M / I / D)
+### 🎛️ Režimy spouštění kontejneru (D / I / M)
 
 Každá karta distra (Kali, Parrot, Docker) má vlastní přepínač režimu spouštění. Volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>` a launcheru se předává přes `NH_ISOLATED` / `NH_MINIMAL`.
 
 | Režim | Význam | Izolace | Minimální konfigurace | Co se binduje |
 |---|---|---|---|---|
-| **M** | plný (výchozí) | ne | ne | Android systém, úložiště, `$FILES_DIR/tmp`, `~/share`, fake `/proc` a `/sys` |
+| **D** | plný (výchozí) | ne | ne | Android systém, úložiště, `$FILES_DIR/tmp`, `~/share`, fake `/proc` a `/sys` |
 | **I** | izolovaný | ano | ne | pouze `/dev`, `/proc`, `/sys` + fake `/proc` a `/sys` (žádné hostitelské cesty) |
-| **D** | minimální | ano | ano | pouze `/dev`, `/proc`, `/sys` (žádná fake data) |
+| **M** | minimální | ano | ano | pouze `/dev`, `/proc`, `/sys` (žádná fake data) |
 
-- Režim **D** navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+- Režim **M** navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
 - Izolace a minimální konfigurace jsou **nezávislé volby** — izolovaný režim (**I**) pořád dostává fake systémová data i `/dev/shm`, jen nevidí hostitelské cesty.
+- Starší uložené volby se při prvním načtení migrují (původní `M`=plný → `D`, původní `D`=minimální → `M`).
 
 ### 🧪 Fake systémová data (`/proc`, `/sys`)
 
@@ -54,7 +55,7 @@ Android aplikacím část `/proc` a `/sys` blokuje nebo zkresluje. Launcher prot
 - Soubory v `/proc/sys` se vážou **jednotlivě**, ne celý adresář — zbytek `/proc/sys` zůstává živý.
 - Sdílená paměť kontejneru je v `$FILES_DIR/nh/shm/<distro>` a binduje se na `/dev/shm`.
 - Zámek pro emulaci pevných odkazů (`PROOT_L2S_DIR`) je umístěný v `<rootfs>/.l2s`, takže souběžné starty relací nekolidují.
-- V minimálním režimu (**D**) se fake data ani `/dev/shm` nevytvářejí.
+- V minimálním režimu (**M**) se fake data ani `/dev/shm` nevytvářejí.
 
 ### 🌍 Prostředí relace
 

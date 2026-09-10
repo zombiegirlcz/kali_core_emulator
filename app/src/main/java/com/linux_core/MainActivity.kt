@@ -103,6 +103,7 @@ import com.linux_core.core.RemoteRootfsCatalog
 import com.linux_core.core.RootfsManager
 import com.linux_core.core.saveBootMode
 import com.linux_core.core.loadBootMode
+import com.linux_core.core.DEFAULT_BOOT_MODE
 import com.linux_core.ui.components.BootModeChip
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
@@ -361,11 +362,11 @@ fun MainScreen() {
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
     var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
     val bootModes = remember { mutableStateMapOf<String, String>() }
-    fun bootModeFor(distroId: String): String = bootModes[distroId] ?: "M"
+    fun bootModeFor(distroId: String): String = bootModes[distroId] ?: DEFAULT_BOOT_MODE
     LaunchedEffect(Unit) {
-        bootModes["kali"] = loadBootMode(context, "kali", "M")
-        bootModes["parrot"] = loadBootMode(context, "parrot", "M")
-        bootModes["docker"] = loadBootMode(context, "docker", "M")
+        bootModes["kali"] = loadBootMode(context, "kali", DEFAULT_BOOT_MODE)
+        bootModes["parrot"] = loadBootMode(context, "parrot", DEFAULT_BOOT_MODE)
+        bootModes["docker"] = loadBootMode(context, "docker", DEFAULT_BOOT_MODE)
     }
     val scope = rememberCoroutineScope()
 
@@ -765,11 +766,11 @@ fun MainScreen() {
                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
                                         BootModeChip(
-                                            label = "M",
-                                            selected = bootModeFor(distro.id) == "M",
+                                            label = "D",
+                                            selected = bootModeFor(distro.id) == "D",
                                             onClick = {
-                                                bootModes[distro.id] = "M"
-                                                saveBootMode(context, distro.id, "M")
+                                                bootModes[distro.id] = "D"
+                                                saveBootMode(context, distro.id, "D")
                                             },
                                         )
                                         BootModeChip(
@@ -781,11 +782,11 @@ fun MainScreen() {
                                             },
                                         )
                                         BootModeChip(
-                                            label = "D",
-                                            selected = bootModeFor(distro.id) == "D",
+                                            label = "M",
+                                            selected = bootModeFor(distro.id) == "M",
                                             onClick = {
-                                                bootModes[distro.id] = "D"
-                                                saveBootMode(context, distro.id, "D")
+                                                bootModes[distro.id] = "M"
+                                                saveBootMode(context, distro.id, "M")
                                             },
                                         )
                                     }
@@ -874,11 +875,11 @@ fun MainScreen() {
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 ) {
                                     BootModeChip(
-                                        label = "M",
-                                        selected = bootModeFor("docker") == "M",
+                                        label = "D",
+                                        selected = bootModeFor("docker") == "D",
                                         onClick = {
-                                            bootModes["docker"] = "M"
-                                            saveBootMode(context, "docker", "M")
+                                            bootModes["docker"] = "D"
+                                            saveBootMode(context, "docker", "D")
                                         },
                                     )
                                     BootModeChip(
@@ -890,11 +891,11 @@ fun MainScreen() {
                                         },
                                     )
                                     BootModeChip(
-                                        label = "D",
-                                        selected = bootModeFor("docker") == "D",
+                                        label = "M",
+                                        selected = bootModeFor("docker") == "M",
                                         onClick = {
-                                            bootModes["docker"] = "D"
-                                            saveBootMode(context, "docker", "D")
+                                            bootModes["docker"] = "M"
+                                            saveBootMode(context, "docker", "M")
                                         },
                                     )
                                 }

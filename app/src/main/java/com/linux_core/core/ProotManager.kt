@@ -39,7 +39,7 @@ object ProotManager {
         customCommand: String? = null,
         hasRoot: Boolean = false,
         isDockerImage: Boolean = false,
-        bootMode: String = "M", // M=default, I=isolated, D=minimal
+        bootMode: String = DEFAULT_BOOT_MODE, // D=default (full), I=isolated, M=minimal
     ): ProotConfig {
         val rootDir = context.filesDir
         val rootfsDir = File(rootDir, rootfsDirName)
@@ -318,12 +318,7 @@ object ProotManager {
                 if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
             }
 
-        val (nhIsolated, nhMinimal) =
-            when (bootMode) {
-                "I" -> "1" to "0"
-                "D" -> "1" to "1"
-                else -> "0" to "0"
-            }
+        val (nhIsolated, nhMinimal) = bootModeFlags(bootMode)
         val envVars =
             mutableListOf(
                 "NH_MOUNT_STORAGE=${if (mountStorage) "1" else "0"}",

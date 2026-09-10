@@ -570,10 +570,11 @@ Terminál jako Messenger chat-head nad ostatními aplikacemi.
 
 Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící fake systémová data a sjednocuje nasazování PRoot binárek.
 
-### 1. Režimy spouštění M / I / D na každé kartě
-- Každé distro (Kali, Parrot, Docker) má vlastní trojici přepínačů **M** (plný), **I** (izolovaný), **D** (minimální); volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>`.
+### 1. Režimy spouštění D / I / M na každé kartě
+- Každé distro (Kali, Parrot, Docker) má vlastní trojici přepínačů **D** (plný, výchozí), **I** (izolovaný), **M** (minimální); volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>`.
 - Izolace a minimální režim jsou **nezávislé volby** — izolovaný režim se už nechová jako minimální (dřív ho launcher chybně přepínal).
 - Minimální režim navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+- Starší uložené volby se při prvním načtení **migrují** (původní `M`=plný → `D`, původní `D`=minimální → `M`), takže volba na zařízení po aktualizaci nepřepne na jiný režim.
 
 ### 2. Fake `/proc` a `/sys` uvnitř kontejneru
 - Launcher vytváří statické náhrady (`loadavg`, `stat`, `uptime`, `version`, `vmstat` + čtyři `sysctl` hodnoty + prázdný `/sys/fs/selinux`) v `$FILES_DIR/nh/sysdata/<distro>/` a binduje je dovnitř.

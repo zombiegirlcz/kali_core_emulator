@@ -37,6 +37,7 @@ import com.termux.view.TerminalViewClient
 import com.linux_core.core.ProotConfig
 import com.linux_core.core.ProotManager
 import com.linux_core.core.loadBootMode
+import com.linux_core.core.DEFAULT_BOOT_MODE
 import com.linux_core.core.TerminalService
 import com.linux_core.core.KeyType
 import com.linux_core.core.HackerKeyboardRows
@@ -1594,7 +1595,7 @@ class TerminalActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             val cfg = try {
                 val distroId1 = distroName.substringAfterLast("/")
-                val bootMode1 = loadBootMode(this@TerminalActivity, distroId1, "M")
+                val bootMode1 = loadBootMode(this@TerminalActivity, distroId1, DEFAULT_BOOT_MODE)
                 ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker, bootMode1)
             } catch (e: Exception) {
                 Log.e(TAG, "addNewSession setup failed for $distroName", e)
@@ -2264,7 +2265,7 @@ class TerminalActivity : ComponentActivity() {
                                            newRootfsDirName.startsWith("oci-") ||
                                            newRootfsDirName.startsWith("nh/distro/docker/")
                             val distroId2 = newRootfsDirName.substringAfterLast("/")
-                            val bootMode2 = loadBootMode(this@TerminalActivity, distroId2, "M")
+                            val bootMode2 = loadBootMode(this@TerminalActivity, distroId2, DEFAULT_BOOT_MODE)
                             ProotManager.setupProotEnvironment(this@TerminalActivity, newRootfsDirName, mountStorageSaved, null, false, isDocker, bootMode2)
                         } catch (e: Exception) {
                             Log.e(TAG, "Attach setup failed for $newRootfsDirName", e)
@@ -2294,7 +2295,7 @@ class TerminalActivity : ComponentActivity() {
                                        distroName.startsWith("oci-") ||
                                        distroName.startsWith("nh/distro/docker/")
                         val distroId3 = distroName.substringAfterLast("/")
-                        val bootMode3 = loadBootMode(this@TerminalActivity, distroId3, "M")
+                        val bootMode3 = loadBootMode(this@TerminalActivity, distroId3, DEFAULT_BOOT_MODE)
                         ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker, bootMode3)
                     } catch (e: Exception) {
                         Log.e(TAG, "Attach setup failed for $distroName", e)
@@ -2421,7 +2422,7 @@ class TerminalActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             val result = try {
                 val distroId4 = rootfsDirName.substringAfterLast("/")
-                val bootMode4 = loadBootMode(this@TerminalActivity, distroId4, "M")
+                val bootMode4 = loadBootMode(this@TerminalActivity, distroId4, DEFAULT_BOOT_MODE)
                 ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot, isDockerImage, bootMode4)
             } catch (e: Exception) {
                 Log.e(TAG, "Setup failed for $rootfsDirName", e)
