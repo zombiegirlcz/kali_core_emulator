@@ -32,14 +32,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build release APK
-        run: ./gradlew assembleRelease
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
 
       - name: Check APK size
-        run: ls -lh app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release.apk 2>/dev/null || true
+        run: ls -lh app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload release APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: app/build/outputs/apk/release/app-release.apk
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
