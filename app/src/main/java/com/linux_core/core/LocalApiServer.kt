@@ -107,6 +107,54 @@ object LocalApiServer {
                 Log.e(TAG, "Server socket exception: ${e.message}")
             }
         }
+        startAshellPty(appContext!!)
+    }
+
+    /**
+     * Spustí nativní `ashell_pty` daemon (streaming PTY most pro `ashell -c`).
+     * Binárka se deployne z assets, je-li stará/chybí, a spawnuje se s
+     * portem + filesDir. Běží jako app UID, binduje jen 127.0.0.1.
+     */
+    private fun startAshellPty(context: Context) {
+        try {
+            val target = File(context.filesDir, "ashell_pty")
+            var deploy = !target.exists() || target.length() == 0L
+            if (!deploy) {
+                try {
+                    val assetSize = context.assets.open("ashell_pty").use { it.available().toLong() }
+                    if (target.length() != assetSize) deploy = true
+                } catch (e: Exception) {
+                    deploy = true
+                }
+            }
+            if (deploy) {
+                context.assets.open("ashell_pty").use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.setExecutable(true, false)
+                target.setReadable(true, false)
+                Log.i(TAG, "Deployed ashell_pty (${target.length()} bytes)")
+            }
+            if (!target.canExecute()) {
+                Log.w(TAG, "ashell_pty not executable — PTY shell unavailable")
+                return
+            }
+            // Stop stale instance first (port reuse)
+            stopAshellPty()
+            ptyProcess = ProcessBuilder(target.absolutePath, ASHELL_PTY_PORT.toString(), context.filesDir.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            Log.i(TAG, "ashell_pty started on 127.0.0.1:$ASHELL_PTY_PORT")
+        } catch (e: Exception) {
+            Log.w(TAG, "ashell_pty unavailable: ${e.message}")
+        }
+    }
+
+    private fun stopAshellPty() {
+        try {
+            ptyProcess?.destroy()
+        } catch (_: Exception) {}
+        ptyProcess = null
     }
 
     fun restart(context: Context) {
@@ -136,6 +184,7 @@ object LocalApiServer {
         } catch (e: Exception) {
             Log.w(TAG, "Error closing UsbFdExporter: ${e.message}")
         }
+        stopAshellPty()
     }
 
     private fun initTts(context: Context) {

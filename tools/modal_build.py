@@ -372,6 +372,18 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(wrapper_bin_path):,} B)")
+    # ashell_pty (streaming PTY bridge for `ashell -c`)
+    print("─" * 60)
+    print("[native-bin] Building ashell_pty...")
+    pty_src = os.path.join(cpp_dir, "ashell_pty.c")
+    pty_bin_path = os.path.join(assets_dir, "ashell_pty")
+    if not os.path.exists(pty_src):
+        print(f"[native-bin] {pty_src} chybí — ashell_pty PŘESKOČEN")
+    else:
+        cmd = [cc, "-o", pty_bin_path, pty_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
 
 
 def _build_linux_x11(src_dir):
@@ -1305,10 +1317,12 @@ _NATIVE_COMPONENTS = {
     "bin": {
         "sources": ["app/src/main/cpp/usb_bridge.c",
                      "app/src/main/cpp/su_daemon.c",
-                     "app/src/main/cpp/su_wrapper.c"],
+                     "app/src/main/cpp/su_wrapper.c",
+                     "app/src/main/cpp/ashell_pty.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
                      "app/src/main/assets/su_daemon",
-                     "app/src/main/assets/su_wrapper"],
+                     "app/src/main/assets/su_wrapper",
+                     "app/src/main/assets/ashell_pty"],
         "fn": build_native_bin,
     },
     "linux-x11": {

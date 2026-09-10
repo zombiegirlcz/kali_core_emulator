@@ -27,7 +27,133 @@ if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
     CMD="$*"
     [ -z "$CMD" ] && { echo "[-] Usage: ashell -c '<prikaz>'" >&2; echo "    Pro multi-command: ashell -c \"ls -la && echo ok\"" >&2; exit 1; }
 
-    # Token (potřebný pro /shell)
+    # Host rootfs (pro překlad cwd guestu → host): PROOT_L2S_DIR bez přípony /.l2s
+    ROOTFS_HOST=""
+    if [ -n "${PROOT_L2S_DIR:-}" ]; then
+        ROOTFS_HOST="${PROOT_L2S_DIR%/.l2s}"
+    fi
+    TERM_GUEST="${TERM:-xterm-256color}"
+
+    # 1) Streaming PTY most (python3 socket → ashell_pty na 127.0.0.1:13340)
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$CMD" "$PWD" "$ROOTFS_HOST" "$TERM_GUEST" <<'PYEOF'
+import sys, os, select, struct, socket, termios, tty
+
+port = 13340
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+cwd = sys.argv[2] if len(sys.argv) > 2 else ""
+rootfs = sys.argv[3] if len(sys.argv) > 3 else ""
+term = sys.argv[4] if len(sys.argv) > 4 else "xterm-256color"
+
+try:
+    s = socket.create_connection(("127.0.0.1", port), timeout=2)
+except Exception:
+    sys.exit(125)  # ashell_pty nedostupný → fallback na HTTP
+
+def send(t, payload=b""):
+    try:
+        s.sendall(bytes([t]) + struct.pack(">I", len(payload)) + payload)
+    except Exception:
+        pass
+
+stdin_fd = sys.stdin.fileno()
+is_tty = os.isatty(stdin_fd)
+old = None
+if is_tty:
+    try:
+        old = termios.tcgetattr(stdin_fd)
+        tty.setraw(stdin_fd)
+    except Exception:
+        old = None
+        is_tty = False
+
+hello = ("%s\0%s\0%s\0%s\0%s\0" % (cmd, cwd, rootfs, term, "1" if is_tty else "0")).encode("utf-8", "replace")
+send(0x05, hello)
+
+last_size = None
+def maybe_winch():
+    global last_size
+    try:
+        sz = os.get_terminal_size()
+        cur = (sz.columns, sz.lines)
+    except Exception:
+        cur = (80, 24)
+    if cur != last_size:
+        last_size = cur
+        send(0x03, struct.pack(">II", cur[0], cur[1]))
+
+if is_tty:
+    maybe_winch()
+
+exit_code = 0
+stdin_open = True
+
+def handle_server():
+    global exit_code
+    hdr = b""
+    while len(hdr) < 5:
+        chunk = s.recv(5 - len(hdr))
+        if not chunk:
+            return False
+        hdr += chunk
+    t = hdr[0]
+    ln = struct.unpack(">I", hdr[1:])[0]
+    payload = b""
+    while len(payload) < ln:
+        chunk = s.recv(ln - len(payload))
+        if not chunk:
+            return False
+        payload += chunk
+    if t == 0x02:
+        os.write(sys.stdout.fileno(), payload)
+    elif t == 0x04 and len(payload) >= 4:
+        exit_code = struct.unpack(">I", payload[:4])[0] & 0xFF
+    elif t == 0xFF:
+        return False
+    return True
+
+try:
+    while True:
+        rlist = [s] if not stdin_open else [s, sys.stdin]
+        r, _, _ = select.select(rlist, [], [], 0.2)
+        for x in r:
+            if x is s:
+                if not handle_server():
+                    raise EOFError
+            else:
+                data = os.read(stdin_fd, 8192)
+                if not data:
+                    # EOF na stdin (pipe) → STDIN_EOF frame (server zavře child stdin)
+                    send(0x06)
+                    stdin_open = False
+                else:
+                    send(0x01, data)
+        if is_tty:
+            maybe_winch()
+except EOFError:
+    pass
+except Exception:
+    pass
+finally:
+    if old is not None:
+        try:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old)
+        except Exception:
+            pass
+    try:
+        s.close()
+    except Exception:
+        pass
+sys.exit(exit_code)
+PYEOF
+        RC=$?
+        if [ "$RC" -ne 125 ]; then
+            exit $RC
+        fi
+        # 125 = ashell_pty nedostupný → pokračuj na HTTP fallback
+    fi
+
+    # 2) HTTP fallback (původní JSON most přes LocalApiServer)
     TOKEN=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
         sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1)
 
@@ -72,17 +198,26 @@ except Exception as e:
         sys.stderr.write('Chyba parsování odpovědi: %s\n' % e)
         sys.stderr.write('Raw: %s\n' % data[:400])
         sys.exit(1)
+# Odmítnutí / vnitřní chyba (JSON bez exit_code) → stderr + rc=1
+if 'error' in d and 'exit_code' not in d:
+    out = d.get('stdout',''); err = d.get('stderr','')
+    if out: sys.stdout.write(out)
+    if err: sys.stderr.write(err)
+    if not out and not err:
+        sys.stderr.write(d['error'] + '\n')
+    sys.exit(1)
 out = d.get('stdout',''); err = d.get('stderr','')
 rc = d.get('exit_code', 0)
 if out: sys.stdout.write(out)
 if err: sys.stderr.write(err)
-if not out and not err and 'error' in d:
-    sys.stderr.write(d['error'] + '\n')
-sys.exit(0 if rc == 0 else 1)
+if not isinstance(rc, int): rc = 0
+# Propaguj skutečný exit code (0..255; timeout -1 → 1)
+sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
 PYEOF
     printf '%s' "$RESPONSE" | python3 /tmp/.ashell_parse_$$.py
+    RC=$?
     rm -f /tmp/.ashell_parse_$$.py
-    exit $?
+    exit $RC
 fi
 
 # ── Konfigurace (ashell.conf: env proměnné + blocklist) ─────────────────
