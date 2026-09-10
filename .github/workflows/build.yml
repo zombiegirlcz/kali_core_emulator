@@ -2,12 +2,16 @@ name: Build APK
 
 on:
   push:
-    branches: [master]
+    branches: [dev, master]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,14 +32,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
+      - name: Build release APK
+        run: ./gradlew assembleRelease
 
       - name: Check APK size
-        run: ls -lh app/build/outputs/apk/debug/app-debug.apk
+        run: ls -lh app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release.apk 2>/dev/null || true
 
-      - name: Upload APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
