@@ -336,7 +336,7 @@ object ProotManager {
 
         // Příkaz: boot <distro> [-- <customCommand>]
         // Docker: boot docker <imageName>
-        val bootScript = File(homeDir, "boot")
+        val bootScript = File(rootDir, "usr/bin/boot")
         val fullCommand = mutableListOf("/system/bin/sh", bootScript.absolutePath)
         if (isDockerImage) {
             fullCommand.add("docker")

@@ -99,6 +99,7 @@ import com.linux_core.core.RemoteDistroScript
 import com.linux_core.core.RemoteRootfsCatalog
 import com.linux_core.core.RootfsManager
 import com.linux_core.core.saveBootMode
+import com.linux_core.core.loadBootMode
 import com.linux_core.ui.components.BootModeChip
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
@@ -345,7 +346,13 @@ fun MainScreen() {
     var downloadJob by remember { mutableStateOf<Job?>(null) }
     var mountStorage by remember { mutableStateOf(sharedPrefs.getBoolean("mount_storage", false)) }
     var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
-    var dockerBootMode by remember { mutableStateOf("M") }
+    val bootModes = remember { mutableStateMapOf<String, String>() }
+    fun bootModeFor(distroId: String): String = bootModes[distroId] ?: "M"
+    LaunchedEffect(Unit) {
+        bootModes["kali"] = loadBootMode(context, "kali", "M")
+        bootModes["parrot"] = loadBootMode(context, "parrot", "M")
+        bootModes["docker"] = loadBootMode(context, "docker", "M")
+    }
     val scope = rememberCoroutineScope()
 
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
@@ -738,6 +745,36 @@ fun MainScreen() {
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                         )
                                     }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        BootModeChip(
+                                            label = "M",
+                                            selected = bootModeFor(distro.id) == "M",
+                                            onClick = {
+                                                bootModes[distro.id] = "M"
+                                                saveBootMode(context, distro.id, "M")
+                                            },
+                                        )
+                                        BootModeChip(
+                                            label = "I",
+                                            selected = bootModeFor(distro.id) == "I",
+                                            onClick = {
+                                                bootModes[distro.id] = "I"
+                                                saveBootMode(context, distro.id, "I")
+                                            },
+                                        )
+                                        BootModeChip(
+                                            label = "D",
+                                            selected = bootModeFor(distro.id) == "D",
+                                            onClick = {
+                                                bootModes[distro.id] = "D"
+                                                saveBootMode(context, distro.id, "D")
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -824,25 +861,25 @@ fun MainScreen() {
                                 ) {
                                     BootModeChip(
                                         label = "M",
-                                        selected = dockerBootMode == "M",
+                                        selected = bootModeFor("docker") == "M",
                                         onClick = {
-                                            dockerBootMode = "M"
+                                            bootModes["docker"] = "M"
                                             saveBootMode(context, "docker", "M")
                                         },
                                     )
                                     BootModeChip(
                                         label = "I",
-                                        selected = dockerBootMode == "I",
+                                        selected = bootModeFor("docker") == "I",
                                         onClick = {
-                                            dockerBootMode = "I"
+                                            bootModes["docker"] = "I"
                                             saveBootMode(context, "docker", "I")
                                         },
                                     )
                                     BootModeChip(
                                         label = "D",
-                                        selected = dockerBootMode == "D",
+                                        selected = bootModeFor("docker") == "D",
                                         onClick = {
-                                            dockerBootMode = "D"
+                                            bootModes["docker"] = "D"
                                             saveBootMode(context, "docker", "D")
                                         },
                                     )
@@ -2004,86 +2041,6 @@ fun MainScreen() {
                                     ) {
                                         val canManageDocker = isDockerMode && selectedDockerDir != null
                                         val canManageDistro = !isDockerMode && isExtracted
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        ) {
-                                            if (canManageDocker || canManageDistro) {
-                                                Button(
-                                                    onClick = {
-                                                        if (!hasStoragePermission) {
-                                                            requestAllFilesAccess(context)
-                                                        } else {
-                                                            isMoreMenuExpanded = false
-                                                            if (canManageDocker) {
-                                                                com.linux_core.core.BackupService.startBackup(context, selectedDockerDir!!)
-                                                            } else {
-                                                                com.linux_core.core.BackupService.startBackup(context, selectedDistro.id)
-                                                            }
-                                                            Toast.makeText(
-                                                                context,
-                                                                "Backup started. Check notification for progress.",
-                                                                Toast.LENGTH_SHORT,
-                                                            ).show()
-                                                        }
-                                                    },
-                                                    shape = RoundedCornerShape(6.dp),
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
-                                                    modifier =
-                                                        Modifier
-                                                            .weight(1f)
-                                                            .height(40.dp)
-                                                            .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp)),
-                                                ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        Icon(
-                                                            Icons.Default.Backup,
-                                                            contentDescription = "Backup",
-                                                            tint = Color.LightGray,
-                                                            modifier = Modifier.size(14.dp),
-                                                        )
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Text(
-                                                            "BACKUP",
-                                                            fontSize = 10.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = Color.LightGray,
-                                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                        )
-                                                    }
-                                                }
-                                            }
-
-                                            Button(
-                                                onClick = {
-                                                    restorePicker.launch(arrayOf("*/*"))
-                                                },
-                                                shape = RoundedCornerShape(6.dp),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF161B22)),
-                                                modifier =
-                                                    Modifier
-                                                        .weight(1f)
-                                                        .height(40.dp)
-                                                        .border(1.dp, Color(0xFF30363D), RoundedCornerShape(6.dp)),
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(
-                                                        Icons.Default.FolderOpen,
-                                                        contentDescription = "Restore",
-                                                        tint = Color.LightGray,
-                                                        modifier = Modifier.size(14.dp),
-                                                    )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(
-                                                        "RESTORE",
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color.LightGray,
-                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                    )
-                                                }
-                                            }
-                                        }
 
                                         if (canManageDocker || canManageDistro) {
                                             val isDocker = canManageDocker

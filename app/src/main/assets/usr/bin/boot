@@ -209,16 +209,17 @@ is_termux_image() {
     [ -f "$1/data/data/com.termux/files/usr/bin/login" ]
 }
 
-# ─── Profile injection for Termux/non-Termux images ─────
+# ─── Profile injection for Termux images only ─────
 inject_profile() {
     # $1 = ROOTFS
+    # Skip for non-Termux images (Kali/Parrot manage their own /etc).
     local ROOTFS="$1"
+    is_termux_image "$ROOTFS" || return 0
     local PROFILE_DIR="$ROOTFS/etc/profile.d"
     mkdir -p "$PROFILE_DIR"
     cat > "$PROFILE_DIR/termux-profile.sh" << 'PROF'
 #!/bin/sh
 # NetHunter: obnovení PATH a env proměnných při každém login shellu
-# These paths are INSIDE the guest rootfs (for Termux-style images), not host paths.
 export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/sbin:$PATH"
 export HOME="${HOME:-/root}"
 export PREFIX="/data/data/com.termux/files/usr"
@@ -231,13 +232,14 @@ PROF
     chmod 644 "$PROFILE_DIR/termux-profile.sh" 2>/dev/null || true
 }
 
-# ─── inject_env: guest-wide environment ─────────────────
+# ─── inject_env: guest-wide environment (Termux images only) ─
 inject_env() {
     # $1 = ROOTFS
+    # Skip for non-Termux images — Kali/Parrot keep their own /etc.
     local ROOTFS="$1"
+    is_termux_image "$ROOTFS" || return 0
     local ETC_DIR="$ROOTFS/etc"
 
-    # /etc/environment (PAM reads this)
     mkdir -p "$ETC_DIR"
     cat > "$ETC_DIR/environment" << 'ENVEOF'
 PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -246,7 +248,6 @@ LANG="en_US.UTF-8"
 LC_ALL="en_US.UTF-8"
 ENVEOF
 
-    # /etc/profile.d/env.sh — additional vars for login shells
     mkdir -p "$ETC_DIR/profile.d"
     cat > "$ETC_DIR/profile.d/env.sh" << 'ENVEOF'
 #!/bin/sh
@@ -283,9 +284,6 @@ boot_classic() {
 
     local BINDS
     BINDS=$(build_binds "$distro")
-
-    # Inject environment variables into guest
-    inject_env "$ROOTFS"
 
     # Bootstrap (first run only)
     if [ -x "$ROOTFS/root/bootstrap.sh" ] && \
@@ -408,7 +406,8 @@ boot_docker() {
     # Build guest PATH
     local GUEST_PATH
     GUEST_PATH=$(build_path "$ROOTFS")
-    [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
+    # Only add Termux prefix for actual Termux-style images.
+    [ "$IS_TERMUX_IMAGE" = "1" ] && [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
         GUEST_PATH="$GUEST_PATH:/data/data/com.termux/files/usr/bin"
     [ -z "$GUEST_PATH" ] && GUEST_PATH="/usr/bin:/bin"
 
