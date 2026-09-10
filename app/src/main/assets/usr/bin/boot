@@ -32,14 +32,13 @@ export PROOT_LOADER="$LOADER"
 export PROOT_TMP_DIR="$FILES_DIR/tmp"
 export TMPDIR="$FILES_DIR/tmp"
 
-# link2symlink support (proot-distro pattern)
+# link2symlink support (hardlink emulation, required by dpkg)
 # Note: actual path is set per-container in setup_sysdata_shm()
 
-# proot extensions, split so minimal mode can drop the proot-distro extras
-# (--sysvipc and --kernel-release are omitted in --minimal, matching
-# proot_distro/commands/login/proot_cmd.py:_add_proot_extensions).
+# proot extensions, split so minimal mode can drop the optional extras
+# (--sysvipc and --kernel-release are omitted in minimal mode).
 PROOT_FLAGS_BASE="-v 0 --kill-on-exit -0 --link2symlink -L"
-PROOT_FLAGS_EXTRA="--sysvipc --kernel-release=\\Linux\\localhost\\6.17.0-proot-distro\\6.17.0-proot-distro\\aarch64\\localdomain\\-1\\"
+PROOT_FLAGS_EXTRA="--sysvipc --kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\6.17.0-nethunter\\aarch64\\localdomain\\-1\\"
 PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_FLAGS_EXTRA"
 
 log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
@@ -51,7 +50,7 @@ nh_session_start() {
     local distro="$1"
     local SESSION_DIR="$FILES_DIR/nh/sessions"
     mkdir -p "$SESSION_DIR"
-    # JSON session metadata (proot-distro compatible format)
+    # JSON session metadata
     cat > "$SESSION_DIR/$$.json" << SESSIONEOF
 {"pid": $$, "container": "$distro", "kind": "login", "command": [], "user": "root", "start_time": $(date +%s), "isolated": ${NH_ISOLATED:-0}, "minimal": ${NH_MINIMAL:-0}, "detach": false}
 SESSIONEOF
@@ -95,7 +94,7 @@ fi
 # ─── Mode flags (set by UI or env) ───────────────────────
 # NH_ISOLATED=1 → no host binds, only /dev /proc /sys
 # NH_MINIMAL=1  → minimal proot config (no sysvipc, no fake sysdata)
-# Note: isolated and minimal are independent flags (proot-distro behavior)
+# Note: isolated and minimal are independent flags
 NH_ISOLATED="${NH_ISOLATED:-0}"
 NH_MINIMAL="${NH_MINIMAL:-0}"
 
@@ -105,10 +104,10 @@ if [ "$NH_MINIMAL" = "1" ]; then
 fi
 export PROOT_FLAGS
 
-# ─── Guest environment (proot-distro _build_normal_env equivalent) ───
+# ─── Guest environment ──────────────────────────────────
 export_guest_env() {
-    # The Termux baseline (browser/audio hints) belongs to the default
-    # environment, not the stripped-down minimal one.
+    # Browser/audio hints belong to the default environment, not the
+    # stripped-down minimal one.
     if [ "$NH_MINIMAL" = "0" ]; then
         export MOZ_FAKE_NO_SANDBOX=1
         export PULSE_SERVER=127.0.0.1
@@ -121,7 +120,7 @@ export_guest_env() {
     fi
 }
 
-# ─── sysdata + shm setup (proot-distro style) ───────────
+# ─── sysdata + shm setup ────────────────────────────────
 setup_sysdata_shm() {
     # $1 = distro name (kali|parrot|docker/<image>)
     local distro="${1:-kali}"
@@ -131,23 +130,24 @@ setup_sysdata_shm() {
 
     mkdir -p "$SYSDATA_DIR" "$SHM_DIR"
 
-    # Set PROOT_L2S_DIR to a safe location inside rootfs (proot-distro pattern)
+    # Set PROOT_L2S_DIR to a safe location inside rootfs
     # This avoids race conditions when multiple sessions start simultaneously.
     local L2S_DIR="$ROOTFS/.l2s"
     mkdir -p "$L2S_DIR" 2>/dev/null || true
     export PROOT_L2S_DIR="$L2S_DIR"
 
-    # Skip fake sysdata in minimal mode (proot-distro behavior)
+    # Skip fake sysdata in minimal mode
     if [ "$NH_MINIMAL" = "1" ]; then
         log "minimal mode: skipping fake sysdata"
         return 0
     fi
 
     # Fake /proc files (Android blocks/limits these).
-    # Content matches proot-distro proot_distro/sysdata.py _FAKE_ENTRIES exactly.
+    # Content is static so tools that read these files (top, htop, dpkg)
+    # get consistent values on Android.
     printf '0.12 0.07 0.02 2/165 765\n' > "$SYSDATA_DIR/loadavg"
     printf '124.08 932.80\n' > "$SYSDATA_DIR/uptime"
-    printf '%s\n' "Linux version 6.17.0-proot-distro (proot@termux) (gcc (GCC) 13.3.0, GNU ld (GNU Binutils) 2.42) #1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000" > "$SYSDATA_DIR/version"
+    printf '%s\n' "Linux version 6.17.0-nethunter (nethunter@localhost) (gcc (GCC) 13.3.0, GNU ld (GNU Binutils) 2.42) #1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000" > "$SYSDATA_DIR/version"
 
     cat > "$SYSDATA_DIR/stat" <<'NH_FAKE_STAT'
 cpu  1957 0 2877 93280 262 342 254 87 0 0
@@ -385,7 +385,7 @@ build_binds() {
         _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/version:/proc/version"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/vmstat:/proc/vmstat"
-        # Individual sysctl substitutes (proot-distro binds files, not /proc/sys).
+        # Individual sysctl substitutes (bind files, not the whole /proc/sys).
         _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/cap_last_cap:/proc/sys/kernel/cap_last_cap"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/fs/inotify/max_user_watches:/proc/sys/fs/inotify/max_user_watches"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/overflowuid:/proc/sys/kernel/overflowuid"
@@ -394,34 +394,37 @@ build_binds() {
         _binds="$_binds -b $SYSROOT/shm/$distro:/dev/shm"
     fi
 
-    # Standard /dev fixes (Android lacks /dev/random, /dev/fd, etc.)
-    [ -e /dev/random ] || _binds="$_binds -b /dev/urandom:/dev/random"
-    [ -e /dev/fd ] || _binds="$_binds -b /proc/self/fd:/dev/fd"
-    [ -e /dev/stdin ] || _binds="$_binds -b /proc/self/fd/0:/dev/stdin"
-    [ -e /dev/stdout ] || _binds="$_binds -b /proc/self/fd/1:/dev/stdout"
-    [ -e /dev/stderr ] || _binds="$_binds -b /proc/self/fd/2:/dev/stderr"
+    # Device fixes are part of the non-minimal stack (minimal = bare
+    # /dev, /proc, /sys only).
+    if [ "$NH_MINIMAL" = "0" ]; then
+        # Standard /dev fixes (Android lacks /dev/random, /dev/fd, etc.)
+        [ -e /dev/random ] || _binds="$_binds -b /dev/urandom:/dev/random"
+        [ -e /dev/fd ] || _binds="$_binds -b /proc/self/fd:/dev/fd"
+        [ -e /dev/stdin ] || _binds="$_binds -b /proc/self/fd/0:/dev/stdin"
+        [ -e /dev/stdout ] || _binds="$_binds -b /proc/self/fd/1:/dev/stdout"
+        [ -e /dev/stderr ] || _binds="$_binds -b /proc/self/fd/2:/dev/stderr"
+    fi
 
-    # Android system paths
-    for _p in /apex /odm /product /system /system_ext /vendor; do
-        [ -d "$_p" ] && [ -x "$_p" ] && _binds="$_binds -b $_p"
-    done
-    [ -f /linkerconfig/ld.config.txt ] && _binds="$_binds -b /linkerconfig/ld.config.txt"
-    [ -f /linkerconfig/com.android.art/ld.config.txt ] && _binds="$_binds -b /linkerconfig/com.android.art/ld.config.txt"
-    [ -f /plat_property_contexts ] && _binds="$_binds -b /plat_property_contexts"
-    [ -f /property_contexts ] && _binds="$_binds -b /property_contexts"
+    # Host paths are visible only outside isolated mode. Isolated sessions
+    # deliberately see just /dev, /proc and /sys.
+    if [ "$NH_ISOLATED" = "0" ]; then
+        for _p in /apex /odm /product /system /system_ext /vendor; do
+            [ -d "$_p" ] && [ -x "$_p" ] && _binds="$_binds -b $_p"
+        done
+        [ -f /linkerconfig/ld.config.txt ] && _binds="$_binds -b /linkerconfig/ld.config.txt"
+        [ -f /linkerconfig/com.android.art/ld.config.txt ] && _binds="$_binds -b /linkerconfig/com.android.art/ld.config.txt"
+        [ -f /plat_property_contexts ] && _binds="$_binds -b /plat_property_contexts"
+        [ -f /property_contexts ] && _binds="$_binds -b /property_contexts"
 
-    # Storage + Termux data
-    [ -d /storage ] && _binds="$_binds -b /storage"
-    [ -d /storage/emulated/0 ] && _binds="$_binds -b /storage/emulated/0"
-    [ -d /sdcard ] && _binds="$_binds -b /sdcard"
-    [ -d /mnt/sdcard ] && _binds="$_binds -b /mnt/sdcard"
-    [ -d /data/app ] && _binds="$_binds -b /data/app"
-    [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
-    # NOTE: Host is com.linux_core, not Termux.
-    # Host-side tools are already deployed to $FILES_DIR/usr/{bin,lib} by ProotManager.
-    # We do NOT bind /data/data/com.termux/files/* because those paths do not exist on this host.
-    # If a Termux-style guest image is used, its own Termux prefix lives INSIDE the rootfs
-    # at /data/data/com.termux/files/... and is accessible via guest PATH.
+        [ -d /storage ] && _binds="$_binds -b /storage"
+        [ -d /storage/emulated/0 ] && _binds="$_binds -b /storage/emulated/0"
+        [ -d /sdcard ] && _binds="$_binds -b /sdcard"
+        [ -d /mnt/sdcard ] && _binds="$_binds -b /mnt/sdcard"
+        [ -d /data/app ] && _binds="$_binds -b /data/app"
+        [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
+    fi
+    # Host-side tools live in $FILES_DIR/usr/{bin,lib} (deployed by ProotManager);
+    # no host app prefix is bound into the guest.
 
     # App-managed dirs (skip in isolated/minimal mode)
     if [ "$NH_ISOLATED" = "0" ]; then
@@ -439,16 +442,16 @@ build_binds() {
     echo "$_binds"
 }
 
-# ─── Termux-type detection ──────────────────────────────
+# ─── Host-shell image detection ─────────────────────────
 is_termux_image() {
     # $1 = ROOTFS
     [ -f "$1/data/data/com.termux/files/usr/bin/login" ]
 }
 
-# ─── Profile injection for Termux images only ─────
+# ─── Profile injection for host-shell images only ─
 inject_profile() {
     # $1 = ROOTFS
-    # Skip for non-Termux images (Kali/Parrot manage their own /etc).
+    # Skip for regular images (Kali/Parrot manage their own /etc).
     local ROOTFS="$1"
     is_termux_image "$ROOTFS" || return 0
     local PROFILE_DIR="$ROOTFS/etc/profile.d"
@@ -468,10 +471,10 @@ PROF
     chmod 644 "$PROFILE_DIR/termux-profile.sh" 2>/dev/null || true
 }
 
-# ─── inject_env: guest-wide environment (Termux images only) ─
+# ─── inject_env: guest-wide environment (host-shell images only) ─
 inject_env() {
     # $1 = ROOTFS
-    # Skip for non-Termux images — Kali/Parrot keep their own /etc.
+    # Skip for regular images — Kali/Parrot keep their own /etc.
     local ROOTFS="$1"
     is_termux_image "$ROOTFS" || return 0
     local ETC_DIR="$ROOTFS/etc"
@@ -580,7 +583,7 @@ boot_docker() {
         return 1
     fi
 
-    # Detect Termux-style image by rootfs structure (NOT host path)
+    # Detect host-shell style image by rootfs structure (NOT host path)
     local IS_TERMUX_IMAGE=0
     if is_termux_image "$ROOTFS"; then
         IS_TERMUX_IMAGE=1
@@ -623,7 +626,7 @@ boot_docker() {
         find "$ROOTFS" -maxdepth 2 -type d 2>/dev/null | head -20 >&2
         return 1
     fi
-    log "Docker image=$image_name shell=$GUEST_SH termux=$IS_TERMUX_IMAGE"
+    log "Docker image=$image_name shell=$GUEST_SH hostshell=$IS_TERMUX_IMAGE"
 
     # Prepare sysdata/shm before binds
     setup_sysdata_shm "docker/$image_name"
@@ -642,7 +645,7 @@ boot_docker() {
     # Build guest PATH
     local GUEST_PATH
     GUEST_PATH=$(build_path "$ROOTFS")
-    # Only add Termux prefix for actual Termux-style images.
+    # Only add the host-shell prefix for actual host-shell images.
     [ "$IS_TERMUX_IMAGE" = "1" ] && [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
         GUEST_PATH="$GUEST_PATH:/data/data/com.termux/files/usr/bin"
     [ -z "$GUEST_PATH" ] && GUEST_PATH="/usr/bin:/bin"
@@ -674,7 +677,7 @@ boot_docker() {
 
     # Normal docker boot
     if [ "$IS_TERMUX_IMAGE" = "1" ]; then
-        # Termux image: inject profile + use login binary
+        # Host-shell image: inject profile + use login binary
         inject_profile "$ROOTFS"
         if [ -n "$ENTRYPOINT" ]; then
             exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
@@ -759,7 +762,7 @@ main() {
     [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
     eval "set -- $_newargs"
 
-    # Guest environment (HOME/USER/TERM/...) — proot-distro parity.
+    # Guest environment (HOME/USER/TERM/...).
     export_guest_env
 
     case "${1:-}" in

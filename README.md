@@ -1,6 +1,6 @@
-# Linux Kali NetHunter🐉 and ParrotOS security🦜 proot-distro emulator
+# Linux Kali NetHunter🐉 & ParrotOS Security🦜 PRoot Emulator
                        _ROOT && UNROOT_
-A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency Termux terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
+A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
 
 ---
 
@@ -233,7 +233,7 @@ To track the state of the guest container, the following sentinel files are mana
 - `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
 
 #### 3. Execution Entrypoints & Scripts
-- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, and launches the guest shell with flag mounts (`-v 0 --kill-on-exit -0 --link2symlink --sysvipc`). It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
+- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, prepares fake `/proc` and `/sys` substitutes, and launches the guest shell. Base flag mounts (`-v 0 --kill-on-exit -0 --link2symlink -L`) are shared, while `--sysvipc` and `--kernel-release` are omitted in minimal mode. It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
 - **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
 - **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
 
@@ -361,9 +361,9 @@ Připojení USB zařízení už **nepřeruší** běžící terminálovou relaci
 
 ---
 
-## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+## 📦 Správa kontejnerů — `nh distro`
 
-Wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
+Správce PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
 
 ```bash
 nh distro list                          # seznam distro + stav
@@ -530,13 +530,13 @@ shizuku
 
 ---
 
-## 📂 Open-with & `~/share` (Termux-style)
+## 📂 Open-with & `~/share`
 
 Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
 
 - **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
 - Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
-- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně docker image) → uvnitř guesta je složka vidět jako `~/share`.
 
 > Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
 
@@ -552,7 +552,7 @@ Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share
 Terminál jako Messenger chat-head nad ostatními aplikacemi.
 
 - **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
-- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + `TerminalView` + rohová úchytka ◢ pro resize.
 - **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
 
 ### Session režimy
@@ -566,14 +566,46 @@ Terminál jako Messenger chat-head nad ostatními aplikacemi.
 - Při prvním použití Android vyzve k povolení overlay — `nh float` ho sám otevře, povol a spusť znovu.
 - `nh float here` používá `$NETHUNTER_SESSION_ID` (stejný mechanismus jako `nh vpn ignore`).
 
+## 📈 Changelog — Režimy spouštění & fake systémová data
+
+Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící fake systémová data a sjednocuje nasazování PRoot binárek.
+
+### 1. Režimy spouštění M / I / D na každé kartě
+- Každé distro (Kali, Parrot, Docker) má vlastní trojici přepínačů **M** (plný), **I** (izolovaný), **D** (minimální); volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>`.
+- Izolace a minimální režim jsou **nezávislé volby** — izolovaný režim se už nechová jako minimální (dřív ho launcher chybně přepínal).
+- Minimální režim navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+
+### 2. Fake `/proc` a `/sys` uvnitř kontejneru
+- Launcher vytváří statické náhrady (`loadavg`, `stat`, `uptime`, `version`, `vmstat` + čtyři `sysctl` hodnoty + prázdný `/sys/fs/selinux`) v `$FILES_DIR/nh/sysdata/<distro>/` a binduje je dovnitř.
+- Soubory v `/proc/sys` se vážou **jednotlivě**, ne celý adresář — zbytek `/proc/sys` zůstává živý.
+- Doplněny chybějící adresáře `sysctl/kernel` a `sysctl/fs/inotify` — dřív zápis pod `set -e` shodil start relace.
+- `/dev/shm` se binduje z `$FILES_DIR/nh/shm/<distro>`.
+
+### 3. Prostředí relace
+- Neminimální relace dostávají `HOME=/root`, `USER=root`, `TERM` (fallback `xterm-256color`), `MOZ_FAKE_NO_SANDBOX=1` a `PULSE_SERVER=127.0.0.1`.
+
+### 4. Nasazení PRoot binárek při startu aplikace
+- `ProotManager.setupProotEnvironment()` se volá hned v `MainActivity.onCreate()` → `boot`, `proot`, loader a `libtalloc` jsou v `files/usr/bin` dřív, než se otevře terminál.
+- Nasazení je **hashované** (MD5 sidecar `<soubor>.md5`) — změněný asset se přepíše, nezměněný se přeskočí.
+
+### 5. Obnova rootfs — explicitní chyby
+- `RootfsManager` kontroluje návratové hodnoty `mkdirs()` při extrakci/obnově a při selhání vyhazuje `IOException` (dřív tiché `ENOENT`).
+- Obnova přejmenuje stávající rootfs na `.bak` a při chybě se vrátí zpět.
+
+### 6. CI podepisování
+- GitHub Actions staví debug APK **stejným** klíčem `app/release.jks` (alias `releaseKey`) → `adb install -r` funguje napříč sestaveními.
+- Hesla z GitHub secrets (`KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`); validace certifikátu je měkká (warning místo pádu buildu).
+
+---
+
 ## 📈 Version 4.4 Changelog (FLOAT-SHARE)
 
 Tento release přidává „Open with" / share do `~/share`, Picture-in-Picture režim terminálu a plovoucí terminálové okno (`nh float`):
 
-### 1. Open-with & `~/share` (Termux-style)
+### 1. Open-with & `~/share`
 - **`ShareReceiverActivity`** (exported, translucent) s filtry `ACTION_VIEW`/`ACTION_SEND`/`ACTION_SEND_MULTIPLE` pro `*/*` → appka viditelná v systémovém „Otevřít v aplikaci" i share sheetu.
 - Kopírování přijatých souborů do `filesDir/share/` (sanitizace jména, kolize `nazev (1).ext`), toast + otevření terminálu s `cd /root/share`.
-- `boot` skript binduje `$FILES_DIR/share → /root/share` (i non-termux docker) → guest vidí `~/share`.
+- `boot` skript binduje `$FILES_DIR/share → /root/share` (i docker image) → guest vidí `~/share`.
 
 ### 2. Picture-in-Picture (PiP)
 - Manifest `SYSTEM_ALERT_WINDOW` + `TerminalActivity` `supportsPictureInPicture`/`resizeableActivity`.
@@ -713,7 +745,7 @@ This release adds Shizuku privilege escalation, the services dashboard, replaces
 ## ⚙️ Technology Stack
 - **Kotlin & Jetpack Compose** for a modern, responsive UI.
 - **PRoot** for user-space chroot virtualization without root privileges.
-- **Termux Libraries** for low-latency terminal rendering.
+- **Terminal emulation libraries** for low-latency terminal rendering.
 - **AdGuard NatLibs** for secure network diagnostic intercepting.
 - **OkHttp & Apache Commons Compress** for robust rootfs downloads and extraction.
 

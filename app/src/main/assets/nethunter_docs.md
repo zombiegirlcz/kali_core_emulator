@@ -21,6 +21,45 @@ V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
 - **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
 - **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, `dcheck` pro diagnostiku, `vpn-bypass` pro obcházení VPN filtru (port 13339) a sjednocený CLI nástroj `nh` aliasy starších příkazů (zpětná kompatibilita).
 
+### 🎛️ Režimy spouštění kontejneru (M / I / D)
+
+Každá karta distra (Kali, Parrot, Docker) má vlastní přepínač režimu spouštění. Volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>` a launcheru se předává přes `NH_ISOLATED` / `NH_MINIMAL`.
+
+| Režim | Význam | Izolace | Minimální konfigurace | Co se binduje |
+|---|---|---|---|---|
+| **M** | plný (výchozí) | ne | ne | Android systém, úložiště, `$FILES_DIR/tmp`, `~/share`, fake `/proc` a `/sys` |
+| **I** | izolovaný | ano | ne | pouze `/dev`, `/proc`, `/sys` + fake `/proc` a `/sys` (žádné hostitelské cesty) |
+| **D** | minimální | ano | ano | pouze `/dev`, `/proc`, `/sys` (žádná fake data) |
+
+- Režim **D** navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+- Izolace a minimální konfigurace jsou **nezávislé volby** — izolovaný režim (**I**) pořád dostává fake systémová data i `/dev/shm`, jen nevidí hostitelské cesty.
+
+### 🧪 Fake systémová data (`/proc`, `/sys`)
+
+Android aplikacím část `/proc` a `/sys` blokuje nebo zkresluje. Launcher proto před startem kontejneru připraví statické náhrady v `$FILES_DIR/nh/sysdata/<distro>/` a přibinduje je dovnitř:
+
+| Soubor | Nahrazuje | Hodnota |
+|---|---|---|
+| `loadavg` | `/proc/loadavg` | `0.12 0.07 0.02 2/165 765` |
+| `stat` | `/proc/stat` | CPU řádky + `btime`, `ctxt`, `processes`, `softirq` |
+| `uptime` | `/proc/uptime` | `124.08 932.80` |
+| `version` | `/proc/version` | řetězec jádra kontejneru |
+| `vmstat` | `/proc/vmstat` | kompletní sada čítačů paměti |
+| `sysctl/kernel/cap_last_cap` | `/proc/sys/kernel/cap_last_cap` | `40` |
+| `sysctl/fs/inotify/max_user_watches` | `/proc/sys/fs/inotify/max_user_watches` | `4096` |
+| `sysctl/kernel/overflowuid` | `/proc/sys/kernel/overflowuid` | `65534` |
+| `sysctl/kernel/overflowgid` | `/proc/sys/kernel/overflowgid` | `65534` |
+| `sys_empty/` | `/sys/fs/selinux` | prázdný adresář |
+
+- Soubory v `/proc/sys` se vážou **jednotlivě**, ne celý adresář — zbytek `/proc/sys` zůstává živý.
+- Sdílená paměť kontejneru je v `$FILES_DIR/nh/shm/<distro>` a binduje se na `/dev/shm`.
+- Zámek pro emulaci pevných odkazů (`PROOT_L2S_DIR`) je umístěný v `<rootfs>/.l2s`, takže souběžné starty relací nekolidují.
+- V minimálním režimu (**D**) se fake data ani `/dev/shm` nevytvářejí.
+
+### 🌍 Prostředí relace
+
+Launcher nastavuje pro neminimální relace `HOME=/root`, `USER=root`, `TERM` (fallback `xterm-256color`), `MOZ_FAKE_NO_SANDBOX=1` a `PULSE_SERVER=127.0.0.1`. Android systémové proměnné (`ANDROID_ROOT`, `ANDROID_DATA`, …) se dědí pouze v plném režimu; izolované a minimální relace si nesou jen hodnoty z image.
+
 ## ⏰ Background auto-start (cron automatizace)
 
 Od verze 2026-08-14 se aplikace umí **sama spustit na pozadí po restartu zařízení** — hlavní použití je **cron automatizace** uvnitř PRoot guestu. (Permise `RECEIVE_BOOT_COMPLETED` dříve v manifestu chyběla; nyní je přidaná i s receiverem, který ji volá.)
@@ -70,9 +109,9 @@ nh log -n 50 -g TlsMitm          # logcat viewer
 
 Staré názvy (`nethunter-toast`, `vpn-cli`, `vpn-on`, `vpn-bypass`, `ignore-vpn`, ...) zůstávají funkční jako symlinky na `nh`.
 
-## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+## 📦 Správa kontejnerů — `nh distro`
 
-`nh distro` je wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
+`nh distro` je správce PRoot kontejnerů (kali, parrot). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
 
 ```bash
 nh distro list                          # seznam distro + stav
@@ -87,7 +126,7 @@ nh distro help                          # nápověda
 
 **Bezpečnostní pojistka:** `kill`, `remove`, `restore` vyžadují `--force`, jinak vrtnou 409 `confirmation_required`.
 
-**Z hostitele bez rootu (Termux / adb shell):**
+**Z hostitele bez rootu (host shell / adb shell):**
 ```bash
 curl http://127.0.0.1:1337/distro/ps          # localhost = bez auth
 curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
@@ -605,13 +644,13 @@ code-server --install-extension /cesta/k/souboru.vsix
 - Port 8443 je vázán pouze na localhost — pro přístup z jiného zařízení použít SSH tunel nebo VPN bypass proxy :13339
 - Workspace je omezen na `/root/projects` — nelze otevřít adresář mimo guest bez symlinku
 
-## 📂 Open-with & `~/share` (Termux-style)
+## 📂 Open-with & `~/share`
 
 Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
 
 - **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
 - Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
-- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně docker image) → uvnitř guesta je složka vidět jako `~/share`.
 
 > Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
 
@@ -627,7 +666,7 @@ Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share
 Terminál jako Messenger chat-head nad ostatními aplikacemi.
 
 - **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
-- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + `TerminalView` + rohová úchytka ◢ pro resize.
 - **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
 
 ### Session režimy
