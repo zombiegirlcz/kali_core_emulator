@@ -65,7 +65,9 @@ import java.util.regex.Pattern
 object LocalApiServer {
     private const val TAG = "LocalApiServer"
     private const val PORT = 1337
+    private const val ASHELL_PTY_PORT = 13340
     private var serverSocket: ServerSocket? = null
+    private var ptyProcess: Process? = null
     private var isRunning = false
     private val executor = Executors.newCachedThreadPool()
     private var tts: TextToSpeech? = null
