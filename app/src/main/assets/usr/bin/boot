@@ -111,9 +111,12 @@ export_guest_env() {
     if [ "$NH_MINIMAL" = "0" ]; then
         export MOZ_FAKE_NO_SANDBOX=1
         export PULSE_SERVER=127.0.0.1
-        export HOME=/root
-        export USER=root
     fi
+    # HOME/USER/LOGNAME jsou potřeba VŽDY (i v minimal/isolated módu) — jinak
+    # shell zdědí HOME=/ a prázdný LOGNAME z hostitelského prostředí.
+    export HOME=/root
+    export USER=root
+    export LOGNAME=root
     export TERM="${TERM:-xterm-256color}"
     if [ -n "${COLORTERM:-}" ]; then
         export COLORTERM
