@@ -213,12 +213,19 @@ object ProotManager {
                     if (parts.isEmpty()) return@map line
 
                     when {
-                        isGroup && parts.size >= 3 -> parts.toMutableList().also { it[2] = appGid.toString() }.joinToString(":")
+                        isGroup && parts.size >= 3 ->
+                            parts.toMutableList().also {
+                                // root (gid 0) musí zůstat 0: PRoot `-0` běží jako fake root
+                                // a zsh potřebuje getgrgid(0), jinak nejde shodit privilegia.
+                                it[2] = if (parts[0] == "root") "0" else appGid.toString()
+                            }.joinToString(":")
                         isShadow && parts.size >= 3 -> parts.toMutableList().also { it[2] = appUid.toString() }.joinToString(":")
                         !isGroup && !isShadow && parts.size >= 4 ->
                             parts.toMutableList().also {
-                                it[2] = appUid.toString()
-                                it[3] = appGid.toString()
+                                // root (uid 0) musí zůstat 0:0 — PRoot `-0` běží jako fake root,
+                                // takže `getpwuid(0)` musí uspět (jinak zsh: "can't drop privileges").
+                                if (parts[0] == "root") { it[2] = "0"; it[3] = "0" }
+                                else { it[2] = appUid.toString(); it[3] = appGid.toString() }
                             }.joinToString(":")
                         else -> line
                     }
