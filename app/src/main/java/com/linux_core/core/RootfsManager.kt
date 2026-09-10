@@ -63,7 +63,10 @@ private fun processTarEntry(
             }
         }
         tarEntry?.isLink == true -> {
-            entryFile.parentFile?.mkdirs()
+            val parent = entryFile.parentFile
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
+            }
             try {
                 entryFile.delete()
                 android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
@@ -71,16 +74,26 @@ private fun processTarEntry(
             }
         }
         tarEntry?.isSymbolicLink == true -> {
-            entryFile.parentFile?.mkdirs()
+            val parent = entryFile.parentFile
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                throw IOException("Failed to create parent dir for symlink: ${parent.absolutePath}")
+            }
             try {
                 entryFile.delete()
                 android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
             } catch (_: Exception) {
             }
         }
-        tarEntry?.isDirectory == true -> entryFile.mkdirs()
+        tarEntry?.isDirectory == true -> {
+            if (!entryFile.exists() && !entryFile.mkdirs()) {
+                throw IOException("Failed to create directory: ${entryFile.absolutePath}")
+            }
+        }
         else -> {
-            entryFile.parentFile?.mkdirs()
+            val parent = entryFile.parentFile
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                throw IOException("Failed to create parent dir for file: ${parent.absolutePath}")
+            }
             if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
             FileOutputStream(entryFile).use { fos ->
                 inputStream?.copyTo(fos)
@@ -519,13 +532,18 @@ object RootfsManager {
 
                                 val tarEntry = entry as? TarArchiveEntry
                                 if (tarEntry != null && tarEntry.isDirectory) {
-                                    entryFile.mkdirs()
+                                    if (!entryFile.exists() && !entryFile.mkdirs()) {
+                                        throw IOException("Failed to create directory: ${entryFile.absolutePath}")
+                                    }
                                     entry = tarIn.nextEntry
                                     continue
                                 }
 
                                 if (tarEntry != null && (tarEntry.isSymbolicLink || tarEntry.isLink)) {
-                                    entryFile.parentFile?.mkdirs()
+                                    val parent = entryFile.parentFile
+                                    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                                        throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
+                                    }
                                     val linkTarget = tarEntry.linkName
                                     try {
                                         if (tarEntry.isSymbolicLink) {
@@ -534,10 +552,15 @@ object RootfsManager {
                                             android.system.Os.link(linkTarget, entryFile.absolutePath)
                                         }
                                     } catch (_: Exception) {
-                                        entryFile.mkdirs()
+                                        if (!entryFile.exists() && !entryFile.mkdirs()) {
+                                            throw IOException("Failed to create fallback dir for link: ${entryFile.absolutePath}")
+                                        }
                                     }
                                 } else {
-                                    entryFile.parentFile?.mkdirs()
+                                    val parent = entryFile.parentFile
+                                    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                                        throw IOException("Failed to create parent dir for file: ${parent.absolutePath}")
+                                    }
                                     FileOutputStream(entryFile).use { out ->
                                         tarIn.copyTo(out)
                                     }
@@ -851,22 +874,44 @@ object RootfsManager {
                                 val tarEntry = entry as? TarArchiveEntry
                                 when {
                                     tarEntry?.isSymbolicLink == true -> {
-                                        entryFile.parentFile?.mkdirs()
+                                        val parent = entryFile.parentFile
+                                        if (parent != null && !parent.exists()) {
+                                            if (!parent.mkdirs()) {
+                                                throw IOException("Failed to create parent dir for symlink: ${parent.absolutePath}")
+                                            }
+                                        }
                                         try {
+                                            if (entryFile.exists()) entryFile.delete()
                                             android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
                                         } catch (_: Exception) {
                                         }
                                     }
                                     tarEntry?.isLink == true -> {
-                                        entryFile.parentFile?.mkdirs()
+                                        val parent = entryFile.parentFile
+                                        if (parent != null && !parent.exists()) {
+                                            if (!parent.mkdirs()) {
+                                                throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
+                                            }
+                                        }
                                         try {
+                                            if (entryFile.exists()) entryFile.delete()
                                             android.system.Os.link(tarEntry.linkName, entryFile.absolutePath)
                                         } catch (_: Exception) {
                                         }
                                     }
-                                    tarEntry?.isDirectory == true -> entryFile.mkdirs()
+                                    tarEntry?.isDirectory == true -> {
+                                        if (!entryFile.exists() && !entryFile.mkdirs()) {
+                                            throw IOException("Failed to create directory: ${entryFile.absolutePath}")
+                                        }
+                                    }
                                     else -> {
-                                        entryFile.parentFile?.mkdirs()
+                                        val parent = entryFile.parentFile
+                                        if (parent != null && !parent.exists()) {
+                                            if (!parent.mkdirs()) {
+                                                throw IOException("Failed to create parent dir for file: ${parent.absolutePath}")
+                                            }
+                                        }
+                                        if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
                                         FileOutputStream(entryFile).use { fos ->
                                             tarIn.copyTo(fos)
                                         }
@@ -874,6 +919,7 @@ object RootfsManager {
                                             entryFile.setExecutable(true, false)
                                         }
                                         entryFile.setReadable(true, false)
+                                        entryFile.setWritable(true, false)
                                     }
                                 }
 
@@ -1420,7 +1466,10 @@ object RootfsManager {
                             // ── Hardlink: commons-compress nedodává obsah — vytvoř symlink na
                             //    cíl v rámci rootfs (funkční ekvivalent; PRoot symlinky zvládá).
                             tarEntry?.isLink == true -> {
-                                entryFile.parentFile?.mkdirs()
+                                val parent = entryFile.parentFile
+                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                                    throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
+                                }
                                 try {
                                     entryFile.delete()
                                     android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
@@ -1428,18 +1477,28 @@ object RootfsManager {
                                 }
                             }
                             tarEntry?.isSymbolicLink == true -> {
-                                entryFile.parentFile?.mkdirs()
+                                val parent = entryFile.parentFile
+                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                                    throw IOException("Failed to create parent dir for symlink: ${parent.absolutePath}")
+                                }
                                 try {
                                     entryFile.delete()
                                     android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
                                 } catch (_: Exception) {
                                 }
                             }
-                            tarEntry?.isDirectory == true -> entryFile.mkdirs()
+                            tarEntry?.isDirectory == true -> {
+                                if (!entryFile.exists() && !entryFile.mkdirs()) {
+                                    throw IOException("Failed to create directory: ${entryFile.absolutePath}")
+                                }
+                            }
                             else -> {
-                                entryFile.parentFile?.mkdirs()
+                                val parent = entryFile.parentFile
+                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                                    throw IOException("Failed to create parent dir for file: ${parent.absolutePath}")
+                                }
                                 // Přepis existujícího souboru: pokud je to symlink, smaž ho
-                                // (FileOutputStream by psal SKRZ symlink do cíle mimo rootfs!")
+                                // (FileOutputStream by psal SKRZ symlink do cíle mimo rootfs!)
                                 if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
                                 FileOutputStream(entryFile).use { fos ->
                                     tarIn.copyTo(fos)
