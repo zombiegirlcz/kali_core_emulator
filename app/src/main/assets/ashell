@@ -36,7 +36,9 @@ if [ "$1" = "-c" ] || [ "$1" = "--cmd" ]; then
 
     # 1) Streaming PTY most (python3 socket → ashell_pty na 127.0.0.1:13340)
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$CMD" "$PWD" "$ROOTFS_HOST" "$TERM_GUEST" <<'PYEOF'
+        # Klient se píše do temp SOUBORU (ne `python3 - <<EOF`), aby
+        # python zdědil PŮVODNÍ stdin (pipe/tty) a mohl forwardovat vstup.
+        cat > /tmp/.ashell_pty_$$.py <<'PYEOF'
 import sys, os, select, struct, socket, termios, tty
 
 port = 13340
@@ -146,7 +148,9 @@ finally:
         pass
 sys.exit(exit_code)
 PYEOF
+        python3 /tmp/.ashell_pty_$$.py "$CMD" "$PWD" "$ROOTFS_HOST" "$TERM_GUEST"
         RC=$?
+        rm -f /tmp/.ashell_pty_$$.py
         if [ "$RC" -ne 125 ]; then
             exit $RC
         fi
