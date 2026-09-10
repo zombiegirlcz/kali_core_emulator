@@ -181,6 +181,16 @@ class MainActivity : ComponentActivity() {
         // Layout migration: ensure old paths are moved to nh/distro + usr/bin before any rootfs access
         com.linux_core.core.RootfsManager.ensureMigrated(applicationContext)
 
+        // Deploy host-side tools (proot/loader/boot/nano/rsync/sed/rg) into files/usr/bin
+        // so boot and PRoot launcher are available immediately after app start.
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                com.linux_core.core.ProotManager.setupProotEnvironment(applicationContext)
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Early ProotManager setup failed", e)
+            }
+        }
+
         com.linux_core.core.ShortcutHelper.registerShortcuts(this)
         com.linux_core.core.VpnLogManager.initialize(applicationContext)
 
