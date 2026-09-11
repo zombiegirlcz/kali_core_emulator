@@ -15,6 +15,7 @@
 #   NH_CWD           — working dir override (su_daemon re-entry)
 #   NH_DISTRO        — distro override for "--" re-entry mode (kali|parrot|docker:<image>)
 #   BOOT_DEBUG       — "1" for verbose logging
+#   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
 
 set -e
 
@@ -38,7 +39,9 @@ export TMPDIR="$FILES_DIR/tmp"
 # proot extensions, split so minimal mode can drop the optional extras
 # (--sysvipc and --kernel-release are omitted in minimal mode).
 PROOT_FLAGS_BASE="-v 0 --kill-on-exit -0 --link2symlink -L"
-PROOT_FLAGS_EXTRA="--sysvipc --kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\6.17.0-nethunter\\aarch64\\localdomain\\-1\\"
+PROOT_SYSVIPC="--sysvipc"
+PROOT_KERNEL_RELEASE="--kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\6.17.0-nethunter\\aarch64\\localdomain\\-1\\"
+PROOT_FLAGS_EXTRA="$PROOT_SYSVIPC $PROOT_KERNEL_RELEASE"
 PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_FLAGS_EXTRA"
 
 log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
@@ -97,12 +100,24 @@ fi
 # Note: isolated and minimal are independent flags
 NH_ISOLATED="${NH_ISOLATED:-0}"
 NH_MINIMAL="${NH_MINIMAL:-0}"
+# NH_FAKE_SYS=0 -> no fake /proc + /sys overlay: the guest sees Android's real
+# /proc/{version,stat,uptime,vmstat,loadavg}, the real /proc/sys and the real
+# /sys/fs/selinux, and `uname -r` reports the real kernel. Tooling that
+# inspects the real kernel/process view (e.g. Frida) needs this. --sysvipc and
+# the /dev fixes stay enabled, only the fake view is dropped.
+NH_FAKE_SYS="${NH_FAKE_SYS:-1}"
 
 # minimal mode = bare proot config: no --sysvipc, no --kernel-release
 if [ "$NH_MINIMAL" = "1" ]; then
     PROOT_FLAGS="$PROOT_FLAGS_BASE"
+else
+    PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_SYSVIPC"
+    # --kernel-release is part of the fake view; without it `uname -r` reports
+    # the actual Android kernel.
+    [ "$NH_FAKE_SYS" = "1" ] && PROOT_FLAGS="$PROOT_FLAGS $PROOT_KERNEL_RELEASE"
 fi
-export PROOT_FLAGS
+unset PROOT_KERNEL_RELEASE
+export PROOT_FLAGS NH_FAKE_SYS
 
 # ─── Guest environment ──────────────────────────────────
 export_guest_env() {
@@ -153,6 +168,13 @@ setup_sysdata_shm() {
     # Skip fake sysdata in minimal mode
     if [ "$NH_MINIMAL" = "1" ]; then
         log "minimal mode: skipping fake sysdata"
+        return 0
+    fi
+
+    # NH_FAKE_SYS=0 -> the guest must see the real /proc + /sys, so there is
+    # nothing to generate. (PROOT_L2S_DIR above is already set.)
+    if [ "$NH_FAKE_SYS" = "0" ]; then
+        log "fake-sys disabled: skipping fake sysdata"
         return 0
     fi
 
@@ -402,8 +424,8 @@ build_binds() {
     local _binds="-b /dev -b /proc -b /sys"
     local SYSROOT="$FILES_DIR/nh"
 
-    # sysdata + shm (skip in minimal mode)
-    if [ "$NH_MINIMAL" = "0" ]; then
+    # sysdata + shm (skip in minimal mode and when the fake overlay is off)
+    if [ "$NH_MINIMAL" = "0" ] && [ "$NH_FAKE_SYS" = "1" ]; then
         _binds="$_binds -b $SYSROOT/sysdata/$distro/loadavg:/proc/loadavg"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/stat:/proc/stat"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"

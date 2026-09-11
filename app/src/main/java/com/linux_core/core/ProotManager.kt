@@ -323,6 +323,10 @@ object ProotManager {
                 }
                 if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
                 if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+                // /data is only readable under real root (DAC + SELinux), so this
+                // mount is useful inside a sudo session (su_daemon re-entry), not
+                // in the plain app-UID session.
+                if (rootPrefs.getBoolean("bind_data", false)) append(" -b /data:/mnt/data")
             }
 
         val (nhIsolated, nhMinimal) = bootModeFlags(bootMode)
@@ -333,6 +337,8 @@ object ProotManager {
                 "NH_DISTRO=$distroId",
                 "NH_ISOLATED=$nhIsolated",
                 "NH_MINIMAL=$nhMinimal",
+                // NH_FAKE_SYS=0 -> guest sees the real /proc + /sys (Frida et al.)
+                "NH_FAKE_SYS=${if (rootPrefs.getBoolean("bind_fake_sys", true)) "1" else "0"}",
                 "NH_BOOT_MODE=$bootMode",
             )
         // DEFAULT (neizolovaný) mód: předej Android env z host procesu, aby v guestu

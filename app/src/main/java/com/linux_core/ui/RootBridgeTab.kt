@@ -448,6 +448,12 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindBluetooth by remember { mutableStateOf(prefs.getBoolean("bind_bluetooth", false)) }
     var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", false)) }
     var bindAiApp by remember { mutableStateOf(prefs.getBoolean("bind_aiapp", false)) }
+    var bindData by remember { mutableStateOf(prefs.getBoolean("bind_data", false)) }
+
+    // Emulovaný /proc + /sys (boot: NH_FAKE_SYS). Vypnuto = guest vidí reálný
+    // kernel, /proc a /sys — potřeba pro nástroje zkoumající reálný stav
+    // (Frida). Není to bind, proto stojí mimo seznam mountů.
+    var fakeSys by remember { mutableStateOf(prefs.getBoolean("bind_fake_sys", true)) }
 
     // Auto-fix ownership after sudo commands (layer 1)
     var autoFixPermissions by remember { mutableStateOf(prefs.getBoolean("auto_fix_permissions", true)) }
@@ -751,7 +757,8 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
                     Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
                     Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
-                    Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp)
+                    Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp),
+                    Triple("Data (root)", "/data → /mnt/data (obsah vidí jen sudo)", "bind_data" to bindData)
                 )
 
                 items.forEach { (label, mountPath, statePair) ->
@@ -774,6 +781,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                     "bind_bluetooth" -> bindBluetooth = checked
                                     "bind_app" -> bindApp = checked
                                     "bind_aiapp" -> bindAiApp = checked
+                                    "bind_data" -> bindData = checked
                                 }
                             },
                             colors = CheckboxDefaults.colors(
@@ -798,6 +806,57 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                 fontFamily = FontFamily.Monospace
                             )
                         }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Fake /proc & /sys",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Checkbox(
+                        checked = fakeSys,
+                        onCheckedChange = { checked ->
+                            prefs.edit().putBoolean("bind_fake_sys", checked).apply()
+                            fakeSys = checked
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF00FF41),
+                            checkmarkColor = Color.Black,
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text(
+                            text = if (fakeSys) "emulovaný /proc + /sys" else "reálný /proc + /sys",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = if (fakeSys) {
+                                "zapnuto: /proc/version, stat, uname -r a /sys/fs/selinux se předstírají"
+                            } else {
+                                "vypnuto: skutečný kernel a /proc (Frida, ptrace, kernel moduly)"
+                            },
+                            color = Color.Gray,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
 

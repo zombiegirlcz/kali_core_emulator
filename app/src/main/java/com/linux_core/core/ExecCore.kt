@@ -157,12 +157,17 @@ object ExecCore {
         // Jen cross-app bind (bind_aiapp) — agentův guest dřív žádné extra mouny
         // neměl, takže neměníme jeho chování. Vyžaduje root -> guest pod su.
         val rootPrefs = ctx.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        val bindData = rootPrefs.getBoolean("bind_data", false)
+        val fakeSys = if (rootPrefs.getBoolean("bind_fake_sys", true)) "1" else "0"
         val extraMounts = buildString {
             if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+            // /data is only readable under real root (DAC + SELinux).
+            if (bindData) append(" -b /data:/mnt/data")
         }
-        // Root jen pokud je zapnutý cross-app bind A zároveň dostupné su — jinak
-        // zůstává guest v app sandboxu (bezpečnější, bez SELinux rizika na rootfs).
-        val su = if (rootPrefs.getBoolean("bind_aiapp", false)) findSu(ctx) else null
+        // Root jen pokud je zapnutý cross-app bind / čtení /data A zároveň
+        // dostupné su — jinak zůstává guest v app sandboxu (bezpečnější,
+        // bez SELinux rizika na rootfs).
+        val su = if (rootPrefs.getBoolean("bind_aiapp", false) || bindData) findSu(ctx) else null
 
         return try {
             val startTime = System.currentTimeMillis()
@@ -177,6 +182,7 @@ object ExecCore {
                 writeText(
                     "#!/system/bin/sh\n" +
                     "export NH_EXTRA_MOUNTS='$extraMounts'\n" +
+                    "export NH_FAKE_SYS='$fakeSys'\n" +
                     "exec sh ${bootScript.absolutePath} $bootSub" +
                     (if (bootImage != null) " $bootImage" else "") +
                     " -- sh -c 'sh ${cmdFile.absolutePath}'\n"

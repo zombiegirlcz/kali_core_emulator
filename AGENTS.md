@@ -246,6 +246,16 @@ nutné (apt/dpkg zálohy přes `link()`); `-0` kvůli fake root UX; tracer cost 
 (ne degradace live vs. fresh); **`LD_LIBRARY_PATH` v `hostShellEnv()` způsoboval SIGBUS** — nikdy
 nepřidávat; `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
 
+**Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
+(`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
+tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`,
+`--kernel-release`) je gate-ovaný na `NH_MINIMAL=0` **a** `NH_FAKE_SYS=1`; reálný `-b /sys`
+je v základním řádku `build_binds()` ve **všech** módech. `NH_FAKE_SYS=0`
+(RootBridge → „Fake /proc & /sys", pref `bind_fake_sys`) dá guestu skutečný
+kernel/`/proc`/`/sys`, ale zachová `--sysvipc` + `/dev` fixes (Frida). Pref `bind_data`
+přidá `/data:/mnt/data` — obsah je čitelný jen v sudo seanci (`su_daemon` re-entry),
+nikdy se nedělá hostitelský `mount --bind` (leak mountů do globálního namespace).
+
 **X server / linux-x11:** asset `usr/lib/linux-x11` je `libXlorie.so` z Termux-X11 — **JNI knihovna**, ne binárka: `entry 0x0`, žádný `main`, `JNI_OnLoad` registruje `com.linux.x11.CmdEntryPoint`/`LorieView` (Java vrstva v repu **neexistuje**). Spustit přes `linker64`/přímo nelze (SIGILL). Desktop proto jede na **Xvfb** (`apt install xvfb`, `nh desktop start`): display `:0` → TCP 6000, `-ac -listen tcp`; MIT-SHM funguje i přes loopback TCP (ověřeno).
 
 **git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)
