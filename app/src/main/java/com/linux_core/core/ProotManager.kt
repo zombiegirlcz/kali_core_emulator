@@ -1232,16 +1232,6 @@ object ProotManager {
             }
         }
 
-        // Deploy linux-x11 X server binary to guest usr/bin
-        // Asset path: usr/lib/linux-x11 (20 MB libXlorie.so)
-        // Target: usr/bin/linux-x11 (in PATH for nh desktop start)
-        deployIfChanged(
-            context,
-            "usr/lib/linux-x11",
-            File(rootfsDir, "usr/bin/linux-x11"),
-            executable = true,
-        )
-
         // Initialize USB bridge: create socket path INSIDE rootfs tmp
         // so it's visible from PRoot as /tmp/usb_bridge.sock
         val usbBridgeSocket = File(rootfsDir, "tmp/usb_bridge.sock")

@@ -289,8 +289,6 @@ def build_native():
     else:
         _build_native_lib(src_dir)
         _build_native_bin(src_dir)
-    # linux-x11 je v samostatném adresáři (linux-x11/src/main/cpp), ne v cpp/
-    _build_linux_x11(src_dir)
     _build_usrtools(
         os.path.join(src_dir, "app/src/main/assets", "usr"),
         "/vol/builds",
@@ -386,154 +384,6 @@ def _build_native_bin(src_dir):
         print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
 
 
-def _build_linux_x11(src_dir):
-    """Build linux-x11 X server using CMake (X11 headers, dix-config.h, pixman-version.h).
-
-    X server vyžaduje generované config headers (dix-config.h, pixman-version.h,
-    globals.h, xkb-config.h, ...) které vznikají při CMake configure fázi.
-    Ruční kompilace tyto headery nevygeneruje, takže je nutné použít CMake.
-    """
-    lorie_cpp = os.path.join(src_dir, "app/src/main/linux-x11/src/main/cpp")
-    if not os.path.isdir(lorie_cpp):
-        print(f"[linux-x11] {lorie_cpp} neexistuje — linux-x11 PŘESKOČEN")
-        return
-    assets_dir = os.path.join(src_dir, "app/src/main/assets")
-    bin_dir = os.path.join(assets_dir, "usr/bin")
-    lib_dir = os.path.join(assets_dir, "usr/lib")
-    os.makedirs(bin_dir, exist_ok=True)
-    os.makedirs(lib_dir, exist_ok=True)
-    linux_x11_bin = os.path.join(lib_dir, "linux-x11")
-
-    # libepoxy upstream files missing from repo (gen_dispatch.py + gl.xml)
-    # Fetch them before CMake configure so GL/gl.h can be generated.
-    epoxy_dir = os.path.join(lorie_cpp, "libepoxy")
-    gen_dispatch = os.path.join(epoxy_dir, "src", "gen_dispatch.py")
-    gl_xml = os.path.join(epoxy_dir, "registry", "gl.xml")
-    if not os.path.exists(gen_dispatch) or not os.path.exists(gl_xml):
-        print("  [linux-x11] Fetching missing libepoxy upstream files...")
-        os.makedirs(os.path.dirname(gen_dispatch), exist_ok=True)
-        os.makedirs(os.path.dirname(gl_xml), exist_ok=True)
-        subprocess.run(["wget", "-q",
-                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/src/gen_dispatch.py",
-                        "-O", gen_dispatch], check=True)
-        subprocess.run(["wget", "-q",
-                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/registry/gl.xml",
-                        "-O", gl_xml], check=True)
-        print(f"    ✓ {gen_dispatch}")
-        print(f"    ✓ {gl_xml}")
-    # Apply libepoxy.patch to gen_dispatch.py if not already applied
-    patch_file = os.path.join(lorie_cpp, "patches", "libepoxy.patch")
-    if os.path.exists(patch_file):
-        result = subprocess.run(
-            ["patch", "-p1", "-d", epoxy_dir, "-i", patch_file, "--dry-run"],
-            capture_output=True, text=True)
-        if result.returncode == 0:
-            print("  [linux-x11] Applying libepoxy.patch...")
-            subprocess.run(["patch", "-p1", "-d", epoxy_dir, "-i", patch_file], check=True)
-            print("    ✓ libepoxy.patch applied")
-        elif result.returncode != 0:
-            # Patch was already applied (dry-run failed), skip re-application
-            print("  [linux-x11] libepoxy.patch already applied, skipping")
-        else:
-            print("  [linux-x11] Error applying libepoxy.patch:", result.stderr)
-
-    # Build linux-x11 X server via CMake (NDK Bionic cross-compile).
-    # Bionic je záměr: X server se spouští přímo v PRoot guestu přes
-    # /system/bin/linker64 (binds /system, /apex, /linkerconfig), takže
-    # glibc cross-build není potřeba. (glibc varianta byla experiment.)
-    print("  [linux-x11] Using NDK Bionic toolchain (android-24/arm64-v8a)")
-    ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
-    if not os.path.exists(ndk_toolchain):
-        print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
-        return
-
-    # CMake build dir (mimo /vol/src, aby se necetoval do APK)
-    build_dir = "/tmp/linux-x11-build"
-    if os.path.exists(build_dir):
-        import shutil as _sh
-        _sh.rmtree(build_dir)
-    os.makedirs(build_dir, exist_ok=True)
-
-    cmake_cmd = [
-        "cmake",
-        "-G", "Ninja",
-        "-S", lorie_cpp,
-        "-B", build_dir,
-        f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
-        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-        "-DANDROID_ABI=arm64-v8a",
-        "-DANDROID_PLATFORM=android-24",
-        "-DANDROID_STL=c++_static",
-        "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
-    ]
-    print(f"  $ {' '.join(cmake_cmd)}")
-    proc = subprocess.run(cmake_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(f"  CMAKE CONFIGURE FAILED (rc={proc.returncode})")
-        if proc.stdout:
-            print(f"  stdout: {proc.stdout[-2000:]}")
-        if proc.stderr:
-            print(f"  stderr: {proc.stderr[-2000:]}")
-        return
-    print(f"  ✓ CMake configure OK")
-
-    # CMake build
-    build_cmd = ["cmake", "--build", build_dir, "--parallel", "8"]
-    print(f"  $ {' '.join(build_cmd)}")
-    proc = subprocess.run(build_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(f"  CMAKE BUILD FAILED (rc={proc.returncode})")
-        fail_log = "/vol/builds/linux-x11-build-fail.log"
-        with open(fail_log, "w") as f:
-            f.write("--- STDOUT ---\n")
-            f.write(proc.stdout or "")
-            f.write("\n--- STDERR ---\n")
-            f.write(proc.stderr or "")
-        print(f"  Full log saved to {fail_log}")
-        if proc.stdout:
-            print(f"  stdout (tail): {proc.stdout[-4000:]}")
-        if proc.stderr:
-            print(f"  stderr (tail): {proc.stderr[-4000:]}")
-        return
-    print(f"  ✓ CMake build OK")
-
-    # Najít výstupní binárku — lorie obvykle produkuje 'lorie'/'Xlorie', Xorg 'Xserver'
-    # Najít výstupní binárku — lorie obvykle produkuje 'libXlorie.so', případně 'lorie'/'Xlorie'
-    candidates = ["libXlorie.so", "lorie", "Xlorie", "linux-x11", "xserver", "Xserver"]
-    search_dirs = [build_dir] + [os.path.join(build_dir, d) for d in ("xserver", "X11", "src", "bin")]
-    built_bin = None
-    for cand in candidates:
-        for d in search_dirs:
-            cand_path = os.path.join(d, cand)
-            if os.path.isfile(cand_path) and os.access(cand_path, os.X_OK):
-                built_bin = cand_path
-                break
-        if built_bin:
-            break
-    if not built_bin:
-        for root, _dirs, files in os.walk(build_dir):
-            for f in files:
-                if f in ("makekeys",):
-                    continue
-                fp = os.path.join(root, f)
-                if os.path.isfile(fp) and fp.endswith(".so") and os.path.getsize(fp) > 50000:
-                    built_bin = fp
-                    break
-            if built_bin:
-                break
-
-    if not built_bin or not os.path.exists(built_bin):
-        print(f"  BUILD OK ale výstupní binárka nenalezena v {build_dir}")
-        print(f"  Obsah: {os.listdir(build_dir)[:20]}")
-        return
-
-    shutil.copy2(built_bin, linux_x11_bin)
-    print(f"  OK  {built_bin} → {linux_x11_bin} ({os.path.getsize(linux_x11_bin):,} B)")
-
-
-
-
-
 @app.function(
     image=base_image,
     volumes={"/vol": build_vol},
@@ -574,9 +424,6 @@ def build_usrtools():
     )
     build_vol.commit()
     print("[usrtools] committed")
-    _build_linux_x11("/vol/src")
-    build_vol.commit()
-    print("[native-linux-x11] committed")
 
 
 # ── Usr tools build: nano/rsync/sed (glibc bridge) + ripgrep (Bionic) ───────
@@ -1279,19 +1126,6 @@ _PROOT_OUTPUTS = [
     "app/src/main/assets/loader-static-x86_64",
 ]
 
-@app.function(
-    image=base_image,
-    volumes={"/vol": build_vol},
-    timeout=3600,
-    memory=8192,
-    cpu=4,
-)
-def build_linux_x11():
-    _build_linux_x11("/vol/src")
-    build_vol.commit()
-    print("[native-linux-x11] committed")
-
-
 _NATIVE_COMPONENTS = {
     "lib": {
         "sources": ["app/src/main/cpp/usbfd_jni.c"],
@@ -1308,11 +1142,6 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/assets/su_wrapper",
                      "app/src/main/assets/ashell_pty"],
         "fn": build_native_bin,
-    },
-    "linux-x11": {
-        "sources": ["app/src/main/linux-x11/src/main/cpp/lorie"],
-        "outputs": ["app/src/main/assets/usr/lib/linux-x11"],
-        "fn": build_linux_x11,
     },
     "usrtools": {
         "sources": [],  # externí downloads; self-skip na outputs
