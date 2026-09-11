@@ -437,17 +437,15 @@ def _build_linux_x11(src_dir):
         else:
             print("  [linux-x11] Error applying libepoxy.patch:", result.stderr)
 
-    # Build linux-x11 X server via CMake.
-    # Prefer glibc cross-compiler for PRoot rootfs; fallback to NDK Bionic.
-    use_glibc = shutil.which("aarch64-linux-gnu-gcc") is not None
-    if use_glibc:
-        print("  [linux-x11] Using glibc cross-compiler (aarch64-linux-gnu-gcc)")
-    else:
-        print("  [linux-x11] Using NDK Bionic toolchain (android-24/arm64-v8a)")
-        ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
-        if not os.path.exists(ndk_toolchain):
-            print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
-            return
+    # Build linux-x11 X server via CMake (NDK Bionic cross-compile).
+    # Bionic je záměr: X server se spouští přímo v PRoot guestu přes
+    # /system/bin/linker64 (binds /system, /apex, /linkerconfig), takže
+    # glibc cross-build není potřeba. (glibc varianta byla experiment.)
+    print("  [linux-x11] Using NDK Bionic toolchain (android-24/arm64-v8a)")
+    ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
+    if not os.path.exists(ndk_toolchain):
+        print(f"  [linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
+        return
 
     # CMake build dir (mimo /vol/src, aby se necetoval do APK)
     build_dir = "/tmp/linux-x11-build"
@@ -456,32 +454,18 @@ def _build_linux_x11(src_dir):
         _sh.rmtree(build_dir)
     os.makedirs(build_dir, exist_ok=True)
 
-    if use_glibc:
-        cmake_cmd = [
-            "cmake",
-            "-G", "Ninja",
-            "-S", lorie_cpp,
-            "-B", build_dir,
-            "--fresh",
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-            "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
-            "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
-            "-DCMAKE_C_FLAGS=-Ugetdtablesize -D_GNU_SOURCE -I/opt/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include",
-            "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
-        ]
-    else:
-        cmake_cmd = [
-            "cmake",
-            "-G", "Ninja",
-            "-S", lorie_cpp,
-            "-B", build_dir,
-            f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
-            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-            "-DANDROID_ABI=arm64-v8a",
-            "-DANDROID_PLATFORM=android-24",
-            "-DANDROID_STL=c++_static",
-            "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
-        ]
+    cmake_cmd = [
+        "cmake",
+        "-G", "Ninja",
+        "-S", lorie_cpp,
+        "-B", build_dir,
+        f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+        "-DANDROID_ABI=arm64-v8a",
+        "-DANDROID_PLATFORM=android-24",
+        "-DANDROID_STL=c++_static",
+        "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
+    ]
     print(f"  $ {' '.join(cmake_cmd)}")
     proc = subprocess.run(cmake_cmd, capture_output=True, text=True)
     if proc.returncode != 0:

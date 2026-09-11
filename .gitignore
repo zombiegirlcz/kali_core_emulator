@@ -169,3 +169,6 @@ refactor_motd_table.py
 
 # Stray launcher stage (canonical copy lives in /tmp/launcher_stage)
 _launcher_stage/
+
+# pi subagent artifacts (not tracked)
+.pi-subagents/

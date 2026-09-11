@@ -335,6 +335,12 @@ object ProotManager {
                 "NH_MINIMAL=$nhMinimal",
                 "NH_BOOT_MODE=$bootMode",
             )
+        // DEFAULT (neizolovaný) mód: předej Android env z host procesu, aby v guestu
+        // fungovaly bionic binárky (linker64, ART) a nástroje čtoucí
+        // ANDROID_ROOT/DATA (viz docs/proot-cmd-mod.md, sekce DEFAULT).
+        if (nhIsolated == "0") {
+            envVars.addAll(androidHostEnv())
+        }
 
         // Příkaz: boot <distro> [-- <customCommand>]
         // Docker: boot docker <imageName>
@@ -469,6 +475,34 @@ object ProotManager {
             android.os.Build.SUPPORTED_ABIS.any { it == "x86_64" } -> "x86_64"
             else -> "i686"
         }
+
+    /**
+     * Android env z host procesu (+ fallback cesty) — jen pro DEFAULT mód.
+     * Bionic binárky (linker64/ART, linux-x11) potřebují ANDROID_ROOT/DATA
+     * a spol.; app proces je má, ale PTY session dostává jen [ProotConfig.env],
+     * takže je musíme předat explicitně.
+     */
+    private fun androidHostEnv(): List<String> {
+        val fallbacks =
+            mapOf(
+                "ANDROID_ROOT" to "/system",
+                "ANDROID_DATA" to "/data",
+                "ANDROID_ART_ROOT" to "/apex/com.android.art",
+                "ANDROID_I18N_ROOT" to "/apex/com.android.i18n",
+                "ANDROID_TZDATA_ROOT" to "/apex/com.android.tzdata",
+                "EXTERNAL_STORAGE" to "/sdcard",
+            )
+        val out = mutableListOf<String>()
+        for ((key, fb) in fallbacks) {
+            val v = System.getenv(key) ?: fb
+            if (v.isNotEmpty()) out.add("$key=$v")
+        }
+        // Classpath jen když ho host má (jinak by guest dostal prázdno).
+        for (key in listOf("BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH")) {
+            System.getenv(key)?.takeIf { it.isNotEmpty() }?.let { out.add("$key=$it") }
+        }
+        return out
+    }
 
     /**
      * Deploy arch-specific binárek do usr/bin.
