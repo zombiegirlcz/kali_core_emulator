@@ -246,6 +246,12 @@ nutné (apt/dpkg zálohy přes `link()`); `-0` kvůli fake root UX; tracer cost 
 (ne degradace live vs. fresh); **`LD_LIBRARY_PATH` v `hostShellEnv()` způsoboval SIGBUS** — nikdy
 nepřidávat; `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
 
+**git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)
+na symlinky do `$ROOTFS/.l2s`. Když se `.l2s` vyčistí (nová session / přepnutí módu), symlinky
+osiří → `invalid object … Not a directory` a rozbitý repo (postihuje VŠECHNA repa v rootfs).
+Pojistka: `nh fix git [path]` materializuje symlinky na reálné soubory (přes host bind `/mnt/app`,
+kde jsou symlinky vidět; vyžaduje `bind_aiapp`). Pouštět po `git clone/gc/repack` pod prootem.
+
 **su_daemon / Root Bridge:** fork-per-connection (parent hned `accept()`, žádné blokování nových `sudo`),
 POLLHUP → SIGKILL command childa, config v `g_*` globálech, ignorovat SIGPIPE, `pkill -x` (ne `-f`),
 fail-closed bez launcheru (`_exit(126)`), **re-entry do PRoot** místo host `chroot` (ochrana proti

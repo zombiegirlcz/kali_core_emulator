@@ -1405,9 +1405,54 @@ fix_dispatch() {
     case "$1" in
         pkg) fix_pkg "$2" ;;
         auto) fix_auto ;;
+        git) shift; fix_git "$@" ;;
         permission|perms) shift; fix_permission "$@" ;;
-        *) echo "Usage: nh fix pkg <name>|auto|permission <path>"; exit 1 ;;
+        *) echo "Usage: nh fix pkg <name>|auto|git [path]|permission <path>"; exit 1 ;;
     esac
+}
+
+# Materializuje PRoot link2symlink (.l2s) symlinky v .git na reálné soubory.
+# PRoot `-L` převádí git hardlinky (pack/idx/rev i loose objekty) na symlinky
+# do .l2s; když .l2s zmizí/vyčistí se, repa se rozbijí ("invalid object ...").
+# Přístup přes host bind /mnt/app, kde jsou symlinky skutečně vidět.
+fix_git() {
+    local repo="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+    repo=$(readlink -f "$repo" 2>/dev/null || echo "$repo")
+    [ -d "$repo/.git" ] || { echo "[-] '$repo' není git repo (.git nenalezen)" >&2; exit 1; }
+
+    local host_repo=""
+    if [ -n "${NH_DISTRO:-}" ] && [ -d "/mnt/app/files/nh/distro/$NH_DISTRO" ]; then
+        host_repo="/mnt/app/files/nh/distro/$NH_DISTRO$repo"
+    fi
+    if [ -z "$host_repo" ] || [ ! -d "$host_repo/.git" ]; then
+        echo "[-] Nelze najít host pohled na repo (chybí bind /mnt/app nebo NH_DISTRO)." >&2
+        echo "    Zapni 'bind_aiapp' (Root Bridge) a spusť znovu." >&2
+        exit 1
+    fi
+
+    echo "[*] Materializuji .git L2S symlinky: $repo"
+    local pass
+    for pass in 1 2 3; do
+        find "$host_repo/.git" -type l 2>/dev/null | while read -r l; do
+            local d b r d1 d2 dd
+            d=$(dirname "$l"); b=$(basename "$l"); r=$(readlink "$l")
+            d1="$d/$b.0001"
+            d2="$d/$(basename "$r")"
+            if [ -e "$d1" ] && [ ! -L "$d1" ]; then dd="$d1"
+            elif [ -e "$d2" ] && [ ! -L "$d2" ]; then dd="$d2"
+            else dd=""; fi
+            [ -n "$dd" ] && { rm -f "$l" && cp "$dd" "$l"; }
+        done
+    done
+
+    local left
+    left=$(find "$host_repo/.git" -type l 2>/dev/null | wc -l)
+    if [ "$left" = "0" ]; then
+        echo "[+] Hotovo: všechny .git symlinky materializovány."
+    else
+        echo "[!] Zbývá $left symlinků (cíl chybí = objekt už ztracený)."
+        echo "    Tip: repo znovu naklonuj a hned spusť 'nh fix git'."
+    fi
 }
 
 fix_permission() {
@@ -1645,11 +1690,15 @@ help_fix() {
     echo "  ${GREEN}permission <path>${RST} Vrátí vlastnictví cesty na UID aplikace"
     echo "                         (přes magisk daemon, běží mimo proot) — pro"
     echo "                         soubory vytvořené pod real rootem."
+    echo "  ${GREEN}git [path]${RST}         Materializuje PRoot link2symlink (.l2s) symlinky"
+    echo "                         v .git na reálné soubory (po git clone/gc/repack)"
+    echo "                         — chrání repa před rozbitím, když .l2s zmizí."
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh fix pkg libc6"
     echo "    nh fix auto"
     echo "    nh fix permission /root/muj-adresar"
+    echo "    nh fix git"
     echo ""
 }
 
