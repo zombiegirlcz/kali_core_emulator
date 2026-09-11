@@ -385,6 +385,16 @@ find_sh() {
     return 1
 }
 
+# ─── Build guest PATH from rootfs structure ──────────────
+build_path() {
+    # $1 = ROOTFS path; prints colon-joined guest PATH of existing dirs
+    local _rootfs="$1" _p _gp=""
+    for _p in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+        [ -d "$_rootfs$_p" ] && _gp="${_gp:+$_gp:}$_p"
+    done
+    echo "$_gp"
+}
+
 # ─── Assemble bind mounts ───────────────────────────────
 build_binds() {
     # $1 = distro name for sysdata/shm
