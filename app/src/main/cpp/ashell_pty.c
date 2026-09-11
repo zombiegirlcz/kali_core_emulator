@@ -481,6 +481,11 @@ int main(int argc, char **argv) {
     if (argc > 2 && argv[2][0] != '\0') files_dir = argv[2];
 
     signal(SIGPIPE, SIG_IGN);
+    /* Auto-reap per-connection workers. The accept loop below forks a worker
+     * for every client but never waitpid()s it, so without SIG_IGN each
+     * handled connection would leave a zombie behind (process leak).
+     * Workers reset this to SIG_DFL so they can wait for their own shell. */
+    signal(SIGCHLD, SIG_IGN);
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) { perror("[ashell_pty] socket"); return 1; }
