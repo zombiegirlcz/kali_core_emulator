@@ -1305,98 +1305,89 @@ desktop_start() {
     rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
+    # X server = Xvfb (headless X.Org; standard X11 + MIT-SHM přes loopback TCP).
+    # POZN: asset "linux-x11" (libXlorie.so) je JNI knihovna Termux-X11 — nemá
+    # main (entry 0x0) a vyžaduje Java vrstvu com.linux.x11.*; nelze ji spustit
+    # samostatně. Xvfb je nativní glibc X server běžící v guestu.
+    if ! command -v Xvfb >/dev/null 2>&1; then
+        echo "[*] Installing Xvfb..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xvfb </dev/null
+    fi
+    if ! command -v Xvfb >/dev/null 2>&1; then
+        echo "[-] Xvfb není dostupný (apt selhal) — X server nelze spustit." >&2
+        return 1
+    fi
+
     echo "[*] Checking desktop dependencies..."
     if ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
         echo "[*] Installing XFCE4 and DBUS..."
         apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal dbus-x11 curl procps </dev/null
     fi
-    
-    if ! command -v adb >/dev/null 2>&1; then
-        echo "[*] Installing ADB..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" adb </dev/null
-    fi
-    
-    if ! command -v linux-x11 >/dev/null 2>&1; then
-        echo "[!] linux-x11 binary NOT found."
-        echo "    The X11 server (lorie/Termux-X11) is not installed in this PRoot container."
-        echo "    Build it via: mbuild native  (or deploy linux-x11 binary manually)"
-        echo ""
-        read -p "Setup ADB reverse tunnel for X11? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "[*] Checking ADB connection..."
-            adb start-server >/dev/null 2>&1
-            if ! adb devices | grep -q -w "device"; then
-                echo "[!] ADB is not connected. We need it to disable Phantom Process Killer."
-                read -p "Zadej ADB <IP> <PORT> [PAIRING CODE] (nech prazdne pro preskoceni): " adb_ip adb_port adb_code
-                if [ -n "$adb_ip" ] && [ -n "$adb_port" ]; then
-                    if [ -n "$adb_code" ]; then
-                        adb pair "$adb_ip:$adb_port" "$adb_code"
-                    else
-                        adb connect "$adb_ip:$adb_port"
-                    fi
-                    sleep 2
-                fi
-            fi
-            if adb devices | grep -q -w "device"; then
-                echo "[*] Setting up ADB reverse tunnel for X11 (tcp:6000 -> localabstract:/x11)..."
-                adb reverse tcp:6000 localabstract:/x11
-                echo "[+] ADB reverse tunnel established."
-                echo "[*] Disabling Phantom Process Killer via ADB..."
-                adb shell "device_config put activity_manager max_phantom_processes 2147483647 && settings put global max_phantom_processes 2147483647"
-                echo "[+] Phantom Process Killer disabled!"
-            else
-                echo "[-] ADB not connected. Skipping ADB setup."
-            fi
-        else
-            echo "[-] Skipping ADB setup. X11 will not be reachable from host without ADB tunnel."
-        fi
-        echo "[!] WARNING: linux-x11 binary is missing. X server cannot start."
-        echo "    Install it first, then run: nh desktop start"
-        return 0
-    fi
+
     echo "[*] Stopping existing sessions..."
-    pkill -9 -f linux-x11 2>/dev/null || true
-    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    echo "[*] Starting X server (Linux-X11) ..."
-    # The desktop is rendered by the separate X11 launcher app
-    # (com.linux_core.xlauncher), which connects to this X server over TCP.
-    # This launches Linux-X11 inside the PRoot container, providing DISPLAY=:1 to X11 clients.
-    linux-x11 :1 -xstartup "dbus-launch --exit-with-session xfce4-session" &
-    echo "[+] X server (Linux-X11) ready on DISPLAY=:1 — open the NetHunter X11 Launcher."
+    # -x = přesná shoda názvu procesu; NIKDY -f se vzorem, který by mohl
+    # zabít volající shell (např. když má vzor ve svém cmdline).
+    pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x linux-x11 2>/dev/null || true
+    pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
+    pkill -9 -x xfce4-session 2>/dev/null || true
+    sleep 1
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+
+    echo "[*] Starting X server (Xvfb :0, TCP 6000)..."
+    # Display :0 => TCP 6000, což je port, na který se připojuje externí
+    # NetHunter X11 Launcher (com.linux_core.xlauncher) přes 127.0.0.1:6000.
+    # -ac         = vypne access control (TCP klient z Android hostu)
+    # -listen tcp = povolí TCP (MIT-SHM funguje i přes loopback TCP)
+    nohup Xvfb :0 -screen 0 1280x720x24 -ac -listen tcp >/tmp/xvfb.log 2>&1 &
+
+    _i=0
+    while [ $_i -lt 10 ]; do
+        DISPLAY=:0 xdpyinfo >/dev/null 2>&1 && break
+        sleep 1; _i=$((_i+1))
+    done
+    if ! DISPLAY=:0 xdpyinfo >/dev/null 2>&1; then
+        echo "[-] Xvfb se nenastartoval (viz /tmp/xvfb.log):" >&2
+        tail -5 /tmp/xvfb.log 2>/dev/null >&2
+        return 1
+    fi
+
+    if command -v xfce4-session >/dev/null 2>&1; then
+        echo "[*] Starting XFCE4 session on DISPLAY=:0..."
+        DISPLAY=:0 nohup dbus-launch --exit-with-session xfce4-session >/tmp/xfce4.log 2>&1 &
+    fi
+
+    echo "[+] X server (Xvfb) + XFCE ready on DISPLAY=:0 (TCP 127.0.0.1:6000) — open the NetHunter X11 Launcher."
 }
 
 desktop_stop() {
-    pkill -9 -f linux-x11 2>/dev/null || true
-    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+    pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x linux-x11 2>/dev/null || true
+    pkill -9 -x xfce4-session 2>/dev/null || true
+    pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
     echo "[-] Desktop stopped."
 }
 
 desktop_status() {
     echo "=== DESKTOP STATUS ==="
-    if command -v linux-x11 >/dev/null 2>&1; then
-        echo "[+] linux-x11 binary: FOUND"
+    if command -v Xvfb >/dev/null 2>&1; then
+        echo "[+] Xvfb binary: FOUND"
     else
-        echo "[-] linux-x11 binary: MISSING (build via: mbuild native)"
+        echo "[-] Xvfb binary: MISSING (apt-get install xvfb)"
     fi
-    if pgrep -f "linux-x11" >/dev/null 2>&1; then
-        echo "[+] X Server (Linux-X11): RUNNING"
+    if pgrep -f "Xvfb :0" >/dev/null 2>&1; then
+        echo "[+] X Server (Xvfb :0, TCP 6000): RUNNING"
     else
-        echo "[-] X Server (Linux-X11): STOPPED"
+        echo "[-] X Server (Xvfb :0, TCP 6000): STOPPED (run: nh desktop start)"
     fi
-    if adb devices 2>/dev/null | grep -q -w "device"; then
-        echo "[+] ADB device: CONNECTED"
-        if adb reverse --list 2>/dev/null | grep -q "tcp:6000"; then
-            echo "[+] ADB reverse tunnel: ESTABLISHED (tcp:6000 -> localabstract:/x11)"
-        else
-            echo "[-] ADB reverse tunnel: NOT SET (run: nh desktop start)"
-        fi
+    if pgrep -f "xfce4-session" >/dev/null 2>&1; then
+        echo "[+] XFCE4 session: RUNNING"
     else
-        echo "[-] ADB device: NOT CONNECTED"
+        echo "[-] XFCE4 session: STOPPED"
     fi
-    echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)."
+    echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)"
+    echo "    connecting to 127.0.0.1:6000."
 }
 
 # ─── FIX ───────────────────────────────────────────────────

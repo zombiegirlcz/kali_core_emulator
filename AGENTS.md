@@ -68,7 +68,7 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 | 1337 | `LocalApiServer` — REST most (baterka, toast, wifi, GPS, schránka, VPN, USB, `/shell`, `/distro/*`) |
 | 13338 | AI agent démon (`nethunter_agent.py`, ReAct LLM, nástroj `analyze_network`) |
 | 13339 | VPN bypass proxy (`http(s)_proxy` pro guest → obchází AdGuard) |
-| 6000/tcp → `localabstract:/x11` | X11 server (`linux-x11`, `DISPLAY=:1`) přes `adb reverse` |
+| 6000/tcp | X11 server **Xvfb :0** v guestu (`DISPLAY=:0`, viewer `127.0.0.1:6000`) |
 
 ### Klíčové třídy
 
@@ -245,6 +245,8 @@ app nefunguje → `-1`/„Unknown App".
 nutné (apt/dpkg zálohy přes `link()`); `-0` kvůli fake root UX; tracer cost ~100 µs/syscall je intrinsický
 (ne degradace live vs. fresh); **`LD_LIBRARY_PATH` v `hostShellEnv()` způsoboval SIGBUS** — nikdy
 nepřidávat; `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
+
+**X server / linux-x11:** asset `usr/lib/linux-x11` je `libXlorie.so` z Termux-X11 — **JNI knihovna**, ne binárka: `entry 0x0`, žádný `main`, `JNI_OnLoad` registruje `com.linux.x11.CmdEntryPoint`/`LorieView` (Java vrstva v repu **neexistuje**). Spustit přes `linker64`/přímo nelze (SIGILL). Desktop proto jede na **Xvfb** (`apt install xvfb`, `nh desktop start`): display `:0` → TCP 6000, `-ac -listen tcp`; MIT-SHM funguje i přes loopback TCP (ověřeno).
 
 **git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)
 na symlinky do `$ROOTFS/.l2s`. Když se `.l2s` vyčistí (nová session / přepnutí módu), symlinky
