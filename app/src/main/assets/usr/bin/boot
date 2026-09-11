@@ -47,6 +47,21 @@ PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_FLAGS_EXTRA"
 log() { [ -n "$BOOT_DEBUG" ] && echo "[boot] $*" >&2 || true; }
 err() { echo "[boot] ERROR: $*" >&2; }
 
+# ─── App settings fallback (su_daemon re-entry) ─────
+# The app passes the session settings via env, but `sudo` inside the guest
+# goes through su_daemon, which exec()s this script under real root and
+# inherits only the daemon's environment. ProotManager keeps the settings in
+# nh/root_env so a sudo session matches the session the user actually started
+# (notably the /data bind and the fake /proc + /sys switch).
+# Explicit caller env wins: the app sets NH_ENV_FROM_APP=1.
+if [ "${NH_ENV_FROM_APP:-0}" != "1" ]; then
+    ROOT_ENV_FILE="$FILES_DIR/nh/root_env"
+    if [ -r "$ROOT_ENV_FILE" ]; then
+        . "$ROOT_ENV_FILE" || true
+        log "applied session settings from $ROOT_ENV_FILE"
+    fi
+fi
+
 # ─── Session tracking ───────────────────────────────────
 nh_session_start() {
     # $1 = distro name

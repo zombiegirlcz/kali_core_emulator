@@ -183,6 +183,7 @@ object ExecCore {
                     "#!/system/bin/sh\n" +
                     "export NH_EXTRA_MOUNTS='$extraMounts'\n" +
                     "export NH_FAKE_SYS='$fakeSys'\n" +
+                    "export NH_ENV_FROM_APP='1'\n" +
                     "exec sh ${bootScript.absolutePath} $bootSub" +
                     (if (bootImage != null) " $bootImage" else "") +
                     " -- sh -c 'sh ${cmdFile.absolutePath}'\n"

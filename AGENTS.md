@@ -256,6 +256,12 @@ kernel/`/proc`/`/sys`, ale zachová `--sysvipc` + `/dev` fixes (Frida). Pref `bi
 přidá `/data:/mnt/data` — obsah je čitelný jen v sudo seanci (`su_daemon` re-entry),
 nikdy se nedělá hostitelský `mount --bind` (leak mountů do globálního namespace).
 
+**`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
+dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
+`/mnt/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`
+(`NH_ISOLATED/MINIMAL/FAKE_SYS/MOUNT_STORAGE/EXTRA_MOUNTS`) a `boot` ho nasourceuje,
+**jen když `NH_ENV_FROM_APP != 1`** (appka předává hodnoty přes env, ty mají přednost).
+
 **X server / linux-x11:** asset `usr/lib/linux-x11` je `libXlorie.so` z Termux-X11 — **JNI knihovna**, ne binárka: `entry 0x0`, žádný `main`, `JNI_OnLoad` registruje `com.linux.x11.CmdEntryPoint`/`LorieView` (Java vrstva v repu **neexistuje**). Spustit přes `linker64`/přímo nelze (SIGILL). Desktop proto jede na **Xvfb** (`apt install xvfb`, `nh desktop start`): display `:0` → TCP 6000, `-ac -listen tcp`; MIT-SHM funguje i přes loopback TCP (ověřeno).
 
 **git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)

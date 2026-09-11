@@ -27,7 +27,6 @@ Zdroj pravdy je kód, ne tenhle soubor:
 | `NH_BOOT_MODE` | — | `D`/`I`/`M`, jen informativní (do container JSONu) |
 
 Mapování z UI (`BootModePersistence.bootModeFlags()`):
-
 ```
 D  ->  NH_ISOLATED=0  NH_MINIMAL=0
 I  ->  NH_ISOLATED=1  NH_MINIMAL=0     ← pozor: izolovaný NENÍ minimal
@@ -89,6 +88,30 @@ Guest tak vidí reálný `/proc/version`, `/proc/stat`, `/proc/sys` a
 `/sys/fs/selinux` (a tudíž i reálná oprávnění — typicky `Permission denied`
 pro untrusted_app). Používá se pro nástroje zkoumající skutečný
 kernel/process view (Frida, ptrace, kernel moduly).
+
+## `sudo` v guestu — odkud bere nastavení
+
+`sudo`/`su` v guestu nejde přes appku: guest zavolá `su_wrapper` → `su_daemon`
+(běží jako root) → ten `execv`-ne `boot -- <cmd>`. Dítě ale dědí **jen
+prostředí daemonu**, které žádné `NH_*` nemá — takže by sudo session měla
+prázdné `/mnt/data` a fake `uname -r`, i když si uživatel přepínače zapnul.
+
+Proto `ProotManager` při každém startu session zapisuje `$FILES_DIR/nh/root_env`:
+
+```sh
+NH_ISOLATED='0'
+NH_MINIMAL='0'
+NH_FAKE_SYS='0'
+NH_MOUNT_STORAGE='0'
+NH_EXTRA_MOUNTS=' -b /data:/mnt/data -b /system:/mnt/system ...'
+```
+
+`boot` ho hned po definici `log()`/`err()` **nasourceuje** — ale jen když
+volající není appka, tj. `NH_ENV_FROM_APP != 1`. Appka totiž hodnoty předává
+přes env a ty mají přednost (a `ExecCore` si staví vlastní `NH_EXTRA_MOUNTS`).
+
+Soubor je čistý shell fragment (`KEY='value'`, `'` escapovaný), takže se dá
+bezpečně sourcovat.
 
 ## Přepínače z RootBridge (`root_settings` → `NH_EXTRA_MOUNTS`)
 
