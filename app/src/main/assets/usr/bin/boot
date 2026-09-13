@@ -121,6 +121,15 @@ NH_MINIMAL="${NH_MINIMAL:-0}"
 # inspects the real kernel/process view (e.g. Frida) needs this. --sysvipc and
 # the /dev fixes stay enabled, only the fake view is dropped.
 NH_FAKE_SYS="${NH_FAKE_SYS:-1}"
+# Effective fake-overlay flag. Isolated (I) and minimal (M) are "real host
+# view" modes: they never overlay /proc + /sys. The UI switch (NH_FAKE_SYS)
+# can additionally disable the overlay for DEFAULT (D).
+if [ "$NH_MINIMAL" = "1" ] || [ "$NH_ISOLATED" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
+    NH_FAKE_EFFECTIVE=0
+else
+    NH_FAKE_EFFECTIVE=1
+fi
+export NH_FAKE_EFFECTIVE
 
 # minimal mode = bare proot config: no --sysvipc, no --kernel-release
 if [ "$NH_MINIMAL" = "1" ]; then
@@ -129,7 +138,7 @@ else
     PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_SYSVIPC"
     # --kernel-release is part of the fake view; without it `uname -r` reports
     # the actual Android kernel.
-    [ "$NH_FAKE_SYS" = "1" ] && PROOT_FLAGS="$PROOT_FLAGS $PROOT_KERNEL_RELEASE"
+    [ "$NH_FAKE_EFFECTIVE" = "1" ] && PROOT_FLAGS="$PROOT_FLAGS $PROOT_KERNEL_RELEASE"
 fi
 unset PROOT_KERNEL_RELEASE
 export PROOT_FLAGS NH_FAKE_SYS
@@ -186,9 +195,10 @@ setup_sysdata_shm() {
         return 0
     fi
 
-    # NH_FAKE_SYS=0 -> the guest must see the real /proc + /sys, so there is
-    # nothing to generate. (PROOT_L2S_DIR above is already set.)
-    if [ "$NH_FAKE_SYS" = "0" ]; then
+    # Overlay disabled (isolated/minimal mode or the UI switch) -> the guest
+    # must see the real /proc + /sys, so there is nothing to generate.
+    # (PROOT_L2S_DIR above is already set.)
+    if [ "$NH_FAKE_EFFECTIVE" != "1" ]; then
         log "fake-sys disabled: skipping fake sysdata"
         return 0
     fi
@@ -440,7 +450,7 @@ build_binds() {
     local SYSROOT="$FILES_DIR/nh"
 
     # sysdata + shm (skip in minimal mode and when the fake overlay is off)
-    if [ "$NH_MINIMAL" = "0" ] && [ "$NH_FAKE_SYS" = "1" ]; then
+    if [ "$NH_FAKE_EFFECTIVE" = "1" ]; then
         _binds="$_binds -b $SYSROOT/sysdata/$distro/loadavg:/proc/loadavg"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/stat:/proc/stat"
         _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"

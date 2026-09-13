@@ -849,9 +849,9 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                         )
                         Text(
                             text = if (fakeSys) {
-                                "zapnuto: /proc/version, stat, uname -r a /sys/fs/selinux se předstírají"
+                                "zapnuto: D mód předstírá /proc a uname -r (I a M jsou vždy reálné)"
                             } else {
-                                "vypnuto: skutečný kernel a /proc (Frida, ptrace, kernel moduly)"
+                                "vypnuto: skutečný kernel a /proc ve všech módech (Frida)"
                             },
                             color = Color.Gray,
                             fontSize = 10.sp,

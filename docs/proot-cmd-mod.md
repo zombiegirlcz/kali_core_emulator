@@ -57,14 +57,14 @@ PROOT_KERNEL_RELEASE="--kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\...
 | | **D** default | **I** isolated | **M** minimal |
 |---|---|---|---|
 | `-b /dev -b /proc -b /sys` | ✅ | ✅ | ✅ |
-| fake `/proc/{loadavg,stat,uptime,version,vmstat}` | ✅ | ✅ | ❌ |
-| fake `/proc/sys/kernel/{cap_last_cap,overflowuid,overflowgid}` | ✅ | ✅ | ❌ |
-| fake `/proc/sys/fs/inotify/max_user_watches` | ✅ | ✅ | ❌ |
-| fake `sys_empty:/sys/fs/selinux` | ✅ | ✅ | ❌ |
-| `shm/<distro>:/dev/shm` | ✅ | ✅ | ❌ |
+| fake `/proc/{loadavg,stat,uptime,version,vmstat}` | ✅ | ❌ | ❌ |
+| fake `/proc/sys/kernel/{cap_last_cap,overflowuid,overflowgid}` | ✅ | ❌ | ❌ |
+| fake `/proc/sys/fs/inotify/max_user_watches` | ✅ | ❌ | ❌ |
+| fake `sys_empty:/sys/fs/selinux` | ✅ | ❌ | ❌ |
+| `shm/<distro>:/dev/shm` | ✅ | ❌ | ❌ |
 | `/dev` fixes (`random`, `fd`, `stdin`, `stdout`, `stderr`) | ✅ | ✅ | ❌ |
 | `--sysvipc` | ✅ | ✅ | ❌ |
-| `--kernel-release` (fake `uname -r`) | ✅ | ✅ | ❌ |
+| `--kernel-release` (fake `uname -r`) | ✅ | ❌ | ❌ |
 | host cesty `/apex /odm /product /system /system_ext /vendor` | ✅ | ❌ | ❌ |
 | `/linkerconfig/*.txt`, `/plat_property_contexts`, `/property_contexts` | ✅ | ❌ | ❌ |
 | `/storage`, `/storage/emulated/0`, `/sdcard`, `/mnt/sdcard`, `/data/app`, `/data/dalvik-cache` | ✅ | ❌ | ❌ |
@@ -72,17 +72,37 @@ PROOT_KERNEL_RELEASE="--kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\...
 
 Reálný Android `/sys` je bindovaný **ve všech** módech (`-b /sys` je
 v základním řádku `build_binds()`). Fake je nad ním jen `/sys/fs/selinux`
-(prázdný adresář).
+(prázdný adresář) — a to **výhradně v DEFAULT módu**.
+
+> **I a M jsou „real host view" módy.** Nejenže nepřidávají fake overlay, ale
+> ani si nehrají na fake kernel: `uname -r` i `/proc/version` hlásí skutečný
+> Android kernel. Rozdíl mezi nimi je jen v tom, co dalšího se binduje:
+> `I` má `/dev` fixes + `--sysvipc` + host cesty, `M` je holý proot.
+> Historicky oba přebíraly fake `/sys/fs/selinux` z `NH_MINIMAL=0` gate —
+> opraveno 2026-09-11 (`NH_FAKE_EFFECTIVE`).
 
 ## `NH_FAKE_SYS` — originál místo fake dat
 
 Přepínač v RootBridge UI (**Fake /proc & /sys**, pref `bind_fake_sys`,
-default **zapnuto**). Když je vypnutý (`NH_FAKE_SYS=0`):
+default **zapnuto**). Vypnutý (`NH_FAKE_SYS=0`) vypne overlay **pro DEFAULT
+mód**; `I` a `M` ho nemají nikdy (viz výše).
+
+`boot` z toho počítá `NH_FAKE_EFFECTIVE`:
+
+```sh
+if [ "$NH_MINIMAL" = "1" ] || [ "$NH_ISOLATED" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
+    NH_FAKE_EFFECTIVE=0     # reálný host view
+else
+    NH_FAKE_EFFECTIVE=1     # D mód s overlay
+fi
+```
+
+Když je overlay vypnutý:
 
 - `setup_sysdata_shm()` přeskočí generování fake souborů
 - `build_binds()` nepřidá žádný sysdata bind ani `sys_empty:/sys/fs/selinux`
 - `--kernel-release` se vynechá → `uname -r` hlásí skutečný kernel
-- **zachová se** `--sysvipc` i `/dev` fixes (v ne-minimal módech)
+- **zachová se** `--sysvipc` i `/dev` fixes (kde jsou v daném módu zapnuté)
 
 Guest tak vidí reálný `/proc/version`, `/proc/stat`, `/proc/sys` a
 `/sys/fs/selinux` (a tudíž i reálná oprávnění — typicky `Permission denied`
@@ -127,7 +147,7 @@ Platí při **příštím** startu session.
 | `bind_app` | `false` | `/data/user/0/com.linux_core:/mnt/app` |
 | `bind_aiapp` | `false` | `/data/user/0/com.kali.aiassistant:/mnt/aiapp` |
 | `bind_data` | `false` | `/data:/mnt/data` |
-| `bind_fake_sys` | `true` | není bind → `NH_FAKE_SYS` |
+| `bind_fake_sys` | `true` | není bind → `NH_FAKE_SYS` (jen DEFAULT mód) |
 
 ### `bind_data` — `/data` pod rootem
 
