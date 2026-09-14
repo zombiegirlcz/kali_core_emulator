@@ -532,6 +532,9 @@ object LocalApiServer {
                 path == "/distro/kill" && method == "POST" -> handleDistroKill(context, body, out)
                 path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
                 path == "/terminal/float" && method == "POST" -> handleTerminalFloat(context, body, out)
+                // Otevře plnohodnotný terminál (TerminalActivity) — používá X11 launcher
+                // (kali_GUI) pro přepnutí zpět do terminálu. Loopback = bez tokenu.
+                path == "/terminal/open" && method == "POST" -> handleTerminalOpen(context, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
@@ -1255,6 +1258,32 @@ object LocalApiServer {
      * Vyžaduje SYSTEM_ALERT_WINDOW (Settings.canDrawOverlays). Bez oprávnění
      * otevře systémové nastavení a vrátí status overlay_permission_required.
      */
+    /**
+     * POST /terminal/open — otevře TerminálActivity (plnohodnotný terminál core appky).
+     *
+     * Používá to externí X11 launcher (com.linux_core.xlauncher) pro tlačítko
+     * "přepnout do terminálu". TerminalActivity není exported (záměrně), takže
+     * cizí appka ji nemůže spustit přímo — tudy to jde přes běžící app proces.
+     * Endpoint není citlivý (nic nečte/nevnucuje), ale je jen pro loopback.
+     */
+    private fun handleTerminalOpen(context: Context, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            val intent = Intent(ctx, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            ctx.startActivity(intent)
+            sendResponse(out, 200, "OK", "{\"ok\":true}")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleTerminalOpen failed: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error", "{\"ok\":false,\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleTerminalFloat(context: Context, body: String, out: OutputStream) {
         val ctx = appContext ?: run {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
