@@ -94,7 +94,8 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 - **Jen STATICKÉ buildy** z kořene `assets/`: `proot-static-{aarch64,arm,i686,x86_64}` +
   `loader-static-*`. Dynamické (`proot-*`, `loader-*`, `libtalloc-*.so`) byly z repa odstraněny
   **2026-09-08** (`ProotManager.deployArchBinaries`).
-- `talloc` se instaluje do rootfs jako `lib/libtalloc.so.2`.
+- `talloc` je do `proot-static-*` slinkovan **staticky** (`libtalloc.a`, viz
+  `tools/modal_build.py`); žádný `libtalloc.so.2` se za běhu nenasazuje.
 - Launcher je univerzální `assets/usr/bin/boot` (re-entry mód `boot -- <args…>`, `-0 --kill-on-exit`,
   `--link2symlink`); nasazuje se do `$PREFIX/bin/boot`.
 - Guest bindy zahrnují `$FILES_DIR/share → /root/share`, `$FILES_DIR/ipc → /run/host_ipc`.

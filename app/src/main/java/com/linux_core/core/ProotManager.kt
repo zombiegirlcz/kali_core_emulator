@@ -537,10 +537,15 @@ object ProotManager {
     }
 
     /**
-     * Deploy arch-specific binárek do usr/bin.
-     * Jen STATICKÉ buildy: assets/proot-static-$suffix a assets/loader-static-$suffix.
-     * Dynamické fallbacky (proot-$suffix, loader-$suffix, libtalloc-$suffix.so)
-     byly odstraněny z repa 2026-09-08.
+     * Deploy arch-specific binarek do usr/bin.
+     * Jen STATICKE buildy: assets/proot-static-$suffix a assets/loader-static-$suffix.
+     * Dynamicke fallbacky (proot-$suffix, loader-$suffix, libtalloc-$suffix.so)
+     * byly odstraneny z repa 2026-09-08 a talloc je do proot-static slinkovan
+     * staticky (libtalloc.a, viz tools/modal_build.py).
+     *
+     * Deploy je HASH-GATED (`deployIfChanged`, sidecar `<target>.md5`), ne
+     * existence-only: jinak by po APK updatu zustala na zarizeni navzdy stara
+     * binarka (existence-only check delal presne to).
      */
     private fun deployArchBinaries(
         context: Context,
@@ -549,52 +554,37 @@ object ProotManager {
         val usrBin = File(context.filesDir, "usr/bin")
         usrBin.mkdirs()
 
-        // 1) proot: jen static z kořenu assets/
-        deployFirstAvailable(
-            context,
-            listOf(
-                "proot-static-$suffix" to "STATIC",
-            ),
-            File(usrBin, "proot"),
-        )
-
-        // 2) loader: jen static z kořenu assets/
-        deployFirstAvailable(
-            context,
-            listOf(
-                "loader-static-$suffix" to "STATIC",
-            ),
-            File(usrBin, "loader"),
-        )
+        deployArchAsset(context, "proot-static-$suffix", File(usrBin, "proot"))
+        deployArchAsset(context, "loader-static-$suffix", File(usrBin, "loader"))
     }
 
     /**
-     * Zkusí nasadit první dostupný asset do cílového souboru.
-     * Pokud cíl už existuje a je neprázdný, přeskočí (idempotentní).
+     * Nasadí jeden arch asset (proot/loader), pokud se jeho md5 liší od
+     * naposledy nasazeného. Chybějící asset pro dané ABI jen zaloguje a
+     * ponechá, co už na zařízení je.
      */
-    private fun deployFirstAvailable(
+    private fun deployArchAsset(
         context: Context,
-        candidates: List<Pair<String, String>>,
+        asset: String,
         target: File,
     ) {
-        if (target.exists() && target.length() > 0L) {
-            target.setExecutable(true, false)
+        val assetExists =
+            try {
+                context.assets.open(asset).close()
+                true
+            } catch (_: Exception) {
+                false
+            }
+        if (!assetExists) {
+            if (target.exists() && target.length() > 0L) {
+                target.setExecutable(true, false)
+                Log.d(TAG, "deployArchBinaries: asset $asset nedostupny - ponechavam ${target.name}")
+            } else {
+                Log.e(TAG, "deployArchBinaries: zadny kandidat pro ${target.name} ($asset) neexistuje!")
+            }
             return
         }
-        for ((asset, label) in candidates) {
-            try {
-                context.assets.open(asset).use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                target.setExecutable(true, false)
-                target.setReadable(true, false)
-                Log.i(TAG, "deployArchBinaries: ${target.name} <- $asset ($label, ${target.length()} B)")
-                return
-            } catch (e: Exception) {
-                Log.d(TAG, "deployArchBinaries: asset $asset nedostupný ($label): ${e.message}")
-            }
-        }
-        Log.e(TAG, "deployArchBinaries: ŽÁDNÝ kandidát pro ${target.name} (suffix) neexistuje!")
+        deployIfChanged(context, asset, target, executable = true)
     }
 
     private fun updateResolvConf(
@@ -959,23 +949,10 @@ object ProotManager {
         context: Context,
         rootfsDir: File,
     ) {
-        // Kanonické umístění tallocu: files/usr/lib/libtalloc.so.2 (deployArchBinaries).
-        // Legacy kopie v files rootu už se nenasazuje — fallback pro staré instalace.
-        val tallocFile =
-            File(context.filesDir, "usr/lib/libtalloc.so.2")
-                .takeIf { it.exists() && it.length() > 0L }
-                ?: File(context.filesDir, "libtalloc.so.2")
-        // Copy talloc into rootfs lib so guest binaries can find it
-        val tallocDest = File(rootfsDir, "lib/libtalloc.so.2")
-        if (!tallocDest.exists() || tallocDest.length() == 0L) {
-            try {
-                tallocFile.copyTo(tallocDest, overwrite = true)
-                tallocDest.setReadable(true, false)
-                Log.i(TAG, "Installed talloc into rootfs: lib/libtalloc.so.2")
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to install talloc into rootfs: ${e.message}")
-            }
-        }
+        // talloc se do rootfs nekopiruje: proot-static je slinkovany staticky
+        // s libtalloc.a (viz tools/modal_build.py, kontrola "still links
+        // libtalloc dynamically"), takze zadny libtalloc.so.2 za behu neni
+        // potreba. Puvodni talloc kopie (z jniLibs ery) byl mrtvy kod.
         // Fix bash/sh symlinks
         val paths = listOf("bin/sh", "bin/bash")
         for (relPath in paths) {
@@ -1113,7 +1090,7 @@ object ProotManager {
                         appendLine("    exit 1")
                         appendLine("fi")
                         appendLine("")
-                        appendLine("# LD_LIBRARY_PATH: host filesDir (pro talloc/proot libs) + rootfs lib")
+                        appendLine("# LD_LIBRARY_PATH: host filesDir + rootfs lib (terminalmap je dynamicky)")
                         appendLine(
                             "export LD_LIBRARY_PATH=\"/data/data/com.linux_core/files:/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"",
                         )

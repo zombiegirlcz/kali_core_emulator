@@ -25,8 +25,7 @@ PROOT="$PREFIX/bin/proot"
 # Loader: prefer new path (usr/bin/loader from deployArchBinaries), fallback to old (filesDir/loader)
 LOADER="$PREFIX/bin/loader"
 [ ! -x "$LOADER" ] && LOADER="$FILES_DIR/loader"
-TALLOC="$PREFIX/lib/libtalloc.so.2"
-[ ! -f "$TALLOC" ] && TALLOC="$FILES_DIR/libtalloc.so.2"
+# talloc se nepouziva: proot-static je slinkovany staticky s libtalloc.a
 
 export LD_LIBRARY_PATH="$PREFIX/lib:/system/lib64:/system/lib"
 export PROOT_LOADER="$LOADER"

@@ -233,14 +233,14 @@ To track the state of the guest container, the following sentinel files are mana
 - `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
 
 #### 3. Execution Entrypoints & Scripts
-- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, prepares fake `/proc` and `/sys` substitutes, and launches the guest shell. Base flag mounts (`-v 0 --kill-on-exit -0 --link2symlink -L`) are shared, while `--sysvipc` and `--kernel-release` are omitted in minimal mode. It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
+- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader (static, talloc linked in), prepares fake `/proc` and `/sys` substitutes, and launches the guest shell. Base flag mounts (`-v 0 --kill-on-exit -0 --link2symlink -L`) are shared, while `--sysvipc` and `--kernel-release` are omitted in minimal mode. It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
 - **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
 - **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
 
 #### 4. Shared Library & Dynamic Linker Fixes
 To prevent core dump or execution crashes in the sandboxed chroot:
 - The system loader is copied into the guest `lib/ld-linux-aarch64.so.1` and `lib64/ld-linux-aarch64.so.1`.
-- The helper library `libtalloc.so.2` is deployed into guest `lib/libtalloc.so.2`.
+- `talloc` is linked **statically** into `proot-static-*` (`libtalloc.a`); no `libtalloc.so.2` is deployed at runtime.
 - Any broken symbolic links for `bin/sh` and `bin/bash` in the guest OS are automatically dereferenced and replaced with solid binaries to prevent loader failures.
 
 #### 5. Deployed Helper Scripts — Unified `nh` CLI (Guest `/usr/local/bin/`)
@@ -586,7 +586,7 @@ Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící
 - Neminimální relace dostávají `HOME=/root`, `USER=root`, `TERM` (fallback `xterm-256color`), `MOZ_FAKE_NO_SANDBOX=1` a `PULSE_SERVER=127.0.0.1`.
 
 ### 4. Nasazení PRoot binárek při startu aplikace
-- `ProotManager.setupProotEnvironment()` se volá hned v `MainActivity.onCreate()` → `boot`, `proot`, loader a `libtalloc` jsou v `files/usr/bin` dřív, než se otevře terminál.
+- `ProotManager.setupProotEnvironment()` se volá hned v `MainActivity.onCreate()` → `boot`, `proot` a `loader` (static) jsou v `files/usr/bin` dřív, než se otevře terminál.
 - Nasazení je **hashované** (MD5 sidecar `<soubor>.md5`) — změněný asset se přepíše, nezměněný se přeskočí.
 
 ### 5. Obnova rootfs — explicitní chyby
