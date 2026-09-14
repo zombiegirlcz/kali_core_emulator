@@ -1305,9 +1305,15 @@ desktop_start() {
     rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
-    # X server = Xvfb (headless X.Org; standard X11 + MIT-SHM přes loopback TCP).
-    # Bývalý asset "linux-x11" (libXlorie.so z Termux-X11) byl JNI knihovna bez
-    # main — nešel spustit samostatně a byl odstraněn. Xvfb je nativní X server.
+
+    # Konfigurovatelne rozliseni/hloubka (NH_XRES, NH_XDEPTH).
+    # Nizsi rozliseni/hloubka = vyrazne mene dat na frame
+    # (1280x720x24 -> 1024x600x16 = 2,7x mene bajtu).
+    local XRES="${NH_XRES:-1280x720}"
+    local XDEPTH="${NH_XDEPTH:-24}"
+
+    # X server = Xvfb (headless X.Org). Bývalý asset "linux-x11" (libXlorie.so)
+    # byl JNI knihovna bez main — nešel spustit samostatně a byl odstraněn.
     if ! command -v Xvfb >/dev/null 2>&1; then
         echo "[*] Installing Xvfb..."
         apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xvfb </dev/null
@@ -1327,17 +1333,19 @@ desktop_start() {
     # -x = přesná shoda názvu procesu; NIKDY -f se vzorem, který by mohl
     # zabít volající shell (např. když má vzor ve svém cmdline).
     pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x socat 2>/dev/null || true
     pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
     pkill -9 -x xfce4-session 2>/dev/null || true
     sleep 1
     rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
 
-    echo "[*] Starting X server (Xvfb :0, TCP 6000)..."
-    # Display :0 => TCP 6000, což je port, na který se připojuje externí
-    # NetHunter X11 Launcher (com.linux_core.xlauncher) přes 127.0.0.1:6000.
-    # -ac         = vypne access control (TCP klient z Android hostu)
-    # -listen tcp = povolí TCP (MIT-SHM funguje i přes loopback TCP)
-    nohup Xvfb :0 -screen 0 1280x720x24 -ac -listen tcp >/tmp/xvfb.log 2>&1 &
+    echo "[*] Starting X server (Xvfb :0, ${XRES}x${XDEPTH}, unix socket only)..."
+    # BEZPECNOST: -nolisten tcp => zadny 0.0.0.0:6000. Xvfb poslouchá jen na
+    # unix socketu /tmp/.X11-unix/X0 (v guest namespace). Launcher je jina
+    # Android appka (jiny UID), takze se pripojuje pres 127.0.0.1:6000, kde
+    # bezi socat bridge na unix socket (jen loopback, zadny LAN pristup).
+    # -ac = zadna xauth (socket je pristupny jen z naseho UID).
+    nohup Xvfb :0 -screen 0 ${XRES}x${XDEPTH} -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
 
     _i=0
     while [ $_i -lt 10 ]; do
@@ -1350,16 +1358,38 @@ desktop_start() {
         return 1
     fi
 
+    # Socat bridge: 127.0.0.1:6000 -> /tmp/.X11-unix/X0 (jen loopback).
+    # Cross-UID pristup (launcher je jina appka) pres TCP na loopbacku je
+    # povoleny Androidem; bind=127.0.0.1 zaruci, ze to nikdo z LAN nevidi.
+    if ! command -v socat >/dev/null 2>&1; then
+        echo "[*] Installing socat (X11 loopback bridge)..."
+        apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" socat </dev/null 2>&1 | tail -2
+    fi
+    if command -v socat >/dev/null 2>&1; then
+        nohup socat TCP-LISTEN:6000,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/tmp/.X11-unix/X0 >/tmp/socat.log 2>&1 &
+        sleep 1
+        if ! pgrep -x socat >/dev/null 2>&1; then
+            echo "[-] socat bridge se nenastartoval (viz /tmp/socat.log):" >&2
+            tail -3 /tmp/socat.log 2>/dev/null >&2
+        fi
+    else
+        echo "[-] socat nedostupny — X11 pujde jen pres unix socket (launcher se nepripoji)" >&2
+    fi
+
     if command -v xfce4-session >/dev/null 2>&1; then
         echo "[*] Starting XFCE4 session on DISPLAY=:0..."
         DISPLAY=:0 nohup dbus-launch --exit-with-session xfce4-session >/tmp/xfce4.log 2>&1 &
     fi
 
-    echo "[+] X server (Xvfb) + XFCE ready on DISPLAY=:0 (TCP 127.0.0.1:6000) — open the NetHunter X11 Launcher."
+    echo "[+] X server (Xvfb) + XFCE ready."
+    echo "    X display :0  -> unix socket /tmp/.X11-unix/X0"
+    echo "    Loopback      -> 127.0.0.1:6000 (socat bridge, jen localhost)"
+    echo "    Resolution    -> ${XRES}x${XDEPTH}  (NH_XRES/NH_XDEPTH)"
 }
 
 desktop_stop() {
     pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x socat 2>/dev/null || true
     pkill -9 -x xfce4-session 2>/dev/null || true
     pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
     rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
@@ -1374,9 +1404,14 @@ desktop_status() {
         echo "[-] Xvfb binary: MISSING (apt-get install xvfb)"
     fi
     if pgrep -f "Xvfb :0" >/dev/null 2>&1; then
-        echo "[+] X Server (Xvfb :0, TCP 6000): RUNNING"
+        echo "[+] X Server (Xvfb :0, unix socket): RUNNING"
     else
-        echo "[-] X Server (Xvfb :0, TCP 6000): STOPPED (run: nh desktop start)"
+        echo "[-] X Server (Xvfb :0): STOPPED (run: nh desktop start)"
+    fi
+    if pgrep -x socat >/dev/null 2>&1; then
+        echo "[+] TCP bridge (127.0.0.1:6000): RUNNING (loopback only)"
+    else
+        echo "[-] TCP bridge (127.0.0.1:6000): STOPPED"
     fi
     if pgrep -f "xfce4-session" >/dev/null 2>&1; then
         echo "[+] XFCE4 session: RUNNING"
@@ -1384,7 +1419,7 @@ desktop_status() {
         echo "[-] XFCE4 session: STOPPED"
     fi
     echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)"
-    echo "    connecting to 127.0.0.1:6000."
+    echo "    connecting to 127.0.0.1:6000 (socat bridge -> unix socket)."
 }
 
 # ─── FIX ───────────────────────────────────────────────────
