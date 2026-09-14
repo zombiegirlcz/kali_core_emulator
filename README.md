@@ -587,7 +587,7 @@ Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící
 
 ### 4. Nasazení PRoot binárek při startu aplikace
 - `ProotManager.setupProotEnvironment()` se volá hned v `MainActivity.onCreate()` → `boot`, `proot` a `loader` (static) jsou v `files/usr/bin` dřív, než se otevře terminál.
-- Nasazení je **hashované** (MD5 sidecar `<soubor>.md5`) — změněný asset se přepíše, nezměněný se přeskočí.
+- Nasazení je **hashované**: MD5 assetu se porovná s MD5 souboru na disku — změněný asset se přepíše, nezměněný se přeskočí. Žádný sidecar `.md5` se neukládá.
 
 ### 5. Obnova rootfs — explicitní chyby
 - `RootfsManager` kontroluje návratové hodnoty `mkdirs()` při extrakci/obnově a při selhání vyhazuje `IOException` (dřív tiché `ENOENT`).

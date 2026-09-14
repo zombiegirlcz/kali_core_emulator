@@ -467,9 +467,24 @@ object ProotManager {
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
+    /** MD5 souboru na disku (protějšek assetMd5 pro nasazený cíl). */
+    private fun fileMd5(file: File): String {
+        val md = MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } >= 0) {
+                md.update(buffer, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     /**
-     * Deploy asset only if its hash changed (skip overwrite when identical).
-     * Sidecar file `<target>.md5` stores last deployed hash.
+     * Deploy asset only if its content differs from what is already deployed.
+     * Hash se počítá z ASSETU i z CÍLE na disku — binárka je sama sobě
+     * podpisem, žádný sidecar `<target>.md5` se neukládá. Případný legacy
+     * sidecar z dřívějška se při deployi uklidí.
      */
     private fun deployIfChanged(
         context: Context,
@@ -478,10 +493,18 @@ object ProotManager {
         executable: Boolean = false,
     ) {
         val newHash = assetMd5(context, assetPath)
-        val hashFile = File(target.absolutePath + ".md5")
-        val currentHash = if (hashFile.exists()) hashFile.readText().trim() else ""
+        val currentHash =
+            if (target.exists() && target.length() > 0L) {
+                fileMd5(target)
+            } else {
+                ""
+            }
 
-        if (currentHash == newHash && target.exists() && target.length() > 0L) {
+        // Legacy cleanup: staré sidecar soubory `<target>.md5`.
+        File(target.absolutePath + ".md5").takeIf { it.exists() }?.delete()
+
+        if (currentHash == newHash) {
+            if (executable) target.setExecutable(true, false)
             Log.i(TAG, "Skip $target (hash unchanged)")
             return
         }
@@ -492,7 +515,6 @@ object ProotManager {
         }
         if (executable) target.setExecutable(true, false)
         target.setReadable(true, false)
-        hashFile.writeText(newHash)
         Log.i(TAG, "Deployed $target ($assetPath, md5=$newHash, ${target.length()} B)")
     }
 
@@ -543,9 +565,9 @@ object ProotManager {
      * byly odstraneny z repa 2026-09-08 a talloc je do proot-static slinkovan
      * staticky (libtalloc.a, viz tools/modal_build.py).
      *
-     * Deploy je HASH-GATED (`deployIfChanged`, sidecar `<target>.md5`), ne
-     * existence-only: jinak by po APK updatu zustala na zarizeni navzdy stara
-     * binarka (existence-only check delal presne to).
+     * Deploy je HASH-GATED (`deployIfChanged`): hash assetu vs. hash cile na
+     * disku (zadny sidecar `.md5`). Existence-only check by po APK updatu
+     * nechal na zarizeni navzdy starou binarku.
      */
     private fun deployArchBinaries(
         context: Context,
