@@ -56,8 +56,7 @@ Před každou distribuovanou verzí navyš `versionCode`.
 
 ## 3. Architektura
 
-Jednomodulová app (`:app`) + in-tree nativní knihovna `:linux-x11`
-(`app/src/main/linux-x11`, `include(":linux-x11")` v `settings.gradle.kts`). Spouští Kali/ParrotOS
+Jednomodulová app (`:app`). Spouští Kali/ParrotOS
 v nerootovaném PRoot kontejneru (Termux terminál) s AdGuard C++ VPN, TLS MITM a X11 serverem.
 GUI není součást core — desktop renderuje **externí** NetHunter X11 Launcher (`kali_GUI` app).
 
@@ -125,7 +124,7 @@ Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modalu a **musí bý
 - Version catalog `gradle/libs.versions.toml` už obsahuje i `commons-compress`, `xz`, Termux
   (`terminal-view`/`terminal-emulator`/`termux-shared` v0.118.0), `guava` 33.6.0, `bouncycastle`,
   `androidx.biometric` — už **není** potřeba deklarovat přímo v `app/build.gradle.kts`.
-  Přímo jsou jen `androidx.viewpager2`, `recyclerview`, `onnxruntime-android:1.17.1` a `:linux-x11`.
+  Přímo jsou jen `androidx.viewpager2`, `recyclerview` a `onnxruntime-android:1.17.1`.
 - **Guava exclude:** `com.google.guava:listenablefuture` vyloučit ze všech Termux závislostí.
 - `packaging.jniLibs.useLegacyPackaging = true` (nutné pro Termux `.so`), `org.gradle.parallel=false`.
 - Compose BOM z catalogu spravuje Compose verze; ONNX modely `vpn_brain*.onnx` v assets.
@@ -263,7 +262,7 @@ dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by 
 (`NH_ISOLATED/MINIMAL/FAKE_SYS/MOUNT_STORAGE/EXTRA_MOUNTS`) a `boot` ho nasourceuje,
 **jen když `NH_ENV_FROM_APP != 1`** (appka předává hodnoty přes env, ty mají přednost).
 
-**X server / linux-x11:** asset `usr/lib/linux-x11` je `libXlorie.so` z Termux-X11 — **JNI knihovna**, ne binárka: `entry 0x0`, žádný `main`, `JNI_OnLoad` registruje `com.linux.x11.CmdEntryPoint`/`LorieView` (Java vrstva v repu **neexistuje**). Spustit přes `linker64`/přímo nelze (SIGILL). Desktop proto jede na **Xvfb** (`apt install xvfb`, `nh desktop start`): display `:0` → TCP 6000, `-ac -listen tcp`; MIT-SHM funguje i přes loopback TCP (ověřeno).
+**X server / desktop:** bývalý `:linux-x11` modul s assetem `usr/lib/linux-x11` (`libXlorie.so` z Termux-X11) byl **odstraněn** (2026-09-11) — byla to JNI knihovna bez `main`, nespustitelná samostatně. Desktop jede na **Xvfb** (`apt install xvfb`, `nh desktop start`): display `:0` → TCP 6000, `-ac -listen tcp`; MIT-SHM funguje i přes loopback TCP (ověřeno). Renderuje **externí** app `kali_GUI` (`com.linux_core.xlauncher`, `X11Client` + XTEST). `ProotManager.removeLegacyLinuxX11()` uklidí staré ~20 MB artefakty z `files/usr/{bin,lib}`.
 
 **git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)
 na symlinky do `$ROOTFS/.l2s`. Když se `.l2s` vyčistí (nová session / přepnutí módu), symlinky

@@ -156,7 +156,7 @@ export_guest_env() {
     export USER=root
     export LOGNAME=root
     # Android prostředí — jen neizolovaný (DEFAULT) mód. Potřeba pro bionic
-    # binárky (linker64, ART, linux-x11). Hodnoty dědíme z host procesu,
+    # binárky (linker64, ART). Hodnoty dědíme z host procesu,
     # fallback na standardní cesty (stejně jako androidHostEnv v ProotManager).
     if [ "$NH_ISOLATED" = "0" ]; then
         export ANDROID_ROOT="${ANDROID_ROOT:-/system}"

@@ -1306,9 +1306,8 @@ desktop_start() {
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
     # X server = Xvfb (headless X.Org; standard X11 + MIT-SHM přes loopback TCP).
-    # POZN: asset "linux-x11" (libXlorie.so) je JNI knihovna Termux-X11 — nemá
-    # main (entry 0x0) a vyžaduje Java vrstvu com.linux.x11.*; nelze ji spustit
-    # samostatně. Xvfb je nativní glibc X server běžící v guestu.
+    # Bývalý asset "linux-x11" (libXlorie.so z Termux-X11) byl JNI knihovna bez
+    # main — nešel spustit samostatně a byl odstraněn. Xvfb je nativní X server.
     if ! command -v Xvfb >/dev/null 2>&1; then
         echo "[*] Installing Xvfb..."
         apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xvfb </dev/null
@@ -1328,7 +1327,6 @@ desktop_start() {
     # -x = přesná shoda názvu procesu; NIKDY -f se vzorem, který by mohl
     # zabít volající shell (např. když má vzor ve svém cmdline).
     pkill -9 -x Xvfb 2>/dev/null || true
-    pkill -9 -x linux-x11 2>/dev/null || true
     pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
     pkill -9 -x xfce4-session 2>/dev/null || true
     sleep 1
@@ -1362,7 +1360,6 @@ desktop_start() {
 
 desktop_stop() {
     pkill -9 -x Xvfb 2>/dev/null || true
-    pkill -9 -x linux-x11 2>/dev/null || true
     pkill -9 -x xfce4-session 2>/dev/null || true
     pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
     rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true

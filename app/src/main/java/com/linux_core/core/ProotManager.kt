@@ -67,6 +67,11 @@ object ProotManager {
         val suffix = detectArchSuffix()
         deployArchBinaries(context, suffix)
 
+        // Cleanup legacy linux-x11 (libXlorie.so z Termux-X11 + wrapper skript).
+        // Byl to JNI knihovna bez main, nesel spustit samostatne; desktop jede
+        // na Xvfb. Na starych instalacich ale zustal v usr/{bin,lib} (~20 MB).
+        removeLegacyLinuxX11(hostPrefixBinDir, hostPrefixLibDir)
+
         // Migrace layoutu: staré cesty (kali-arm64, filesDir/bin) → nh/distro + usr/bin
         RootfsManager.ensureMigrated(context)
 
@@ -540,7 +545,7 @@ object ProotManager {
 
     /**
      * Android env z host procesu (+ fallback cesty) — jen pro DEFAULT mód.
-     * Bionic binárky (linker64/ART, linux-x11) potřebují ANDROID_ROOT/DATA
+     * Bionic binárky (linker64/ART) potřebují ANDROID_ROOT/DATA
      * a spol.; app proces je má, ale PTY session dostává jen [ProotConfig.env],
      * takže je musíme předat explicitně.
      */
@@ -564,6 +569,33 @@ object ProotManager {
             System.getenv(key)?.takeIf { it.isNotEmpty() }?.let { out.add("$key=$it") }
         }
         return out
+    }
+
+    /**
+     * Odstrani pozustatky mrtveho linux-x11 (libXlorie.so + wrapper skript)
+     * z host prefixu. Bezpecne: soubory uz nejsou v assets a nikdo je nespousti.
+     */
+    private fun removeLegacyLinuxX11(
+        usrBin: File,
+        usrLib: File,
+    ) {
+        val legacy =
+            listOf(
+                File(usrBin, "linux-x11"),
+                File(usrBin, "linux-x11.md5"),
+                File(usrLib, "linux-x11"),
+                File(usrLib, "linux-x11.md5"),
+            )
+        for (f in legacy) {
+            if (f.exists()) {
+                val n = f.length()
+                if (f.delete()) {
+                    Log.i(TAG, "Removed legacy linux-x11 artifact: ${f.absolutePath} ($n B)")
+                } else {
+                    Log.w(TAG, "Failed to remove legacy linux-x11: ${f.absolutePath}")
+                }
+            }
+        }
     }
 
     /**
