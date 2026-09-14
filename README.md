@@ -162,7 +162,7 @@ exec 3>&-
 
 Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
 
-> **Důležité:** Modul g2 **nikdy není** připojen k UDC — aktivaci/deaktivaci nechává na aplikaci (`UsbGadgetManager` / `/usbg2` API). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
+> **Důležité:** Modul g2 **nikdy není** připojen k UDC sám od sebe — aktivaci/deaktivaci dělá `usbtool` pod real rootem (guest přes `sudo` / su_daemon re-entry; configfs `/config/usb_gadget` je bindnutý do guesta). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
 
 ### Instalace
 - Flash přes Magisk (zip), vyžaduje **Magisk ≥ 20400**.
@@ -187,9 +187,8 @@ Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připra
 
 ### Použití z aplikace
 - Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
-- HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
-- **Spuštění skriptů z modulu přes API:** `POST /usbg2/exec` s body `{"args":["g2"]}` — spustí `/system/bin/usbtool <args>` pod real rootem (Magisk su). Argumenty se validují (jen `[a-zA-Z0-9_.-]`), `watch` je blokovaný (streamuje donekonečna).
-- **Z prootu:** `usbtool status|g1|g2|setup|host|device|detect|logs` (wrapper v `/usr/local/bin`, volá API) nebo `nh usb gadget <cmd>`.
+- **Přímé ovládání (bez API):** `usbtool status|g1|g2|setup|host|device|detect|logs` — guest wrapper zavolá `/system/bin/usbtool` pod real rootem přes `sudo` (su_daemon re-entry). `nh usb gadget <cmd>` je ekvivalent.
+- Příprava g2 (configfs) probíhá automaticky v `post-fs-data.sh` modulu při bootu; `usbtool setup` ji jen zopakuje ručně.
 - Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
 
 ---

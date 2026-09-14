@@ -417,7 +417,7 @@ object LocalApiServer {
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/", "/usb/", "/usbg2/",
+                "/battery/optimize", "/app/logs", "/editor/", "/usb/",
                 "/vpn/ai/", "/vpn/mitm/selective")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
@@ -570,72 +570,12 @@ object LocalApiServer {
                 path == "/usb/raw_transfer" && method == "GET" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
                 path == "/usb/stream" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
 
-                // ─── USB Gadget g2 (aktivace/deaktivace; přípravu dělá Magisk modul)
-                path == "/usbg2/status" && method == "GET" -> handleUsbG2Status(context, out)
-                path == "/usbg2/start" && method == "POST" -> handleUsbG2Start(context, out)
-                path == "/usbg2/stop" && method == "POST" -> handleUsbG2Stop(context, out)
-                path == "/usbg2/exec" && method == "POST" -> handleUsbG2Exec(context, body, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error routing request: ${e.message}", e)
             sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
         }
-    }
-
-    // ── USB Gadget g2 (aktivace = navázání na UDC; přípravu dělá Magisk modul) ──
-    private fun handleUsbG2Status(context: Context, out: OutputStream) {
-        try {
-            val mgr = UsbGadgetManager(context)
-            sendResponse(out, 200, "OK", mgr.statusJson())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleUsbG2Start(context: Context, out: OutputStream) {
-        val mgr = UsbGadgetManager(context)
-        mgr.activate().fold(
-            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
-            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
-        )
-    }
-
-    private fun handleUsbG2Stop(context: Context, out: OutputStream) {
-        val mgr = UsbGadgetManager(context)
-        mgr.deactivate().fold(
-            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
-            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
-        )
-    }
-
-    /**
-     * POST /usbg2/exec  {"args":["g2"]}
-     * Spustí skript z Magisk modulu (custom_usb_g2_setup) pod real rootem:
-     *   su -c "/system/bin/usbtool <args...>"
-     */
-    private fun handleUsbG2Exec(context: Context, body: String, out: OutputStream) {
-        val args: List<String> = try {
-            val j = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
-            val raw = j.optJSONArray("args") ?: org.json.JSONArray()
-            (0 until raw.length()).map { raw.getString(it) }
-        } catch (e: Exception) {
-            sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid JSON body\"}")
-            return
-        }
-        val mgr = UsbGadgetManager(context)
-        mgr.execUsbTool(args).fold(
-            onSuccess = { (rc, output) ->
-                // Vlastní escape — zachová \n (jsonEsc je mění na mezery, což rozbije výpis)
-                val esc = output.replace("\\", "\\\\").replace("\"", "\\\"")
-                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-                sendResponse(out, 200, "OK",
-                    "{\"ok\":${rc == 0},\"rc\":$rc,\"output\":\"$esc\"}")
-            },
-            onFailure = { e ->
-                sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}")
-            }
-        )
     }
 
     private fun jsonEsc(s: String): String =

@@ -2378,8 +2378,8 @@ usb_gadget() {
     if [ $# -eq 0 ]; then
         echo "Usage: nh usb gadget <command> [args...]"
         echo ""
-        echo "  Spustí skript z Magisk modulu custom_usb_g2_setup na hostiteli"
-        echo "  (real root, přes API /usbg2/exec)."
+        echo "  Ovládá USB gadget g2 (Magisk modul custom_usb_g2_setup) přímo,"
+        echo "  přes 'usbtool' (sudo, real root — žádné API)."
         echo ""
         echo "  Commands:"
         echo "    status            Stav gadgetů a UDC"
@@ -2392,35 +2392,11 @@ usb_gadget() {
         exit 1
     fi
 
-    # JSON args pole (argy jsou jednoduchá slova)
-    local ARGS="" a e
-    for a in "$@"; do
-        e=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        if [ -z "$ARGS" ]; then ARGS="\"$e\""; else ARGS="$ARGS,\"$e\""; fi
-    done
-
-    local resp
-    resp=$(api_post_json "/usbg2/exec" "{\"args\":[$ARGS]}")
-    if [ -z "$resp" ]; then
-        echo "[-] LocalApiServer neodpovídá (${API_URL}/usbg2/exec)" >&2
-        exit 1
+    if ! command -v usbtool >/dev/null 2>&1; then
+        echo "[-] usbtool nenalezen (chybí Magisk modul custom_usb_g2_setup nebo wrapper)" >&2
+        exit 127
     fi
-    printf '%s' "$resp" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception as e:
-    sys.stderr.write("[-] Neplatná odpověď API: %s\n" % e)
-    sys.exit(1)
-if "error" in d:
-    sys.stderr.write("[-] %s\n" % d["error"])
-    sys.exit(1)
-out = d.get("output", "")
-if out:
-    print(out)
-rc = d.get("rc", 1)
-sys.exit(0 if d.get("ok") else (rc or 1))
-'
+    exec usbtool "$@"
 }
 
 # ─── ZKILL (host zombie cleanup) ──────────────────────────

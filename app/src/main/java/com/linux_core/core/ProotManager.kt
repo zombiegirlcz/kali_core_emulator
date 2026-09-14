@@ -313,7 +313,15 @@ object ProotManager {
                 if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
                 if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
                 if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
-                if (rootPrefs.getBoolean("bind_usb", true) && File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
+                if (rootPrefs.getBoolean("bind_usb", true)) {
+                    if (File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
+                    // Gadget g2 ovládání: configfs musí být v guestu vidět pod sudo
+                    // (su_daemon re-entry) na stejné cestě jako na hostu, aby skripty
+                    // modulu custom_usb_g2_setup fungovaly bez úprav.
+                    if (File("/config/usb_gadget").exists()) {
+                        append(" -b /config/usb_gadget:/config/usb_gadget")
+                    }
+                }
                 if (rootPrefs.getBoolean(
                         "bind_bluetooth",
                         false,
