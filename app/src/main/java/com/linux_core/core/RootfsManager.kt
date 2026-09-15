@@ -545,16 +545,29 @@ object RootfsManager {
                                         throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
                                     }
                                     val linkTarget = tarEntry.linkName
+                                    // Odstranit cokoliv, co na cíli už je (prázdný adresář
+                                    // z dřívějška, starý symlink). Bez toho Os.symlink()
+                                    // selže a fallback dřív vytvořil PRÁZDNÝ ADRESÁŘ místo
+                                    // symlinku — přesně to rozbilo kali rootfs:
+                                    // bin/sbin/lib/lib64 byly prázdné dirs místo -> usr/*.
+                                    if (entryFile.exists() || isSymlink(entryFile)) {
+                                        if (entryFile.isDirectory && !isSymlink(entryFile)) {
+                                            entryFile.deleteRecursively()
+                                        } else {
+                                            entryFile.delete()
+                                        }
+                                    }
                                     try {
                                         if (tarEntry.isSymbolicLink) {
                                             android.system.Os.symlink(linkTarget, entryFile.absolutePath)
                                         } else {
                                             android.system.Os.link(linkTarget, entryFile.absolutePath)
                                         }
-                                    } catch (_: Exception) {
-                                        if (!entryFile.exists() && !entryFile.mkdirs()) {
-                                            throw IOException("Failed to create fallback dir for link: ${entryFile.absolutePath}")
-                                        }
+                                    } catch (e: Exception) {
+                                        // NIKDY nevytvářet adresář jako fallback — chybějící
+                                        // symlink je lepší než tichý prázdný adresář, který
+                                        // rozbije rootfs (usrmerge).
+                                        Log.w("RootfsManager", "Link failed ${entryFile.absolutePath} -> $linkTarget: ${e.message}")
                                     }
                                 } else {
                                     val parent = entryFile.parentFile
@@ -585,6 +598,10 @@ object RootfsManager {
 
                 // rootfsFile.delete() // Keep for reinstall
 
+                // ── Normalize usrmerge symlinks (kali tar je má, ale při
+                //    rozbalení přes app UID mohou selhat) ──────────────────
+                normalizeUsrMerge(extractDir)
+
                 // ── Backup original archive next to docker dir (best-effort) ──
                 try {
                     val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")
@@ -606,6 +623,42 @@ object RootfsManager {
                 }
             }
         }.flowOn(Dispatchers.IO)
+
+    /** True when [f] is a symlink (does not follow it). */
+    private fun isSymlink(f: File): Boolean =
+        try {
+            android.system.Os.readlink(f.absolutePath) != null
+        } catch (_: Exception) {
+            false
+        }
+
+    /**
+     * Doplní usrmerge symlinky (bin -> usr/bin atd.), pokud v rootfs chybí.
+     *
+     * Některé rootfs (kali) mají v taru symlinky, ale při extrakci pod app UID
+     * mohou selhat a zůstat jako prázdné adresáře. Tím se /bin/bash (a další)
+     * ztratí a PRoot pak hlásí „execve: No such file or directory".
+     * Idempotentní: existující symlinky nechá být.
+     */
+    private fun normalizeUsrMerge(rootfs: File) {
+        for (name in listOf("bin", "sbin", "lib", "lib64")) {
+            val link = File(rootfs, name)
+            val target = File(rootfs, "usr/$name")
+            if (!target.isDirectory) continue
+            if (isSymlink(link)) continue
+            if (link.exists() && link.list()?.isNotEmpty() == true) {
+                // Má obsah — nejsme si jisti, necháme být.
+                continue
+            }
+            try {
+                if (link.exists()) link.deleteRecursively()
+                android.system.Os.symlink("usr/$name", link.absolutePath)
+                Log.i("RootfsManager", "usrmerge: $name -> usr/$name")
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "usrmerge fix failed for $name: ${e.message}")
+            }
+        }
+    }
 
     private fun checkAvailableSpace(
         dir: File,
