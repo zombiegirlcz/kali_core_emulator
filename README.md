@@ -257,7 +257,9 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh desktop` | `start`, `stop`, `status` |
 | `nh fix` | `pkg <name>`, `auto`, `permission <path>` |
 | `nh apps` | `usage` |
-| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control` |
+| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control`, `bridge`, `gadget` |
+| `nh shi` | `start --root\|--shell\|--none`, `stop`, `status`, `exec <cmd>` |
+| `nh docs` | otevře `nethunter_docs.md` v pageru (`less -R -F`) |
 
 > Legacy scripts (`nethunter-*`, `vpn-on`, `vpn-off`, `vpn-cli`, `vpn-bypass`, `ignore-vpn`, `nethunter-agent-cli`, `nethunter-desktop`) are still present as **compatibility symlinks** pointing to `nh`. All new development and documentation should use the unified `nh` syntax.
 
@@ -484,48 +486,79 @@ Kliknutím na službu se rozbalí detail s akčními tlačítky:
 │                    [⏹ STOP]              [🌐 OPEN]      │
 ```
 
-### Spuštění Shizuku serveru
+### Privilege eskalace z PRootu — `nh shi`
 
-Automatická strategie `startServer()`:
-
-1. **Už běží?** → return true
-2. **`su` + Shizuku APK?** → `su -c "libshizuku.so --apk=<apk>"` → server běží jako **root**
-3. **`su` bez Shizuku APK?** → raw `su -c` fallback pro příkazy
-4. **ADB?** → pokus o start přes ADB shell
-5. **Nic?** → tlačítko **⚙ SETUP** otevře dialog s instrukcemi
-
-### CLI v PRootu
-
-Automaticky nasazeno do `/usr/local/bin/shizuku`:
+Od v4.5 má unified CLI **`nh shi`** kategorii, která spouští příkazy pod
+vyšším UID. Režim se přepíná jednou a platí pro všechny další `nh shi exec`:
 
 ```bash
-# Spuštění příkazu s vyššími právy
-shizuku -c "pm list packages"
-shizuku -c "settings put global airplane_mode 1"
-shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
-shizuku -c "svc wifi disable"
-shizuku -c "dumpsys battery set level 15"
+nh shi start --shell     # uid 2000 — stejná práva jako Shizuku/adb (doporučeno)
+nh shi start --root      # uid 0 — plná root práva (vyžaduje Magisk su)
+nh shi start --none      # Shizuku server (non-root; vyžaduje adb pairing)
 
-# Interaktivní shell
-shizuku
+nh shi exec "pm list packages | head"
+nh shi exec "settings put global airplane_mode_on 1"
+nh shi exec "appops set com.twitter POST_NOTIFICATIONS deny"
+nh shi exec "svc wifi disable"
+nh shi exec "dumpsys battery set level 15"
+
+nh shi status            # aktivní režim, su, Shizuku server, adb
+nh shi stop              # vypnout eskalaci (mode=none)
+```
+
+`nh shi exec` jde přes `LocalApiServer` na `POST /shizuku/exec`, který spustí
+příkaz v nakonfigurovaném režimu a vrátí stdout + exit code zpět do guesta.
+
+### Tři režimy — kdy který
+
+| Režim | UID | Jak | Kdy použít |
+|---|---|---|---|
+| `--root` | 0 | `su 0 -c <cmd>` (Magisk) | Root zařízení, plná práva |
+| `--shell` | 2000 | `su 2000 -c <cmd>` (Magisk) | Root zařízení, práva jako Shizuku/adb |
+| `--none` | — | Shizuku server + rish | Non-root zařízení (adb pairing) |
+
+> **Pozn.** Na zařízeních s Magisk `su` umí přepnout na libovolné UID (`su 2000 -c`),
+> takže režimy `--root` / `--shell` fungují okamžitě bez Shizuku serveru.
+> Shizuku server (`--none`) je pro non-root zařízení — vyžaduje zapnuté
+> bezdrátové ladění a spárování (`adb pair` / `adb connect`).
+
+### HTTP API (port 1337, Bearer pro non-localhost)
+
+| Endpoint | Metoda | Popis |
+|---|---|---|
+| `/shizuku/status` | GET | `{su, su_path, active_mode, adb_available, shizuku:{...}}` |
+| `/shizuku/start` | POST | tělo `root` \| `shell` \| `none` → nastaví aktivní režim |
+| `/shizuku/stop` | POST | vypne eskalaci (`mode=none`) |
+| `/shizuku/exec` | POST | tělo = příkaz (nebo JSON `{command, mode}`) → `{stdout, exit_code, mode}` |
+
+### Legacy rish klient (`/usr/local/bin/shizuku`)
+
+Pro režim `--none` je v guestu nasazen i původní rish wrapper:
+
+```bash
+shizuku -c "pm list packages"   # vyžaduje běžící Shizuku server + API_V23 permission
 ```
 
 ### Architektura
 
-| Komponenta | Cesta | Popis |
+| Komponenta | Cesta v APK | Popis |
 |---|---|---|
-| Server binárka | `assets/shizuku/libshizuku.so` | PIE executable (native starter) |
-| ADB knihovna | `assets/shizuku/libadb.so` | Native ADB klient |
-| Rish script | `assets/shizuku/rish.sh` | Rish wrapper pro PRoot |
-| Rish dex | `assets/shizuku/rish_shizuku.dex` | Rish Java třídy |
-| Manager | `ShizukuManager.kt` | Server lifecycle, status, exec |
-| ProotManager | `ProotManager.kt` | Nasazení rish do guestu |
+| Server binárka | `assets/usr/lib/libshizuku.so` | PIE executable (native starter) |
+| ADB knihovna | `assets/usr/lib/libadb.so` | Native ADB klient |
+| Rish knihovna | `assets/usr/lib/librish.so` | Rish nativní část |
+| Server APK | `assets/usr/lib/shizuku.apk` | Bundlovaný Shizuku 13.6.0 (kontejner serveru) |
+| Rish script | `assets/usr/bin/rish.sh` | Rish wrapper pro PRoot |
+| Rish dex | `assets/usr/bin/rish_shizuku.dex` | Rish Java třídy |
+| Manager | `ShizukuManager.kt` | Režimy, `su` detekce, exec |
+| API | `LocalApiServer.kt` | `/shizuku/*` endpointy |
 
 ### Podmínky
 
-- **Shizuku app** nainstalovaná (Play Store / F-Droid) + spuštěný server (root nebo ADB)
-- **Nebo root** (Magisk, `su`)
-- **Nebo ADB** (wireless debugging)
+- **Root zařízení** (Magisk) → `nh shi start --shell` nebo `--root`, funguje hned
+- **Non-root zařízení** → `nh shi start --none` + Shizuku server (adb pairing);
+  vyžaduje Shizuku app nainstalovanou (Play Store / F-Droid) NEBO bundlovaný
+  `shizuku.apk` spuštěný přes `adb`
+- **Bez rootu i bez adb** → eskalace není možná (app UID zůstává)
 
 ---
 

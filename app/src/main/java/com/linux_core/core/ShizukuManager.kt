@@ -17,6 +17,27 @@ data class ShizukuStatus(
     val adbWirelessPaired: Boolean = false
 )
 
+/**
+ * Režim privilege eskalace pro `nh shi start --root|--shell`.
+ *
+ * - [ROOT]  — `su 0 -c <cmd>`; plná root práva (uid 0)
+ * - [SHELL] — `su 2000 -c <cmd>`; práva shell UID (stejná jako Shizuku/adb)
+ * - [NONE]  — bez `su`; příkaz jde přes Shizuku server (rish; vyžaduje ShizukuProvider)
+ */
+enum class ShizukuMode(val uid: Int?) {
+    ROOT(0),
+    SHELL(2000),
+    NONE(null),
+    ;
+
+    fun describe(): String =
+        when (this) {
+            ROOT -> "root (uid 0)"
+            SHELL -> "shell (uid 2000)"
+            NONE -> "none (Shizuku server)"
+        }
+}
+
 object ShizukuManager {
     private const val TAG = "ShizukuManager"
 
@@ -34,6 +55,96 @@ object ShizukuManager {
 
     // Shizuku manager package
     private const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
+
+    // Kandidáti na su binárku (Magisk ji drží v /product/bin jako symlink na magisk).
+    private val SU_PATHS =
+        listOf(
+            "/product/bin/su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/data/adb/ksu/bin/su",
+            "/data/adb/magisk/su",
+            "/sbin/su",
+        )
+
+    /**
+     * Sestaví argv pro `su <uid> -c <cmd>` v daném režimu.
+     *
+     * Vrací seznam bez shell escapování — volající použije [ProcessBuilder],
+     * který argv předá bez interpretace shell metaznaků (žádná injection).
+     *
+     * [NONE] vrací prázdný seznam (volající místo toho použije Shizuku/rish cestu).
+     */
+    @JvmStatic
+    fun buildSuArgv(
+        suBin: String,
+        mode: ShizukuMode,
+        command: String,
+    ): List<String> =
+        when (mode) {
+            ShizukuMode.ROOT -> listOf(suBin, "0", "-c", command)
+            ShizukuMode.SHELL -> listOf(suBin, "2000", "-c", command)
+            ShizukuMode.NONE -> emptyList()
+        }
+
+    /** Mapuje CLI přepínač (`--root`, `root`, `--shell`, `shell`) na režim; neznámý → null. */
+    @JvmStatic
+    fun parseMode(arg: String): ShizukuMode? =
+        when (arg.trim().lowercase()) {
+            "--root", "root", "-r" -> ShizukuMode.ROOT
+            "--shell", "shell", "-s" -> ShizukuMode.SHELL
+            "--none", "none", "--server", "server" -> ShizukuMode.NONE
+            else -> null
+        }
+
+    /** Najde první spustitelnou `su` binárku; null když žádná. */
+    private fun findSu(): String? =
+        SU_PATHS.firstOrNull { File(it).exists() && File(it).canExecute() }
+
+    /** Veřejný přístup k nalezené `su` binárce (pro /shizuku/status); null když žádná. */
+    @JvmStatic
+    fun suPath(): String? = findSu()
+
+    /**
+     * Vrací true, pokud zařízení má funkční `su` (Magisk apod.).
+     * Zkouší jen spuštění, ne root shell — bezpečné i pro non-root zařízení.
+     */
+    @JvmStatic
+    fun isSuAvailable(): Boolean =
+        try {
+            val su = findSu() ?: return false
+            val p = ProcessBuilder(su, "-c", "id").redirectErrorStream(true).start()
+            p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            p.exitValue() == 0
+        } catch (_: Exception) {
+            false
+        }
+
+    /**
+     * Spustí příkaz pod `su <uid> -c` a vrátí JSON ve stejném tvaru jako
+     * [exec] (`{stdout, exit_code}` / `{error, exit_code}`).
+     *
+     * [ShizukuMode.NONE] deleguje na [exec] (Shizuku/rish cesta).
+     */
+    @JvmStatic
+    fun execAs(
+        context: Context,
+        mode: ShizukuMode,
+        command: String,
+    ): String {
+        if (mode == ShizukuMode.NONE) return exec(context, command)
+        val su = findSu() ?: return """{"error":"su binary not found","exit_code":-1}"""
+        return try {
+            val argv = buildSuArgv(su, mode, command)
+            val pb = ProcessBuilder(argv).redirectErrorStream(true)
+            val proc = pb.start()
+            val output = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            """{"stdout":"${output.escapeJson()}","exit_code":$exitCode,"mode":"${mode.name.lowercase()}"}"""
+        } catch (e: Exception) {
+            """{"error":"${(e.message ?: "exec failed").escapeJson()}","exit_code":-1}"""
+        }
+    }
 
     /**
      * Deploy the native server binary from assets to filesDir.

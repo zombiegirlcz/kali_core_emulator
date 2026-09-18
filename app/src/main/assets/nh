@@ -1598,6 +1598,7 @@ help_dispatch() {
         ashell)                   help_ashell ;;
         zkill)                    help_zkill ;;
         float)                    help_float ;;
+        shi|shizuku)              help_shi ;;
         docs|manual)              help_docs ;;
         all)                      list_cmds ;;
         *)
@@ -2616,6 +2617,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
+        "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
     done
@@ -2640,6 +2642,121 @@ docs_open() {
     else
         cat "$doc"
     fi
+}
+
+# ─── SHIZUKU / PRIVILEGE ESKALACE (nh shi) ─────────────────
+
+shi_dispatch() {
+    case "$1" in
+        start|on) shift; shi_start "$@" ;;
+        stop|off) shi_stop ;;
+        status|st) shi_status ;;
+        exec|run) shift; shi_exec "$@" ;;
+        help|-h|--help) help_shi ;;
+        *) echo "Použití: nh shi start --root|--shell|--none"; echo "        nh shi stop | status | exec <cmd>"; echo "Pro nápovědu: nh shi help"; exit 1 ;;
+    esac
+}
+
+shi_start() {
+    local mode="${1:-}"
+    if [ -z "$mode" ]; then
+        echo "Použití: nh shi start --root|--shell|--none" >&2
+        exit 1
+    fi
+    api_post "/shizuku/start" "$mode" | fmt '
+import sys, json
+G,R,Y,N=chr(27)+"[92m",chr(27)+"[91m",chr(27)+"[93m",chr(27)+"[0m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d:
+        print(R + "✘  " + str(d.get("error")) + N)
+        sys.exit(1)
+    m=d.get("mode","?"); desc=d.get("describe",""); started=d.get("started",False)
+    mark=G+"✔" if started else Y+"⚠"
+    print(f"{mark}  Režim: {desc}{N}")
+    if m=="none" and not started:
+        print(f"{Y}   Shizuku server nenaběhl (chybí adb/Shizuku). Zkus --root nebo --shell.{N}")
+except Exception as e:
+    print(f"{R}✘  {e}{N}"); sys.exit(1)
+'
+}
+
+shi_stop() {
+    api_post "/shizuku/stop" "" | fmt '
+import sys, json
+G,N=chr(27)+"[92m",chr(27)+"[0m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d:
+        print(d["error"]); sys.exit(0)
+    print(f"{G}✔  Privilege eskalace vypnuta (mode=none){N}")
+except Exception as e:
+    print(f"Chyba: {e}")
+'
+}
+
+shi_status() {
+    api_get "/shizuku/status" | fmt '
+import sys, json
+G,R,Y,N,Gy=chr(27)+"[92m",chr(27)+"[91m",chr(27)+"[93m",chr(27)+"[0m",chr(27)+"[90m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d:
+        print(d["error"]); sys.exit(0)
+    su=d.get("su",False); sup=d.get("su_path"); am=d.get("active_mode","none")
+    sustr = ("ano (" + sup + ")") if su else "ne"
+    print(G + "Privilege eskalace" + N)
+    print("  aktivni rezim: " + am)
+    print("  su:            " + sustr)
+    print("  adb available: " + str(d.get("adb_available",False)))
+    s=d.get("shizuku",{})
+    print("  shizuku:       running=" + str(s.get("running")) + " pid=" + str(s.get("pid")) + " mode=" + str(s.get("mode")))
+except Exception as e:
+    print("Chyba: " + str(e))
+'
+}
+
+shi_exec() {
+    if [ -z "$1" ]; then
+        echo "Použití: nh shi exec \"<příkaz>\"" >&2
+        exit 1
+    fi
+    api_post_bin "/shizuku/exec" "$*" | fmt '
+import sys, json
+R,N=chr(27)+"[91m",chr(27)+"[0m"
+try:
+    d=json.load(sys.stdin)
+    if "error" in d:
+        sys.stderr.write(R + str(d["error"]) + N + chr(10))
+        sys.exit(d.get("exit_code",1) or 1)
+    sys.stdout.write(d.get("stdout",""))
+    rc=d.get("exit_code",0)
+    if rc!=0:
+        sys.exit(rc)
+except Exception as e:
+    sys.stderr.write("Chyba: " + str(e) + chr(10))
+    sys.exit(1)
+'
+}
+
+help_shi() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}SHIZUKU / PRIVILEGE ESKALACE${RST} ${DIM}– spouštění příkazů pod vyšším UID${RST}"
+    separator
+    echo "  ${GREEN}start --root${RST}            Příkazy pod uid 0 (plná root práva)"
+    echo "  ${GREEN}start --shell${RST}           Příkazy pod uid 2000 (stejná práva jako Shizuku/adb)"
+    echo "  ${GREEN}start --none${RST}            Shizuku server (non-root, vyžaduje adb/Shizuku)"
+    echo "  ${GREEN}stop${RST}                     Vypnout eskalaci (mode=none)"
+    echo "  ${GREEN}status${RST}                   Stav: aktivní režim, su, Shizuku server, adb"
+    echo "  ${GREEN}exec <cmd>${RST}               Spustit příkaz v aktivním režimu"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh shi start --shell"
+    echo '    nh shi exec "pm list packages | head"'
+    echo '    nh shi exec "settings put global airplane_mode_on 1"'
+    echo "    nh shi status"
+    echo ""
 }
 
 help_docs() {
@@ -2695,6 +2812,7 @@ case "$CMD" in
     distro)                 distro_dispatch "$@" ;;
     zkill)                  zkill_dispatch "$@" ;;
     float)                  float_dispatch "$@" ;;
+    shi|shizuku)            shi_dispatch "$@" ;;
     ashell)                 exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
     docs|manual)            docs_open "$@" ;;
     stat)                   vpn_dispatch status "$@" ;;
