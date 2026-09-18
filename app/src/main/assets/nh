@@ -75,16 +75,17 @@ separator() {
 
 system_dispatch() {
     case "$1" in
-        battery) system_battery ;;
-        volume) shift; system_volume "$@" ;;
+        battery|bat) system_battery ;;
+        volume|vol) shift; system_volume "$@" ;;
         torch) shift; system_torch "$@" ;;
-        vibrate) shift; system_vibrate "$@" ;;
+        vibrate|vib) shift; system_vibrate "$@" ;;
         toast) shift; system_toast "$@" ;;
-        clipboard) shift; system_clipboard "$@" ;;
-        notification) shift; system_notification "$@" ;;
-        speech) system_speech ;;
+        clipboard|clip) shift; system_clipboard "$@" ;;
+        notification|notif) shift; system_notification "$@" ;;
+        speech|stt) system_speech ;;
         ashell) system_ashell ;;
-        *) echo "Usage: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; exit 1 ;;
+        help|-h|--help) help_system ;;
+        *) echo "Použití: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; echo "Pro nápovědu: nh system help"; exit 1 ;;
     esac
 }
 
@@ -264,10 +265,11 @@ network_dispatch() {
     case "$1" in
         wifi) shift; network_wifi "$@" ;;
         cell) network_cell ;;
-        location) network_location ;;
+        location|loc|gps) network_location ;;
         map) network_map ;;
-        ifconfig) shift; network_ifconfig "$@" ;;
-        *) echo "Usage: nh network wifi|cell|location|map|ifconfig"; exit 1 ;;
+        ifconfig|if) shift; network_ifconfig "$@" ;;
+        help|-h|--help) help_network ;;
+        *) echo "Použití: nh network wifi|cell|location|map|ifconfig"; echo "Pro nápovědu: nh network help"; exit 1 ;;
     esac
 }
 
@@ -479,18 +481,19 @@ except Exception as e:
 
 vpn_dispatch() {
     case "$1" in
-        status) vpn_status ;;
+        status|stat) vpn_status ;;
         start) vpn_start ;;
         stop) vpn_stop ;;
         on) shift; vpn_on "$@" ;;
         off) shift; vpn_off "$@" ;;
-        logs) shift; vpn_logs "$@" ;;
+        logs|log) shift; vpn_logs "$@" ;;
         ai) shift; vpn_ai "$@" ;;
         mitm) shift; vpn_mitm "$@" ;;
         bypass) shift; vpn_bypass "$@" ;;
         ignore) shift; vpn_ignore "$@" ;;
-        sni-fallback) shift; vpn_sni_fallback "$@" ;;
-        *) echo "Usage: nh vpn status|start|stop|on|off|logs|mitm|bypass|ignore|sni-fallback"; exit 1 ;;
+        sni-fallback|sni) shift; vpn_sni_fallback "$@" ;;
+        help|-h|--help) help_vpn ;;
+        *) echo "Použití: nh vpn status|start|stop|on|off|logs|mitm|ai|bypass|ignore|sni-fallback"; echo "Pro nápovědu: nh vpn help"; exit 1 ;;
     esac
 }
 
@@ -905,6 +908,7 @@ except: print('Error')
 agent_dispatch() {
     local config_dir="$HOME/.config/nethunter"
     case "$1" in
+        help|-h|--help) help_agent; exit 0 ;;
         config)
             shift
             local provider="" key="" model=""
@@ -991,6 +995,7 @@ print(f'[+] Configuration updated: {json.dumps(data,indent=2)}')
 log_dispatch() {
     case "$1" in
         set) shift; log_set "$@" ;;
+        help|-h|--help) help_log ;;
         *) log_view "$@" ;;
     esac
 }
@@ -1070,8 +1075,8 @@ log_usage() {
 device_dispatch() {
     case "$1" in
         admin) shift; device_admin "$@" ;;
-        battery-optimize) shift; device_battery_optimize "$@" ;;
-        accessibility) shift; device_accessibility "$@" ;;
+        battery-optimize|opt) shift; device_battery_optimize "$@" ;;
+        accessibility|acc) shift; device_accessibility "$@" ;;
         tap) shift; device_tap "$@" ;;
         click) shift; device_click "$@" ;;
         longclick) shift; device_longclick "$@" ;;
@@ -1079,7 +1084,8 @@ device_dispatch() {
         text) shift; device_text "$@" ;;
         scroll) shift; device_scroll "$@" ;;
         global) shift; device_global "$@" ;;
-        *) echo "Usage: nh device admin|battery-optimize|accessibility|tap|click|longclick|swipe|text|scroll|global"; exit 1 ;;
+        help|-h|--help) help_device ;;
+        *) echo "Použití: nh device admin|battery-optimize|accessibility|tap|click|longclick|swipe|text|scroll|global"; echo "Pro nápovědu: nh device help"; exit 1 ;;
     esac
 }
 
@@ -1260,7 +1266,8 @@ device_global() {
 api_dispatch() {
     case "$1" in
         share) shift; api_share "$@" ;;
-        *) echo "Usage: nh api share on|off|status"; exit 1 ;;
+        help|-h|--help) help_api ;;
+        *) echo "Použití: nh api share on|off|status"; echo "Pro nápovědu: nh api help"; exit 1 ;;
     esac
 }
 
@@ -1295,8 +1302,9 @@ desktop_dispatch() {
     case "$1" in
         start) desktop_start ;;
         stop) desktop_stop ;;
-        status) desktop_status ;;
-        *) echo "Usage: nh desktop start|stop|status"; exit 1 ;;
+        status|stat) desktop_status ;;
+        help|-h|--help) help_desktop ;;
+        *) echo "Použití: nh desktop start|stop|status"; echo "Pro nápovědu: nh desktop help"; exit 1 ;;
     esac
 }
 
@@ -1430,7 +1438,8 @@ fix_dispatch() {
         auto) fix_auto ;;
         git) shift; fix_git "$@" ;;
         permission|perms) shift; fix_permission "$@" ;;
-        *) echo "Usage: nh fix pkg <name>|auto|git [path]|permission <path>"; exit 1 ;;
+        help|-h|--help) help_fix ;;
+        *) echo "Použití: nh fix pkg <název>|auto|git [cesta]|permission <cesta>"; echo "Pro nápovědu: nh fix help"; exit 1 ;;
     esac
 }
 
@@ -1536,7 +1545,8 @@ fix_auto() {
 apps_dispatch() {
     case "$1" in
         usage) apps_usage ;;
-        *) echo "Usage: nh apps usage"; exit 1 ;;
+        help|-h|--help) help_apps ;;
+        *) echo "Použití: nh apps usage"; echo "Pro nápovědu: nh apps help"; exit 1 ;;
     esac
 }
 
@@ -1568,42 +1578,61 @@ except Exception as e:
 "
 }
 
-# ─── HELP ──────────────────────────────────────────────────
+# ─── HELP & DISPATCH HELPERS ───────────────────────────────────────
 
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell|zkill|float)
-            "help_$topic"
-            ;;
+        system|sys)              help_system ;;
+        network|net)             help_network ;;
+        vpn)                      help_vpn ;;
+        agent|ai)                 help_agent ;;
+        log|logs)                 help_log ;;
+        device|dev)               help_device ;;
+        api)                      help_api ;;
+        desktop|vnc)              help_desktop ;;
+        fix)                      help_fix ;;
+        apps)                     help_apps ;;
+        usb)                      help_usb ;;
+        distro)                   help_distro ;;
+        ashell)                   help_ashell ;;
+        zkill)                    help_zkill ;;
+        float)                    help_float ;;
+        all)                      list_cmds ;;
         *)
             banner
             echo ""
-            echo "  ${WHITE}${BOLD}Použití:${RST} nh ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
+            echo "  ${WHITE}${BOLD}Použití:${RST} nh ${CYAN}<kategorie|${YELLOW}alias${CYAN}>${RST} ${GREEN}<akce>${RST} [parametry...]"
             echo "         nethunter ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
             echo ""
             separator
-            echo "  ${WHITE}${BOLD}Kategorie:${RST}"
+            echo "  ${WHITE}${BOLD}KATEGORIE A ALIASE:${RST}"
             echo ""
-            printf "  ${CYAN}system${RST}     battery, volume, torch, vibrate, toast, clipboard, notification, speech\n"
-            printf "  ${CYAN}network${RST}    wifi, cell, location, map, ifconfig\n"
-            printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, ai, bypass, ignore, sni-fallback\n"
-            printf "  ${CYAN}agent${RST}      config, start, stop, status, ask, chat\n"
-            printf "  ${CYAN}log${RST}        [-n N] [-g P], set lvl 1-5\n"
-            printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility, tap, click, longclick, swipe, text, scroll, global\n"
-            printf "  ${CYAN}api${RST}        share on/off/status\n"
-            printf "  ${CYAN}desktop${RST}    start, stop, status\n"
-            printf "  ${CYAN}fix${RST}        pkg <name>, auto, permission <path>\n"
-            printf "  ${CYAN}apps${RST}       usage\n"
-            printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
-            printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
-            printf "  ${CYAN}float${RST}      ⬡  plovoucí terminál přes ostatní aplikace (here, close)\n"
-            printf "  ${CYAN}zkill${RST}      ⬡  zombie cleanup na hostu (safe; --root pro su_daemon)\n"
-            printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "system" "(sys)" "Baterie, hlasitost, svítilna, vibrace, toast, schránka, notifikace, řeč"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "network" "(net)" "Wi-Fi (scan/connect), mobilní síť, GPS lokace, TerminalMap, ifconfig"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "vpn" "" "Sledování provozu, TLS MITM, AI verdikty, bypass, ignore relace, SNI fallback"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "device" "(dev)" "Device Admin, baterie opt., dotyková gesta (tap/swipe/text/scroll), accessibility UI"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "distro" "" "Správa PRoot kontejnerů (kali, parrot): list, ps, kill, backup, restore, login"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "usb" "" "USB Host (list, claim, bulk, control), raw USB bridge ioctl, USB gadget g2"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Pi-Coding Agent LLM konfig (provider, key, model), dotazy a chat"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "fix" "" "Oprava dpkg locků, zaseklých balíčků, vlastnictví souborů a PRoot git .l2s linků"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "desktop" "(vnc)" "Spuštění a správa headless GUI prostředí (Xvfb / VNC / X11)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "apps" "" "Statistiky využití aplikací v popředí za 24h"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "api" "" "Správa sdílení LocalApiServer rozhraní (0.0.0.0 vs 127.0.0.1)"
             echo ""
             separator
-            echo "  ${DIM}Pro detaily: nh help <kategorie>${RST}"
-            echo "  ${DIM}Seznam všech příkazů: nh list${RST}"
+            echo "  ${WHITE}${BOLD}SPECIALNÍ NÁSTROJE:${RST}"
+            echo ""
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "float" "Plovoucí terminálové okno přes ostatní aplikace (here, close, new)"
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "ashell" "Únik z PRootu (root@kali) do prostředí Android hostitelské aplikace"
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "zkill" "Bezpečný úklid osiřelých zombie procesů na hostitelském systému"
+            echo ""
+            separator
+            echo "  ${YELLOW}Tipy:${RST}"
+            echo "    • Detailní nápověda pro kategorii: ${GREEN}nh help <kategorie>${RST} nebo ${GREEN}nh <kategorie> -h${RST}"
+            echo "    • Kompletní abecední seznam příkazů: ${GREEN}nh list${RST}"
+            echo "    • Rychlé zkratky: ${GREEN}nh sys battery${RST}, ${GREEN}nh net wifi${RST}, ${GREEN}nh dev tap 500 1000${RST}, ${GREEN}nh ps${RST}, ${GREEN}nh stat${RST}"
             echo ""
             ;;
     esac
@@ -1612,219 +1641,257 @@ help_dispatch() {
 help_system() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}SYSTEM${RST}"
+    echo "  ${WHITE}${BOLD}SYSTEM (sys)${RST} ${DIM}– Interakce se systémovými funkcemi Androidu${RST}"
     separator
-    echo "  ${GREEN}battery${RST}                 Stav baterie (%, bar, teplota, napětí)"
-    echo "  ${GREEN}volume [N]${RST}              Zobrazit/nastavit hlasitost (0-15)"
-    echo "  ${GREEN}torch on|off${RST}            Zapnout/vypnout svítilnu"
-    echo "  ${GREEN}vibrate [ms]${RST}            Vibrovat (výchozí 500ms)"
-    echo "  ${GREEN}toast <msg>${RST}             Android Toast notifikace"
-    echo "  ${GREEN}clipboard get|set [text]${RST} Číst/zapsat schránku"
-    echo "  ${GREEN}notification -t T -c C${RST}  Systémová notifikace"
-    echo "  ${GREEN}speech${RST}                  Rozpoznávání řeči"
+    echo "  ${GREEN}battery${RST}                         Stav baterie (procento, grafický ukazatel, teplota, napětí, nabíjení)"
+    echo "  ${GREEN}volume [stream] [level]${RST}         Zobrazit nebo nastavit hlasitost (music, ring, system, alarm)"
+    echo "  ${GREEN}torch <on|off>${RST}                 Zapnout nebo vypnout svítilnu LED"
+    echo "  ${GREEN}vibrate [ms]${RST}                   Vibrace zařízení na zadanou dobu (výchozí: 500 ms)"
+    echo "  ${GREEN}toast <zpráva>${RST}                 Zobrazit Android Toast notifikaci na obrazovce"
+    echo "  ${GREEN}clipboard <get|set [text]>${RST}      Přečíst nebo uložit text do systémové schránky"
+    echo "  ${GREEN}notification -t <titulek> -c <obsah>${RST} Zobrazit systémovou notifikaci v liště"
+    echo "  ${GREEN}speech${RST}                          Aktivovat rozpoznávání řeči (STT) přes hostitelské API"
+    echo "  ${GREEN}ashell${RST}                          Escape do host user shellu"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh sys battery"
+    echo "    nh system volume music 15"
+    echo "    nh system torch on"
+    echo "    nh system clipboard set "Tajný klíč 12345""
+    echo "    nh system toast "Operace dokončena""
     echo ""
 }
 
 help_network() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}NETWORK${RST}"
+    echo "  ${WHITE}${BOLD}NETWORK (net)${RST} ${DIM}– Správa síťových rozhraní, Wi-Fi, celulární sítě a GPS${RST}"
     separator
-    echo "  ${GREEN}wifi [on|off|scan|connect <ssid> <pass>]${RST}  Správa Wi-Fi"
-    echo "  ${GREEN}cell${RST}                     Informace o mobilní síti"
-    echo "  ${GREEN}location${RST}                 GPS souřadnice"
-    echo "  ${GREEN}map${RST}                      TerminalMap s aktuální lokací"
-    echo "  ${GREEN}ifconfig [rozhraní]${RST}      Síťová rozhraní"
+    echo "  ${GREEN}wifi [status]${RST}                  Stav Wi-Fi adaptéru a připojení"
+    echo "  ${GREEN}wifi <on|off>${RST}                 Zapnout nebo vypnout Wi-Fi rozhraní"
+    echo "  ${GREEN}wifi scan${RST}                     Vyhledat dostupné Wi-Fi sítě v okolí"
+    echo "  ${GREEN}wifi connect <ssid> <heslo>${RST}    Připojit k Wi-Fi síti"
+    echo "  ${GREEN}cell${RST}                          Informace o mobilní síti (operátor, typ sítě, síla signálu, cell ID)"
+    echo "  ${GREEN}location${RST}                      Získat aktuální GPS souřadnice (zeměpisná šířka, délka, přesnost)"
+    echo "  ${GREEN}map${RST}                           Zobrazit TerminalMap s vizualizací aktuální polohy v terminálu"
+    echo "  ${GREEN}ifconfig [rozhraní]${RST}           Vypisuje síťová rozhraní z Android hostitele (wlan0, rmnet, tun, atd.)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh net wifi scan"
+    echo "    nh net wifi connect MyHomeSSID WPA2Password"
+    echo "    nh net cell"
+    echo "    nh net location"
+    echo "    nh net ifconfig wlan0"
     echo ""
 }
 
 help_vpn() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}VPN${RST}"
+    echo "  ${WHITE}${BOLD}VPN & TRAFFIC INSPECTION${RST} ${DIM}– Správa vestavěného VPN firewallu a MITM proxy${RST}"
     separator
-    echo "  ${GREEN}status${RST}                   Stav VPN (běží/packety/traffic)"
-    echo "  ${GREEN}start|stop${RST}               Spustit/zastavit VPN"
-    echo "  ${GREEN}on [cmd]${RST}                 Zapnout VPN (volitelně spustit příkaz)"
-    echo "  ${GREEN}off [cmd]${RST}                Vypnout VPN (volitelně spustit příkaz a obnovit)"
-    echo "  ${GREEN}logs [-f] [-n N] [-g P] [json|legacy]${RST}  MITM provoz"
-    echo "  ${GREEN}mitm on|off${RST}              Zapnout/vypnout TLS MITM"
-    echo "  ${GREEN}mitm status${RST}              Stav MITM + aktivní session"
-    echo "  ${GREEN}mitm ca${RST}                  Export Root CA certifikátu"
-    echo "  ${GREEN}ai pending${RST}               Čekající flow na AI rozhodnutí"
-    echo "  ${GREEN}ai history <ip>${RST}           Historie adresy"
-    echo "  ${GREEN}ai verdict <ip> <v> [conf]${RST} Nastavit verdikt (allowed/blocked)"
-    echo "  ${GREEN}ai summary${RST}                Denní statistika"
-    echo "  ${GREEN}ai notify <ip> [question]${RST} Allow/Deny notifikace"
-    echo "  ${GREEN}mitm selective <ip> [sec]${RST}  Selective MITM capture (max 60s)"
-    echo "  ${GREEN}bypass <cmd>${RST}             Spustit příkaz mimo VPN"
-    echo "  ${GREEN}ignore on|off|status${RST}     VPN bypass pro aktuální session"
-    echo "  ${GREEN}sni-fallback get|set|clear${RST} Správa SNI fallback hostnamu"
+    echo "  ${GREEN}status${RST}                        Stav VPN engine (stav běhu, přenesené bajty, přenesené pakety)"
+    echo "  ${GREEN}start | stop${RST}                  Spustit nebo zastavit VPN službu"
+    echo "  ${GREEN}on [příkaz] | off [příkaz]${RST}    Aktivovat/deaktivovat VPN (volitelně spustit příkaz v chráněném režimu)"
+    echo "  ${GREEN}logs [-f] [-n N] [-g P] [json]${RST} Prohlížení zachyceného MITM/DNS/IP provozu"
+    echo "  ${GREEN}mitm <on|off|status|ca>${RST}        Správa TLS MITM dekódování a export Root CA certifikátu"
+    echo "  ${GREEN}mitm selective <ip> [sekundy]${RST} Selective TLS capture pro konkrétní IP adresu (max 60s)"
+    echo "  ${GREEN}ai pending | history | summary${RST} Přehled AI analýzy provozu a bezpečnostních verdiktů"
+    echo "  ${GREEN}ai verdict <ip> <allowed|blocked>${RST} Ruční nastavení verdiktu pro IP adresu"
+    echo "  ${GREEN}bypass <příkaz>${RST}               Spustit zadaný příkaz zcela mimo VPN tunel"
+    echo "  ${GREEN}ignore <on|off|status>${RST}          Přidat/odebrat aktuální terminálovou session do VPN bypassu"
+    echo "  ${GREEN}sni-fallback <get|set|clear>${RST}   Správa náhradního SNI hostnamu pro nešifrované relace"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh vpn status"
+    echo "    nh vpn logs -n 50 -g github.com"
+    echo "    nh vpn mitm ca > /tmp/nethunter-root-ca.crt"
+    echo "    nh vpn ignore on"
+    echo "    nh vpn bypass curl https://ifconfig.me"
     echo ""
 }
 
 help_device() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}DEVICE${RST}"
+    echo "  ${WHITE}${BOLD}DEVICE (dev)${RST} ${DIM}– Správa oprávnění, gesta a automatizace UI${RST}"
     separator
-    echo "  ${GREEN}admin status|request|lock${RST}         Správa Device Admin"
-    echo "  ${GREEN}battery-optimize status|request${RST}  Ignorování optimalizace baterie"
-    echo "  ${GREEN}accessibility [--json]${RST}      Získat hierarchii obrazovky"
-    echo "  ${GREEN}tap <x> <y>${RST}                Kliknutí na souřadnice"
-    echo "  ${GREEN}click <text>${RST}              Kliknutí podle textu"
-    echo "  ${GREEN}longclick <text>${RST}          Dlouhé kliknutí podle textu"
-    echo "  ${GREEN}swipe <x1> <y1> <x2> <y2> [ms]${RST}  Přetažení (gestum)"
-    echo "  ${GREEN}text <text> [target]${RST}       Vložení textu"
-    echo "  ${GREEN}scroll forward|backward [text]${RST}  Rolování"
-    echo "  ${GREEN}global back|home|recents|...${RST}  Globální akce zařízení"
+    echo "  ${GREEN}admin <status|request|lock>${RST}        Stav Device Admin, vyžádání práv nebo zamknutí obrazovky"
+    echo "  ${GREEN}battery-optimize <status|request>${RST} Kontrola a vyžádání výjimky z optimalizace baterie (Doze)"
+    echo "  ${GREEN}accessibility [--json]${RST}           Získat ucelenou stromovou hierarchii prvků na obrazovce"
+    echo "  ${GREEN}tap <x> <y>${RST}                       Simulovat dotyk na zadané souřadnice X Y"
+    echo "  ${GREEN}click <text>${RST}                     Kliknout na tlačítko nebo prvek podle zobrazovaného textu"
+    echo "  ${GREEN}longclick <text>${RST}                 Dlouhé stisknutí prvku podle textu"
+    echo "  ${GREEN}swipe <x1> <y1> <x2> <y2> [ms]${RST}  Gesto přetažení (swipe) z X1,Y1 do X2,Y2"
+    echo "  ${GREEN}text <text> [target]${RST}             Napsat text do aktivního vstupního pole"
+    echo "  ${GREEN}scroll <forward|backward> [text]${RST}  Rolování seznamu vpřed nebo vzad"
+    echo "  ${GREEN}global <back|home|recents|...>${RST}   Provést globální tlačítkovou akci (Zpět, Domů, Přehled)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh dev tap 500 1200"
+    echo "    nh dev click "Přihlásit se""
+    echo "    nh dev swipe 500 1500 500 300 250"
+    echo "    nh dev global back"
     echo ""
 }
 
 help_usb() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}USB HOST${RST}"
+    echo "  ${WHITE}${BOLD}USB HOST & GADGET${RST} ${DIM}– Nízkoúrovňová komunikace s USB zařízeními${RST}"
     separator
-    echo "  ${GREEN}list${RST}                    Vypsat připojená USB zařízení"
-    echo "  ${GREEN}permission <device>${RST}     Vyžádat oprávnění pro zařízení"
-    echo "  ${GREEN}claim <device> [iface]${RST}  Claimovat rozhraní (výchozí 0)"
-    echo "  ${GREEN}release <device>${RST}        Uvolnit rozhraní"
-    echo "  ${GREEN}send <device> <file>${RST}    Poslat soubor (raw bulk OUT)"
-    echo "  ${GREEN}bulk <device> <ep> [file]${RST} Bulk transfer (IN/OUT podle endpointu)"
-    echo "  ${GREEN}control <device> [req] [val] [idx] [file]${RST}  Control transfer"
+    echo "  ${GREEN}list${RST}                              Vypsat připojená USB zařízení a jejich USB ID"
+    echo "  ${GREEN}permission <zařízení>${RST}               Vyžádat si Android USB Host oprávnění pro zařízení"
+    echo "  ${GREEN}claim <zařízení> [rozhraní]${RST}          Převzít (claim) USB rozhraní (výchozí: 0)"
+    echo "  ${GREEN}release <zařízení>${RST}                  Uvolnit převzaté USB rozhraní"
+    echo "  ${GREEN}send <zařízení> <soubor>${RST}            Odeslat binární soubor (raw bulk OUT)"
+    echo "  ${GREEN}bulk <zařízení> <endpoint> [soubor]${RST} Send/Receive Bulk transfer podle endpointu"
+    echo "  ${GREEN}control <zařízení> [req] [val] [idx]${RST} Spustit USB Control transfer"
+    echo "  ${GREEN}bridge <dev> [iface] <cmd> [args...]${RST} USB passthrough přes UNIX socket (fd export)"
+    echo "  ${GREEN}gadget <status|g1|g2|setup|host...>${RST} Ovládání Magisk custom_usb_g2_setup modulu"
     echo ""
-    echo "  ${YELLOW}Příklad:${RST}"
+    echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh usb list"
     echo "    nh usb permission /dev/bus/usb/001/002"
     echo "    nh usb claim /dev/bus/usb/001/002 0"
-    echo "    nh usb send /dev/bus/usb/001/002 exploit.bin"
+    echo "    nh usb bulk /dev/bus/usb/001/002 0x81 payload.bin"
+    echo "    nh usb gadget status"
     echo ""
 }
 
 help_fix() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}FIX${RST}  ${DIM}– oprava balíčků a vlastnictví souborů${RST}"
+    echo "  ${WHITE}${BOLD}FIX${RST} ${DIM}– Diagnostika a automatická oprava balíčků, práv a symlinků${RST}"
     separator
-    echo "  ${GREEN}pkg <name>${RST}        Mockne zaseklý postinst skript balíčku"
-    echo "                         (/bin/true), odblokuje dpkg --configure -a"
-    echo "  ${GREEN}auto${RST}              Opraví všechny rozbité balíčky"
-    echo "  ${GREEN}permission <path>${RST} Vrátí vlastnictví cesty na UID aplikace"
-    echo "                         (přes magisk daemon, běží mimo proot) — pro"
-    echo "                         soubory vytvořené pod real rootem."
-    echo "  ${GREEN}git [path]${RST}         Materializuje PRoot link2symlink (.l2s) symlinky"
-    echo "                         v .git na reálné soubory (po git clone/gc/repack)"
-    echo "                         — chrání repa před rozbitím, když .l2s zmizí."
+    echo "  ${GREEN}pkg <balíček>${RST}           Nahradí zaseklý postinst skript balíčku (/bin/true) a odblokuje dpkg"
+    echo "  ${GREEN}auto${RST}                   Opraví všechny rozbité dpkg/apt balíčky a dokončí konfiguraci"
+    echo "  ${GREEN}permission <cesta>${RST}     Obnoví vlastnictví cesty/souborů na UID aplikace (přes Root daemon)"
+    echo "  ${GREEN}git [cesta]${RST}            Materializuje PRoot link2symlink (.l2s) symlinky v .git repozitáři na reálné soubory"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh fix pkg libc6"
     echo "    nh fix auto"
-    echo "    nh fix permission /root/muj-adresar"
-    echo "    nh fix git"
+    echo "    nh fix pkg libc6"
+    echo "    nh fix permission /data/data/com.linux_core/files"
+    echo "    nh fix git /root/my-repo"
     echo ""
 }
 
 help_ashell() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}ASHELL${RST}  ${DIM}– escape proot → host app shell${RST}"
+    echo "  ${WHITE}${BOLD}ASHELL${RST} ${DIM}– Únik z PRootu do hostitelského prostředí Android aplikace${RST}"
     separator
-    echo "  ${GREEN}ashell${RST}                  Spustí interaktivní shell mimo PRoot,"
-    echo "                              v kontextu Android aplikace"
-    echo "                              (uid aplikace, HOME = filesDir)."
-    echo "                              Otevře nové okno TerminalActivity."
+    echo "  ${GREEN}ashell${RST}                 Spustí interaktivní Android host shell (v mimo-PRoot kontextu)"
+    echo "                             s UID aplikace a HOME=/data/data/com.linux_core/files."
+    echo "                             Otevře novou relaci v samostatném terminálovém okně."
     echo ""
     echo "  ${YELLOW}Příklad:${RST}"
-    echo "    nh ashell                  # otevře host shell v novém okně"
-    echo ""
-    echo "  ${DIM}  Slouží k úniku z izolovaného PRootu (root@kali)"
-    echo "  do hostitelského prostředí, kde můžete pracovat"
-    echo "  s interními cestami aplikace (/data/data/com.linux_core/...).${RST}"
+    echo "    nh ashell"
     echo ""
 }
 
 help_zkill() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}ZKILL${RST}  ${DIM}– diagnostika a úklid zombie procesů na Android hostu${RST}"
+    echo "  ${WHITE}${BOLD}ZKILL${RST} ${DIM}– Čištění osiřelých zombie procesů na Android hostiteli${RST}"
     separator
-    echo "  ${GREEN}zkill${RST}             Bezpečný režim: SIGCHLD všem rodičům, pak"
-    echo "                        TERM/KILL jen na app procesy (uid >= 10000)."
-    echo "                        Systémové procesy a vlastní app se NIKDY nezabíjí."
-    echo "  ${GREEN}zkill --root${RST}      Navíc povolí restart bezpečných root démonů"
-    echo "                        (su_daemon) — jejich osiřelé zombie zreapuje init."
-    echo "                        su_daemon je restartovatelný (Root Bridge / relace)."
+    echo "  ${GREEN}zkill${RST}                  Bezpečný režim: pošle SIGCHLD všem rodičovským procesům,"
+    echo "                             a poté ukončí pouze neaktivní procesy aplikace (uid >= 10000)."
+    echo "                             Systémové procesy ani aktivní relace se nikdy nezabíjejí."
+    echo "  ${GREEN}zkill --root${RST}           Navíc restartuje bezpečné root démony (su_daemon), čímž reape osiřelé procesy."
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh zkill                  # safe cleanup"
-    echo "    nh zkill --root           # + restart su_daemon (pokud je rodič zombie)"
+    echo "    nh zkill"
+    echo "    nh zkill --root"
     echo ""
 }
 
 help_distro() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}DISTRO${RST}  ${DIM}– proot-distro-like správa kontejnerů${RST}"
+    echo "  ${WHITE}${BOLD}DISTRO${RST} ${DIM}– Správa PRoot kontejnerů a Linux distribučních prostředí${RST}"
     separator
-    echo "  ${GREEN}list${RST}                    Seznam distro (kali, parrot) + stav"
-    echo "  ${GREEN}status${RST}                 Alias pro list"
-    echo "  ${GREEN}ps${RST}                     Aktivní session (ID, distro, vpn-ignored)"
-    echo "  ${GREEN}kill <session_id>${RST}      Ukončí session (potvrzení --force)"
-    echo "  ${GREEN}remove <id>${RST}            Smaže rootfs (kali|parrot, --force)"
-    echo "  ${GREEN}backup [id] [-o file]${RST}  Záloha rootfs do tar.gz (výchozí kali, Downloads)"
-    echo "  ${GREEN}restore <file>${RST}         Obnova rootfs ze souboru v Downloads (--force)"
-    echo "  ${GREEN}login <distro> [--bind src:dst ...]${RST}"
-    echo "                           Vstoupí do distro z host ashellu (proot-distro-like)."
-    echo "                           --bind připojí host cestu do guestu (absolutní src i dst)."
+    echo "  ${GREEN}list | status${RST}          Přehled nainstalovaných distribučních kontejnerů (kali, parrot) a jejich stav"
+    echo "  ${GREEN}ps${RST}                     Zobrazit aktivní běžící terminálové relace (ID relace, distro, VPN status)"
+    echo "  ${GREEN}kill <session_id>${RST}       Ukončit konkrétní relaci kontejneru (volitelně --force)"
+    echo "  ${GREEN}remove <distro>${RST}         Odstranit rootfs zvolené distribuce (kali | parrot, vyžaduje --force)"
+    echo "  ${GREEN}backup [distro] [-o s]${RST}  Vytvořit kompletní zálohu rootfs do archivního souboru .tar.gz"
+    echo "  ${GREEN}restore <soubor>${RST}        Obnovit distribuční kontejner ze zálohy .tar.gz"
+    echo "  ${GREEN}login <distro> [--bind src:dst]${RST} Vstoupit do distribuce s možnosti připojení hostitelských složek"
     echo ""
-    echo "  ${YELLOW}Příklad:${RST}"
+    echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh distro list"
     echo "    nh distro ps"
-    echo "    nh distro kill sess_123 --force"
-    echo "    nh distro remove parrot --force"
-    echo "    nh distro backup kali"
-    echo "    nh distro login parrot --bind /sdcard/cil:/cil"
-    echo "    nh distro login kali --bind /data/user/0/com.linux_core/files/cil:/cil"
-    echo ""
-    echo "  ${DIM}  Volá LocalApiServer (127.0.0.1:1337). Z hostitele bez rootu:"
-    echo "  curl http://127.0.0.1:1337/distro/ps (localhost bez auth).${RST}"
+    echo "    nh distro kill sess_102 --force"
+    echo "    nh distro backup kali -o /sdcard/Download/kali-backup.tar.gz"
+    echo "    nh distro login parrot --bind /sdcard/tools:/tools"
     echo ""
 }
 
-list_cmds() {
+help_agent() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy:${RST}"
+    echo "  ${WHITE}${BOLD}AGENT (ai)${RST} ${DIM}– Pi-Coding Agent a LLM rozhraní${RST}"
+    separator
+    echo "  ${GREEN}config [--provider P] [--key K] [--model M]${RST} Konfigurace poskytovatele LLM (gemini, openai, anthropic)"
+    echo "  ${GREEN}start | stop | status${RST}                          Správa na pozadí běžícího agent bridge démona"
+    echo "  ${GREEN}ask <dotaz>${RST}                                    Jednorázová otázka/příkaz pro AI agenta"
+    echo "  ${GREEN}chat${RST}                                          Spustit interaktivní chatovací relaci s AI agentem"
     echo ""
-    for cmd in \
-        "system battery" "system volume" "system torch" "system vibrate" \
-        "system toast" "system clipboard" "system notification" "system speech" \
-        "network wifi" "network cell" "network location" "network map" "network ifconfig" \
-        "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
-        "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
-        "agent config" "agent start" "agent stop" "agent status" "agent ask" "agent chat" \
-        "log" "log set" \
-        "device admin" "device battery-optimize" "device accessibility" \
-        "device tap" "device click" "device longclick" "device swipe" \
-        "device text" "device scroll" "device global" \
-        "api share" \
-        "desktop start" "desktop stop" "desktop status" \
-        "fix pkg" "fix auto" "fix permission" \
-        "apps usage" \
-        "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
-        "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \
-        "zkill" "zkill --root" \
-        "float" "float here" "float close" \
-        "ashell"; do
-        printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
-    done
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh agent config --provider gemini --key MY_API_KEY --model gemini-2.0-flash"
+    echo "    nh agent ask "Jaký příkaz v Linuxu najde největší soubory v /var/log?""
+    echo "    nh agent chat"
     echo ""
 }
 
-usage() {
-    help_dispatch
-    exit 1
+help_log() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}LOG (logs)${RST} ${DIM}– Prohlížení a filtrování systémových logů aplikace${RST}"
+    separator
+    echo "  ${GREEN}log [-n N] [-g vzor] [-K]${RST}   Prohlížet zvýrazněný logcat (N řádků, filtrování regexem, -K skryje touch/klávesnici)"
+    echo "  ${GREEN}log set lvl <1-5>${RST}           Nastavit úroveň logování aplikace (1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh log -n 100"
+    echo "    nh log -g VpnNatEngine -K"
+    echo "    nh log set lvl 4"
+    echo ""
+}
+
+help_desktop() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DESKTOP (vnc)${RST} ${DIM}– VNC / Headless X11 grafické prostředí${RST}"
+    separator
+    echo "  ${GREEN}start${RST}                  Spustit headless X11 server (Xvfb) a desktopové prostředí"
+    echo "  ${GREEN}stop${RST}                   Ukončit grafické prostředí a uvolnit paměť"
+    echo "  ${GREEN}status${RST}                 Zobrazit stav běhu X serveru a připojených klientů"
+    echo ""
+    echo "  ${YELLOW}Poznámka:${RST} Rozlišení a barevnou hloubku lze upravit proměnnými ${CYAN}NH_XRES${RST} (např. 1280x720) a ${CYAN}NH_XDEPTH${RST} (např. 24)."
+    echo ""
+}
+
+help_apps() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}APPS${RST} ${DIM}– Statistika využití aplikací na zařízení${RST}"
+    separator
+    echo "  ${GREEN}usage${RST}                  Přehled nejčastěji používaných aplikací v popředí za posledních 24 hodin"
+    echo ""
+}
+
+help_api() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}API${RST} ${DIM}– Správa přístupnosti rozhraní LocalApiServer${RST}"
+    separator
+    echo "  ${GREEN}share on${RST}               Povolit přístup k API z okolní sítě (bind na 0.0.0.0)"
+    echo "  ${GREEN}share off${RST}              Omezit přístup k API pouze na localhost (bind na 127.0.0.1)"
+    echo "  ${GREEN}share status${RST}           Zobrazit aktuální stav sdílení LocalApiServeru"
+    echo ""
 }
 
 # ─── ASHELL (escape proot → host app user shell) ─────────
@@ -1910,8 +1977,8 @@ compat_dispatch() {
 
 usb_dispatch() {
     case "$1" in
-        list)           usb_list ;;
-        permission)     shift; usb_permission "$@" ;;
+        list|ls)        usb_list ;;
+        permission|perm) shift; usb_permission "$@" ;;
         claim)          shift; usb_claim "$@" ;;
         release)        shift; usb_release "$@" ;;
         send)           shift; usb_send "$@" ;;
@@ -1919,8 +1986,10 @@ usb_dispatch() {
         control)        shift; usb_control "$@" ;;
         bridge)         shift; usb_bridge "$@" ;;
         gadget)         shift; usb_gadget "$@" ;;
+        help|-h|--help) help_usb ;;
         *)
-            echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge|gadget"
+            echo "Použití: nh usb list|permission|claim|release|send|bulk|control|bridge|gadget"
+            echo "Pro nápovědu: nh usb help"
             exit 1 ;;
     esac
 }
@@ -2524,6 +2593,18 @@ except Exception as e:
 '
 }
 
+list_cmds() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy a zkratky:${RST}"
+    echo ""
+    for cmd in         "system battery (sys bat)" "system volume (sys vol)" "system torch" "system vibrate (sys vib)"         "system toast" "system clipboard (sys clip)" "system notification (sys notif)" "system speech"         "network wifi (net wifi)" "network cell (net cell)" "network location (net loc)" "network map" "network ifconfig (net if)"         "vpn status (stat)" "vpn start" "vpn stop" "vpn on" "vpn off"         "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback"         "agent config (ai config)" "agent start" "agent stop" "agent status" "agent ask" "agent chat"         "log (logs)" "log set"         "device admin (dev admin)" "device battery-optimize (dev opt)" "device accessibility (dev acc)"         "device tap" "device click" "device longclick" "device swipe"         "device text" "device scroll" "device global"         "api share"         "desktop start (vnc start)" "desktop stop (vnc stop)" "desktop status (vnc status)"         "fix pkg" "fix auto" "fix permission" "fix git"         "apps usage"         "usb list (usb ls)" "usb permission (usb perm)" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget"         "distro list (ls)" "distro ps (ps)" "distro kill" "distro remove" "distro backup" "distro restore" "distro login"         "zkill" "zkill --root"         "float" "float here" "float close"         "ashell"; do
+        printf "  ${GREEN}%-42s${RST}
+" "nh ${cmd}"
+    done
+    echo ""
+}
+
 # ─── MAIN ──────────────────────────────────────────────────
 
 # Check if invoked via compat symlink
@@ -2551,23 +2632,26 @@ CMD="$1"
 shift
 
 case "$CMD" in
-    system)     system_dispatch "$@" ;;
-    network)    network_dispatch "$@" ;;
-    vpn)        vpn_dispatch "$@" ;;
-    agent)      agent_dispatch "$@" ;;
-    log)        log_dispatch "$@" ;;
-    device)     device_dispatch "$@" ;;
-    api)        api_dispatch "$@" ;;
-    desktop)    desktop_dispatch "$@" ;;
-    fix)        fix_dispatch "$@" ;;
-    apps)       apps_dispatch "$@" ;;
-    usb)        usb_dispatch "$@" ;;
-    distro)     distro_dispatch "$@" ;;
-    zkill)      zkill_dispatch "$@" ;;
-    float)      float_dispatch "$@" ;;
-    ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
-    help|--help|-h) help_dispatch "$@" ;;
-    list)       list_cmds ;;
+    system|sys)             system_dispatch "$@" ;;
+    network|net)            network_dispatch "$@" ;;
+    vpn)                    vpn_dispatch "$@" ;;
+    agent|ai)               agent_dispatch "$@" ;;
+    log|logs)               log_dispatch "$@" ;;
+    device|dev)             device_dispatch "$@" ;;
+    api)                    api_dispatch "$@" ;;
+    desktop|vnc)            desktop_dispatch "$@" ;;
+    fix)                    fix_dispatch "$@" ;;
+    apps)                   apps_dispatch "$@" ;;
+    usb)                    usb_dispatch "$@" ;;
+    distro)                 distro_dispatch "$@" ;;
+    zkill)                  zkill_dispatch "$@" ;;
+    float)                  float_dispatch "$@" ;;
+    ashell)                 exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
+    stat)                   vpn_dispatch status "$@" ;;
+    ps)                     distro_dispatch ps "$@" ;;
+    ls)                     distro_dispatch list "$@" ;;
+    help|--help|-h)         help_dispatch "$@" ;;
+    list)                   list_cmds ;;
     *)
         # Try compat as last resort
         compat_dispatch "nethunter-$CMD" "$@" 2>/dev/null && exit $?
