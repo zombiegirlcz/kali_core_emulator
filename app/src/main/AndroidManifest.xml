@@ -309,6 +309,26 @@
                 <action android:name="com.linux_core.action.BIND_BRIDGE" />
             </intent-filter>
         </service>
+
+        <!-- Shizuku klientský provider (Apache 2.0, RikkaApps/Shizuku-API).
+             Shizuku server (běžící pod shell/root UID) sem posílá binder přes
+             ContentProvider.call("sendBinder"). Bez tohoto provideru nemá
+             server kam binder doručit → rish v guestu hlásí
+             "Server is not running".
+
+             - android:permission=INTERACT_ACROSS_USERS_FULL je POŽADAVEK na
+               volajícího (shell UID ji má, běžné appky ne) — chrání provider
+               před zneužitím.
+             - android:multiprocess=false (ShizukuProvider si to v attachInfo
+               vynucuje).
+             - android:exported=true (server běží mimo naši appku). -->
+        <provider
+            android:name="com.linux_core.core.LinuxCoreShizukuProvider"
+            android:authorities="com.linux_core.shizuku"
+            android:exported="true"
+            android:multiprocess="false"
+            android:directBootAware="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     </application>
 
     <!-- Signature-level permission: bind povolen pouze appkám se stejným signing key -->

@@ -549,8 +549,46 @@ shizuku -c "pm list packages"   # vyžaduje běžící Shizuku server + API_V23 
 | Server APK | `assets/usr/lib/shizuku.apk` | Bundlovaný Shizuku 13.6.0 (kontejner serveru) |
 | Rish script | `assets/usr/bin/rish.sh` | Rish wrapper pro PRoot |
 | Rish dex | `assets/usr/bin/rish_shizuku.dex` | Rish Java třídy |
-| Manager | `ShizukuManager.kt` | Režimy, `su` detekce, exec |
+| Manager | `ShizukuManager.kt` | Režimy, `su` detekce, exec, start strategie |
 | API | `LocalApiServer.kt` | `/shizuku/*` endpointy |
+
+#### Klientská část Shizuku (Apache 2.0, RikkaApps/Shizuku-API)
+
+Aby server mohl doručit binder do naší appky, musí být v appce zaregistrovaný
+`ShizukuProvider` (ContentProvider) — server do něj volá
+`ContentProvider.call("sendBinder")`. Bez něj rish v guestu hlásí
+`Server is not running` (server nemá kam binder poslat).
+
+Zdroje (zkopírované z `RikkaApps/Shizuku-API`, `LICENSE` Apache 2.0):
+
+| Soubor | Účel |
+|---|---|
+| `rikka/shizuku/Shizuku.java` | klientská API (binder, permission, listeners) |
+| `rikka/shizuku/ShizukuBinderWrapper.java` | proxy binder přes `transactRemote` |
+| `rikka/shizuku/ShizukuProvider.java` | přijímá binder od serveru |
+| `rikka/shizuku/ShizukuRemoteProcess.java` | `Process` nad `newProcess` |
+| `rikka/shizuku/SystemServiceHelper.java` | reflexe `ServiceManager` |
+| `rikka/shizuku/ShizukuApiConstants.java` | konstanty protokolu |
+| `moe/shizuku/api/BinderContainer.java` | Parcelable wrapper binderu |
+| `rikka/sui/Sui.java` | Sui (Magisk modul) — vypnuto |
+| `app/src/main/aidl/moe/shizuku/server/*.aidl` | AIDL kontrakty serveru |
+
+Registrace v `AndroidManifest.xml`:
+
+```xml
+<provider
+    android:name="com.linux_core.core.LinuxCoreShizukuProvider"
+    android:authorities="com.linux_core.shizuku"
+    android:exported="true"
+    android:multiprocess="false"
+    android:directBootAware="true"
+    android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+```
+
+`LinuxCoreShizukuProvider` je tenký wrapper, který v `onCreate()` volá
+`disableAutomaticSuiInitialization()` — automatická Sui inicializace jde přes
+hidden-API reflexi (`ServiceManager.getService`) a na Androidu 9+ by shodila
+inicializaci provideru (NPE v `SystemServiceHelper`). Sui nepoužíváme.
 
 ### Podmínky
 

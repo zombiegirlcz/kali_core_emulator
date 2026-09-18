@@ -38,6 +38,21 @@ enum class ShizukuMode(val uid: Int?) {
         }
 }
 
+/**
+ * Jak nastartovat bundlovaný Shizuku server pro režim `--none` (non-root cesta).
+ *
+ * - [ALREADY_RUNNING] — už běží, nic nedělat
+ * - [VIA_SU]          — root k dispozici: nakopírovat do /data/local/tmp a spustit pod shell UID
+ * - [VIA_ADB]         — bez rootu: použít adb (wireless debugging) k přenosu + spuštění
+ * - [UNAVAILABLE]     — ani su, ani adb; eskalace není možná
+ */
+enum class ServerStartPlan {
+    ALREADY_RUNNING,
+    VIA_SU,
+    VIA_ADB,
+    UNAVAILABLE,
+}
+
 object ShizukuManager {
     private const val TAG = "ShizukuManager"
 
@@ -104,6 +119,59 @@ object ShizukuManager {
     /** Veřejný přístup k nalezené `su` binárce (pro /shizuku/status); null když žádná. */
     @JvmStatic
     fun suPath(): String? = findSu()
+
+    // ─── Startovací strategie Shizuku serveru (non-root cesta) ───────────────
+
+    /**
+     * Rozhodne, jak nastartovat server. Čistá funkce — testovatelná bez zařízení.
+     * Pořadí priorit: už běží → su (spolehlivější) → adb → nedostupné.
+     */
+    @JvmStatic
+    fun planServerStart(
+        running: Boolean,
+        suAvailable: Boolean,
+        adbAvailable: Boolean,
+    ): ServerStartPlan =
+        when {
+            running -> ServerStartPlan.ALREADY_RUNNING
+            suAvailable -> ServerStartPlan.VIA_SU
+            adbAvailable -> ServerStartPlan.VIA_ADB
+            else -> ServerStartPlan.UNAVAILABLE
+        }
+
+    /**
+     * Příkazy, které jako root nakopírují server + APK z app filesDir do
+     * [tmpDir] (`/data/local/tmp`), kde k nim má shell UID přístup a je
+     * spustitelný (app filesDir je pro shell UID `rwx------`).
+     */
+    @JvmStatic
+    fun buildSuServerStartCommands(
+        filesDir: String,
+        tmpDir: String = "/data/local/tmp",
+    ): List<String> =
+        listOf(
+            "cp $filesDir/shizuku-server $tmpDir/shizuku-server",
+            "cp $filesDir/shizuku.apk $tmpDir/shizuku.apk",
+            "chmod 755 $tmpDir/shizuku-server",
+            "chmod 644 $tmpDir/shizuku.apk",
+        )
+
+    /**
+     * Příkaz spouštějící server s odkazem na APK (starter `--apk=` z něj čte
+     * Java třídy serveru). Volající přidá `su 2000 -c` a přesměrování na log.
+     */
+    @JvmStatic
+    fun buildSuServerStartCommand(tmpDir: String = "/data/local/tmp"): String =
+        "$tmpDir/shizuku-server --apk=$tmpDir/shizuku.apk"
+
+    /** Je zapnuté bezdrátové ladění? (adbd běží) */
+    private fun isAdbAvailable(): Boolean =
+        try {
+            Runtime.getRuntime().exec(arrayOf("getprop", "init.svc.adbd"))
+                .inputStream.bufferedReader().readText().trim() == "running"
+        } catch (_: Exception) {
+            false
+        }
 
     /**
      * Vrací true, pokud zařízení má funkční `su` (Magisk apod.).
@@ -410,65 +478,151 @@ object ShizukuManager {
      * If Termux with android-tools is installed, we could try that.
      */
     private fun startWithAdb(context: Context, apkPath: String?): Boolean {
-        // Check if adbd is running
-        val adbRunning = try {
-            Runtime.getRuntime().exec(arrayOf("getprop", "init.svc.adbd"))
-                .inputStream.bufferedReader().readText().trim() == "running"
-        } catch (e: Exception) { false }
-
-        if (!adbRunning) {
-            Log.w(TAG, "adbd not running — wireless debugging not enabled")
-            return false
-        }
-
-        // Deploy server binary and bundled APK
         val serverBin = deployServer(context) ?: return false
         val bundledApk = deployBundledApk(context) ?: return false
+        val su = suPath()
+        val adbAvailable = isAdbAvailable()
 
-        // Build the ADB command the user must run on their computer
-        val adbCmd = "adb shell ${serverBin.absolutePath} --apk=${bundledApk.absolutePath}"
+        val plan = planServerStart(running = false, suAvailable = su != null, adbAvailable = adbAvailable)
+        Log.i(
+            TAG,
+            "startServer: plan=$plan su=$su adb=$adbAvailable " +
+                "server=$serverBin apk=$bundledApk",
+        )
 
-        Log.i(TAG, "adbd running. User must run on computer: $adbCmd")
-
-        // Try Termux if available (bonus: can run ADB locally)
-        if (tryTermuxAdbStart(context, adbCmd)) {
-            Thread.sleep(2000)
-            val newStatus = status(context)
-            if (newStatus.running) {
-                if (newStatus.pid != null) {
-                    File(context.filesDir, PID_FILE).writeText(newStatus.pid.toString())
-                }
-                Log.i(TAG, "Shizuku server started via Termux ADB")
-                return true
+        return when (plan) {
+            ServerStartPlan.ALREADY_RUNNING -> true
+            ServerStartPlan.UNAVAILABLE -> {
+                Log.w(TAG, "Nelze nastartovat Shizuku server: chybi su i adb")
+                false
             }
+            ServerStartPlan.VIA_SU -> startViaSu(context, su!!)
+            ServerStartPlan.VIA_ADB -> startViaAdb(context)
         }
-
-        // Show command to user (handled by UI)
-        return true // adbd is running, server CAN be started via ADB
     }
 
     /**
-     * Try to start via Termux ADB if available (bonus feature).
+     * Root cesta: nakopíruje server + APK do /data/local/tmp (přes `su -c cp`)
+     * a spustí server pod **shell UID** (`su 2000 -c`) — stejná práva jako
+     * Shizuku spuštěný přes adb, ale bez nutnosti wireless debug párování.
+     *
+     * Ověření běhu: `su 2000 -c pidof shizuku_server` (app UID by proces
+     * neviděl, protože běží pod uid 2000).
      */
-    private fun tryTermuxAdbStart(context: Context, adbCmd: String): Boolean {
+    private fun startViaSu(context: Context, su: String): Boolean {
+        val tmpDir = "/data/local/tmp"
         return try {
-            // Check for adb in system PATH (host is com.linux_core, not Termux)
-            val adbPaths = listOf(
+            // 1. Nasadit server + APK do tmpDir (shell UID tam čte i spouští)
+            for (cmd in buildSuServerStartCommands(context.filesDir.absolutePath, tmpDir)) {
+                val p = ProcessBuilder(su, "-c", cmd).redirectErrorStream(true).start()
+                if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) p.destroy()
+            }
+
+            // 2. Spustit server pod shell UID (non-root, shoduje se s filozofií Shizuku)
+            val startCmd = buildSuServerStartCommand(tmpDir) + " > $tmpDir/shizuku.log 2>&1 &"
+            ProcessBuilder(su, "2000", "-c", startCmd)
+                .redirectErrorStream(true).start()
+                .waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            Thread.sleep(2500)
+
+            // 3. Ověřit běh (pidof pod su, app UID by shell proces neviděl)
+            val pidOut = ProcessBuilder(su, "2000", "-c", "pidof shizuku_server 2>/dev/null || true")
+                .redirectErrorStream(true).start()
+                .inputStream.bufferedReader().readText().trim()
+            val pid = pidOut.split(" ").firstNotNullOfOrNull { it.toIntOrNull() }
+            if (pid != null) {
+                File(context.filesDir, PID_FILE).writeText(pid.toString())
+                Log.i(TAG, "Shizuku server spusten pres su (shell uid, pid=$pid)")
+                true
+            } else {
+                val log = File("$tmpDir/shizuku.log").let { if (it.exists()) it.readText().take(1000) else "(zadny log)" }
+                Log.w(TAG, "Shizuku server nenabehl. Log: $log")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startViaSu selhalo: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Non-root cesta: server musí spustit `adb shell` (shell UID). App kontext
+     * `adb` binárku nemá — zkusíme ji najít v guest rootfs (Kali/Parrot ji mají
+     * v `/usr/bin/adb`) a přes ni spustit `shizuku-server` na hostu.
+     *
+     * Když `adb` není k dispozici, vrátíme false s jasným logem; uživatel musí
+     * zapnout bezdrátové ladění a spustit server ručně.
+     */
+    private fun startViaAdb(context: Context): Boolean {
+        val adb = findAdbBinary(context)
+        if (adb == null) {
+            Log.w(TAG, "startViaAdb: adb binarka nenalezena (app kontext ani guest rootfs)")
+            return false
+        }
+
+        val tmpDir = "/data/local/tmp"
+        val server = "$tmpDir/shizuku-server"
+        val apk = "$tmpDir/shizuku.apk"
+        return try {
+            // adb push z app filesDir (přes /sdcard by to bylo pomalé) není možný
+            // — app UID nemůže psát do /data/local/tmp. Použijeme host cestu
+            // z app filesDir přes `adb shell` + `run-as`, což je jediná cesta bez rootu.
+            val pkg = context.packageName
+            val files = context.filesDir.absolutePath
+            val push = "run-as $pkg cat $files/shizuku-server > $server && " +
+                "run-as $pkg cat $files/shizuku.apk > $apk && " +
+                "chmod 755 $server && chmod 644 $apk"
+            val pushProc = ProcessBuilder(adb, "shell", push).redirectErrorStream(true).start()
+            val pushOut = pushProc.inputStream.bufferedReader().readText()
+            if (!pushProc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || pushProc.exitValue() != 0) {
+                Log.w(TAG, "startViaAdb: push selhal (rc=${pushProc.exitValue()}): $pushOut")
+                return false
+            }
+
+            val startCmd = buildSuServerStartCommand(tmpDir) + " > $tmpDir/shizuku.log 2>&1 &"
+            ProcessBuilder(adb, "shell", startCmd).redirectErrorStream(true).start()
+                .waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            Thread.sleep(2500)
+
+            val pidOut = ProcessBuilder(adb, "shell", "pidof shizuku_server 2>/dev/null || true")
+                .redirectErrorStream(true).start()
+                .inputStream.bufferedReader().readText().trim()
+            val pid = pidOut.split(" ").firstNotNullOfOrNull { it.toIntOrNull() }
+            if (pid != null) {
+                File(context.filesDir, PID_FILE).writeText(pid.toString())
+                Log.i(TAG, "Shizuku server spusten pres adb (shell uid, pid=$pid)")
+                true
+            } else {
+                val log = ProcessBuilder(adb, "shell", "cat $tmpDir/shizuku.log 2>/dev/null || true")
+                    .redirectErrorStream(true).start()
+                    .inputStream.bufferedReader().readText().take(1000)
+                Log.w(TAG, "startViaAdb: server nenabehl. Log: $log")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startViaAdb selhalo: ${e.message}")
+            false
+        }
+    }
+
+    /** Najde adb binárku: app kontext (`/system/bin`) nebo guest rootfs (Kali/Parrot). */
+    private fun findAdbBinary(context: Context): String? {
+        val direct =
+            listOf(
                 "/system/bin/adb",
                 "/system/xbin/adb",
                 "/data/local/tmp/adb",
-                "/data/data/com.linux_core/files/usr/bin/adb"
-            )
-            val adbFile = adbPaths.firstOrNull { File(it).exists() && File(it).canExecute() }
-                ?: return false
+                File(context.filesDir, "usr/bin/adb").absolutePath,
+            ).firstOrNull { File(it).exists() && File(it).canExecute() }
+        if (direct != null) return direct
 
-            // Run adb from system
-            val proc = Runtime.getRuntime().exec(arrayOf(adbFile, "shell", adbCmd.substringAfter("adb shell ")))
-            proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-            proc.exitValue() == 0
-        } catch (e: Exception) {
-            false
-        }
+        val distroRoot = File(context.filesDir, "nh/distro")
+        return distroRoot.listFiles()?.asSequence()
+            ?.flatMap { d ->
+                sequenceOf(File(d, "usr/bin/adb"), File(d, "bin/adb"))
+            }
+            ?.firstOrNull { it.exists() && it.canExecute() }
+            ?.absolutePath
     }
 
     /**
