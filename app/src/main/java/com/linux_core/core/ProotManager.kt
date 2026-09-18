@@ -453,6 +453,15 @@ object ProotManager {
         if (!hasAssets) return
 
         for (name in names) {
+            // proot/loader a shizuku artefakty v assets/usr/bin se nasazuji
+            // cilene (deployArchBinaries -> $PREFIX/bin/{proot,loader},
+            // deployShizukuRish -> guest /usr/local/bin). Genericky deployDir
+            // by je zbytecne kopiroval i pod arch jmenem (~2 MB navic).
+            if (name.startsWith("proot-static-") || name.startsWith("loader-static-") ||
+                name == "rish.sh" || name == "rish_shizuku.dex"
+            ) {
+                continue
+            }
             val target = File(targetDir, name)
             try {
                 deployIfChanged(context, "$assetDir/$name", target, executable)
@@ -600,7 +609,8 @@ object ProotManager {
 
     /**
      * Deploy arch-specific binarek do usr/bin.
-     * Jen STATICKE buildy: assets/proot-static-$suffix a assets/loader-static-$suffix.
+     * Jen STATICKE buildy: assets/usr/bin/proot-static-$suffix a
+     * assets/usr/bin/loader-static-$suffix (layout 2026-09-18).
      * Dynamicke fallbacky (proot-$suffix, loader-$suffix, libtalloc-$suffix.so)
      * byly odstraneny z repa 2026-09-08 a talloc je do proot-static slinkovan
      * staticky (libtalloc.a, viz tools/modal_build.py).
@@ -616,8 +626,8 @@ object ProotManager {
         val usrBin = File(context.filesDir, "usr/bin")
         usrBin.mkdirs()
 
-        deployArchAsset(context, "proot-static-$suffix", File(usrBin, "proot"))
-        deployArchAsset(context, "loader-static-$suffix", File(usrBin, "loader"))
+        deployArchAsset(context, "usr/bin/proot-static-$suffix", File(usrBin, "proot"))
+        deployArchAsset(context, "usr/bin/loader-static-$suffix", File(usrBin, "loader"))
     }
 
     /**
@@ -1340,7 +1350,7 @@ object ProotManager {
         } else {
             // Force redeploy if asset size differs (updated script)
             try {
-                val assetSize = context.assets.open("shizuku/rish.sh").use { it.available().toLong() }
+                val assetSize = context.assets.open("usr/bin/rish.sh").use { it.available().toLong() }
                 if (rishScript.length() != assetSize) needsDeploy = true
             } catch (e: Exception) {
                 needsDeploy = true
@@ -1355,7 +1365,7 @@ object ProotManager {
         }
 
         try {
-            context.assets.open("shizuku/rish.sh").use { input ->
+            context.assets.open("usr/bin/rish.sh").use { input ->
                 rishScript.outputStream().use { output -> input.copyTo(output) }
             }
             rishScript.setExecutable(true, false)
@@ -1367,7 +1377,7 @@ object ProotManager {
         }
 
         try {
-            context.assets.open("shizuku/rish_shizuku.dex").use { input ->
+            context.assets.open("usr/bin/rish_shizuku.dex").use { input ->
                 rishDex.outputStream().use { output -> input.copyTo(output) }
             }
             rishDex.setReadable(true, false)
@@ -1717,73 +1727,21 @@ object ProotManager {
         val motd = StringBuilder()
         motd.append(NL)
 
-        if (isParrot) {
-            val motdParrot = File(rootfsDir, "etc/motd-parrot").readText()
-            motd.append(NL)
-            motd.append(motdParrot)
-        } else {
-            val motdKali = File(rootfsDir, "etc/motd-kali").readText()
-            motd.append(NL)
-            motd.append(motdKali)
+        // Banner (logo + quick-help) je KOMPLETNE v assetu motd-kali / motd-parrot.
+        // Kotlin uz quick-help znovu nepridava - drive se tim banner tiskl 2x
+        // (asset + tento append). Logo se obarvi stejnou barvou jako v
+        // nethunter-welcome.sh: parrot zluta, kali modra.
+        val motdAsset = if (isParrot) "etc/motd-parrot" else "etc/motd-kali"
+        val rawMotd = File(rootfsDir, motdAsset).readText()
+        val logoColor = if (isParrot) "\u001b[1;33m" else "\u001b[1;34m"
+        val motdLines = rawMotd.lines()
+        var logoEnd = 0
+        for ((i, l) in motdLines.withIndex()) {
+            if (l.isNotBlank()) logoEnd = i else if (i > 0) break
         }
-
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;32m     nh network location\u001b[0m              GPS + Google Maps").append(NL)
-        motd.append("  \u001b[0;32m     nh network cell\u001b[0m                 mobilní síť (5G/4G/3G)").append(NL)
-        motd.append("  \u001b[0;32m     nh network map\u001b[0m                  OSM terminálová mapa").append(NL)
-        motd.append("  \u001b[0;32m     nh system battery\u001b[0m               stav baterie").append(NL)
-        motd.append("  \u001b[0;32m     nh network wifi\u001b[0m                 WiFi info").append(NL)
-        motd.append("  \u001b[0;32m     nh system volume\u001b[0m               hlasitost").append(NL)
-        motd.append("  \u001b[0;32m     nh system torch\u001b[0m               svítilna").append(NL)
-        motd.append("  \u001b[0;32m     nh system toast\u001b[0m                Android toast").append(NL)
-        motd.append("  \u001b[0;32m     nh system vibrate\u001b[0m             vibrace").append(NL)
-        motd.append("  \u001b[0;32m     nh system tts-speak\u001b[0m           přečíst text nahlas").append(NL)
-        motd.append("  \u001b[0;32m     nh system notification\u001b[0m         systémová notifikace").append(NL)
-        motd.append("  \u001b[0;32m     nh system clipboard\u001b[0m           schránka (čtení/zápis)").append(NL)
-        motd.append("  \u001b[0;32m     nh log [-n N] [-g P]\u001b[0m          logcat viewer").append(NL)
-        motd.append("  \u001b[0;32m     nh usb list\u001b[0m                    USB zařízení (OTG)").append(NL)
-        motd.append("  \u001b[0;32m     ifconfig [rozhraní]\u001b[0m                 síťová rozhraní (přes Android API)").append(NL)
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[1;33m   🛡️  VPN\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn on|off\u001b[0m                  VPN zapnout/vypnout").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn mitm on|off\u001b[0m            TLS MITM zapnout/vypnout").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn mitm status\u001b[0m            MITM stav + session").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn logs\u001b[0m                    MITM formátované logy").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn status\u001b[0m                  stav VPN").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn bypass\u001b[0m                 obejít VPN pro příkaz").append(NL)
-        motd.append("  \u001b[0;33m     nh vpn ignore\u001b[0m                VPN bypass pro session").append(NL)
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[1;33m   🔑  ROOT BRIDGE (host Magisk su)\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     sudo id\u001b[0m                       root na hostiteli (uid=0)").append(NL)
-        motd.append("  \u001b[0;33m     su -c 'prikaz'\u001b[0m               spustit příkaz jako root").append(NL)
-        motd.append("  \u001b[0;33m     su\u001b[0m                          hostitelský root shell").append(NL)
-        motd.append("  \u001b[0;33m     ifconfig\u001b[0m                     wlan0 + tun0 (i bez su)").append(NL)
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[1;33m   🖥️  DESKTOP\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     nh desktop start|stop|status\u001b[0m  XFCE4 GUI (X server :1 → external X11 launcher)").append(NL)
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[1;33m   </>  EDITOR (VS Code)\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;33m     code-server-ctl start\u001b[0m           VS Code v prohlížeči (:8443)").append(NL)
-        motd.append("  \u001b[0;33m     code-server-ctl status\u001b[0m          stav editoru").append(NL)
-        motd.append("  \u001b[0;33m     code-server-ctl password\u001b[0m         zobrazit heslo").append(NL)
-        motd.append("  \u001b[0;33m     code-server-ctl install\u001b[0m         nainstalovat code-server").append(NL)
-        motd.append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
-        motd.append("  \u001b[0;90m     📖 nh list  → seznam všech příkazů\u001b[0m").append(NL)
-        motd.append("  \u001b[0;90m     📖 nh help  → nápověda\u001b[0m").append(NL)
-        motd.append("  \u001b[0;90m     📖 cat nethunter_docs.md  → plná dokumentace\u001b[0m").append(NL)
-        motd.append("  \u001b[1;36m─────────────────────────────────────────────────────────\u001b[0m").append(NL)
+        val logo = motdLines.subList(0, logoEnd + 1).joinToString(NL)
+        val rest = motdLines.subList(logoEnd + 1, motdLines.size).joinToString(NL)
+        motd.append(logoColor).append(logo).append("\u001b[0m").append(NL).append(rest)
         motd.append(NL)
 
         try {

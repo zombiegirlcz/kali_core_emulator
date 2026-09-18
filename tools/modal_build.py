@@ -946,8 +946,12 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     _proot_run([strip, proot_bin])
     _proot_run([strip, loader_bin])
 
-    dest_proot = os.path.join(assets_dir, f"proot-static-{suffix}")
-    dest_loader = os.path.join(assets_dir, f"loader-static-{suffix}")
+    # Layout od 2026-09-18: staticke binarky ziji v assets/usr/bin (ne v koreni
+    # assets). ProotManager je odtud nasazuje do $PREFIX/bin/{proot,loader}.
+    usr_bin = os.path.join(assets_dir, "usr", "bin")
+    os.makedirs(usr_bin, exist_ok=True)
+    dest_proot = os.path.join(usr_bin, f"proot-static-{suffix}")
+    dest_loader = os.path.join(usr_bin, f"loader-static-{suffix}")
     shutil.copy2(proot_bin, dest_proot)
     shutil.copy2(loader_bin, dest_loader)
 
@@ -1116,14 +1120,14 @@ def list_volume():
 _STATE_FILE = f"/vol/.build_state.{GITHUB_REPO.replace('/', '_')}.json"
 
 _PROOT_OUTPUTS = [
-    "app/src/main/assets/proot-static-aarch64",
-    "app/src/main/assets/proot-static-arm",
-    "app/src/main/assets/proot-static-i686",
-    "app/src/main/assets/proot-static-x86_64",
-    "app/src/main/assets/loader-static-aarch64",
-    "app/src/main/assets/loader-static-arm",
-    "app/src/main/assets/loader-static-i686",
-    "app/src/main/assets/loader-static-x86_64",
+    "app/src/main/assets/usr/bin/proot-static-aarch64",
+    "app/src/main/assets/usr/bin/proot-static-arm",
+    "app/src/main/assets/usr/bin/proot-static-i686",
+    "app/src/main/assets/usr/bin/proot-static-x86_64",
+    "app/src/main/assets/usr/bin/loader-static-aarch64",
+    "app/src/main/assets/usr/bin/loader-static-arm",
+    "app/src/main/assets/usr/bin/loader-static-i686",
+    "app/src/main/assets/usr/bin/loader-static-x86_64",
 ]
 
 _NATIVE_COMPONENTS = {

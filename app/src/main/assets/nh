@@ -82,7 +82,7 @@ system_dispatch() {
         toast) shift; system_toast "$@" ;;
         clipboard|clip) shift; system_clipboard "$@" ;;
         notification|notif) shift; system_notification "$@" ;;
-        speech|stt) system_speech ;;
+        speech|stt|tts-speak) system_speech ;;
         ashell) system_ashell ;;
         help|-h|--help) help_system ;;
         *) echo "Použití: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; echo "Pro nápovědu: nh system help"; exit 1 ;;
@@ -1598,6 +1598,7 @@ help_dispatch() {
         ashell)                   help_ashell ;;
         zkill)                    help_zkill ;;
         float)                    help_float ;;
+        docs|manual)              help_docs ;;
         all)                      list_cmds ;;
         *)
             banner
@@ -1650,7 +1651,7 @@ help_system() {
     echo "  ${GREEN}toast <zpráva>${RST}                 Zobrazit Android Toast notifikaci na obrazovce"
     echo "  ${GREEN}clipboard <get|set [text]>${RST}      Přečíst nebo uložit text do systémové schránky"
     echo "  ${GREEN}notification -t <titulek> -c <obsah>${RST} Zobrazit systémovou notifikaci v liště"
-    echo "  ${GREEN}speech${RST}                          Aktivovat rozpoznávání řeči (STT) přes hostitelské API"
+    echo "  ${GREEN}speech | tts-speak${RST}              Aktivovat rozpoznávání řeči (STT) přes hostitelské API"
     echo "  ${GREEN}ashell${RST}                          Escape do host user shellu"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
@@ -2596,11 +2597,60 @@ except Exception as e:
 list_cmds() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy a zkratky:${RST}"
+    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy (krátké aliasy):${RST}"
     echo ""
-    for cmd in         "system battery (sys bat)" "system volume (sys vol)" "system torch" "system vibrate (sys vib)"         "system toast" "system clipboard (sys clip)" "system notification (sys notif)" "system speech"         "network wifi (net wifi)" "network cell (net cell)" "network location (net loc)" "network map" "network ifconfig (net if)"         "vpn status (stat)" "vpn start" "vpn stop" "vpn on" "vpn off"         "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback"         "agent config (ai config)" "agent start" "agent stop" "agent status" "agent ask" "agent chat"         "log (logs)" "log set"         "device admin (dev admin)" "device battery-optimize (dev opt)" "device accessibility (dev acc)"         "device tap" "device click" "device longclick" "device swipe"         "device text" "device scroll" "device global"         "api share"         "desktop start (vnc start)" "desktop stop (vnc stop)" "desktop status (vnc status)"         "fix pkg" "fix auto" "fix permission" "fix git"         "apps usage"         "usb list (usb ls)" "usb permission (usb perm)" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget"         "distro list (ls)" "distro ps (ps)" "distro kill" "distro remove" "distro backup" "distro restore" "distro login"         "zkill" "zkill --root"         "float" "float here" "float close"         "ashell"; do
+    for cmd in \
+        "sys battery" "sys volume [N]" "sys torch <on|off>" "sys vibrate [ms]" \
+        "sys toast <msg>" "sys clipboard get|set [text]" "sys notification -t T -c C" "sys speech" \
+        "net wifi [on|off|scan|connect]" "net cell" "net location" "net map" "net ifconfig [iface]" \
+        "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
+        "vpn logs" "vpn mitm on|off|status|ca" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
+        "ai config" "ai start" "ai stop" "ai status" "ai ask" "ai chat" \
+        "log [-n N] [-g P]" "log set lvl 1-5" \
+        "dev admin" "dev battery-optimize" "dev accessibility" \
+        "dev tap <x> <y>" "dev click <text>" "dev longclick <text>" "dev swipe <x1> <y1> <x2> <y2>" \
+        "dev text <text>" "dev scroll <fwd|back>" "dev global <back|home|recents>" \
+        "api share on|off|status" \
+        "vnc start" "vnc stop" "vnc status" \
+        "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
+        "apps usage" \
+        "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
+        "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
+        "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
     done
+    echo ""
+}
+
+# ─── DOCS ──────────────────────────────────────────────────
+
+docs_open() {
+    local doc=""
+    for cand in "${HOME:-/root}/nethunter_docs.md" "/root/nethunter_docs.md" "/usr/local/share/nethunter_docs.md"; do
+        if [ -f "$cand" ]; then doc="$cand"; break; fi
+    done
+    if [ -z "$doc" ]; then
+        echo "[-] nethunter_docs.md nenalezen (očekáván v ~/)" >&2
+        exit 1
+    fi
+    if command -v less >/dev/null 2>&1; then
+        LESS="-R -F" less "$doc"
+    elif command -v more >/dev/null 2>&1; then
+        more "$doc"
+    else
+        cat "$doc"
+    fi
+}
+
+help_docs() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DOCS${RST} ${DIM}– Kompletní dokumentace NetHunter AI Operator${RST}"
+    separator
+    echo "  ${GREEN}docs${RST}                         Otevře nethunter_docs.md v pageru (man-like formát)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh docs"
     echo ""
 }
 
@@ -2646,6 +2696,7 @@ case "$CMD" in
     zkill)                  zkill_dispatch "$@" ;;
     float)                  float_dispatch "$@" ;;
     ashell)                 exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
+    docs|manual)            docs_open "$@" ;;
     stat)                   vpn_dispatch status "$@" ;;
     ps)                     distro_dispatch ps "$@" ;;
     ls)                     distro_dispatch list "$@" ;;

@@ -21,9 +21,10 @@ object ShizukuManager {
     private const val TAG = "ShizukuManager"
 
     // Asset paths
-    private const val ASSET_SERVER = "shizuku/libshizuku.so"
-    private const val ASSET_RISH_DEX = "shizuku/rish_shizuku.dex"
-    private const val ASSET_APK = "shizuku/shizuku.apk"
+    // Cesty v APK (od 2026-09-18): .so -> assets/usr/lib, skripty/dex -> assets/usr/bin
+    private const val ASSET_SERVER = "usr/lib/libshizuku.so"
+    private const val ASSET_RISH_DEX = "usr/bin/rish_shizuku.dex"
+    private const val ASSET_APK = "usr/lib/shizuku.apk"
 
     // FilesDir paths
     private const val SERVER_BIN = "shizuku-server"
@@ -109,7 +110,7 @@ object ShizukuManager {
 
         val rishScript = File(binDir, "shizuku")
         try {
-            context.assets.open("shizuku/rish.sh").use { input ->
+            context.assets.open("usr/bin/rish.sh").use { input ->
                 rishScript.outputStream().use { output -> input.copyTo(output) }
             }
             rishScript.setExecutable(true, false)
@@ -367,7 +368,7 @@ object ShizukuManager {
         var shouldDeploy = !target.exists() || target.length() == 0L
         if (!shouldDeploy) {
             try {
-                val assetSize = context.assets.open("shizuku/shizuku.apk").use { it.available().toLong() }
+                val assetSize = context.assets.open(ASSET_APK).use { it.available().toLong() }
                 if (target.length() != assetSize) shouldDeploy = true
             } catch (e: Exception) {
                 shouldDeploy = true
@@ -375,7 +376,7 @@ object ShizukuManager {
         }
         if (!shouldDeploy) return target
         return try {
-            context.assets.open("shizuku/shizuku.apk").use { input ->
+            context.assets.open(ASSET_APK).use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
             target.setReadable(true, false)
