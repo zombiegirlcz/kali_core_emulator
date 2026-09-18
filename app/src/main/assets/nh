@@ -1644,7 +1644,7 @@ help_system() {
     echo "  ${WHITE}${BOLD}SYSTEM (sys)${RST} ${DIM}– Interakce se systémovými funkcemi Androidu${RST}"
     separator
     echo "  ${GREEN}battery${RST}                         Stav baterie (procento, grafický ukazatel, teplota, napětí, nabíjení)"
-    echo "  ${GREEN}volume [stream] [level]${RST}         Zobrazit nebo nastavit hlasitost (music, ring, system, alarm)"
+    echo "  ${GREEN}volume [level]${RST}                 Zobrazit nebo nastavit hlasitost hudby (0-15)"
     echo "  ${GREEN}torch <on|off>${RST}                 Zapnout nebo vypnout svítilnu LED"
     echo "  ${GREEN}vibrate [ms]${RST}                   Vibrace zařízení na zadanou dobu (výchozí: 500 ms)"
     echo "  ${GREEN}toast <zpráva>${RST}                 Zobrazit Android Toast notifikaci na obrazovce"
@@ -1655,10 +1655,10 @@ help_system() {
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh sys battery"
-    echo "    nh system volume music 15"
+    echo "    nh system volume 15"
     echo "    nh system torch on"
-    echo "    nh system clipboard set "Tajný klíč 12345""
-    echo "    nh system toast "Operace dokončena""
+    echo '    nh system clipboard set "Tajný klíč 12345"'
+    echo '    nh system toast "Operace dokončena"'
     echo ""
 }
 
@@ -1729,7 +1729,7 @@ help_device() {
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh dev tap 500 1200"
-    echo "    nh dev click "Přihlásit se""
+    echo '    nh dev click "Přihlásit se"'
     echo "    nh dev swipe 500 1500 500 300 250"
     echo "    nh dev global back"
     echo ""
@@ -1772,7 +1772,7 @@ help_fix() {
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh fix auto"
     echo "    nh fix pkg libc6"
-    echo "    nh fix permission /data/data/com.linux_core/files"
+    echo "    nh fix permission /root/muj-adresar"
     echo "    nh fix git /root/my-repo"
     echo ""
 }
@@ -1816,7 +1816,7 @@ help_distro() {
     echo "  ${GREEN}ps${RST}                     Zobrazit aktivní běžící terminálové relace (ID relace, distro, VPN status)"
     echo "  ${GREEN}kill <session_id>${RST}       Ukončit konkrétní relaci kontejneru (volitelně --force)"
     echo "  ${GREEN}remove <distro>${RST}         Odstranit rootfs zvolené distribuce (kali | parrot, vyžaduje --force)"
-    echo "  ${GREEN}backup [distro] [-o s]${RST}  Vytvořit kompletní zálohu rootfs do archivního souboru .tar.gz"
+    echo "  ${GREEN}backup [distro]${RST}  Vytvořit kompletní zálohu rootfs do Downloads (.tar.gz)"
     echo "  ${GREEN}restore <soubor>${RST}        Obnovit distribuční kontejner ze zálohy .tar.gz"
     echo "  ${GREEN}login <distro> [--bind src:dst]${RST} Vstoupit do distribuce s možnosti připojení hostitelských složek"
     echo ""
@@ -1841,7 +1841,7 @@ help_agent() {
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh agent config --provider gemini --key MY_API_KEY --model gemini-2.0-flash"
-    echo "    nh agent ask "Jaký příkaz v Linuxu najde největší soubory v /var/log?""
+    echo '    nh agent ask "Jaký příkaz v Linuxu najde největší soubory v /var/log?"'
     echo "    nh agent chat"
     echo ""
 }
@@ -2599,8 +2599,7 @@ list_cmds() {
     echo "  ${WHITE}${BOLD}Všechny dostupné příkazy a zkratky:${RST}"
     echo ""
     for cmd in         "system battery (sys bat)" "system volume (sys vol)" "system torch" "system vibrate (sys vib)"         "system toast" "system clipboard (sys clip)" "system notification (sys notif)" "system speech"         "network wifi (net wifi)" "network cell (net cell)" "network location (net loc)" "network map" "network ifconfig (net if)"         "vpn status (stat)" "vpn start" "vpn stop" "vpn on" "vpn off"         "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback"         "agent config (ai config)" "agent start" "agent stop" "agent status" "agent ask" "agent chat"         "log (logs)" "log set"         "device admin (dev admin)" "device battery-optimize (dev opt)" "device accessibility (dev acc)"         "device tap" "device click" "device longclick" "device swipe"         "device text" "device scroll" "device global"         "api share"         "desktop start (vnc start)" "desktop stop (vnc stop)" "desktop status (vnc status)"         "fix pkg" "fix auto" "fix permission" "fix git"         "apps usage"         "usb list (usb ls)" "usb permission (usb perm)" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget"         "distro list (ls)" "distro ps (ps)" "distro kill" "distro remove" "distro backup" "distro restore" "distro login"         "zkill" "zkill --root"         "float" "float here" "float close"         "ashell"; do
-        printf "  ${GREEN}%-42s${RST}
-" "nh ${cmd}"
+        printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
     done
     echo ""
 }
@@ -2628,7 +2627,7 @@ esac
 
 # Normal dispatch
 CMD="$1"
-[ -z "$CMD" ] && { usage; exit 1; }
+[ -z "$CMD" ] && { help_dispatch; exit 1; }
 shift
 
 case "$CMD" in
@@ -2655,6 +2654,6 @@ case "$CMD" in
     *)
         # Try compat as last resort
         compat_dispatch "nethunter-$CMD" "$@" 2>/dev/null && exit $?
-        usage
+        help_dispatch
         ;;
 esac
