@@ -57,15 +57,33 @@ class ShizukuServerStartTest {
     @Test
     fun `su commands copy server and apk into data local tmp`() {
         val cmds = ShizukuManager.buildSuServerStartCommands("/data/user/0/com.linux_core/files")
-        assertEquals(4, cmds.size)
+        // 4x cp (server, apk, 3x .so) + mkdir + 3x chmod = 9
+        assertEquals(9, cmds.size)
         assertTrue(cmds[0].startsWith("cp "))
         assertTrue(cmds[0].contains("/data/user/0/com.linux_core/files/shizuku-server"))
         assertTrue(cmds[0].contains("/data/local/tmp/shizuku-server"))
         assertTrue(cmds[1].startsWith("cp "))
         assertTrue(cmds[1].contains("/data/user/0/com.linux_core/files/shizuku.apk"))
         assertTrue(cmds[1].contains("/data/local/tmp/shizuku.apk"))
-        assertTrue(cmds[2].startsWith("chmod 755 /data/local/tmp/shizuku-server"))
-        assertTrue(cmds[3].startsWith("chmod 644 /data/local/tmp/shizuku.apk"))
+    }
+
+    @Test
+    fun `su commands copy native libs into lib arm64`() {
+        // Starter cte .so z <apk_dir>/lib/<abi>/; bez nich app_process child umre
+        // na UnsatisfiedLinkError: dlopen failed: "/data/local/tmp/lib/arm64/librish.so".
+        val cmds = ShizukuManager.buildSuServerStartCommands("/f")
+        assertTrue(cmds.any { it.contains("mkdir -p /data/local/tmp/lib/arm64") })
+        assertTrue(cmds.any { it.contains("/f/usr/lib/librish.so /data/local/tmp/lib/arm64/librish.so") })
+        assertTrue(cmds.any { it.contains("/f/usr/lib/libadb.so /data/local/tmp/lib/arm64/libadb.so") })
+        assertTrue(cmds.any { it.contains("/f/usr/lib/libshizuku.so /data/local/tmp/lib/arm64/libshizuku.so") })
+    }
+
+    @Test
+    fun `su commands set exec and read bits`() {
+        val cmds = ShizukuManager.buildSuServerStartCommands("/f")
+        assertTrue(cmds.any { it.startsWith("chmod 755 /data/local/tmp/shizuku-server") })
+        assertTrue(cmds.any { it.startsWith("chmod 644 /data/local/tmp/shizuku.apk") })
+        assertTrue(cmds.any { it.contains("chmod 644 /data/local/tmp/lib/arm64/") })
     }
 
     @Test
@@ -82,6 +100,7 @@ class ShizukuServerStartTest {
         val cmds = ShizukuManager.buildSuServerStartCommands("/x", tmpDir = "/opt/shz")
         assertTrue(cmds[0].endsWith("/opt/shz/shizuku-server"))
         assertTrue(cmds[1].endsWith("/opt/shz/shizuku.apk"))
+        assertTrue(cmds.any { it.contains("/opt/shz/lib/arm64/librish.so") })
         assertTrue(ShizukuManager.buildSuServerStartCommand("/opt/shz").contains("--apk=/opt/shz/shizuku.apk"))
     }
 }

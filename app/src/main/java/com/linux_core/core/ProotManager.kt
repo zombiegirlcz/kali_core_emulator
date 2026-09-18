@@ -1727,21 +1727,14 @@ object ProotManager {
         val motd = StringBuilder()
         motd.append(NL)
 
-        // Banner (logo + quick-help) je KOMPLETNE v assetu motd-kali / motd-parrot.
-        // Kotlin uz quick-help znovu nepridava - drive se tim banner tiskl 2x
-        // (asset + tento append). Logo se obarvi stejnou barvou jako v
-        // nethunter-welcome.sh: parrot zluta, kali modra.
+        // Banner (logo + quick-help) je KOMPLETNE v assetu motd-kali / motd-parrot,
+        // VCETNE ANSI barev (generuje tools/colorize_motd.py): logo kali 1;34
+        // (modra) / parrot 1;33 (zluta), oddelovace 1;36, sekce 📡 1;32 s prikazy
+        // 0;32, ostatni sekce 1;33 s prikazy 0;33, paticka 0;90.
+        // Kotlin obsah jen zkopiruje 1:1 (zadne dalsi obarvovani - jinak by se
+        // barvy zdvojily a prvni radek by mel dva ESC prefixy).
         val motdAsset = if (isParrot) "etc/motd-parrot" else "etc/motd-kali"
-        val rawMotd = File(rootfsDir, motdAsset).readText()
-        val logoColor = if (isParrot) "\u001b[1;33m" else "\u001b[1;34m"
-        val motdLines = rawMotd.lines()
-        var logoEnd = 0
-        for ((i, l) in motdLines.withIndex()) {
-            if (l.isNotBlank()) logoEnd = i else if (i > 0) break
-        }
-        val logo = motdLines.subList(0, logoEnd + 1).joinToString(NL)
-        val rest = motdLines.subList(logoEnd + 1, motdLines.size).joinToString(NL)
-        motd.append(logoColor).append(logo).append("\u001b[0m").append(NL).append(rest)
+        motd.append(File(rootfsDir, motdAsset).readText())
         motd.append(NL)
 
         try {

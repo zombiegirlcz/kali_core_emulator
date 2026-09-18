@@ -2657,12 +2657,69 @@ shi_dispatch() {
     esac
 }
 
+# Non-root start: server pres adb (shell UID), ZADNE su.
+# App kontext adb binarku nema, ale guest ji ma (/usr/bin/adb).
+# Predpoklad: uzivatel jiz udelal `adb pair` + `adb connect` z guesta.
+shi_start_none() {
+    local SRC="/mnt/app"
+    local TMP="/data/local/tmp"
+    local SERVER="$TMP/shizuku-server"
+    local APK="$TMP/shizuku.apk"
+    local LIBDIR="$TMP/lib/arm64"
+
+    if ! adb devices 2>/dev/null | grep -q "device$"; then
+        echo "[-] adb neni pripojeny. Nejdřív spáruj:" >&2
+        echo "      adb pair <host>:<port> <pairing-code>" >&2
+        echo "      adb connect <host>:<port>" >&2
+        return 1
+    fi
+
+    local missing=""
+    for f in shizuku-server shizuku.apk usr/lib/librish.so usr/lib/libadb.so usr/lib/libshizuku.so; do
+        [ -f "$SRC/$f" ] || missing="$missing $f"
+    done
+    if [ -n "$missing" ]; then
+        echo "[-] Chybi v $SRC:$missing" >&2
+        echo "    (spust appku aspoň jednou, aby se nasadily assety)" >&2
+        return 1
+    fi
+
+    echo "[*] Pushuji server + apk + .so do $TMP ..."
+    adb push "$SRC/shizuku-server"     "$SERVER" >/dev/null 2>&1 || { echo "[-] push server selhal" >&2; return 1; }
+    adb push "$SRC/shizuku.apk"        "$APK"    >/dev/null 2>&1 || { echo "[-] push apk selhal" >&2; return 1; }
+    adb shell "mkdir -p $LIBDIR" >/dev/null 2>&1
+    adb push "$SRC/usr/lib/librish.so"    "$LIBDIR/librish.so"    >/dev/null 2>&1 || { echo "[-] push librish selhal" >&2; return 1; }
+    adb push "$SRC/usr/lib/libadb.so"     "$LIBDIR/libadb.so"     >/dev/null 2>&1 || { echo "[-] push libadb selhal" >&2; return 1; }
+    adb push "$SRC/usr/lib/libshizuku.so" "$LIBDIR/libshizuku.so" >/dev/null 2>&1 || { echo "[-] push libshizuku selhal" >&2; return 1; }
+
+    echo "[*] Startuji server pod shell UID (non-root) ..."
+    adb shell "chmod 755 $SERVER; nohup $SERVER --apk=$APK > $TMP/shz.log 2>&1 &" >/dev/null 2>&1
+    sleep 4
+
+    local pid
+    pid=$(adb shell "pidof shizuku_server" 2>/dev/null | tr -d '\r\n ')
+    if [ -n "$pid" ]; then
+        echo "[+] Shizuku server běží (pid=$pid, shell UID, non-root)"
+        api_post "/shizuku/mode" "none" >/dev/null 2>&1
+        return 0
+    fi
+    echo "[-] Shizuku server nenabehl. Log:" >&2
+    adb shell "cat $TMP/shz.log" >&2
+    return 1
+}
+
 shi_start() {
     local mode="${1:-}"
     if [ -z "$mode" ]; then
         echo "Použití: nh shi start --root|--shell|--none" >&2
         exit 1
     fi
+    case "$mode" in
+        --none|none|--server|server)
+            shi_start_none
+            return $?
+            ;;
+    esac
     api_post "/shizuku/start" "$mode" | fmt '
 import sys, json
 G,R,Y,N=chr(27)+"[92m",chr(27)+"[91m",chr(27)+"[93m",chr(27)+"[0m"

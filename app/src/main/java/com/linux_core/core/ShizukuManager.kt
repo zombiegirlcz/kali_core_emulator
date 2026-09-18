@@ -152,8 +152,18 @@ object ShizukuManager {
         listOf(
             "cp $filesDir/shizuku-server $tmpDir/shizuku-server",
             "cp $filesDir/shizuku.apk $tmpDir/shizuku.apk",
+            // Starter cte .so z <apk_dir>/lib/<abi>/ (viz strings libshizuku.so:
+            // "%s/lib/%s"). Bez nich app_process child umre:
+            //   UnsatisfiedLinkError: dlopen failed: library
+            //   "/data/local/tmp/lib/arm64/librish.so" not found
+            //   at rikka.shizuku.server.ShizukuService.<init>
+            "mkdir -p $tmpDir/lib/arm64",
+            "cp $filesDir/usr/lib/librish.so $tmpDir/lib/arm64/librish.so",
+            "cp $filesDir/usr/lib/libadb.so $tmpDir/lib/arm64/libadb.so",
+            "cp $filesDir/usr/lib/libshizuku.so $tmpDir/lib/arm64/libshizuku.so",
             "chmod 755 $tmpDir/shizuku-server",
             "chmod 644 $tmpDir/shizuku.apk",
+            "chmod 644 $tmpDir/lib/arm64/librish.so $tmpDir/lib/arm64/libadb.so $tmpDir/lib/arm64/libshizuku.so",
         )
 
     /**

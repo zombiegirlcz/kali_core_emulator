@@ -568,6 +568,7 @@ object LocalApiServer {
                 // ─── Shizuku / privilege eskalace (nh shi) ──────────────────
                 path == "/shizuku/status" && method == "GET" -> handleShizukuStatus(context, out)
                 path == "/shizuku/start" && method == "POST" -> handleShizukuStart(context, body, out)
+                path == "/shizuku/mode" && method == "POST" -> handleShizukuMode(context, body, out)
                 path == "/shizuku/stop" && method == "POST" -> handleShizukuStop(context, out)
                 path == "/shizuku/exec" && method == "POST" -> handleShizukuExec(context, body, out)
 
@@ -1242,6 +1243,31 @@ object LocalApiServer {
         sendResponse(out, 200, "OK", JSONObject().apply {
             put("mode", mode.name.lowercase())
             put("started", started)
+            put("describe", mode.describe())
+        }.toString())
+    }
+
+    /**
+     * Jen nastaví aktivní režim (bez startu/stopu serveru).
+     *
+     * Používá `nh shi start --none`, které si server spustí samo přes `adb`
+     * (shell UID) — app do toho nesmí zasahovat (žádné `su`).
+     *
+     * POST /shizuku/mode
+     *   body: "root" | "shell" | "none"
+     *   → { mode, describe }
+     */
+    private fun handleShizukuMode(context: Context, body: String, out: OutputStream) {
+        val mode = ShizukuManager.parseMode(body.trim())
+        if (mode == null) {
+            sendResponse(out, 400, "Bad Request",
+                "{\"error\":\"Invalid mode (use --root, --shell or --none)\"}")
+            return
+        }
+        context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
+            .edit().putString(KEY_SHI_MODE, mode.name.lowercase()).apply()
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("mode", mode.name.lowercase())
             put("describe", mode.describe())
         }.toString())
     }
