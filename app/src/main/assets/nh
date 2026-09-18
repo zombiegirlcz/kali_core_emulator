@@ -53,7 +53,7 @@ api_post_json() {
 }
 
 # Shortcut: pipe JSON through python3 formatter
-# Usage: echo '{"key":"val"}' | fmt 'python code'
+# Usage: echo '{"key":"val"}' | fmt <python-code>
 fmt() {
     python3 -c "$1" 2>/dev/null
 }
@@ -243,7 +243,7 @@ G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[
 try:
     d=json.load(sys.stdin)
     if 'text' in d: print(f'{G}🎙️  Voice: {d[\"text\"]}{N}')
-    else: print(f'{R}✘  {d.get(\"error\", \"No response\")}{N}')
+    else: print(R + \"✘  \" + str(d.get(\"error\", \"No response\")) + N)
 except: print(f'{R}✘  Error parsing voice input{N}')
 "
 }
@@ -1196,7 +1196,7 @@ G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
 try:
     d=json.load(sys.stdin)
     if d.get('success'): print(f'{G}✔ tap $x,$y{N}')
-    else: print(f'{R}✘ tap failed: {d.get(\"error\",\"unknown\")}{N}')
+    else: print(R + \"✘ tap failed: \" + str(d.get(\"error\",\"unknown\")) + N)
 except: print(f'{R}✘ parse error{N}')
 "
 }
@@ -1210,7 +1210,7 @@ G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
 try:
     d=json.load(sys.stdin)
     if d.get('success'): print(f'{G}✔ click \"$text\"{N}')
-    else: print(f'{R}✘ click failed: {d.get(\"error\",\"not found\")}{N}')
+    else: print(R + \"✘ click failed: \" + str(d.get(\"error\",\"not found\")) + N)
 except: print(f'{R}✘ parse error{N}')
 "
 }
@@ -2300,10 +2300,10 @@ try:
                 sub = iface.get("subclass",0)
                 proto = iface.get("protocol",0)
                 eps = iface.get("endpoints",[])
-                ep_str = " ".join([f"ep{e.get(\"address\",\"?\")}:{e.get(\"direction\",\"?\")}:{e.get(\"type\",\"?\")}" for e in eps])
-                print(f"    Iface {iface.get(\"id\",0)}: class={cls} sub={sub} proto={proto}  {ep_str}")
+                ep_str = " ".join(["ep" + str(e.get("address","?")) + ":" + str(e.get("direction","?")) + ":" + str(e.get("type","?")) for e in eps])
+                print("    Iface " + str(iface.get("id",0)) + ": class=" + str(cls) + " sub=" + str(sub) + " proto=" + str(proto) + "  " + ep_str)
     else:
-        print(f"Error: {data.get(\"error\",\"Unknown\")}")
+        print("Error: " + str(data.get("error","Unknown")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2319,7 +2319,7 @@ try:
     if d.get("success"):
         print("\u2713 Permission requested")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2336,7 +2336,7 @@ try:
     if d.get("success"):
         print("\u2713 Interface claimed")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2352,7 +2352,7 @@ try:
     if d.get("success"):
         print("\u2713 Interface released")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2376,7 +2376,7 @@ try:
         req=d.get("total_requested",0)
         print(f"\u2713 Sent {sent}/{req} bytes")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2402,7 +2402,7 @@ try:
         hx=d.get("data_hex","")
         if hx: print(f"  Hex: {hx[:64]}..." if len(hx)>64 else f"  Hex: {hx}")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2425,9 +2425,9 @@ import sys, json
 try:
     d=json.load(sys.stdin)
     if d.get("success"):
-        print(f"\u2713 Control transfer: {d.get(\"transferred\",0)} bytes")
+        print("\u2713 Control transfer: " + str(d.get("transferred",0)) + " bytes")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
