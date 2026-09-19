@@ -2657,15 +2657,15 @@ shi_dispatch() {
     esac
 }
 
-# Non-root start: server pres adb (shell UID), ZADNE su.
-# App kontext adb binarku nema, ale guest ji ma (/usr/bin/adb).
+# Non-root start: shell_daemon pres adb (shell UID 2000), ZADNE su, ZADNA
+# Shizuku appka. Daemon se nahraje do /data/local/tmp, spusti se JEDNOU pod
+# shell UID a bezi do rebootu (jako adb). Pak uz jen TCP 127.0.0.1:13341.
 # Predpoklad: uzivatel jiz udelal `adb pair` + `adb connect` z guesta.
 shi_start_none() {
     local SRC="/mnt/app"
     local TMP="/data/local/tmp"
-    local SERVER="$TMP/shizuku-server"
-    local APK="$TMP/shizuku.apk"
-    local LIBDIR="$TMP/lib/arm64"
+    local DAEMON="$TMP/shell_daemon"
+    local TOKEN_FILE="$SRC/shell_daemon.token"
 
     if ! adb devices 2>/dev/null | grep -q "device$"; then
         echo "[-] adb neni pripojeny. Nejdřív spáruj:" >&2
@@ -2674,37 +2674,45 @@ shi_start_none() {
         return 1
     fi
 
-    local missing=""
-    for f in shizuku-server shizuku.apk usr/lib/librish.so usr/lib/libadb.so usr/lib/libshizuku.so; do
-        [ -f "$SRC/$f" ] || missing="$missing $f"
-    done
-    if [ -n "$missing" ]; then
-        echo "[-] Chybi v $SRC:$missing" >&2
+    if [ ! -f "$SRC/shell_daemon" ]; then
+        echo "[-] Chybi $SRC/shell_daemon" >&2
         echo "    (spust appku aspoň jednou, aby se nasadily assety)" >&2
         return 1
     fi
+    if [ ! -f "$TOKEN_FILE" ]; then
+        echo "[-] Chybi token $TOKEN_FILE (spust appku)" >&2
+        return 1
+    fi
+    local TOKEN
+    TOKEN=$(tr -d '\r\n ' < "$TOKEN_FILE")
+    if [ -z "$TOKEN" ]; then
+        echo "[-] Token je prázdný" >&2
+        return 1
+    fi
 
-    echo "[*] Pushuji server + apk + .so do $TMP ..."
-    adb push "$SRC/shizuku-server"     "$SERVER" >/dev/null 2>&1 || { echo "[-] push server selhal" >&2; return 1; }
-    adb push "$SRC/shizuku.apk"        "$APK"    >/dev/null 2>&1 || { echo "[-] push apk selhal" >&2; return 1; }
-    adb shell "mkdir -p $LIBDIR" >/dev/null 2>&1
-    adb push "$SRC/usr/lib/librish.so"    "$LIBDIR/librish.so"    >/dev/null 2>&1 || { echo "[-] push librish selhal" >&2; return 1; }
-    adb push "$SRC/usr/lib/libadb.so"     "$LIBDIR/libadb.so"     >/dev/null 2>&1 || { echo "[-] push libadb selhal" >&2; return 1; }
-    adb push "$SRC/usr/lib/libshizuku.so" "$LIBDIR/libshizuku.so" >/dev/null 2>&1 || { echo "[-] push libshizuku selhal" >&2; return 1; }
+    echo "[*] Pushuji shell_daemon do $TMP ..."
+    adb push "$SRC/shell_daemon" "$DAEMON" >/dev/null 2>&1 || { echo "[-] push selhal" >&2; return 1; }
+    adb shell "chmod 755 $DAEMON" >/dev/null 2>&1
 
-    echo "[*] Startuji server pod shell UID (non-root) ..."
-    adb shell "chmod 755 $SERVER; nohup $SERVER --apk=$APK > $TMP/shz.log 2>&1 &" >/dev/null 2>&1
-    sleep 4
-
+    # Uz bezi? (idempotentni start)
     local pid
-    pid=$(adb shell "pidof shizuku_server" 2>/dev/null | tr -d '\r\n ')
+    pid=$(adb shell "pidof shell_daemon" 2>/dev/null | tr -d '\r\n ')
+    if [ -z "$pid" ]; then
+        echo "[*] Startuji shell_daemon pod shell UID (non-root) ..."
+        adb shell "nohup $DAEMON --port=13341 --token=$TOKEN > $TMP/shell_daemon.log 2>&1 &" >/dev/null 2>&1
+        sleep 2
+        pid=$(adb shell "pidof shell_daemon" 2>/dev/null | tr -d '\r\n ')
+    fi
+
     if [ -n "$pid" ]; then
-        echo "[+] Shizuku server běží (pid=$pid, shell UID, non-root)"
-        api_post "/shizuku/mode" "none" >/dev/null 2>&1
+        local duid
+        duid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '\r\n ')
+        echo "[+] shell_daemon běží (pid=$pid, uid=${duid:-?}, non-root)"
+        echo "    Příkazy: nh shi exec \"<cmd>\"  (TCP 127.0.0.1:13341)"
         return 0
     fi
-    echo "[-] Shizuku server nenabehl. Log:" >&2
-    adb shell "cat $TMP/shz.log" >&2
+    echo "[-] shell_daemon nenabehl. Log:" >&2
+    adb shell "cat $TMP/shell_daemon.log" >&2
     return 1
 }
 
@@ -2778,7 +2786,12 @@ shi_exec() {
         echo "Použití: nh shi exec \"<příkaz>\"" >&2
         exit 1
     fi
-    api_post_bin "/shizuku/exec" "$*" | fmt '
+    # Preferuj shell_daemon (uid 2000), jinak fallback na /shizuku/exec (su rezim)
+    local endpoint="/shizuku/exec"
+    if api_get "/shizuku/daemon/status" 2>/dev/null | grep -q '"running":true'; then
+        endpoint="/shizuku/daemon/exec"
+    fi
+    api_post_bin "$endpoint" "$*" | fmt '
 import sys, json
 R,N=chr(27)+"[91m",chr(27)+"[0m"
 try:
@@ -2803,13 +2816,18 @@ help_shi() {
     separator
     echo "  ${GREEN}start --root${RST}            Příkazy pod uid 0 (plná root práva)"
     echo "  ${GREEN}start --shell${RST}           Příkazy pod uid 2000 (stejná práva jako Shizuku/adb)"
-    echo "  ${GREEN}start --none${RST}            Shizuku server (non-root, vyžaduje adb/Shizuku)"
+    echo "  ${GREEN}start --none${RST}            shell_daemon pod uid 2000 pres adb (non-root, perzistentní)"
     echo "  ${GREEN}stop${RST}                     Vypnout eskalaci (mode=none)"
-    echo "  ${GREEN}status${RST}                   Stav: aktivní režim, su, Shizuku server, adb"
+    echo "  ${GREEN}status${RST}                   Stav: aktivní režim, su, shell_daemon, adb"
     echo "  ${GREEN}exec <cmd>${RST}               Spustit příkaz v aktivním režimu"
     echo ""
+    echo "  ${DIM}--none = jednorázový start daemona pres 'adb shell' (wireless debugging),"
+    echo "  pak běží pod uid 2000 do rebootu; další příkazy jdou přes TCP 127.0.0.1:13341."
+    echo "  --shell/--root = su fallback (fork per command, jen root zařízení).${RST}"
+    echo ""
     echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh shi start --shell"
+    echo "    nh shi start --none    # non-root: adb shell, shell_daemon pod uid 2000"
+    echo "    nh shi start --shell   # root: su 2000 -c per command"
     echo '    nh shi exec "pm list packages | head"'
     echo '    nh shi exec "settings put global airplane_mode_on 1"'
     echo "    nh shi status"

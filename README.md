@@ -492,9 +492,9 @@ Od v4.5 má unified CLI **`nh shi`** kategorii, která spouští příkazy pod
 vyšším UID. Režim se přepíná jednou a platí pro všechny další `nh shi exec`:
 
 ```bash
-nh shi start --shell     # uid 2000 — stejná práva jako Shizuku/adb (doporučeno)
-nh shi start --root      # uid 0 — plná root práva (vyžaduje Magisk su)
-nh shi start --none      # Shizuku server (non-root; vyžaduje adb pairing)
+nh shi start --none      # shell_daemon pod uid 2000 (non-root, perzistentní)
+nh shi start --shell     # su fallback: su 2000 -c per command (jen root zařízení)
+nh shi start --root      # su fallback: su 0 -c per command (jen root zařízení)
 
 nh shi exec "pm list packages | head"
 nh shi exec "settings put global airplane_mode_on 1"
@@ -502,25 +502,31 @@ nh shi exec "appops set com.twitter POST_NOTIFICATIONS deny"
 nh shi exec "svc wifi disable"
 nh shi exec "dumpsys battery set level 15"
 
-nh shi status            # aktivní režim, su, Shizuku server, adb
+nh shi status            # aktivní režim, su, shell_daemon, adb
 nh shi stop              # vypnout eskalaci (mode=none)
 ```
 
-`nh shi exec` jde přes `LocalApiServer` na `POST /shizuku/exec`, který spustí
-příkaz v nakonfigurovaném režimu a vrátí stdout + exit code zpět do guesta.
+`nh shi exec` jde přes `LocalApiServer`. Pokud běží `shell_daemon`, použije
+`POST /shizuku/daemon/exec` (TCP 127.0.0.1:13341); jinak fallback na
+`POST /shizuku/exec` (su režim). V obou případech se vrací stdout + exit code.
 
 ### Tři režimy — kdy který
 
 | Režim | UID | Jak | Kdy použít |
 |---|---|---|---|
-| `--root` | 0 | `su 0 -c <cmd>` (Magisk) | Root zařízení, plná práva |
-| `--shell` | 2000 | `su 2000 -c <cmd>` (Magisk) | Root zařízení, práva jako Shizuku/adb |
-| `--none` | — | Shizuku server + rish | Non-root zařízení (adb pairing) |
+| `--none` | 2000 | `shell_daemon` (jeden start přes `adb shell`, pak TCP) | Non-root zařízení (wireless debugging) |
+| `--shell` | 2000 | `su 2000 -c <cmd>` per command (Magisk) | Root zařízení, práva jako adb |
+| `--root` | 0 | `su 0 -c <cmd>` per command (Magisk) | Root zařízení, plná práva |
 
-> **Pozn.** Na zařízeních s Magisk `su` umí přepnout na libovolné UID (`su 2000 -c`),
-> takže režimy `--root` / `--shell` fungují okamžitě bez Shizuku serveru.
-> Shizuku server (`--none`) je pro non-root zařízení — vyžaduje zapnuté
-> bezdrátové ladění a spárování (`adb pair` / `adb connect`).
+> **`--none` = obdoba adb/Shizuku démona.** `shell_daemon` se jednou nahraje
+do `/data/local/tmp` a spustí pod shell UID (2000) přes `adb shell`; pak běží
+do rebootu a všechny další příkazy jdou jen přes TCP loopback — **žádné `su`,
+žádné `adb`, žádná Shizuku appka ani její knihovny**. Je to bratr `su_daemon`
+(ten běží pod rootem), ale cíleně bez rootu.
+>
+> Na zařízeních s Magisk `su` umí přepnout na libovolné UID (`su 2000 -c`),
+takže režimy `--shell`/`--root` fungují okamžitě — ale jsou to **fork-per-command**
+procesy, ne perzistentní démon.
 
 ### HTTP API (port 1337, Bearer pro non-localhost)
 
@@ -530,27 +536,24 @@ příkaz v nakonfigurovaném režimu a vrátí stdout + exit code zpět do guest
 | `/shizuku/start` | POST | tělo `root` \| `shell` \| `none` → nastaví aktivní režim |
 | `/shizuku/stop` | POST | vypne eskalaci (`mode=none`) |
 | `/shizuku/exec` | POST | tělo = příkaz (nebo JSON `{command, mode}`) → `{stdout, exit_code, mode}` |
-
-### Legacy rish klient (`/usr/local/bin/shizuku`)
-
-Pro režim `--none` je v guestu nasazen i původní rish wrapper:
-
-```bash
-shizuku -c "pm list packages"   # vyžaduje běžící Shizuku server + API_V23 permission
-```
+| `/shizuku/daemon/status` | GET | `{running, port}` — stav `shell_daemon` |
+| `/shizuku/daemon/start` | POST | spustí `shell_daemon` (jen s `su`; non-root start přes `nh shi start --none`) |
+| `/shizuku/daemon/stop` | POST | `pkill` pod uid 2000 |
+| `/shizuku/daemon/exec` | POST | tělo = příkaz (nebo JSON `{command, cwd}`) → `{stdout, stderr, exit_code}` |
 
 ### Architektura
 
 | Komponenta | Cesta v APK | Popis |
 |---|---|---|
-| Server binárka | `assets/usr/lib/libshizuku.so` | PIE executable (native starter) |
-| ADB knihovna | `assets/usr/lib/libadb.so` | Native ADB klient |
-| Rish knihovna | `assets/usr/lib/librish.so` | Rish nativní část |
-| Server APK | `assets/usr/lib/shizuku.apk` | Bundlovaný Shizuku 13.6.0 (kontejner serveru) |
-| Rish script | `assets/usr/bin/rish.sh` | Rish wrapper pro PRoot |
-| Rish dex | `assets/usr/bin/rish_shizuku.dex` | Rish Java třídy |
-| Manager | `ShizukuManager.kt` | Režimy, `su` detekce, exec, start strategie |
-| API | `LocalApiServer.kt` | `/shizuku/*` endpointy |
+| shell_daemon binárka | `assets/shell_daemon` | Persistentní uid 2000 démon (TCP 13341, token) |
+| shell_daemon token | `<filesDir>/shell_daemon.token` | 128 hex znaků; guest ho vidí jako `/mnt/app/shell_daemon.token` |
+| Daemon klient | `ShellDaemonClient.kt` | Start (`su 2000`), exec přes TCP, token management |
+| Deploy | `ProotManager.deployShellDaemon()` | Kopíruje binárku + token do filesDir |
+| API | `LocalApiServer.kt` | `/shizuku/daemon/*` endpointy |
+
+> **Legacy Shizuku artefakty** (`assets/usr/lib/shizuku.apk`, `libshizuku.so`,
+> `librish.so`, `rish.sh`) zůstávají v APK pro zpětnou kompatibilitu s
+> `rikka.shizuku` klientem, ale `--none` už je nepoužívá.
 
 #### Klientská část Shizuku (Apache 2.0, RikkaApps/Shizuku-API)
 
