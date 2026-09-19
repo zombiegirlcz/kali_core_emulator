@@ -158,7 +158,7 @@ class ShellDaemonInstallModeTest {
     }
 
     @Test
-    fun `ashell nepouziva stary /mnt/app bind pro cestu k daemonu`() {
+    fun `ashell nepouziva stary mnt app bind pro cestu k daemonu`() {
         val a = ashell()
         assertFalse(
             "cesta k daemonu uz nesmi zaviset na bind_app (/mnt/app)",
