@@ -32,12 +32,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-37 build-tools;36.0.0'
-
-      - name: Setup Android NDK
-        uses: android-actions/setup-ndk@v3
-        with:
-          ndk-version: r28
+          packages: 'platforms;android-37 build-tools;36.0.0 ndk;28.0.13004108'
 
       - name: Restore release keystore
         env:
