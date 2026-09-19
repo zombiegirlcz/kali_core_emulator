@@ -568,6 +568,7 @@ object LocalApiServer {
                 path == "/shelldaemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
                 path == "/shelldaemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
                 path == "/shelldaemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
+                path == "/shelldaemon/install" && method == "POST" -> handleShellDaemonInstall(context, body, out)
 
                 // ─── USB Host endpoints ─────────────────────────────────────
                 path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
@@ -1243,6 +1244,35 @@ object LocalApiServer {
             return
         }
         val json = ShellDaemonClient.exec(context, command, cwd)
+        sendResponse(out, statusFor(json), "OK", json)
+    }
+
+    /**
+     * POST /shelldaemon/install
+     *   body = JSON {apk: "/cesta/k.apk", args: "-r -g"}
+     *   → streamovany install pres daemon (cmd package install -S).
+     */
+    private fun handleShellDaemonInstall(context: Context, body: String, out: OutputStream) {
+        val raw = body.trim()
+        if (raw.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"APK path required\"}")
+            return
+        }
+        val apk: String
+        val args: String
+        try {
+            val obj = JSONObject(raw)
+            apk = obj.optString("apk", "")
+            args = obj.optString("args", "")
+        } catch (_: Exception) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+            return
+        }
+        if (apk.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"APK path required\"}")
+            return
+        }
+        val json = ShellDaemonClient.install(context, java.io.File(apk), args)
         sendResponse(out, statusFor(json), "OK", json)
     }
 

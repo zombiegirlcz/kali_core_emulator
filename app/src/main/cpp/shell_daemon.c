@@ -78,6 +78,7 @@
 #define SH_MAGIC 0x53484C4Cu   /* "SHLL" */
 #define SH_MODE_EXEC   0u      /* jednorazovy prikaz (stdout/stderr/exit) */
 #define SH_MODE_ATTACH 1u      /* interaktivni PTY shell pod uid 2000 */
+#define SH_MODE_INSTALL 2u     /* streamovany install: cmd package install -S */
 
 static char g_token[MAX_TOKEN] = {0};
 static int g_port = DEFAULT_PORT;
@@ -497,6 +498,131 @@ static void handle_attach(int client_fd, const char *cmd) {
     close(master_fd);
 }
 
+
+/* ── Streamovany install (jako adb install / INSTALL_STREAM) ──────────────
+ *
+ * adb otevre sluzbu `exec:cmd package install -S <size>` a posle APK po
+ * socketu (raw bytes). My delame to same, jen bez adb: pres `cmd` binarku
+ * (bezi pod uid 2000). Klient posle blob(cmd_args) + uint64(size) + APK.
+ *
+ * Odpoved: int32 exit + blob(stdout) + blob(stderr).
+ */
+static void handle_install(int client_fd) {
+    char *args = malloc(CMD_BUF);
+    if (!args) {
+        int32_t rc = -1;
+        write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "", 0);
+        write_blob(client_fd, "alokace selhala", 14);
+        return;
+    }
+    if (read_blob(client_fd, args, CMD_BUF) < 0) {
+        free(args);
+        return;
+    }
+    uint64_t size = 0;
+    if (read_all(client_fd, &size, sizeof(size)) < 0) {
+        free(args);
+        return;
+    }
+    fprintf(stderr, "[shell_daemon] install: args='%s' size=%llu\n",
+            args, (unsigned long long)size);
+
+    /* Sestav prikaz: `cmd package install -S <size> [args]`. */
+    char cmd[CMD_BUF];
+    snprintf(cmd, sizeof(cmd), "cmd package install -S %llu %s",
+             (unsigned long long)size, args);
+
+    /* Dve pipe: stdin (APK) a stdout+stderr (vysledek). */
+    int in_pipe[2];
+    int out_pipe[2];
+    if (pipe(in_pipe) < 0 || pipe(out_pipe) < 0) {
+        int32_t rc = -1;
+        write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "", 0);
+        write_blob(client_fd, "pipe selhal", 11);
+        free(args);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        int32_t rc = -1;
+        write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "", 0);
+        write_blob(client_fd, "fork selhal", 10);
+        free(args);
+        return;
+    }
+    if (pid == 0) {
+        /* child: stdin = APK, stdout+stderr = out_pipe */
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(out_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        signal(SIGPIPE, SIG_DFL);
+        execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+
+    /* parent: posli APK do childova stdin. */
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    uint64_t sent = 0;
+    char buf[65536];
+    int write_err = 0;
+    while (sent < size) {
+        size_t want = sizeof(buf);
+        if (size - sent < want) want = (size_t)(size - sent);
+        ssize_t n = read(client_fd, buf, want);
+        if (n <= 0) { write_err = 1; break; }
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = write(in_pipe[1], buf + off, (size_t)(n - off));
+            if (w <= 0) { write_err = 1; break; }
+            off += w;
+        }
+        if (write_err) break;
+        sent += (uint64_t)n;
+    }
+    close(in_pipe[1]);
+
+    /* cti stdout+stderr childa do bufferu */
+    char *out = malloc(OUT_BUF);
+    size_t out_len = 0;
+    if (out) {
+        ssize_t n;
+        while ((n = read(out_pipe[0], buf, sizeof(buf))) > 0) {
+            if (out_len + (size_t)n < OUT_BUF - 1) {
+                memcpy(out + out_len, buf, (size_t)n);
+                out_len += (size_t)n;
+            }
+        }
+        out[out_len] = '\0';
+    }
+    close(out_pipe[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    int32_t rc = (int32_t)exit_code;
+    write_all(client_fd, &rc, sizeof(rc));
+    if (write_err) {
+        write_blob(client_fd, out ? out : "", out ? out_len : 0);
+        write_blob(client_fd, "stream prerusen (klient zavrel?)", 32);
+    } else {
+        write_blob(client_fd, out ? out : "", out ? out_len : 0);
+        write_blob(client_fd, "", 0);
+    }
+    if (out) free(out);
+    free(args);
+}
+
 /* Rozhodne podle magic+mode; overi token; dispatchne. */
 static void handle_client(int client_fd) {
     uint32_t magic = 0;
@@ -533,6 +659,11 @@ static void handle_client(int client_fd) {
         fprintf(stderr, "[shell_daemon] attach (cmd=%s)\n", cmd[0] ? cmd : "<interaktivni>");
         handle_attach(client_fd, cmd);
         free(cmd);
+        return;
+    }
+
+    if (mode == SH_MODE_INSTALL) {
+        handle_install(client_fd);
         return;
     }
 

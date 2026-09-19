@@ -53,6 +53,7 @@ object ShellDaemonClient {
     // Protokol konstanty (musí odpovídat shell_daemon.c)
     private const val SH_MAGIC = 0x53484C4C  // "SHLL"
     private const val SH_MODE_EXEC = 0
+    private const val SH_MODE_INSTALL = 2
     private const val SH_MODE_ATTACH = 1
 
     /**
@@ -209,6 +210,65 @@ object ShellDaemonClient {
             val m = (e.message ?: "exec failed")
                 .replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            """{"error":"$m","exit_code":-1}"""
+        }
+    }
+
+    /**
+     * Streamovany install APK pres shell_daemon (jako `adb install`).
+     *
+     * Daemon otevre `cmd package install -S <size> <args>` a preposle APK.
+     * Odpovida se JSON `{stdout, stderr, exit_code, mode:"install"}`.
+     *
+     * @param apkFile lokalni cesta k APK (host filesystem, vidi ji appka)
+     * @param args pm flagy (napr. "-r -g"); bez "install"
+     */
+    @JvmStatic
+    fun install(context: Context, apkFile: File, args: String = ""): String {
+        if (!status().running) {
+            return """{"error":"shell_daemon not running (spust 'ashell adb start')","exit_code":-1}"""
+        }
+        if (!apkFile.exists()) {
+            return """{"error":"APK neexistuje: ${apkFile.absolutePath}","exit_code":-1}"""
+        }
+        val token = ensureToken(context)
+        return try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress("127.0.0.1", PORT), 2500)
+                s.soTimeout = 600_000  // install muze trvat (velke APK)
+                val out = DataOutputStream(s.getOutputStream())
+                out.writeInt(SH_MAGIC)
+                out.writeByte(SH_MODE_INSTALL)
+                writeBlob(out, token.toByteArray(Charsets.UTF_8))
+                writeBlob(out, args.toByteArray(Charsets.UTF_8))
+                out.writeLong(apkFile.length())
+                // stream APK po blokech
+                apkFile.inputStream().use { ins ->
+                    val buf = ByteArray(65536)
+                    while (true) {
+                        val n = ins.read(buf)
+                        if (n <= 0) break
+                        out.write(buf, 0, n)
+                    }
+                }
+                out.flush()
+
+                val inp = DataInputStream(s.getInputStream())
+                val code = inp.readInt()
+                val stdout = readBlob(inp)
+                val stderr = readBlob(inp)
+                JSONObject().apply {
+                    put("stdout", stdout)
+                    put("stderr", stderr)
+                    put("exit_code", code)
+                    put("mode", "install")
+                }.toString()
+            }
+        } catch (e: Exception) {
+            val m = (e.message ?: "install failed")
+                .replace("\", "\\").replace(""", "\"")
+                .replace("
+", "\n").replace("", "\r").replace("	", "\t")
             """{"error":"$m","exit_code":-1}"""
         }
     }

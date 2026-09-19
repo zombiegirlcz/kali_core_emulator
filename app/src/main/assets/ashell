@@ -329,22 +329,36 @@ ADBHELP
                     _cmd="$*"
                     ;;
                 install)
-                    # adb install streamuje APK po socketu (exec:cmd package install -S).
-                    # To daemon (sh -c) neumi, takze jdeme legacy cestou, kterou adb
-                    # pouziva na starych zarizenich (INSTALL_PUSH): zkopiruj APK do
-                    # /data/local/tmp a spust `pm install`.
+                    # Streamovany install jako adb: daemon otevre
+                    # `cmd package install -S <size>` a preposle APK (viz
+                    # shell_daemon.c: handle_install / SH_MODE_INSTALL).
+                    # Kdyz daemon stream neumi (starsi verze), fallback na legacy
+                    # INSTALL_PUSH: cp do /data/local/tmp + pm install.
                     shift
                     if [ $# -lt 1 ]; then
-                        echo "[-] Usage: ashell adb install [-r] <apk>" >&2
+                        echo "[-] Usage: ashell adb install [-r] [-g] <apk>" >&2
                         exit 1
                     fi
                     _opts=""
-                    # posledni argument je APK; vse pred tim jsou pm flagy
                     for _a in "$@"; do _apk="$_a"; done
                     for _a in "$@"; do
                         [ "$_a" = "$_apk" ] && break
                         case "$_a" in -*) _opts="$_opts $_a" ;; esac
                     done
+                    RESPONSE=$(api_call POST "/shelldaemon/install" "{\"apk\":\"$_apk\",\"args\":\"$_opts\"}")
+                    _rc=$?
+                    if [ -n "$RESPONSE" ] && ! printf '%s' "$RESPONSE" | grep -q '"error"'; then
+                        printf '%s' "$RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+out = d.get('stdout',''); err = d.get('stderr','')
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+sys.exit(d.get('exit_code', 0) or 0)
+" 2>/dev/null
+                        exit $?
+                    fi
+                    # fallback: legacy INSTALL_PUSH
                     _base=$(basename "$_apk")
                     _tmp="/data/local/tmp/$_base"
                     _cmd="cp '$_apk' '$_tmp' && pm install$_opts '$_tmp'"
