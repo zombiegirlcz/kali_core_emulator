@@ -118,17 +118,41 @@ if [ "$1" = "adb" ]; then
     }
 
     daemon_path() {
+        # native_dir() uz vraci cestu vcetne ABI slozky (.../lib/arm64),
+        # takze pripojujeme jen nazev binarky. (Driv tu byl bug: hardcoded
+        # /arm64 se pridaval podruhe -> /lib/arm64/arm64/libshelldaemon.so.)
         _d=$(native_dir)
         [ -n "$_d" ] || return 1
-        printf '%s/arm64/libshelldaemon.so' "$_d"
+        printf '%s/libshelldaemon.so' "$_d"
     }
 
-    # Token: appka ho zapisuje do nativeLibraryDir/libtoken.so, ctime ho
-    # `adb shell cat` — stejna cesta pro appku i shell, zadny bind.
+    # Token daemona. `nativeLibraryDir` je read-only (system:system), takze
+    # appka tam token zapsat NEMUZE — zije ve filesDir a vydava ho
+    # `GET /shelldaemon/info` na 127.0.0.1:1337 (kam se uid 2000 dovola).
+    # Fallback: rucni override $SHELLDAEMON_TOKEN, pak stara cesta
+    # nativeLibraryDir/libtoken.so (napr. kdyby bezel stary build).
     daemon_token() {
+        if [ -n "${SHELLDAEMON_TOKEN:-}" ]; then
+            printf '%s' "$SHELLDAEMON_TOKEN"
+            return 0
+        fi
+        _t=$(api_call GET "/shelldaemon/info" 2>/dev/null \
+             | python3 -c 'import sys,json; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+        if [ -n "$_t" ]; then
+            printf '%s' "$_t"
+            return 0
+        fi
         _d=$(native_dir)
         [ -n "$_d" ] || return 1
         adb shell "cat '$_d/libtoken.so' 2>/dev/null" 2>/dev/null | tr -d '\r\n '
+    }
+
+    # Cesta k daemonu z API (presna, bez hadani ABI). Fallback na daemon_path().
+    daemon_path_api() {
+        _p=$(api_call GET "/shelldaemon/info" 2>/dev/null \
+             | python3 -c 'import sys,json; print(json.load(sys.stdin).get("path",""))' 2>/dev/null)
+        if [ -n "$_p" ]; then printf '%s' "$_p"; return 0; fi
+        daemon_path
     }
 
     # PID file, ktery daemon zapisuje do /data/local/tmp/shelldaemon.pid.
@@ -159,11 +183,13 @@ if [ "$1" = "adb" ]; then
                 echo "      adb connect <host>:<port>" >&2
                 exit 1
             fi
-            DAEMON=$(daemon_path)
+            DAEMON=$(daemon_path_api)
             if [ -z "$DAEMON" ]; then
                 echo "[-] Neznám cestu k libshelldaemon.so." >&2
-                echo "    dumpsys nevrátil nativeLibraryDir pro com.linux_core." >&2
-                echo "    Over: adb shell dumpsys package com.linux_core | grep nativeLibraryDir" >&2
+                echo "    1) Ověř, že appka běží (LocalApiServer na 127.0.0.1:1337):" >&2
+                echo "         curl -s $API_URL/shelldaemon/info" >&2
+                echo "    2) Nebo cestu nastav ručně:" >&2
+                echo "         SHELLDAEMON_NATIVE_DIR=<nativeLibraryDir/arm64> ashell adb start" >&2
                 exit 1
             fi
             if ! adb shell "test -x '$DAEMON'" 2>/dev/null; then
@@ -173,8 +199,9 @@ if [ "$1" = "adb" ]; then
             fi
             TOKEN=$(daemon_token)
             if [ -z "$TOKEN" ]; then
-                echo "[-] Token je prázdný ($DAEMON -> libtoken.so)." >&2
-                echo "    Spust appku aspoň jednou — zapise token pri startu." >&2
+                echo "[-] Nepodařilo se získat token daemona." >&2
+                echo "    Ověř, že appka běží (LocalApiServer): curl -s $API_URL/shelldaemon/info" >&2
+                echo "    Nebo nastav ručně: SHELLDAEMON_TOKEN=<hex> ashell adb start" >&2
                 exit 1
             fi
 
@@ -629,11 +656,6 @@ PYEOF
     if [ -z "$RESPONSE" ]; then
         echo "[-] Error: LocalApiServer neodpovídá na ${API_URL}/shell" >&2
         exit 1
-    fi
-
-    # DEBUG: ukaž raw odpověď (jen když ASHELL_DEBUG=1)
-    if [ -n "${ASHELL_DEBUG:-}" ]; then
-        echo "[ASHELL_DEBUG] RESPONSE[${#RESPONSE}]: $(echo "$RESPONSE" | cat -v | head -c 500)" >&2
     fi
 
     # Vytisknout stdout + stderr a vrátit exit code

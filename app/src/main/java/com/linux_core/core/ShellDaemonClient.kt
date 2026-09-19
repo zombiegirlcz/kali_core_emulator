@@ -75,8 +75,9 @@ object ShellDaemonClient {
 
     /**
      * Vrátí (případně vygeneruje) perzistentní token pro autentizaci daemona.
-     * Zapisuje se do `nativeLibraryDir/libtoken.so`, odkud ho `ashell adb start`
-     * přečte přes `adb shell cat`. Idempotentní; placeholder se přepíše.
+     * Zapisuje se do `filesDir/shell_daemon.token` (nativeLibraryDir je read-only).
+     * Guest ho získá přes `GET /shelldaemon/info` (loopback, uid 2000).
+     * Idempotentní.
      */
     @JvmStatic
     fun ensureToken(context: Context): String {
