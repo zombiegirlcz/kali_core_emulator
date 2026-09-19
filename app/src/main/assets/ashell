@@ -168,7 +168,7 @@ if [ "$1" = "adb" ]; then
             if [ -n "$pid" ] && daemon_alive; then
                 duid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '\r\n ')
                 echo "[+] shell_daemon běží (pid=$pid, uid=${duid:-?}, non-root)"
-                echo '    Příkazy: ashell adb -c "<cmd>"  (TCP 127.0.0.1:13341)'
+                echo '    Příkazy: ashell adb <cmd>   (napr. ashell adb id, ashell adb pm list packages)'
                 exit 0
             fi
             echo "[-] shell_daemon nenabehl." >&2
@@ -234,7 +234,7 @@ except Exception:
         -c|--cmd)
             shift
             CMD="$*"
-            [ -z "$CMD" ] && { echo "[-] Usage: ashell adb -c '<prikaz>'" >&2; echo "    Např: ashell adb -c "pm list packages"" >&2; exit 1; }
+            [ -z "$CMD" ] && { echo "[-] Usage: ashell adb -c '<prikaz>' (app UID)" >&2; echo "    Pro uid 2000: ashell adb <prikaz>" >&2; exit 1; }
             RESPONSE=$(api_call POST "/shelldaemon/exec" "$CMD")
             if [ -z "$RESPONSE" ]; then
                 echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
@@ -270,9 +270,69 @@ sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
             exit $RC
             ;;
         *)
-            echo "[-] Neznámý adb subcommand: $SUBCMD" >&2
-            echo "    Usage: ashell adb start|stop|status|shell|-c '<cmd>'" >&2
-            exit 1
+            # ── Passthrough: ashell adb <cokoli> = adb <cokoli>, ale pres daemona ──
+            #
+            # Uvnitr Android shellu (uid 2000) `adb` binarka NEEXISTUJE, takze
+            # prikaz se predava shellu tak, jak by ho dostal `adb shell`:
+            #   ashell adb shell id        -> daemon spusti  id
+            #   ashell adb shell pm list   -> daemon spusti  pm list
+            #   ashell adb shell id        -> (prefix "shell" se zahodi)
+            # Cesta k daemonu + token se resolvuje stejne jako u start.
+            _d=$(native_dir)
+            if [ -z "$_d" ]; then
+                echo "[-] Neznám nativeLibraryDir (dumpsys selhal)." >&2
+                exit 1
+            fi
+            _tok=$(daemon_token)
+            if [ -z "$_tok" ]; then
+                echo "[-] Chybí token ($_d/libtoken.so). Spust appku aspoň jednou." >&2
+                exit 1
+            fi
+            # sesbirej vsechny argumenty za "adb"
+            _cmd="$*"
+            # zahod uvodni "shell" (daemon shell je)
+            case "$_cmd" in
+                shell|shell\ *) _cmd="${_cmd#shell}"; _cmd="${_cmd# }" ;;
+            esac
+            if [ -z "$_cmd" ]; then
+                echo "[-] Usage: ashell adb <prikaz>" >&2
+                echo "    Napr: ashell adb id" >&2
+                echo "          ashell adb pm list packages" >&2
+                exit 1
+            fi
+            RESPONSE=$(api_call POST "/shelldaemon/exec" "$_cmd")
+            if [ -z "$RESPONSE" ]; then
+                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
+                exit 1
+            fi
+            printf '%s' "$RESPONSE" | python3 -c "
+import sys, json
+data = sys.stdin.read()
+try:
+    d = json.loads(data)
+except Exception as e:
+    sys.stderr.write('Chyba parsovani: %s
+' % e)
+    sys.stderr.write('Raw: %s
+' % data[:400])
+    sys.exit(1)
+if 'error' in d and 'exit_code' not in d:
+    out = d.get('stdout',''); err = d.get('stderr','')
+    if out: sys.stdout.write(out)
+    if err: sys.stderr.write(err)
+    if not out and not err:
+        sys.stderr.write(d['error'] + '
+')
+    sys.exit(1)
+out = d.get('stdout',''); err = d.get('stderr','')
+rc = d.get('exit_code', 0)
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+if not isinstance(rc, int): rc = 0
+sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
+" 2>/dev/null
+            RC=$?
+            exit $RC
             ;;
     esac
     exit $?
