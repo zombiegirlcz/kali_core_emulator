@@ -13,7 +13,7 @@ import org.json.JSONObject
 /**
  * Klient k `shell_daemon` — persistentnímu shell-UID (2000) daemonu.
  *
- * **Deploy (analogie Shizuku `libshizuku.so`)**: daemon se neveze jako asset
+ * **Deploy (vzor `libshizuku.so` z AOSP/NDK)**: daemon se neveze jako asset
  * v `assets/`, ale jako spustitelný ELF v `jniLibs/arm64-v8a/libshelldaemon.so`.
  * Android ho při instalaci extrahuje do `applicationInfo.nativeLibraryDir`
  * (díky `useLegacyPackaging=true` je soubor reálně na disku, ne jen v APK).

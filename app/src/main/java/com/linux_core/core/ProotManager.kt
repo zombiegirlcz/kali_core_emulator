@@ -453,13 +453,10 @@ object ProotManager {
         if (!hasAssets) return
 
         for (name in names) {
-            // proot/loader a shizuku artefakty v assets/usr/bin se nasazuji
-            // cilene (deployArchBinaries -> $PREFIX/bin/{proot,loader},
-            // deployShizukuRish -> guest /usr/local/bin). Genericky deployDir
-            // by je zbytecne kopiroval i pod arch jmenem (~2 MB navic).
-            if (name.startsWith("proot-static-") || name.startsWith("loader-static-") ||
-                name == "rish.sh" || name == "rish_shizuku.dex"
-            ) {
+            // proot/loader artefakty v assets/usr/bin se nasazuji cilene
+            // (deployArchBinaries -> $PREFIX/bin/{proot,loader}). Genericky
+            // deployDir by je zbytecne kopiroval i pod arch jmenem (~2 MB navic).
+            if (name.startsWith("proot-static-") || name.startsWith("loader-static-")) {
                 continue
             }
             val target = File(targetDir, name)
@@ -1229,9 +1226,6 @@ object ProotManager {
             Log.e(TAG, "Failed to deploy ashell: ${e.message}")
         }
 
-        // Deploy Shizuku rish shell into guest
-        deployShizukuRish(context, rootfsDir)
-
         // Deploy su/sudo UNIX socket IPC bridge
         deploySuBridge(context, rootfsDir)
 
@@ -1329,65 +1323,6 @@ object ProotManager {
             Log.i(TAG, "USB bridge UDS configured at ${usbBridgeSocket.absolutePath}")
         } catch (e: Exception) {
             Log.w(TAG, "USB bridge UDS setup skipped: ${e.message}")
-        }
-    }
-
-    /**
-     * Deploy Shizuku rish shell (shizuku command) into the guest filesystem.
-     * Shizuku native binaries in assets are arm64 — other archs are not supported.
-     */
-    private fun deployShizukuRish(
-        context: Context,
-        rootfsDir: File,
-    ) {
-        val binDir = File(rootfsDir, "usr/local/bin")
-        if (!binDir.exists()) binDir.mkdirs()
-
-        // Deploy rish script as 'shizuku' command
-        val rishScript = File(binDir, "shizuku")
-        val rishDex = File(binDir, "rish_shizuku.dex")
-
-        var needsDeploy = false
-        if (!rishScript.exists() || rishScript.length() == 0L) {
-            needsDeploy = true
-        } else {
-            // Force redeploy if asset size differs (updated script)
-            try {
-                val assetSize = context.assets.open("usr/bin/rish.sh").use { it.available().toLong() }
-                if (rishScript.length() != assetSize) needsDeploy = true
-            } catch (e: Exception) {
-                needsDeploy = true
-            }
-        }
-        if (!rishDex.exists() || rishDex.length() == 0L) needsDeploy = true
-
-        if (!needsDeploy) {
-            rishScript.setExecutable(true, false)
-            rishScript.setReadable(true, false)
-            return
-        }
-
-        try {
-            context.assets.open("usr/bin/rish.sh").use { input ->
-                rishScript.outputStream().use { output -> input.copyTo(output) }
-            }
-            rishScript.setExecutable(true, false)
-            rishScript.setReadable(true, false)
-            rishScript.setWritable(true, false)
-            Log.i(TAG, "Deployed shizuku command to guest (${rishScript.length()} bytes)")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to deploy shizuku command: ${e.message}")
-        }
-
-        try {
-            context.assets.open("usr/bin/rish_shizuku.dex").use { input ->
-                rishDex.outputStream().use { output -> input.copyTo(output) }
-            }
-            rishDex.setReadable(true, false)
-            rishDex.setWritable(false, false)
-            Log.i(TAG, "Deployed rish dex to guest (${rishDex.length()} bytes)")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to deploy rish dex: ${e.message}")
         }
     }
 
@@ -1527,7 +1462,7 @@ object ProotManager {
      * do filesDir. Guest ho uvidí jako `/mnt/app/shell_daemon` a
      * `/mnt/app/shell_daemon.token` (bind `$FILES_DIR → /mnt/app` z boot
      * skriptu), takže `nh shi start --none` ho přes `adb push` nahraje do
-     * `/data/local/tmp` a spustí pod uid 2000. Nahrazuje Shizuku server.
+     * `/data/local/tmp` a spustí pod uid 2000. Nahrazuje puvodni Shizuku server (odstranen 2026-09-19).
      */
     private fun deployShellDaemon(context: Context) {
         try {

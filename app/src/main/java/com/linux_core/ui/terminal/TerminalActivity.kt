@@ -109,11 +109,11 @@ class TerminalActivity : ComponentActivity() {
 
     // ── Services Panel State ──
     private var isServicesExpanded = false
-    private var expandedService: String? = null // "shizuku", "code", "phoenix", or null
+    private var expandedService: String? = null // "adb", "code", "phoenix", or null
     private lateinit var servicesPanel: LinearLayout
     private lateinit var servicesDetailPanel: LinearLayout
     private lateinit var btnServicesToggle: Button
-    private lateinit var btnShizuku: Button
+    private lateinit var btnAdb: Button
     private lateinit var btnCode: Button
     private lateinit var btnPhoenix: Button
     private val servicesUpdateHandler = Handler(Looper.getMainLooper())
@@ -129,7 +129,7 @@ class TerminalActivity : ComponentActivity() {
                             codeRaw.contains("pid", ignoreCase = true)
 
                     runOnUiThread {
-                        updateServiceIndicator("adb", btnShizuku, adbSt.running)
+                        updateServiceIndicator("adb", btnAdb, adbSt.running)
                         updateServiceIndicator("code", btnCode, codeRunning)
                         updateServiceIndicator("phoenix", btnPhoenix, false)
 
@@ -2369,7 +2369,7 @@ class TerminalActivity : ComponentActivity() {
         
         // Spustit libshelldaemon.so --attach jako command pro TerminalSession.
         // Binarka je extrahovana z jniLibs do nativeLibraryDir (deploy cestou
-        // Shizuku libshizuku.so), NIKOLI v filesDir.
+        // (libshelldaemon.so z jniLibs), NIKOLI v filesDir.
         val daemonBin = com.linux_core.core.ShellDaemonClient.binaryPath(applicationContext)
         if (!daemonBin.exists()) {
             showError("libshelldaemon.so nenalezena v nativeLibraryDir")
@@ -2539,7 +2539,7 @@ class TerminalActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, h
             ).apply { setMargins(8, 2, 8, 2) }
 
-            btnShizuku = Button(this@TerminalActivity).apply {
+            btnAdb = Button(this@TerminalActivity).apply {
                 text = "\uD83D\uDCE1 ADB \u25CB"
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
@@ -2555,7 +2555,7 @@ class TerminalActivity : ComponentActivity() {
                     toggleServiceDetail("adb")
                 }
             }
-            addView(btnShizuku)
+            addView(btnAdb)
 
             View(this@TerminalActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(
@@ -2693,7 +2693,7 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun updateAllServiceIndicators() {
-        updateServiceIndicator("adb", btnShizuku)
+        updateServiceIndicator("adb", btnAdb)
         updateServiceIndicator("code", btnCode)
         updateServiceIndicator("phoenix", btnPhoenix)
 

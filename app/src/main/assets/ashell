@@ -23,7 +23,7 @@ API_URL="http://127.0.0.1:1337"
 
 # ── ashell adb start|stop|status|shell|-c — shell_daemon (uid 2000) ──
 # Persistentní démon běžící pod uid 2000 (shell). Deploy je cestou jniLibs
-# (jako Shizuku libshizuku.so): Android extrahuje libshelldaemon.so do
+# (vzor libshizuku.so): Android extrahuje libshelldaemon.so do
 # nativeLibraryDir; appka publikuje plnou cestu do /mnt/app/shelldaemon.path.
 # `ashell adb start` ji spustí pres `adb shell` pod uid 2000 (ZADNY su).
 # Pak drží do rebootu. `ashell adb -c` spouští příkazy pod uid 2000.
@@ -173,9 +173,9 @@ if [ "$1" = "adb" ]; then
             ;;
         status)
             # Status zjistíme TCP probem z appky (app se jen připojí, nic nespouští).
-            RESPONSE=$(api_call GET "/shizuku/daemon/status")
+            RESPONSE=$(api_call GET "/shelldaemon/status")
             if [ -z "$RESPONSE" ]; then
-                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/status" >&2
+                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/status" >&2
                 exit 1
             fi
             printf '%s' "$RESPONSE" | python3 -c "
@@ -215,9 +215,9 @@ except Exception:
             shift
             CMD="$*"
             [ -z "$CMD" ] && { echo "[-] Usage: ashell adb -c '<prikaz>'" >&2; echo "    Např: ashell adb -c "pm list packages"" >&2; exit 1; }
-            RESPONSE=$(api_call POST "/shizuku/daemon/exec" "$CMD")
+            RESPONSE=$(api_call POST "/shelldaemon/exec" "$CMD")
             if [ -z "$RESPONSE" ]; then
-                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/exec" >&2
+                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
                 exit 1
             fi
             printf '%s' "$RESPONSE" | python3 -c "

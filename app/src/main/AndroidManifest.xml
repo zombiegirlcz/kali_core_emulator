@@ -26,8 +26,6 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
-    <uses-permission android:name="moe.shizuku.manager.permission.MANAGER" />
 
     <!-- USB Host management permission (system-level) -->
     <uses-permission android:name="android.permission.MANAGE_USB" />
@@ -310,25 +308,6 @@
             </intent-filter>
         </service>
 
-        <!-- Shizuku klientský provider (Apache 2.0, RikkaApps/Shizuku-API).
-             Shizuku server (běžící pod shell/root UID) sem posílá binder přes
-             ContentProvider.call("sendBinder"). Bez tohoto provideru nemá
-             server kam binder doručit → rish v guestu hlásí
-             "Server is not running".
-
-             - android:permission=INTERACT_ACROSS_USERS_FULL je POŽADAVEK na
-               volajícího (shell UID ji má, běžné appky ne) — chrání provider
-               před zneužitím.
-             - android:multiprocess=false (ShizukuProvider si to v attachInfo
-               vynucuje).
-             - android:exported=true (server běží mimo naši appku). -->
-        <provider
-            android:name="com.linux_core.core.LinuxCoreShizukuProvider"
-            android:authorities="com.linux_core.shizuku"
-            android:exported="true"
-            android:multiprocess="false"
-            android:directBootAware="true"
-            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     </application>
 
     <!-- Signature-level permission: bind povolen pouze appkám se stejným signing key -->

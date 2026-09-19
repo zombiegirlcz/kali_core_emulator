@@ -67,10 +67,8 @@ object LocalApiServer {
     private const val PORT = 1337
     private const val ASHELL_PTY_PORT = 13340
 
-    // Shizuku / privilege eskalace (nh shi)
-    private const val PREFS_SHI = "shizuku_settings"
-    private const val KEY_SHI_MODE = "active_mode"
-    private const val MAX_SHI_CMD_LEN = 8192
+    // shell_daemon / ashell ADB (uid 2000, non-root)
+    private const val MAX_SHELL_CMD_LEN = 8192
     private var serverSocket: ServerSocket? = null
     private var ptyProcess: java.lang.Process? = null
     private var isRunning = false
@@ -423,7 +421,7 @@ object LocalApiServer {
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/editor/", "/usb/",
-                "/vpn/ai/", "/vpn/mitm/selective", "/shizuku")
+                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -565,16 +563,11 @@ object LocalApiServer {
                 path == "/editor/info" && method == "GET" -> handleEditorInfo(context, out)
                 path == "/editor/install" && method == "POST" -> handleEditorInstall(context, out)
 
-                // ─── Shizuku / privilege eskalace (nh shi) ──────────────────
-                path == "/shizuku/status" && method == "GET" -> handleShizukuStatus(context, out)
-                path == "/shizuku/start" && method == "POST" -> handleShizukuStart(context, body, out)
-                path == "/shizuku/mode" && method == "POST" -> handleShizukuMode(context, body, out)
-                path == "/shizuku/stop" && method == "POST" -> handleShizukuStop(context, out)
-                path == "/shizuku/exec" && method == "POST" -> handleShizukuExec(context, body, out)
-                path == "/shizuku/daemon/status" && method == "GET" -> handleShellDaemonStatus(out)
-                path == "/shizuku/daemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
-                path == "/shizuku/daemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
-                path == "/shizuku/daemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
+                // ─── shell_daemon (uid 2000, non-root) ──────────────────────
+                path == "/shelldaemon/status" && method == "GET" -> handleShellDaemonStatus(out)
+                path == "/shelldaemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
+                path == "/shelldaemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
+                path == "/shelldaemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
 
                 // ─── USB Host endpoints ─────────────────────────────────────
                 path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
@@ -1183,161 +1176,13 @@ object LocalApiServer {
         sendResponse(out, statusFor(json), "OK", json)
     }
 
-    // ─── Shizuku / privilege eskalace ───────────────────────────────────────
-
-    /**
-     * Stav privilege eskalace: který režim je aktivní, dostupnost su, shizuku serveru, adb.
-     *
-     * GET /shizuku/status
-     *   → { su: bool, su_path: str|null, active_mode: "root"|"shell"|"shizuku"|"none",
-     *       shizuku: {...}, adb_available: bool }
-     */
-    private fun handleShizukuStatus(context: Context, out: OutputStream) {
-        val shizuku = ShizukuManager.status(context)
-        val suPath = ShizukuManager.suPath()
-        val active =
-            context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
-                .getString(KEY_SHI_MODE, "none") ?: "none"
-        sendResponse(out, 200, "OK", JSONObject().apply {
-            put("su", suPath != null)
-            put("su_path", suPath ?: JSONObject.NULL)
-            put("active_mode", active)
-            put("adb_available", shizuku.adbAvailable)
-            put("shizuku", JSONObject().apply {
-                put("running", shizuku.running)
-                put("pid", shizuku.pid ?: JSONObject.NULL)
-                put("mode", shizuku.mode)
-                put("apk_path", shizuku.shizukuApkPath ?: JSONObject.NULL)
-                put("wireless_paired", shizuku.adbWirelessPaired)
-            })
-        }.toString())
-    }
-
-    /**
-     * `nh shi start --root|--shell|--none` → uloží aktivní režim do SharedPreferences.
-     * Pro režim "shizuku" (--none) zkusí nastartovat bundlovaný Shizuku server přes adb.
-     *
-     * POST /shizuku/start
-     *   body: "root" | "shell" | "none"
-     *   → { mode: "root"|"shell"|"none", started: bool, ... }
-     */
-    private fun handleShizukuStart(context: Context, body: String, out: OutputStream) {
-        val mode = ShizukuManager.parseMode(body.trim())
-        if (mode == null) {
-            sendResponse(out, 400, "Bad Request",
-                "{\"error\":\"Invalid mode (use --root, --shell or --none)\"}")
-            return
-        }
-
-        if (mode != ShizukuMode.NONE && !ShizukuManager.isSuAvailable()) {
-            sendResponse(out, 400, "Bad Request",
-                "{\"error\":\"su not available on this device (need root)\"}")
-            return
-        }
-
-        context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SHI_MODE, mode.name.lowercase()).apply()
-
-        // --none = Shizuku server cesta (non-root). Zkusíme nastartovat, pokud je adb.
-        var started = mode == ShizukuMode.ROOT || mode == ShizukuMode.SHELL
-        if (mode == ShizukuMode.NONE) {
-            started = ShizukuManager.startServer(context)
-        }
-
-        sendResponse(out, 200, "OK", JSONObject().apply {
-            put("mode", mode.name.lowercase())
-            put("started", started)
-            put("describe", mode.describe())
-        }.toString())
-    }
-
-    /**
-     * Jen nastaví aktivní režim (bez startu/stopu serveru).
-     *
-     * Používá `nh shi start --none`, které si server spustí samo přes `adb`
-     * (shell UID) — app do toho nesmí zasahovat (žádné `su`).
-     *
-     * POST /shizuku/mode
-     *   body: "root" | "shell" | "none"
-     *   → { mode, describe }
-     */
-    private fun handleShizukuMode(context: Context, body: String, out: OutputStream) {
-        val mode = ShizukuManager.parseMode(body.trim())
-        if (mode == null) {
-            sendResponse(out, 400, "Bad Request",
-                "{\"error\":\"Invalid mode (use --root, --shell or --none)\"}")
-            return
-        }
-        context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SHI_MODE, mode.name.lowercase()).apply()
-        sendResponse(out, 200, "OK", JSONObject().apply {
-            put("mode", mode.name.lowercase())
-            put("describe", mode.describe())
-        }.toString())
-    }
-
-    /** POST /shizuku/stop → nastaví režim "none" a (u Shizuku serveru) se pokusí zastavit. */
-    private fun handleShizukuStop(context: Context, out: OutputStream) {
-        context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
-            .edit().putString(KEY_SHI_MODE, "none").apply()
-        ShizukuManager.stopServer(context)
-        sendResponse(out, 200, "OK", "{\"mode\":\"none\",\"stopped\":true}")
-    }
-
-    /**
-     * Spustí příkaz v aktivním režimu eskalace.
-     *
-     * POST /shizuku/exec
-     *   body: command string (nebo JSON {"command":"...","mode":"shell"})
-     *   → { stdout, exit_code, mode } | { error, exit_code }
-     */
-    private fun handleShizukuExec(context: Context, body: String, out: OutputStream) {
-        val raw = body.trim()
-        if (raw.isEmpty()) {
-            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
-            return
-        }
-
-        // Podpora obou tvarů: holý string i JSON {command, mode}
-        var command = raw
-        var modeArg: String? = null
-        if (raw.startsWith("{")) {
-            try {
-                val obj = JSONObject(raw)
-                command = obj.optString("command", "")
-                modeArg = obj.optString("mode", "").takeIf { it.isNotEmpty() }
-            } catch (_: Exception) {
-                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
-                return
-            }
-        }
-        if (command.isEmpty()) {
-            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
-            return
-        }
-        if (command.length > MAX_SHI_CMD_LEN) {
-            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long\"}")
-            return
-        }
-
-        // Explicitní mode z JSON má přednost; jinak aktivní z prefs.
-        val mode = modeArg?.let { ShizukuManager.parseMode(it) }
-            ?: ShizukuManager.parseMode(
-                context.getSharedPreferences(PREFS_SHI, Context.MODE_PRIVATE)
-                    .getString(KEY_SHI_MODE, "none") ?: "none",
-            ) ?: ShizukuMode.NONE
-
-        val json = ShizukuManager.execAs(context, mode, command)
-        sendResponse(out, statusFor(json), "OK", json)
-    }
-
     // ─── shell_daemon (persistentní uid 2000) ────────────────────────────
 
     /**
-     * GET /shizuku/daemon/status
+     * GET /shelldaemon/status
      *   → { running: bool, port: int }
      *
-     * `shell_daemon` je ekvivalent Shizuku/adb démona: po jednorázovém startu
+     * `shell_daemon` je obdoba adb shell démona: po jednorázovém startu
      * (přes `nh shi start --none` z guestu nebo `su 2000 -c` na root zařízení)
      * běží pod uid 2000 do rebootu a všechny exekuce jdou přes něj.
      */
@@ -1349,7 +1194,7 @@ object LocalApiServer {
         }.toString())
     }
 
-    /** POST /shizuku/daemon/start → zkusí nastartovat daemon (jen pokud je su). */
+    /** POST /shelldaemon/start → zkusí nastartovat daemon (jen pokud je su). */
     private fun handleShellDaemonStart(context: Context, out: OutputStream) {
         val ok = ShellDaemonClient.startDaemon(context)
         sendResponse(out, if (ok) 200 else 500, if (ok) "OK" else "Error",
@@ -1360,14 +1205,14 @@ object LocalApiServer {
             }.toString())
     }
 
-    /** POST /shizuku/daemon/stop → pkill pod uid 2000. */
+    /** POST /shelldaemon/stop → pkill pod uid 2000. */
     private fun handleShellDaemonStop(context: Context, out: OutputStream) {
         val ok = ShellDaemonClient.stopDaemon(context)
         sendResponse(out, 200, "OK", "{\"stopped\":$ok}")
     }
 
     /**
-     * POST /shizuku/daemon/exec
+     * POST /shelldaemon/exec
      *   body = command (holý string) nebo JSON {command, cwd}
      *   → { stdout, stderr, exit_code, mode="shell_daemon" }
      */
@@ -1393,7 +1238,7 @@ object LocalApiServer {
             sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
             return
         }
-        if (command.length > MAX_SHI_CMD_LEN) {
+        if (command.length > MAX_SHELL_CMD_LEN) {
             sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long\"}")
             return
         }

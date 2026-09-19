@@ -6,12 +6,9 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Strážce cest k assetům, které ProotManager / ShizukuManager otevírají přes
- * `context.assets.open(...)`. Rozbitá cesta (přesun bez aktualizace deploye)
- * se projeví až na zařízení za běhu — tenhle test to zachytí už v unit testech.
- *
- * Cesty zrcadlí konstanty v ShizukuManager (ASSET_SERVER / ASSET_RISH_DEX /
- * ASSET_APK) a volání deployArchAsset/deployShizukuRish v ProotManager.
+ * Strážce cest k assetům, které ProotManager otevírá přes `context.assets.open(...)`.
+ * Rozbitá cesta (přesun bez aktualizace deploye) se projeví až na zařízení za
+ * běhu — tenhle test to zachytí už v unit testech.
  *
  * Pozn.: běží z modulu `app` (cwd = app/), stejně jako SymbolScannerTest
  * používající `src/main/jniLibs/...`.
@@ -28,21 +25,16 @@ class DeployAssetPathsTest {
     }
 
     @Test
-    fun `shizuku rish shell a dex jsou v usr bin`() {
-        assertAsset("usr/bin/rish.sh")
-        assertAsset("usr/bin/rish_shizuku.dex")
-    }
-
-    @Test
-    fun `shizuku nativni knihovny jsou v usr lib`() {
-        assertAsset("usr/lib/libshizuku.so")
-        assertAsset("usr/lib/librish.so")
-        assertAsset("usr/lib/libadb.so")
-    }
-
-    @Test
-    fun `bundled shizuku apk je v usr lib`() {
-        assertAsset("usr/lib/shizuku.apk")
+    fun `shizuku assety uz nejsou v APK`() {
+        for (rel in listOf(
+            "usr/bin/rish.sh",
+            "usr/bin/rish_shizuku.dex",
+            "usr/lib/librish.so",
+            "usr/lib/libshizuku.so",
+            "usr/lib/shizuku.apk",
+        )) {
+            assertTrue("shizuku asset se nesmi vracet: $rel", !assetFile(rel).exists())
+        }
     }
 
     @Test
