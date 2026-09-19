@@ -111,6 +111,21 @@ if [ "$1" = "adb" ]; then
         adb shell "cat '$_d/libtoken.so' 2>/dev/null" 2>/dev/null | tr -d '\r\n '
     }
 
+    # PID file, ktery daemon zapisuje do /data/local/tmp/shelldaemon.pid.
+    # `pidof libshelldaemon.so` nefunguje — Android comm je orezany na 15 znaku.
+    # Definujeme PRED case, aby je videly vsechny vetve (start/stop/passthrough).
+    PIDFILE=/data/local/tmp/shelldaemon.pid
+    daemon_pid() {
+        adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n '
+    }
+    daemon_alive() {
+        _p=$(daemon_pid)
+        [ -n "$_p" ] || return 1
+        # over, ze proces opravdu existuje a je to nas daemon
+        adb shell "test -d /proc/$_p" 2>/dev/null && \
+        adb shell "grep -q shell_daemon /proc/$_p/cmdline 2>/dev/null || grep -q libshelldaemon /proc/$_p/cmdline 2>/dev/null" 2>/dev/null
+    }
+
     case "$SUBCMD" in
         start)
             if ! command -v adb >/dev/null 2>&1; then
@@ -143,20 +158,6 @@ if [ "$1" = "adb" ]; then
                 exit 1
             fi
 
-            # Uz bezi? Cteme PID file, ktery daemon zapisuje do
-            # /data/local/tmp/shelldaemon.pid. `pidof libshelldaemon.so`
-            # nefunguje — Android comm je orezany na 15 znaku.
-            PIDFILE=/data/local/tmp/shelldaemon.pid
-            daemon_pid() {
-                adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n '
-            }
-            daemon_alive() {
-                _p=$(daemon_pid)
-                [ -n "$_p" ] || return 1
-                # over, ze proces opravdu existuje a je to nas daemon
-                adb shell "test -d /proc/$_p && grep -q shell_daemon /proc/$_p/cmdline 2>/dev/null || grep -q libshelldaemon /proc/$_p/cmdline 2>/dev/null" 2>/dev/null
-            }
-
             pid=$(daemon_pid)
             if ! daemon_alive; then
                 echo "[*] Startuji libshelldaemon.so pod shell UID (non-root) ..."
@@ -181,8 +182,7 @@ if [ "$1" = "adb" ]; then
                 echo "[-] adb neni v guestu k dispozici." >&2
                 exit 1
             fi
-            PIDFILE=/data/local/tmp/shelldaemon.pid
-            _p=$(adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n ')
+            _p=$(daemon_pid)
             if [ -n "$_p" ]; then
                 adb shell "kill $_p 2>/dev/null || true" >/dev/null 2>&1
                 adb shell "rm -f $PIDFILE" >/dev/null 2>&1
@@ -270,36 +270,136 @@ sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
             exit $RC
             ;;
         *)
-            # ── Passthrough: ashell adb <cokoli> = adb <cokoli>, ale pres daemona ──
+            # ── ashell adb <cokoli> = adb <cokoli>, ale vse pres daemona ──
             #
-            # Uvnitr Android shellu (uid 2000) `adb` binarka NEEXISTUJE, takze
-            # prikaz se predava shellu tak, jak by ho dostal `adb shell`:
-            #   ashell adb shell id        -> daemon spusti  id
-            #   ashell adb shell pm list   -> daemon spusti  pm list
-            #   ashell adb shell id        -> (prefix "shell" se zahodi)
+            # Daemon JE nase adb: bezi jako uid 2000 (shell), takze vsechno,
+            # co by umel `adb shell <cmd>`, umi spustit sam. `adb` binarka
+            # v guestu se nepouziva.
+            #
+            # Mapovani (stejne jako adb):
+            #   ashell adb shell <cmd>     -> daemon: <cmd>
+            #   ashell adb <cmd>           -> daemon: <cmd>   (bez "shell")
+            #   ashell adb install x.apk   -> daemon: pm install x.apk
+            #   ashell adb uninstall pkg   -> daemon: pm uninstall pkg
+            #   ashell adb push L R        -> daemon: cp -r L R   (pokud L lokalni)
+            #   ashell adb pull R L        -> daemon: cp -r R L
+            #   ashell adb devices         -> daemon: (n/a) -> prazdny seznam
+            #   ashell adb --help / help   -> vypis nasich prikazu
+            #
             # Cesta k daemonu + token se resolvuje stejne jako u start.
             _d=$(native_dir)
             if [ -z "$_d" ]; then
                 echo "[-] Neznám nativeLibraryDir (dumpsys selhal)." >&2
                 exit 1
             fi
-            _tok=$(daemon_token)
-            if [ -z "$_tok" ]; then
-                echo "[-] Chybí token ($_d/libtoken.so). Spust appku aspoň jednou." >&2
+            # Daemon musi bezet (spousti ho `ashell adb start` pres adb shell).
+            if ! daemon_alive; then
+                echo "[-] shell_daemon nebezi. Spust: ashell adb start" >&2
                 exit 1
             fi
-            # sesbirej vsechny argumenty za "adb"
-            _cmd="$*"
-            # zahod uvodni "shell" (daemon shell je)
-            case "$_cmd" in
-                shell|shell\ *) _cmd="${_cmd#shell}"; _cmd="${_cmd# }" ;;
+
+            # Puvodni argumenty (za "adb") — $@ uz bylo shiftnute, takze $1..$n.
+            _sub="$1"
+            case "$_sub" in
+                help|--help|-h)
+                    cat <<'ADBHELP'
+ashell adb — adb-like rozhrani, vse pres shell_daemon (uid 2000)
+
+  ashell adb start            spusti shell_daemon (jednorazove, pres adb shell)
+  ashell adb stop             zastavi shell_daemon
+  ashell adb status           stav shell_daemonu (TCP probe)
+  ashell adb shell            otevre interaktivni terminal pod uid 2000
+  ashell adb shell <cmd>      spusti <cmd> pod uid 2000
+  ashell adb <cmd>            totеz co "adb shell <cmd>" (prefix shell se zahodi)
+  ashell adb install [-r] <apk>  legacy install: cp do /data/local/tmp + pm install
+  ashell adb uninstall <pkg>     cmd package uninstall (jako adb)
+  ashell adb push <L> <R>        cp -r L R (uid 2000)
+  ashell adb pull <R> <L>        cp -r R L (uid 2000)
+  ashell adb devices             nas shell_daemon jako jedine "zarizeni"
+  ashell adb logcat [...]        logcat pod uid 2000
+  ashell adb -c '<cmd>'          cista app-uid cesta (mimo daemona)
+
+Pozn.: daemon bezi jako Android shell (uid 2000), takze vidi /system/bin
+nastroje (pm, am, logcat, settings, ...). `adb` binarka se nepouziva.
+ADBHELP
+                    exit 0
+                    ;;
+                shell)
+                    shift
+                    _cmd="$*"
+                    ;;
+                install)
+                    # adb install streamuje APK po socketu (exec:cmd package install -S).
+                    # To daemon (sh -c) neumi, takze jdeme legacy cestou, kterou adb
+                    # pouziva na starych zarizenich (INSTALL_PUSH): zkopiruj APK do
+                    # /data/local/tmp a spust `pm install`.
+                    shift
+                    if [ $# -lt 1 ]; then
+                        echo "[-] Usage: ashell adb install [-r] <apk>" >&2
+                        exit 1
+                    fi
+                    _opts=""
+                    # posledni argument je APK; vse pred tim jsou pm flagy
+                    for _a in "$@"; do _apk="$_a"; done
+                    for _a in "$@"; do
+                        [ "$_a" = "$_apk" ] && break
+                        case "$_a" in -*) _opts="$_opts $_a" ;; esac
+                    done
+                    _base=$(basename "$_apk")
+                    _tmp="/data/local/tmp/$_base"
+                    _cmd="cp '$_apk' '$_tmp' && pm install$_opts '$_tmp'"
+                    ;;
+                uninstall)
+                    # adb uninstall posila presne `cmd package uninstall <args>`
+                    # (viz client/adb_install.cpp: uninstall_app_streamed).
+                    shift
+                    _cmd="cmd package uninstall $* 2>/dev/null || pm uninstall $*"
+                    ;;
+                push)
+                    shift
+                    if [ $# -lt 2 ]; then
+                        echo "[-] Usage: ashell adb push <local> <remote>" >&2
+                        exit 1
+                    fi
+                    _src="$1"; shift
+                    _dst="$*"
+                    _cmd="cp -r '$_src' '$_dst'"
+                    ;;
+                pull)
+                    shift
+                    if [ $# -lt 2 ]; then
+                        echo "[-] Usage: ashell adb pull <remote> <local>" >&2
+                        exit 1
+                    fi
+                    _src="$1"; shift
+                    _dst="$*"
+                    _cmd="cp -r '$_src' '$_dst'"
+                    ;;
+                devices)
+                    # Zadny USB adbd tady nema smysl (jsme na tom zarizeni).
+                    # Ukaz nas shell_daemon jako jedine "zarizeni".
+                    if daemon_alive; then
+                        _pid=$(daemon_pid)
+                        printf 'List of devices attached\n127.0.0.1:13341\tdevice (shell_daemon uid 2000, pid %s)\n' "$_pid"
+                    else
+                        printf 'List of devices attached\n'
+                    fi
+                    exit 0
+                    ;;
+                *)
+                    _cmd="$*"
+                    ;;
             esac
+
             if [ -z "$_cmd" ]; then
                 echo "[-] Usage: ashell adb <prikaz>" >&2
                 echo "    Napr: ashell adb id" >&2
                 echo "          ashell adb pm list packages" >&2
+                echo "          ashell adb shell id" >&2
+                echo "          ashell adb install /path/app.apk" >&2
                 exit 1
             fi
+
             RESPONSE=$(api_call POST "/shelldaemon/exec" "$_cmd")
             if [ -z "$RESPONSE" ]; then
                 echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
@@ -311,18 +411,15 @@ data = sys.stdin.read()
 try:
     d = json.loads(data)
 except Exception as e:
-    sys.stderr.write('Chyba parsovani: %s
-' % e)
-    sys.stderr.write('Raw: %s
-' % data[:400])
+    sys.stderr.write('Chyba parsovani odpovedi: %s\n' % e)
+    sys.stderr.write('Raw: %s\n' % data[:400])
     sys.exit(1)
 if 'error' in d and 'exit_code' not in d:
     out = d.get('stdout',''); err = d.get('stderr','')
     if out: sys.stdout.write(out)
     if err: sys.stderr.write(err)
     if not out and not err:
-        sys.stderr.write(d['error'] + '
-')
+        sys.stderr.write(d['error'] + '\n')
     sys.exit(1)
 out = d.get('stdout',''); err = d.get('stderr','')
 rc = d.get('exit_code', 0)
