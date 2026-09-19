@@ -23,8 +23,8 @@ API_URL="http://127.0.0.1:1337"
 
 # ── ashell adb start|stop|status|shell|-c — shell_daemon (uid 2000) ──
 # Persistentní démon běžící pod uid 2000 (shell). Deploy je cestou jniLibs
-# (vzor libshizuku.so): Android extrahuje libshelldaemon.so do
-# nativeLibraryDir; appka publikuje plnou cestu do /mnt/app/shelldaemon.path.
+# (vzor libshizuku.so): Android extrahuje libshelldaemon.so i libtoken.so
+# do nativeLibraryDir. Cestu zjistime z `dumpsys package`.
 # `ashell adb start` ji spustí pres `adb shell` pod uid 2000 (ZADNY su).
 # Pak drží do rebootu. `ashell adb -c` spouští příkazy pod uid 2000.
 # `ashell adb shell` otevře nové terminálové okno pod uid 2000.
@@ -86,41 +86,29 @@ if [ "$1" = "adb" ]; then
         fi
     }
 
-    # Cesta k extrahované binárce.
-    #
-    # Zdroje v poradi priorit:
-    #   1) $SHELLDAEMON_PATH (explicitni override z prostredi)
-    #   2) /mnt/app/shelldaemon.path — appka publikuje pri startu; v guestu
-    #      viditelne JEN kdyz je zapnuty bind_app (RootBridge -> "App Data")
-    #   3) $HOME/shelldaemon.path — fallback pro pripad, ze si ji tam user zkopiruje
-    #
-    # Kdyz nic z toho neni, vratime prazdno a `start` vypise presny navod.
-    daemon_path() {
-        if [ -n "${SHELLDAEMON_PATH:-}" ] && [ -x "$SHELLDAEMON_PATH" ]; then
-            printf '%s' "$SHELLDAEMON_PATH"
+    # Cesta k nativeLibraryDir appky — jedna ze dvou moznosti:
+    #   1) $SHELLDAEMON_NATIVE_DIR (explicitni override)
+    #   2) dumpsys package com.linux_core (vzdy dostupne, uid 2000 to smi)
+    native_dir() {
+        if [ -n "${SHELLDAEMON_NATIVE_DIR:-}" ]; then
+            printf '%s' "$SHELLDAEMON_NATIVE_DIR"
             return 0
         fi
-        _p=""
-        for f in /mnt/app/shelldaemon.path "$HOME/shelldaemon.path"; do
-            if [ -f "$f" ]; then
-                _p=$(tr -d '
- ' < "$f")
-                [ -n "$_p" ] && break
-            fi
-        done
-        printf '%s' "$_p"
+        adb shell "dumpsys package com.linux_core 2>/dev/null | grep -m1 nativeLibraryDir | sed 's/.*=//'" 2>/dev/null | tr -d '\r\n '
     }
 
-    # Token: guest ho vidi jako /mnt/app/shell_daemon.token
+    daemon_path() {
+        _d=$(native_dir)
+        [ -n "$_d" ] || return 1
+        printf '%s/arm64/libshelldaemon.so' "$_d"
+    }
+
+    # Token: appka ho zapisuje do nativeLibraryDir/libtoken.so, ctime ho
+    # `adb shell cat` — stejna cesta pro appku i shell, zadny bind.
     daemon_token() {
-        for f in /mnt/app/shell_daemon.token "$HOME/shell_daemon.token"; do
-            if [ -f "$f" ]; then
-                tr -d '
- ' < "$f"
-                return 0
-            fi
-        done
-        return 1
+        _d=$(native_dir)
+        [ -n "$_d" ] || return 1
+        adb shell "cat '$_d/libtoken.so' 2>/dev/null" 2>/dev/null | tr -d '\r\n '
     }
 
     case "$SUBCMD" in
@@ -139,28 +127,19 @@ if [ "$1" = "adb" ]; then
             DAEMON=$(daemon_path)
             if [ -z "$DAEMON" ]; then
                 echo "[-] Neznám cestu k libshelldaemon.so." >&2
-                echo "" >&2
-                echo "    Duvod: v guestu neni videt /mnt/app (bind_app je vypnuty)." >&2
-                echo "    Řešení (vyber jedno):" >&2
-                echo "      a) V appce: Root Bridge -> zapni 'App Data' (bind_app)," >&2
-                echo "         pak restartuj session (nh distro kill && nh distro start)." >&2
-                echo "      b) Zjisti cestu z hostu:" >&2
-                echo "           adb shell cat /data/data/com.linux_core/files/shelldaemon.path" >&2
-                echo "         a nastav ji v guestu:" >&2
-                echo "           export SHELLDAEMON_PATH=<ta cesta>" >&2
+                echo "    dumpsys nevrátil nativeLibraryDir pro com.linux_core." >&2
+                echo "    Over: adb shell dumpsys package com.linux_core | grep nativeLibraryDir" >&2
                 exit 1
             fi
-            if ! adb shell "test -x $DAEMON" 2>/dev/null; then
+            if ! adb shell "test -x '$DAEMON'" 2>/dev/null; then
                 echo "[-] Binarka neni spustitelna v host kontextu: $DAEMON" >&2
                 echo "    Zkontroluj, ze APK ma extractNativeLibs (useLegacyPackaging=true)." >&2
                 exit 1
             fi
-            TOKEN=$(daemon_token) || {
-                echo "[-] Chybí token /mnt/app/shell_daemon.token (spusť appku)." >&2
-                exit 1
-            }
+            TOKEN=$(daemon_token)
             if [ -z "$TOKEN" ]; then
-                echo "[-] Token je prázdný." >&2
+                echo "[-] Token je prázdný ($DAEMON -> libtoken.so)." >&2
+                echo "    Spust appku aspoň jednou — zapise token pri startu." >&2
                 exit 1
             fi
 

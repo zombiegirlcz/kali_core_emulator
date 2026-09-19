@@ -17,12 +17,14 @@ import org.json.JSONObject
  * v `assets/`, ale jako spustitelný ELF v `jniLibs/arm64-v8a/libshelldaemon.so`.
  * Android ho při instalaci extrahuje do `applicationInfo.nativeLibraryDir`
  * (díky `useLegacyPackaging=true` je soubor reálně na disku, ne jen v APK).
- * Cesta se publikuje do `filesDir/shelldaemon.path` → guest ji vidí jako
- * `/mnt/app/shelldaemon.path` (bind `$FILES_DIR → /mnt/app` z `boot` skriptu).
+ * **Spuštění**: NIKDY přes `su` ani z appky. Daemon musí běžet pod uid 2000,
+ * což app UID (10323) nedokáže spawnout. Spouští ho **guest** příkazem
+ * `ashell adb start`, který si cestu i token zjistí sám přes `adb shell`:
  *
- * **Spuštění**: NIKDY přes `su`. Daemon musí běžet pod uid 2000, což app UID
- * (10323) nedokáže spawnout. Spouští ho proto **guest** příkazem
- * `ashell adb start` → `adb shell nohup <nativeLibraryDir>/libshelldaemon.so …`.
+ *     NativeDir=$(adb shell dumpsys package com.linux_core \
+ *                 | grep -m1 nativeLibraryDir | sed 's/.*=//')
+ *     adb shell nohup "$NativeDir/arm64/libshelldaemon.so" --port=13341 --token=…
+ *
  * Aplikace jen detekuje, že daemon běží (TCP probe), a posílá mu příkazy.
  *
  * **Komunikace**: TCP 127.0.0.1:[PORT], binární protokol (length-prefixed
@@ -38,11 +40,12 @@ object ShellDaemonClient {
     private const val TAG = "ShellDaemonClient"
     const val PORT = 13341
 
-    /** Token pro autentizaci daemona (guest ho čte z `/mnt/app/shell_daemon.token`). */
-    private const val TOKEN_FILE = "shell_daemon.token"
-
-    /** Publikovaná cesta k extrahované binárce (guest čte z `/mnt/app/shelldaemon.path`). */
-    private const val PATH_FILE = "shelldaemon.path"
+    /**
+     * Token zapisujeme do `nativeLibraryDir/libtoken.so` — tam ho uvidí jak
+     * appka, tak `adb shell` (uid 2000). Zadny bind, zadny filesDir.
+     * V jniLibs je placeholder, aby ho Android vubec extrahoval.
+     */
+    private const val TOKEN_SO_NAME = "libtoken.so"
 
     /** Název v jniLibs — Android ho extrahuje do nativeLibraryDir pod stejným jménem. */
     private const val SO_NAME = "libshelldaemon.so"
@@ -61,55 +64,50 @@ object ShellDaemonClient {
         File(context.applicationInfo.nativeLibraryDir, SO_NAME)
 
     /**
-     * Publikuj cestu k binárce do `filesDir/shelldaemon.path`, aby ji guest
-     * (přes bind `/mnt/app`) našel bez hardcoded cesty do `/data/app/...`.
-     * Volá se při deployi i před startem; idempotentní.
+     * Token file v nativeLibraryDir (`libtoken.so`). Appka i `adb shell`
+     * (uid 2000) ho vidi na stejne ceste. Placeholder v jniLibs zajisti,
+     * ze ho Android pri instalaci extrahuje.
      */
     @JvmStatic
-    fun publishBinaryPath(context: Context): String {
-        val bin = binaryPath(context)
-        val p = bin.absolutePath
-        try {
-            File(context.filesDir, PATH_FILE).writeText(p)
-        } catch (e: Exception) {
-            Log.w(TAG, "publishBinaryPath failed: ${e.message}")
-        }
-        return p
-    }
+    fun tokenFile(context: Context): File =
+        File(context.applicationInfo.nativeLibraryDir, TOKEN_SO_NAME)
 
     /**
      * Vrátí (případně vygeneruje) perzistentní token pro autentizaci daemona.
-     * Soubor leží ve filesDir → v guestu je vidět jako `/mnt/app/shell_daemon.token`,
-     * takže ho `ashell adb start` umí přečíst a předat daemonu jako `--token=<hex>`.
+     * Zapisuje se do `nativeLibraryDir/libtoken.so`, odkud ho `ashell adb start`
+     * přečte přes `adb shell cat`. Idempotentní; placeholder se přepíše.
      */
     @JvmStatic
     fun ensureToken(context: Context): String {
-        val f = File(context.filesDir, TOKEN_FILE)
+        val f = tokenFile(context)
         if (f.exists() && f.length() > 0L) {
             val t = f.readText().trim()
-            if (t.isNotEmpty()) return t
+            if (t.isNotEmpty() && t != "placeholder") return t
         }
         val bytes = ByteArray(64)
         SecureRandom().nextBytes(bytes)
         val hex = bytes.joinToString("") { "%02x".format(it) }
-        f.writeText(hex)
-        f.setReadable(true, true)
+        try {
+            f.writeText(hex)
+            f.setReadable(true, true)
+        } catch (e: Exception) {
+            Log.w(TAG, "ensureToken: nelze zapsat ${f.absolutePath}: ${e.message}")
+        }
         return hex
     }
 
     /**
-     * @deprecated Starý deploy z assets byl nahrazen cestou jniLibs.
-     *  Ponecháno kvůli volajícím (ProotManager.deployShellDaemon) — nyní jen
-     *  publikuje cestu k extrahované `.so` a vygeneruje token.
+     * @deprecated Nahrazeno `ensureToken` — binarka se nekam nekopiruje,
+     *  lezi v nativeLibraryDir z jniLibs. Ponecháno pro volajici.
      */
     @JvmStatic
-    @Deprecated("Use publishBinaryPath + ensureToken")
+    @Deprecated("Use ensureToken")
     fun deployBinary(context: Context): File? {
         val bin = binaryPath(context)
         if (!bin.exists()) {
             Log.w(TAG, "deployBinary: ${bin.absolutePath} neexistuje (extractNativeLibs?)")
         }
-        publishBinaryPath(context)
+        ensureToken(context)
         return bin
     }
 
@@ -154,7 +152,6 @@ object ShellDaemonClient {
     @JvmStatic
     fun startDaemon(context: Context): Boolean {
         if (status().running) return true
-        publishBinaryPath(context)
         ensureToken(context)
         Log.i(
             TAG,
@@ -170,7 +167,7 @@ object ShellDaemonClient {
      */
     @JvmStatic
     fun stopDaemon(context: Context): Boolean {
-        publishBinaryPath(context)
+        // App uid 2000 nespawne; zastavi ho guest pres `ashell adb stop`.
         return false
     }
 

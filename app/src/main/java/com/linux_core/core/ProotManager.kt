@@ -1459,19 +1459,17 @@ object ProotManager {
     }
 
     /**
-     * Nasaď `shell_daemon` (persistentní shell UID 2000 daemon) + jeho token
-     * do filesDir. Guest ho uvidí jako `/mnt/app/shell_daemon` a
-     * `/mnt/app/shell_daemon.token` (bind `$FILES_DIR → /mnt/app` z boot
-     * skriptu), takže `nh shi start --none` ho přes `adb push` nahraje do
-     * `/data/local/tmp` a spustí pod uid 2000. Nahrazuje puvodni Shizuku server (odstranen 2026-09-19).
+     * Zajisti token pro `shell_daemon` v `nativeLibraryDir/libtoken.so`.
+     * Binarka i token lezi v nativeLibraryDir (jniLibs + useLegacyPackaging),
+     * takze je odtud precte a spusti `adb shell` (uid 2000). Zadny bind,
+     * zadny filesDir — nahrazuje puvodni Shizuku server (odstranen 2026-09-19).
      */
     private fun deployShellDaemon(context: Context) {
         try {
-            ShellDaemonClient.deployBinary(context)
             ShellDaemonClient.ensureToken(context)
-            Log.i(TAG, "Deployed shell_daemon + token to filesDir")
+            Log.i(TAG, "shell_daemon token ready: ${ShellDaemonClient.tokenFile(context).absolutePath}")
         } catch (e: Exception) {
-            Log.w(TAG, "shell_daemon deploy failed: ${e.message}")
+            Log.w(TAG, "shell_daemon token deploy failed: ${e.message}")
         }
     }
 
