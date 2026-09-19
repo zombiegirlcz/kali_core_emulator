@@ -6,45 +6,30 @@ This document explains how to build the kali_core_emulator Android application.
 
 ### Option 1: GitHub Actions CI/CD (Recommended)
 ```bash
-git push origin master
-# GitHub Actions automatically builds and uploads APK as artifact
+git push origin dev
+# GitHub Actions compiles the NDK outputs, runs unit tests, builds the APK,
+# and uploads it under Actions → workflow run → Artifacts.
 ```
 
-### Option 2: Local Build
+The workflow in `.github/workflows/build.yml` replaces the former Modal build
+for normal CI use. It performs the same relevant project steps: checkout with
+LFS/submodules, JDK 21 and Android SDK setup, NDK r28 native compilation,
+unit tests, and `assembleDebug`. Configure `RELEASE_JKS_BASE64` together with
+`KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` as repository secrets to
+preserve the release keystore signature. Without the keystore secret, the
+workflow still produces a debug-signed APK.
 
-**Prerequisites:**
-- Java JDK 21
-- Android SDK (API 36, Build Tools 36.0.0)
-
-**Steps:**
-```bash
-# Set up environment
-export JAVA_HOME=/path/to/jdk21
-export ANDROID_HOME=/path/to/android-sdk
-
-# Build APK
-./gradlew assembleDebug
-
-# Deploy to device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
+Local Gradle builds are intentionally not part of the supported workflow;
+use GitHub Actions for builds.
 
 ## System Requirements
-
-### For Local Builds
-
-| Component | Version | Notes |
-|---|---|---|
-| Java JDK | 21+ | Temurin, OpenJDK, or Oracle JDK |
-| Android SDK | 36+ | Platform and Build Tools |
-| Gradle | 8.x | Included via gradle wrapper |
-| Git | 2.0+ | With LFS support for large files |
 
 ### For CI/CD Builds
 
 - GitHub Actions (ubuntu-latest)
 - JDK 21 setup (actions/setup-java@v4)
 - Android SDK setup (android-actions/setup-android@v3)
+- Android NDK r28 setup (android-actions/setup-ndk@v3)
 
 ## Build Options
 
