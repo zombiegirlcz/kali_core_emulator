@@ -996,8 +996,9 @@ class TerminalActivity : ComponentActivity() {
         setIntent(intent)
         // ashell escape: pokud je extra nastavený na novém intentu (např. singleTask
         // nedovolil vytvoření nové instance), spustíme ashell session v téhle aktivitě
-        if (intent.getBooleanExtra("ashellMode", false) ||
-            intent.getStringExtra("rootfsDirName") == "ashell-host") {
+        if ((intent.getBooleanExtra("ashellMode", false) ||
+             intent.getStringExtra("rootfsDirName") == "ashell-host")
+            && intent.getStringExtra("rootfsDirName") != "ashell-adb") {
             startAshellSession()
             return
         }
@@ -2326,7 +2327,8 @@ class TerminalActivity : ComponentActivity() {
                             File(filesDir, "$rootfsDirName/.docker_image").exists()
 
         // ashell: escape z prootu do host app shellu (/system/bin/sh, bez PRoot)
-        if (ashellMode || rootfsDirName == "ashell-host") {
+        if ((ashellMode || rootfsDirName == "ashell-host") &&
+            rootfsDirName != "ashell-adb") {
             startAshellSession()
             return
         }

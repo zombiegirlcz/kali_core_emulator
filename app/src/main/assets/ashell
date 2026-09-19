@@ -170,6 +170,46 @@ if [ "$1" = "adb" ]; then
         adb shell "grep -q shell_daemon /proc/$_p/cmdline 2>/dev/null || grep -q libshelldaemon /proc/$_p/cmdline 2>/dev/null" 2>/dev/null
     }
 
+    # Spustí příkaz přes shell_daemon (uid 2000) a vytiskne stdout/stderr.
+    # Jediné místo, kam se posílá /shelldaemon/exec — používají ho
+    # `ashell adb <cmd>`, `ashell adb shell <cmd>` i `ashell adb -c <cmd>`.
+    daemon_exec() {
+        _cmd="$1"
+        if ! daemon_alive; then
+            echo "[-] shell_daemon nebezi. Spust: ashell adb start" >&2
+            return 1
+        fi
+        _resp=$(api_call POST "/shelldaemon/exec" "$_cmd")
+        if [ -z "$_resp" ]; then
+            echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
+            return 1
+        fi
+        printf '%s' "$_resp" | python3 -c "
+import sys, json
+data = sys.stdin.read()
+try:
+    d = json.loads(data)
+except Exception as e:
+    sys.stderr.write('Chyba parsovani odpovedi: %s\n' % e)
+    sys.stderr.write('Raw: %s\n' % data[:400])
+    sys.exit(1)
+if 'error' in d and 'exit_code' not in d:
+    out = d.get('stdout',''); err = d.get('stderr','')
+    if out: sys.stdout.write(out)
+    if err: sys.stderr.write(err)
+    if not out and not err:
+        sys.stderr.write(d['error'] + '\n')
+    sys.exit(1)
+out = d.get('stdout',''); err = d.get('stderr','')
+rc = d.get('exit_code', 0)
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+if not isinstance(rc, int): rc = 0
+sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
+" 2>/dev/null
+        return $?
+    }
+
     case "$SUBCMD" in
         start)
             if ! command -v adb >/dev/null 2>&1; then
@@ -261,9 +301,14 @@ except Exception:
 " 2>/dev/null || echo "[-] Chyba parsování odpovědi" >&2
             ;;
         shell)
+            shift
+            if [ $# -gt 0 ]; then
+                daemon_exec "$*"
+                exit $?
+            fi
             echo "[*] Otevírám nové terminálové okno pod uid 2000 (shell_daemon)..."
             if command -v cmd >/dev/null 2>&1; then
-                cmd activity start-activity -n "$ACTIVITY"                     --es rootfsDirName "ashell-adb"                     --ez mountStorage false                     --ez ashellMode true                     >/dev/null 2>&1
+                cmd activity start-activity -n "$ACTIVITY"                     --es rootfsDirName "ashell-adb"                     --ez mountStorage false                     >/dev/null 2>&1
                 RC=$?
                 if [ $RC -eq 0 ]; then
                     echo "[+] ADB shell opened (via cmd activity)"
@@ -449,45 +494,8 @@ sys.exit(d.get('exit_code', 0) or 0)
                     ;;
             esac
 
-            if [ -z "$_cmd" ]; then
-                echo "[-] Usage: ashell adb <prikaz>" >&2
-                echo "    Napr: ashell adb id" >&2
-                echo "          ashell adb pm list packages" >&2
-                echo "          ashell adb shell id" >&2
-                echo "          ashell adb install /path/app.apk" >&2
-                exit 1
-            fi
-
-            RESPONSE=$(api_call POST "/shelldaemon/exec" "$_cmd")
-            if [ -z "$RESPONSE" ]; then
-                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shelldaemon/exec" >&2
-                exit 1
-            fi
-            printf '%s' "$RESPONSE" | python3 -c "
-import sys, json
-data = sys.stdin.read()
-try:
-    d = json.loads(data)
-except Exception as e:
-    sys.stderr.write('Chyba parsovani odpovedi: %s\n' % e)
-    sys.stderr.write('Raw: %s\n' % data[:400])
-    sys.exit(1)
-if 'error' in d and 'exit_code' not in d:
-    out = d.get('stdout',''); err = d.get('stderr','')
-    if out: sys.stdout.write(out)
-    if err: sys.stderr.write(err)
-    if not out and not err:
-        sys.stderr.write(d['error'] + '\n')
-    sys.exit(1)
-out = d.get('stdout',''); err = d.get('stderr','')
-rc = d.get('exit_code', 0)
-if out: sys.stdout.write(out)
-if err: sys.stderr.write(err)
-if not isinstance(rc, int): rc = 0
-sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
-" 2>/dev/null
-            RC=$?
-            exit $RC
+            daemon_exec "$_cmd"
+            exit $?
             ;;
     esac
     exit $?

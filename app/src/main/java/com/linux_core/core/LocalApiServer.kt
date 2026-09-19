@@ -1371,7 +1371,10 @@ object LocalApiServer {
                 addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
                 putExtra("rootfsDirName", rootfsDirName)
                 putExtra("mountStorage", false)
-                putExtra("ashellMode", true)
+                // ashellMode spouští app-uid host shell (startAshellSession).
+                // Pro adb-shell (uid 2000) ho NESMÍME nastavit, jinak se
+                // rootfsDirName=="ashell-adb" vůbec nevyhodnotí.
+                putExtra("ashellMode", !adbShell)
             }
             ctx.startActivity(intent)
             sendResponse(out, 200, "OK", JSONObject().apply {
