@@ -456,13 +456,11 @@ které rozbalí services panel:
 ```┌─────────────────────────────────────────────────────────┐
 │ [☰] [🏠]         🐉 KALI ▼       [touch] [🐚CLI|🖥GUI] │
 ├─────────────────────────────────────────────────────────┤
-│ ⚡SHIZU ●  [code] CODE ○  🔥 PHOENIX ○  [▶ ALL] [↻]  │
+│ ⚡SHIZU ●  [▶ ALL] [↻]  │
 ├─────────────────────────────────────────────────────────┤
 ```
 
 - **⚡ SHIZU** — Shizuku server status a ovládání
-- **[code] CODE** — code-server (VS Code v prohlížeči, :8443)
-- **🔥 PHOENIX** — Phoenix OTLP exportér
 - **▶ ALL** — spustí všechny služby
 - **↻** — refresh statusů (automaticky každých 5s)
 
@@ -482,7 +480,6 @@ Kliknutím na službu se rozbalí detail s akčními tlačítky:
 ```
 │ ⚡ SHIZUKU SERVER ●  pid:12345  self                    │
 │                                      [⏹ STOP]          │
-│ [code] CODE-SERVER ●  :8443                             │
 │                    [⏹ STOP]              [🌐 OPEN]      │
 ```
 
@@ -797,7 +794,7 @@ This release adds Shizuku privilege escalation, the services dashboard, replaces
 
 ### 2. Shizuku + Services Dashboard
 - **Self-contained Shizuku server:** Bundled `libshizuku.so` native server binary + ADB pairing + rish shell
-- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku, code-server, and Phoenix
+- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku and the ADB shell daemon
 - **`shizuku` CLI in PRoot:** Auto-deployed to `/usr/local/bin/shizuku` — `shizuku -c "pm list packages"`
 - **Start strategies:** Existing Shizuku server → `su -c` → ADB shell → interactive setup dialog
 - **ShizukuManager.kt:** New module for server lifecycle, status checks, and privileged `exec()`

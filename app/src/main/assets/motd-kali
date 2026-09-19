@@ -54,14 +54,6 @@
 [0;33m     nh desktop start|stop|status  XFCE4 GUI[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
-[1;33m   </>  EDITOR (VS Code)[0m
-[1;36m─────────────────────────────────────────────────────────[0m
-[0;33m     code-server-ctl start           VS Code v prohlížeči (:8443)[0m
-[0;33m     code-server-ctl status          stav editoru[0m
-[0;33m     code-server-ctl password        zobrazit heslo[0m
-[0;33m     code-server-ctl install         nainstalovat code-server[0m
-
-[1;36m─────────────────────────────────────────────────────────[0m
 [0;90m     📖 nh list  → seznam všech příkazů[0m
 [0;90m     📖 nh help  → nápověda[0m
 [0;90m     📖 cat nethunter_docs.md  → plná dokumentace[0m

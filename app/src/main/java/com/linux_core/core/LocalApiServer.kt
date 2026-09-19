@@ -420,7 +420,7 @@ object LocalApiServer {
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/", "/usb/",
+                "/battery/optimize", "/app/logs", "/usb/",
                 "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
@@ -556,12 +556,6 @@ object LocalApiServer {
                 path == "/app/logs/level" && method == "GET" -> handleAppLogsLevel(context, out)
                 path == "/app/logs/level" && method == "POST" -> handleAppLogsLevelSet(context, body, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(context, path, out)
-                path == "/editor/start" && method == "POST" -> handleEditorStart(context, out)
-                path == "/editor/stop" && method == "POST" -> handleEditorStop(context, out)
-                path == "/editor/status" && method == "GET" -> handleEditorStatus(context, out)
-                path == "/editor/password" && method == "GET" -> handleEditorPassword(context, out, isLocalConnection)
-                path == "/editor/info" && method == "GET" -> handleEditorInfo(context, out)
-                path == "/editor/install" && method == "POST" -> handleEditorInstall(context, out)
 
                 // ─── shell_daemon (uid 2000, non-root) ──────────────────────
                 path == "/shelldaemon/status" && method == "GET" -> handleShellDaemonStatus(out)
@@ -2883,197 +2877,6 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
-    }
-
-    // ============================================================
-    //  code-server (VS Code in browser) — editor control endpoints
-    // ============================================================
-    //
-    // These endpoints run the code-server-ctl shell script inside the PRoot
-    // guest (the same pattern used for nethunter-desktop start/stop).
-    //
-    // Security:
-    //   - All endpoints require a Bearer token when accessed remotely
-    //     (added to the sensitive-endpoint list at the connection handler).
-    //   - The /editor/password endpoint is additionally localhost-restricted
-    //     so a shared-API listener never leaks the password over the LAN.
-    //   - No free-form shell input is accepted. Only fixed subcommands.
-    //
-    // Storage:
-    //   - code-server state lives in /root/.config/code-server/config.yaml
-    //     (auto-deployed by code-server-ctl with chmod 600).
-    //   - Editor status cache is held in SharedPreferences ("editor_settings").
-
-    private fun editorPrefs(context: Context) =
-        context.getSharedPreferences("editor_settings", Context.MODE_PRIVATE)
-
-    private fun runCodeServerCtl(context: Context, vararg args: String): String {
-        val bootScript = java.io.File(context.filesDir, "usr/bin/boot")
-        if (!bootScript.exists() || !bootScript.canExecute()) {
-            return "{\"error\":\"boot script not found or not executable. Open a terminal session first to bootstrap the rootfs.\"}"
-        }
-        return try {
-            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--", "code-server-ctl", *args)
-            pb.directory(context.filesDir)
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().use { it.readText() }
-            val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) {
-                proc.destroyForcibly()
-                return "{\"error\":\"code-server-ctl timed out after 15s\"}"
-            }
-            val exitCode = proc.exitValue()
-            if (exitCode != 0) {
-                return JSONObject().apply {
-                    put("error", "code-server-ctl exited with code $exitCode")
-                    put("exit_code", exitCode)
-                    put("output", output.take(500))
-                }.toString()
-            }
-            output
-        } catch (e: Exception) {
-            Log.e(TAG, "runCodeServerCtl failed: ${e.message}", e)
-            "{\"error\":\"${e.message}\"}"
-        }
-    }
-
-    private fun handleEditorStart(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "start")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null && !scriptJson.has("error")) {
-                scriptJson
-            } else {
-                val errorMsg = scriptJson?.optString("error")
-                    ?: raw.take(200)
-                JSONObject().apply { put("error", errorMsg) }
-            }
-            val code = if (payload.has("error")) 500 else 200
-            editorPrefs(context).edit()
-                .putLong("last_start_ts", System.currentTimeMillis())
-                .apply()
-            sendResponse(out, code, if (code == 200) "OK" else "Start Failed", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorStop(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "stop")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = scriptJson ?: JSONObject().apply {
-                put("status", "stopped"); put("raw", raw)
-            }
-            val code = if (payload.has("error")) 500 else 200
-            sendResponse(out, code, if (code == 200) "OK" else "Stop Failed", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorStatus(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "status")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null) {
-                // Add last_start_ts from prefs for UI diagnostics
-                try {
-                    val lastStart = editorPrefs(context).getLong("last_start_ts", 0L)
-                    if (lastStart > 0L) scriptJson.put("last_start_ts", lastStart) else scriptJson
-                } catch (e: Exception) { scriptJson }
-                scriptJson
-            } else {
-                JSONObject().apply { put("status", "unknown"); put("raw", raw) }
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorPassword(context: Context, out: OutputStream, isLocalConnection: Boolean = true) {
-        try {
-            // localhost-only enforcement: password must never leak over network
-            // even if the caller presents a valid Bearer token.
-            if (!isLocalConnection) {
-                sendResponse(out, 403, "Forbidden",
-                    "{\"error\":\"Password endpoint is restricted to localhost\"}")
-                return
-            }
-
-            val raw = runCodeServerCtl(context, "password")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null && scriptJson.has("password")) {
-                scriptJson
-            } else {
-                JSONObject().apply {
-                    put("error", "password not available")
-                    put("raw", raw)
-                }
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorInfo(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "info")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = scriptJson ?: JSONObject().apply {
-                put("error", "info not available"); put("raw", raw)
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorInstall(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "install")
-            val obj = parseScriptJsonOrNull(raw)
-            // If install succeeds, the script may print success messages but not JSON.
-            // Parse the raw output for error keywords.
-            if (obj != null && obj.has("error")) {
-                sendResponse(out, 500, "Internal Error", obj.toString())
-            } else if (raw.lowercase().contains("error") || raw.lowercase().contains("fail")) {
-                sendResponse(out, 500, "Internal Error", JSONObject().apply {
-                    put("error", "Installation failed")
-                    put("output", raw.take(500))
-                }.toString())
-            } else {
-                sendResponse(out, 200, "OK", JSONObject().apply {
-                    put("status", "installed")
-                    put("output", raw.take(500))
-                }.toString())
-            }
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun parseScriptJsonOrNull(raw: String): JSONObject? {
-        if (raw.isBlank()) return null
-        return try {
-            val trimmed = raw.trim().lines().lastOrNull { it.trim().startsWith("{") } ?: raw.trim()
-            JSONObject(trimmed)
-        } catch (e: Exception) {
-            Log.w(TAG, "parseScriptJsonOrNull: not JSON: ${raw.take(200)}")
-            null
-        }
-    }
-
-    private fun parseScriptJsonOrWrap(raw: String, fallbackStatus: String): String {
-        val obj = parseScriptJsonOrNull(raw)
-        if (obj != null) return obj.toString()
-        return JSONObject().apply {
-            put("status", fallbackStatus)
-            put("raw", raw)
-        }.toString()
     }
 
     // ═══════════════════════════════════════════════════════════════════

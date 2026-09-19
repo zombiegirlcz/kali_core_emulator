@@ -1288,7 +1288,6 @@ object ProotManager {
                 "nethunter_agent.py" to "nethunter_agent.py",
                 "usr/bin/terminalmap" to "terminalmap",
                 "usr/bin/ifconfig" to "ifconfig",
-                "code-server-ctl" to "code-server-ctl",
                 "scripts/ai-agent.py" to "ai-agent.py",
                 "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
                 "usb_bridge" to "usb_bridge",
@@ -1648,14 +1647,6 @@ object ProotManager {
                 appendLine(
                     "echo \"  \\033[0;33m     nh desktop start|stop|status\\033[0m  XFCE4 GUI (X server :1 → external X11 launcher)\"",
                 )
-                appendLine()
-                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-                appendLine("echo \"  \\033[1;33m   </>  EDITOR (VS Code)\\033[0m\"")
-                appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
-                appendLine("echo \"  \\033[0;33m     code-server-ctl start\\033[0m           VS Code v prohlížeči (:8443)\"")
-                appendLine("echo \"  \\033[0;33m     code-server-ctl status\\033[0m          stav editoru\"")
-                appendLine("echo \"  \\033[0;33m     code-server-ctl password\\033[0m         zobrazit heslo\"")
-                appendLine("echo \"  \\033[0;33m     code-server-ctl install\\033[0m         nainstalovat code-server\"")
                 appendLine()
                 appendLine("echo \"  \\033[1;36m─────────────────────────────────────────────────────────\\033[0m\"")
                 appendLine("echo \"  \\033[0;90m     📖 nh list  → seznam všech příkazů\\033[0m\"")

@@ -173,20 +173,6 @@ class TrafficAggregator(context: Context) {
         try {
             historyStore.setVerdict(address, verdict, source, confidence, note, traceId)
 
-            // Fire-and-forget Phoenix telemetrie
-            val toolCallsForExport = if (source == "llm") listOf("set_verdict") else emptyList()
-            Thread {
-                PhoenixExporter.exportVerdict(
-                    address = address,
-                    verdict = verdict,
-                    source = source,
-                    confidence = confidence,
-                    toolCalls = toolCallsForExport,
-                    traceId = traceId,
-                    context = appContext
-                )
-            }.start()
-
             Log.i(TAG, "Verdict set: $address → $verdict (source=$source, conf=$confidence)")
 
             // Daily stat

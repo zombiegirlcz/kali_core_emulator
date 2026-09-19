@@ -536,35 +536,6 @@ fun MainScreen() {
                     }
                 }
                 Spacer(modifier = Modifier.width(4.dp))
-                val isEditor = (currentTab == "editor")
-                Box(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isEditor) Color(0xFF008F11) else Color.Transparent)
-                            .clickable { currentTab = "editor" }
-                            .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Code,
-                            contentDescription = "Code Editor",
-                            tint = if (isEditor) Color.White else Color.Gray,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "EDITOR",
-                            color = if (isEditor) Color.White else Color.Gray,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(4.dp))
                 val isVpn = (currentTab == "vpn_center")
                 Box(
                     modifier =
@@ -2306,9 +2277,7 @@ fun MainScreen() {
                     } // end else
                 } // end Column (scrollable)
             } // end if(currentTab == "home")
-            if (currentTab == "editor") {
-                com.linux_core.ui.editor.EditorTab()
-            } else if (currentTab == "vpn_center") {
+            if (currentTab == "vpn_center") {
                 VpnCenterScreen(modifier = Modifier.weight(1f))
             } else if (currentTab == "root") {
                 com.linux_core.ui.RootBridgeTab(modifier = Modifier.weight(1f))
