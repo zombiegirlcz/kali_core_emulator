@@ -123,19 +123,19 @@ class TerminalActivity : ComponentActivity() {
             // Run status checks on background thread — process spawning blocks
             thread {
                 try {
-                    val shizukuSt = com.linux_core.core.ShizukuManager.status(applicationContext)
+                    val adbSt = com.linux_core.core.ShellDaemonClient.status()
                     val codeRaw = runCodeServerCtl("status")
                     val codeRunning = codeRaw.contains("running", ignoreCase = true) ||
                             codeRaw.contains("pid", ignoreCase = true)
 
                     runOnUiThread {
-                        updateServiceIndicator("shizuku", btnShizuku, shizukuSt.running)
+                        updateServiceIndicator("adb", btnShizuku, adbSt.running)
                         updateServiceIndicator("code", btnCode, codeRunning)
                         updateServiceIndicator("phoenix", btnPhoenix, false)
 
                         val svc = expandedService
                         if (svc != null) {
-                            updateServiceDetail(svc, shizukuSt)
+                            updateServiceDetail(svc)
                         }
                     }
                 } catch (e: Exception) {
@@ -999,6 +999,11 @@ class TerminalActivity : ComponentActivity() {
         if (intent.getBooleanExtra("ashellMode", false) ||
             intent.getStringExtra("rootfsDirName") == "ashell-host") {
             startAshellSession()
+            return
+        }
+        // ashell-adb: shell pod uid 2000 přes shell_daemon
+        if (intent.getStringExtra("rootfsDirName") == "ashell-adb") {
+            startAdbShellSession()
             return
         }
         handleFileIntent(intent)
@@ -2325,6 +2330,12 @@ class TerminalActivity : ComponentActivity() {
             startAshellSession()
             return
         }
+        
+        // ashell-adb: shell pod uid 2000 přes shell_daemon
+        if (rootfsDirName == "ashell-adb") {
+            startAdbShellSession()
+            return
+        }
 
         val rootfsDir = File(filesDir, rootfsDirName)
         val setupDoneFile = File(rootfsDir, "root/.setup_done")
@@ -2352,6 +2363,44 @@ class TerminalActivity : ComponentActivity() {
      * Automaticky přidá do PATH cesty k binárkám z nainstalovaných distribucí
      * (Kali, Parrot, Docker), aby byly dostupné i mimo PRoot container.
      */
+    private fun startAdbShellSession() {
+        Log.i(TAG, "startAdbShellSession: shell pod uid 2000 přes shell_daemon")
+        val cwd = filesDir
+        
+        // Spustit shell_daemon --attach jako command pro TerminalSession
+        val daemonBin = File(filesDir, "shell_daemon")
+        if (!daemonBin.exists()) {
+            showError("shell_daemon binárka nenalezena v filesDir")
+            return
+        }
+        
+        val token = com.linux_core.core.ShellDaemonClient.ensureToken(applicationContext)
+        val cmd = arrayOf(
+            daemonBin.absolutePath,
+            "--attach",
+            "--port=13341",
+            "--token=$token"
+        )
+        
+        val env = mutableListOf(
+            "HOME=${filesDir.absolutePath}",
+            "USER=shell",
+            "TERM=xterm-256color",
+            "ANDROID_DATA=/data",
+            "ANDROID_ROOT=/system"
+        )
+        
+        val cfg = com.linux_core.core.ProotConfig(
+            command = cmd,
+            cwd = cwd.absolutePath,
+            env = env.toTypedArray(),
+            prootPath = "",
+            rootfsDir = "(adb-shell)"
+        )
+        config = cfg
+        startTerminalSession(cfg)
+    }
+
     private fun startAshellSession() {
         Log.i(TAG, "startAshellSession: escape proot → host app shell")
         val cwd = filesDir
@@ -2489,7 +2538,7 @@ class TerminalActivity : ComponentActivity() {
             ).apply { setMargins(8, 2, 8, 2) }
 
             btnShizuku = Button(this@TerminalActivity).apply {
-                text = "\u26A1 SHIZU \u25CB"
+                text = "\uD83D\uDCE1 ADB \u25CB"
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextColor(Color.GRAY)
@@ -2501,7 +2550,7 @@ class TerminalActivity : ComponentActivity() {
                 )
                 setOnClickListener {
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    toggleServiceDetail("shizuku")
+                    toggleServiceDetail("adb")
                 }
             }
             addView(btnShizuku)
@@ -2642,7 +2691,7 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun updateAllServiceIndicators() {
-        updateServiceIndicator("shizuku", btnShizuku)
+        updateServiceIndicator("adb", btnShizuku)
         updateServiceIndicator("code", btnCode)
         updateServiceIndicator("phoenix", btnPhoenix)
 
@@ -2654,7 +2703,7 @@ class TerminalActivity : ComponentActivity() {
 
     private fun updateServiceIndicator(service: String, button: Button) {
         val running = when (service) {
-            "shizuku" -> com.linux_core.core.ShizukuManager.status(applicationContext).running
+            "adb" -> com.linux_core.core.ShellDaemonClient.status().running
             "code" -> {
                 val raw = runCodeServerCtl("status")
                 raw.contains("running", ignoreCase = true) || raw.contains("pid", ignoreCase = true)
@@ -2666,7 +2715,7 @@ class TerminalActivity : ComponentActivity() {
         val icon = if (running) "\u25CF" else "\u25CB"
         val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
         button.text = when (service) {
-            "shizuku" -> "\u26A1 SHIZU $icon"
+            "adb" -> "\uD83D\uDCE1 ADB $icon"
             "code" -> "[code] CODE $icon"
             "phoenix" -> "\uD83D\uDD25 PHOENIX $icon"
             else -> button.text
@@ -2681,274 +2730,12 @@ class TerminalActivity : ComponentActivity() {
         val icon = if (running) "\u25CF" else "\u25CB"
         val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
         button.text = when (service) {
-            "shizuku" -> "\u26A1 SHIZU $icon"
+            "adb" -> "\uD83D\uDCE1 ADB $icon"
             "code" -> "[code] CODE $icon"
             "phoenix" -> "\uD83D\uDD25 PHOENIX $icon"
             else -> button.text
         }
         button.setTextColor(color)
-    }
-
-    /**
-     * Update service detail with pre-computed ShizukuStatus (main-thread safe).
-     */
-    private fun updateServiceDetail(service: String, shizukuSt: com.linux_core.core.ShizukuStatus) {
-        servicesDetailPanel.removeAllViews()
-
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
-
-        when (service) {
-            "shizuku" -> {
-                val st = shizukuSt
-                val icon = if (st.running) "\u25CF" else "\u25CB"
-                val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
-
-                row.addView(TextView(this).apply {
-                    text = "\u26A1 SHIZUKU SERVER  $icon"
-                    setTextColor(color)
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                })
-
-                row.addView(TextView(this).apply {
-                    val info = when {
-                        st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
-                        st.suAvailable -> "  su available"
-                        st.shizukuApkPath != null -> "  Shizuku APK ready"
-                        st.adbWirelessPaired -> "  ADB wireless paired"
-                        st.adbAvailable -> "  ADB enabled (USB)"
-                        else -> ""
-                    }
-                    text = info
-                    setTextColor(Color.LTGRAY)
-                    textSize = 10f
-                    typeface = Typeface.MONOSPACE
-                })
-
-                row.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-                })
-
-                // START/STOP button
-                if (st.running) {
-                    row.addView(Button(this).apply {
-                        text = "\u23F9 STOP"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#FF5555"))
-                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShizukuManager.stopServer(applicationContext)
-                            updateAllServiceIndicators()
-                        }
-                    })
-                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable || st.adbWirelessPaired) {
-                    row.addView(Button(this).apply {
-                        text = "\u25B6 START"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#00FF41"))
-                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            startShizukuAsync()
-                            updateAllServiceIndicators()
-                        }
-                    })
-                } else {
-                    // No startup method available — show setup options
-                    row.addView(Button(this).apply {
-                        text = "\u2699 SETUP"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#FF6B35"))
-                        background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            showShizukuSetupDialog()
-                        }
-                    })
-                }
-                // ADB hint when server not running but ADB is available
-                if (!st.running && (st.adbAvailable || st.adbWirelessPaired)) {
-                    servicesDetailPanel.addView(LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply { setMargins(0, 4, 0, 0) }
-
-                        val pkg = applicationContext.packageName
-                        val adbCmd = if (st.shizukuApkPath != null) {
-                            "adb shell /data/user/0/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
-                        } else {
-                            "adb shell /data/user/0/$pkg/files/shizuku-server"
-                        }
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = "ADB command (run on computer):"
-                            setTextColor(Color.parseColor("#FF6B35"))
-                            textSize = 9f
-                            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                        })
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = adbCmd
-                            setTextColor(Color.parseColor("#888888"))
-                            textSize = 8f
-                            typeface = Typeface.MONOSPACE
-                        })
-
-                        addView(Button(this@TerminalActivity).apply {
-                            text = "\uD83D\uDCCB COPY"
-                            textSize = 8f
-                            setTextColor(Color.parseColor("#00FF41"))
-                            background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
-                            setPadding(8, 2, 8, 2)
-                            layoutParams = LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.WRAP_CONTENT,
-                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
-                            )
-                            setOnClickListener {
-                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
-                                android.widget.Toast.makeText(this@TerminalActivity,
-                                    "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        })
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = "After running, restart app or press \u21BB"
-                            setTextColor(Color.parseColor("#666666"))
-                            textSize = 8f
-                            typeface = Typeface.MONOSPACE
-                        })
-                    })
-                }
-            }
-
-            "code" -> {
-                val raw = runCodeServerCtl("status")
-                val running = raw.contains("running", ignoreCase = true) || raw.contains("pid", ignoreCase = true)
-                val icon = if (running) "\u25CF" else "\u25CB"
-                val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
-
-                row.addView(TextView(this).apply {
-                    text = "[code] CODE-SERVER  $icon"
-                    setTextColor(color)
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                })
-
-                row.addView(TextView(this).apply {
-                    text = if (running) {
-                        val lines = raw.split("\n").filter { it.contains("running") || it.contains("pid") }
-                        if (lines.isNotEmpty()) "  ${lines.first().trim()}" else ""
-                    } else ""
-                    setTextColor(Color.LTGRAY)
-                    textSize = 10f
-                    typeface = Typeface.MONOSPACE
-                })
-
-                row.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-                })
-
-                if (running) {
-                    row.addView(Button(this).apply {
-                        text = "\u23F9 STOP"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#FF5555"))
-                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            runCodeServerCtl("stop")
-                            updateAllServiceIndicators()
-                        }
-                    })
-                } else {
-                    row.addView(Button(this).apply {
-                        text = "\u25B6 START"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#00FF41"))
-                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            runCodeServerCtl("start")
-                            updateAllServiceIndicators()
-                        }
-                    })
-                }
-            }
-            "phoenix" -> {
-                row.addView(TextView(this).apply {
-                    text = "PHOENIX SERVER"
-                    setTextColor(Color.GRAY)
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                })
-
-                row.addView(TextView(this).apply {
-                    text = "  OTLP endpoint"
-                    setTextColor(Color.LTGRAY)
-                    textSize = 10f
-                    typeface = Typeface.MONOSPACE
-                })
-
-                row.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-                })
-
-                row.addView(Button(this).apply {
-                    text = "\u2699 CONFIGURE"
-                    textSize = 9f
-                    setTextColor(Color.parseColor("#FF6B35"))
-                    background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
-                    setPadding(10, 4, 10, 4)
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                    )
-                    setOnClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        showPhoenixConfigDialog()
-                    }
-                })
-            }
-        }
-
-        servicesDetailPanel.addView(row)
     }
 
     /**
@@ -2967,27 +2754,20 @@ class TerminalActivity : ComponentActivity() {
         }
 
         when (service) {
-            "shizuku" -> {
-                val st = com.linux_core.core.ShizukuManager.status(applicationContext)
+            "adb" -> {
+                val st = com.linux_core.core.ShellDaemonClient.status()
                 val icon = if (st.running) "\u25CF" else "\u25CB"
                 val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
 
                 row.addView(TextView(this).apply {
-                    text = "\u26A1 SHIZUKU SERVER  $icon"
+                    text = "\uD83D\uDCE1 ADB SHELL DAEMON  $icon"
                     setTextColor(color)
                     textSize = 11f
                     setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 })
 
                 row.addView(TextView(this).apply {
-                    val info = when {
-                        st.running -> "  pid:${st.pid ?: "?"}  ${st.mode}"
-                        st.suAvailable -> "  su available"
-                        st.shizukuApkPath != null -> "  Shizuku APK ready"
-                        st.adbWirelessPaired -> "  ADB wireless paired"
-                        st.adbAvailable -> "  ADB enabled (USB)"
-                        else -> ""
-                    }
+                    val info = if (st.running) "  port:${st.port}" else "  stopped"
                     text = info
                     setTextColor(Color.LTGRAY)
                     textSize = 10f
@@ -3012,11 +2792,11 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShizukuManager.stopServer(applicationContext)
+                            com.linux_core.core.ShellDaemonClient.stopDaemon(applicationContext)
                             updateAllServiceIndicators()
                         }
                     })
-                } else if (st.suAvailable || st.shizukuApkPath != null || st.adbAvailable || st.adbWirelessPaired) {
+                } else {
                     row.addView(Button(this).apply {
                         text = "\u25B6 START"
                         textSize = 9f
@@ -3029,83 +2809,9 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            startShizukuAsync()
+                            com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
                             updateAllServiceIndicators()
                         }
-                    })
-                } else {
-                    // No startup method available — show setup options
-                    row.addView(Button(this).apply {
-                        text = "\u2699 SETUP"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#FF6B35"))
-                        background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FF6B35"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            showShizukuSetupDialog()
-                        }
-                    })
-                }
-                // ADB hint when server not running but ADB is available
-                if (!st.running && (st.adbAvailable || st.adbWirelessPaired)) {
-                    servicesDetailPanel.addView(LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply { setMargins(0, 4, 0, 0) }
-
-                        val pkg = applicationContext.packageName
-                        val adbCmd = if (st.shizukuApkPath != null) {
-                            "adb shell /data/user/0/$pkg/files/shizuku-server --apk=${st.shizukuApkPath}"
-                        } else {
-                            "adb shell /data/user/0/$pkg/files/shizuku-server"
-                        }
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = "ADB command (run on computer):"
-                            setTextColor(Color.parseColor("#FF6B35"))
-                            textSize = 9f
-                            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                        })
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = adbCmd
-                            setTextColor(Color.parseColor("#888888"))
-                            textSize = 8f
-                            typeface = Typeface.MONOSPACE
-                        })
-
-                        addView(Button(this@TerminalActivity).apply {
-                            text = "\uD83D\uDCCB COPY"
-                            textSize = 8f
-                            setTextColor(Color.parseColor("#00FF41"))
-                            background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 4f, Color.parseColor("#00FF41"), 1f)
-                            setPadding(8, 2, 8, 2)
-                            layoutParams = LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.WRAP_CONTENT,
-                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 22f, resources.displayMetrics).toInt()
-                            )
-                            setOnClickListener {
-                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("ADB Command", adbCmd))
-                                android.widget.Toast.makeText(this@TerminalActivity,
-                                    "ADB command copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        })
-
-                        addView(TextView(this@TerminalActivity).apply {
-                            text = "After running, restart app or press \u21BB"
-                            setTextColor(Color.parseColor("#666666"))
-                            textSize = 8f
-                            typeface = Typeface.MONOSPACE
-                        })
                     })
                 }
             }
@@ -3276,72 +2982,26 @@ class TerminalActivity : ComponentActivity() {
             .show()
     }
 
-    private fun showShizukuSetupDialog() {
-        val sb = StringBuilder()
-        sb.appendLine("Shizuku server potřebuje root nebo ADB.")
-        sb.appendLine()
-        sb.appendLine("\u2022 Instaluj Shizuku z Play Store / F-Droid")
-        sb.appendLine("\u2022 Nebo povol Wireless debugging v Developer options")
-        sb.appendLine()
-        sb.appendLine("Po instalaci restartuj Shizuku v tomto panelu.")
-
-        val adbCmd = com.linux_core.core.ShizukuManager.getShizukuApkPath(applicationContext)
-        if (adbCmd != null) {
-            sb.appendLine()
-            sb.appendLine("ADB příkaz (spustit z počítače):")
-            sb.appendLine("adb shell /data/user/0/${applicationContext.packageName}/files/shizuku-server --apk=$adbCmd")
-        }
-
-        android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
-            .setTitle("\u26A1 Shizuku Setup")
-            .setMessage(sb.toString())
-            .setPositiveButton("OPEN PLAY STORE") { _, _ ->
-                try {
-                    val intent = android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse("market://details?id=moe.shizuku.privileged.api")
-                    )
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    val intent = android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse("https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api")
-                    )
-                    startActivity(intent)
-                }
-            }
-            .setNeutralButton("OPEN ADB SETTINGS") { _, _ ->
-                try {
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                    startActivity(intent)
-                } catch (e: Exception) { /* ignore */ }
-            }
-            .setNegativeButton("CANCEL", null)
-            .show()
-    }
-
-    /**
-     * Start Shizuku server on a background thread to avoid ANR.
-     */
-    private fun startShizukuAsync(callback: ((Boolean) -> Unit)? = null) {
+    private fun startDaemonAsync(callback: ((Boolean) -> Unit)? = null) {
         Thread {
-            val ok = com.linux_core.core.ShizukuManager.startServer(applicationContext)
+            val ok = com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
             runOnUiThread {
                 callback?.invoke(ok)
                 updateAllServiceIndicators()
                 if (!ok) {
                     android.widget.Toast.makeText(this@TerminalActivity,
-                        "Shizuku server start failed. Check logs.", android.widget.Toast.LENGTH_LONG).show()
+                        "shell_daemon start failed. Check logs.", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
     }
 
     private fun startAllServices() {
-        startShizukuAsync {
+        Thread {
+            com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
             runCodeServerCtl("start")
-            updateAllServiceIndicators()
-        }
+            runOnUiThread { updateAllServiceIndicators() }
+        }.start()
     }
 }
 

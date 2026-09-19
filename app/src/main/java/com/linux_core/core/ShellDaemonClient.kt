@@ -34,6 +34,11 @@ object ShellDaemonClient {
     private const val TOKEN_FILE = "shell_daemon.token"
     private const val ASSET_BIN = "shell_daemon"
     private const val BIN_NAME = "shell_daemon"
+    
+    // Protokol konstanty (musí odpovídat shell_daemon.c)
+    private const val SH_MAGIC = 0x53484C4C  // "SHLL"
+    private const val SH_MODE_EXEC = 0
+    private const val SH_MODE_ATTACH = 1
 
     /**
      * Vrátí (případně vygeneruje) perzistentní token pro autentizaci daemona.
@@ -170,6 +175,9 @@ object ShellDaemonClient {
                 s.connect(InetSocketAddress("127.0.0.1", PORT), 2500)
                 s.soTimeout = 120_000
                 val out = DataOutputStream(s.getOutputStream())
+                // Protokol: magic (4B) + mode (1B) + token + cmd + cwd
+                out.writeInt(SH_MAGIC)
+                out.writeByte(SH_MODE_EXEC)
                 writeBlob(out, token.toByteArray(Charsets.UTF_8))
                 writeBlob(out, command.toByteArray(Charsets.UTF_8))
                 writeBlob(out, cwd.toByteArray(Charsets.UTF_8))
