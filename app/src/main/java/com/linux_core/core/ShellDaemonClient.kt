@@ -266,10 +266,12 @@ object ShellDaemonClient {
             }
         } catch (e: Exception) {
             val m = (e.message ?: "install failed")
-                .replace("\", "\\").replace(""", "\"")
-                .replace("
-", "\n").replace("", "\r").replace("	", "\t")
-            """{"error":"$m","exit_code":-1}"""
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+            "{\"error\":\"$m\",\"exit_code\":-1}"
         }
     }
 
