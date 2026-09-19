@@ -42,10 +42,12 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 
 echo "watchdog: sleduji $REPO / $WORKFLOW / $BRANCH (run $RUN_ID)"
-if ! gh run watch "$RUN_ID" --repo "$REPO" --log --exit-status; then
+if ! gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+    gh run view "$RUN_ID" --repo "$REPO" --log || true
     echo "watchdog: workflow selhal; APK nebude staženo." >&2
     exit 1
 fi
+gh run view "$RUN_ID" --repo "$REPO" --log
 
 DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kali-watchdog.XXXXXX")"
 trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
