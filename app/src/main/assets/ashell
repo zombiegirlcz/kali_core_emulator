@@ -293,18 +293,15 @@ data = sys.stdin.read()
 try:
     d = json.loads(data)
 except Exception as e:
-    sys.stderr.write('Chyba parsování odpovědi: %s
-' % e)
-    sys.stderr.write('Raw: %s
-' % data[:400])
+    sys.stderr.write('Chyba parsování odpovědi: %s\n' % e)
+    sys.stderr.write('Raw: %s\n' % data[:400])
     sys.exit(1)
 if 'error' in d and 'exit_code' not in d:
     out = d.get('stdout',''); err = d.get('stderr','')
     if out: sys.stdout.write(out)
     if err: sys.stderr.write(err)
     if not out and not err:
-        sys.stderr.write(d['error'] + '
-')
+        sys.stderr.write(d['error'] + '\n')
     sys.exit(1)
 out = d.get('stdout',''); err = d.get('stderr','')
 rc = d.get('exit_code', 0)
