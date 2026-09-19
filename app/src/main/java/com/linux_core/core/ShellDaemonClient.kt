@@ -8,20 +8,25 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
-import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
 /**
- * Klient k [shell_daemon] — persistentnímu shell-UID (2000) daemonu.
+ * Klient k `shell_daemon` — persistentnímu shell-UID (2000) daemonu.
  *
- * Analogie Shizuku: daemon se jednou spustí (`nh shi start --none` z guestu
- * přes `adb shell`, nebo na root zařízení `su 2000 -c` z aplikace), pak běží
- * do rebootu a aplikace i PRoot guest přes něj posílají příkazy, které
- * vykonává pod uid 2000 = stejná práva jako adb (`pm`, `settings`, `dumpsys`,
- * `cmd package install`, …). Žádný `su` ani `adb` per-command.
+ * **Deploy (analogie Shizuku `libshizuku.so`)**: daemon se neveze jako asset
+ * v `assets/`, ale jako spustitelný ELF v `jniLibs/arm64-v8a/libshelldaemon.so`.
+ * Android ho při instalaci extrahuje do `applicationInfo.nativeLibraryDir`
+ * (díky `useLegacyPackaging=true` je soubor reálně na disku, ne jen v APK).
+ * Cesta se publikuje do `filesDir/shelldaemon.path` → guest ji vidí jako
+ * `/mnt/app/shelldaemon.path` (bind `$FILES_DIR → /mnt/app` z `boot` skriptu).
  *
- * Komunikace: TCP 127.0.0.1:[PORT], binární protokol (length-prefixed blob)
- * definovaný v `app/src/main/cpp/shell_daemon.c`.
+ * **Spuštění**: NIKDY přes `su`. Daemon musí běžet pod uid 2000, což app UID
+ * (10323) nedokáže spawnout. Spouští ho proto **guest** příkazem
+ * `ashell adb start` → `adb shell nohup <nativeLibraryDir>/libshelldaemon.so …`.
+ * Aplikace jen detekuje, že daemon běží (TCP probe), a posílá mu příkazy.
+ *
+ * **Komunikace**: TCP 127.0.0.1:[PORT], binární protokol (length-prefixed
+ * blob) definovaný v `app/src/main/cpp/shell_daemon.c`.
  */
 data class ShellDaemonStatus(
     val running: Boolean,
@@ -31,20 +36,50 @@ data class ShellDaemonStatus(
 object ShellDaemonClient {
     private const val TAG = "ShellDaemonClient"
     const val PORT = 13341
+
+    /** Token pro autentizaci daemona (guest ho čte z `/mnt/app/shell_daemon.token`). */
     private const val TOKEN_FILE = "shell_daemon.token"
-    private const val ASSET_BIN = "shell_daemon"
-    private const val BIN_NAME = "shell_daemon"
-    
+
+    /** Publikovaná cesta k extrahované binárce (guest čte z `/mnt/app/shelldaemon.path`). */
+    private const val PATH_FILE = "shelldaemon.path"
+
+    /** Název v jniLibs — Android ho extrahuje do nativeLibraryDir pod stejným jménem. */
+    private const val SO_NAME = "libshelldaemon.so"
+
     // Protokol konstanty (musí odpovídat shell_daemon.c)
     private const val SH_MAGIC = 0x53484C4C  // "SHLL"
     private const val SH_MODE_EXEC = 0
     private const val SH_MODE_ATTACH = 1
 
     /**
+     * Absolutní cesta k extrahované binárce v `nativeLibraryDir`.
+     * Tudy ji spustí guest přes `adb shell` pod uid 2000.
+     */
+    @JvmStatic
+    fun binaryPath(context: Context): File =
+        File(context.applicationInfo.nativeLibraryDir, SO_NAME)
+
+    /**
+     * Publikuj cestu k binárce do `filesDir/shelldaemon.path`, aby ji guest
+     * (přes bind `/mnt/app`) našel bez hardcoded cesty do `/data/app/...`.
+     * Volá se při deployi i před startem; idempotentní.
+     */
+    @JvmStatic
+    fun publishBinaryPath(context: Context): String {
+        val bin = binaryPath(context)
+        val p = bin.absolutePath
+        try {
+            File(context.filesDir, PATH_FILE).writeText(p)
+        } catch (e: Exception) {
+            Log.w(TAG, "publishBinaryPath failed: ${e.message}")
+        }
+        return p
+    }
+
+    /**
      * Vrátí (případně vygeneruje) perzistentní token pro autentizaci daemona.
-     * Soubor leží ve filesDir → v guestu je vidět jako `/mnt/app/shell_daemon.token`
-     * (bind `$FILES_DIR → /mnt/app` z `boot` skriptu), takže ho `nh shi start
-     * --none` umí přečíst a předat daemonu jako `--token=<hex>`.
+     * Soubor leží ve filesDir → v guestu je vidět jako `/mnt/app/shell_daemon.token`,
+     * takže ho `ashell adb start` umí přečíst a předat daemonu jako `--token=<hex>`.
      */
     @JvmStatic
     fun ensureToken(context: Context): String {
@@ -61,33 +96,20 @@ object ShellDaemonClient {
         return hex
     }
 
-    /** Nasaď `shell_daemon` z assets do filesDir (hash-gated, idempotentní). */
+    /**
+     * @deprecated Starý deploy z assets byl nahrazen cestou jniLibs.
+     *  Ponecháno kvůli volajícím (ProotManager.deployShellDaemon) — nyní jen
+     *  publikuje cestu k extrahované `.so` a vygeneruje token.
+     */
     @JvmStatic
+    @Deprecated("Use publishBinaryPath + ensureToken")
     fun deployBinary(context: Context): File? {
-        val target = File(context.filesDir, BIN_NAME)
-        var redeploy = !target.exists() || target.length() == 0L
-        if (!redeploy) {
-            try {
-                val sz = context.assets.open(ASSET_BIN).use { it.available().toLong() }
-                if (target.length() != sz) redeploy = true
-            } catch (_: Exception) {
-                redeploy = true
-            }
+        val bin = binaryPath(context)
+        if (!bin.exists()) {
+            Log.w(TAG, "deployBinary: ${bin.absolutePath} neexistuje (extractNativeLibs?)")
         }
-        if (redeploy) {
-            try {
-                context.assets.open(ASSET_BIN).use { i ->
-                    target.outputStream().use { o -> i.copyTo(o) }
-                }
-                target.setExecutable(true, false)
-                target.setReadable(true, false)
-                Log.i(TAG, "Deployed shell_daemon (${target.length()} B)")
-            } catch (e: Exception) {
-                Log.e(TAG, "deploy shell_daemon failed: ${e.message}")
-                return null
-            }
-        }
-        return target
+        publishBinaryPath(context)
+        return bin
     }
 
     /** Zkus TCP connect na daemon (žádný token zatím, jen existence). */
@@ -103,61 +125,37 @@ object ShellDaemonClient {
         }
 
     /**
-     * Spusť daemon, pokud neběží. Dvě cesty:
+     * Aplikace **neumí** daemona spustit pod uid 2000 (app UID nesmí měnit uid
+     * dítěte; `su` je zakázané). Start tedy dělá guest přes `adb shell`:
      *
-     *  1. **Root zařízení** (`su` k dispozici): `su 2000 -c "/data/local/tmp/
-     *     shell_daemon … &"`. `su 2000` spustí proces pod uid 2000, ne pod
-     *     rootem — root je jen umožňovač spuštění (app UID samo nedokáže
-     *     spawnout shell-UID proces), vlastní příkazy běží jako standardní
-     *     shell/adb. **Toto NENÍ su fallback pro exekuci** — spouští se
-     *     jen jednou persistentní daemon.
+     *     ashell adb start
      *
-     *  2. **Non-root**: daemon musí nastartovat `nh shi start --none`
-     *     z guestu přes `adb shell` (guest má vlastní `/usr/bin/adb`).
-     *     Aplikace pak k běžícímu daemonu jen připojí TCP.
+     * Tahle funkce jen publikuje cestu k binárce (aby ji guest našel) a vrátí
+     * `false`, když daemon neběží — UI podle toho zobrazí instrukci.
+     *
+     * @return true jen když daemon už běžel.
      */
     @JvmStatic
     fun startDaemon(context: Context): Boolean {
         if (status().running) return true
-        val bin = deployBinary(context) ?: return false
-        val token = ensureToken(context)
-        val su = ShizukuManager.suPath() ?: run {
-            Log.w(TAG, "startDaemon: su nedostupne — spust 'nh shi start --none' z guestu (adb)")
-            return false
-        }
-        val tmp = "/data/local/tmp"
-        return try {
-            ProcessBuilder(su, "-c", "cp ${bin.absolutePath} $tmp/shell_daemon && chmod 755 $tmp/shell_daemon")
-                .redirectErrorStream(true).start().waitFor(10, TimeUnit.SECONDS)
-            val startCmd = "$tmp/shell_daemon --port=$PORT --token=$token > $tmp/shell_daemon.log 2>&1 &"
-            ProcessBuilder(su, "2000", "-c", startCmd)
-                .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS)
-            Thread.sleep(800)
-            val ok = status().running
-            Log.i(TAG, "startDaemon via 'su 2000 -c': ok=$ok")
-            if (!ok) {
-                val log = File("$tmp/shell_daemon.log")
-                    .let { if (it.exists()) it.readText().take(800) else "(zadny log)" }
-                Log.w(TAG, "daemon nenabehl, log: $log")
-            }
-            ok
-        } catch (e: Exception) {
-            Log.e(TAG, "startDaemon failed: ${e.message}")
-            false
-        }
+        publishBinaryPath(context)
+        ensureToken(context)
+        Log.i(
+            TAG,
+            "startDaemon: app UID nemuze spawnout uid 2000 — spust z guestu: 'ashell adb start' " +
+                "(bin=${binaryPath(context).absolutePath})"
+        )
+        return false
     }
 
-    /** Zastav daemon (pkill pod uid 2000). Best-effort. */
+    /**
+     * Zastavení daemona z appky není možné (běží pod uid 2000). Guest použije
+     * `ashell adb stop` (adb shell pkill). Best-effort: publikuj cestu + token.
+     */
     @JvmStatic
     fun stopDaemon(context: Context): Boolean {
-        val su = ShizukuManager.suPath() ?: return false
-        return try {
-            ProcessBuilder(su, "2000", "-c", "pkill -x shell_daemon 2>/dev/null || true")
-                .redirectErrorStream(true).start().waitFor(3, TimeUnit.SECONDS)
-            true
-        } catch (_: Exception) {
-            false
-        }
+        publishBinaryPath(context)
+        return false
     }
 
     /**
@@ -167,7 +165,7 @@ object ShellDaemonClient {
     @JvmStatic
     fun exec(context: Context, command: String, cwd: String = ""): String {
         if (!status().running) {
-            return """{"error":"shell_daemon not running","exit_code":-1}"""
+            return """{"error":"shell_daemon not running (spust 'ashell adb start')","exit_code":-1}"""
         }
         val token = ensureToken(context)
         return try {

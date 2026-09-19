@@ -22,8 +22,11 @@ ACTIVITY="${APP_PKG}/com.linux_core.ui.terminal.TerminalActivity"
 API_URL="http://127.0.0.1:1337"
 
 # ── ashell adb start|stop|status|shell|-c — shell_daemon (uid 2000) ──
-# Persistentní démon běžící pod uid 2000 (shell). Spustí se jednou přes adb,
-# pak drží do rebootu. `ashell adb -c` spouští příkazy pod uid 2000.
+# Persistentní démon běžící pod uid 2000 (shell). Deploy je cestou jniLibs
+# (jako Shizuku libshizuku.so): Android extrahuje libshelldaemon.so do
+# nativeLibraryDir; appka publikuje plnou cestu do /mnt/app/shelldaemon.path.
+# `ashell adb start` ji spustí pres `adb shell` pod uid 2000 (ZADNY su).
+# Pak drží do rebootu. `ashell adb -c` spouští příkazy pod uid 2000.
 # `ashell adb shell` otevře nové terminálové okno pod uid 2000.
 if [ "$1" = "adb" ]; then
     shift
@@ -32,8 +35,7 @@ if [ "$1" = "adb" ]; then
     # Helper: zavolat LocalApiServer endpoint (GET/POST, volitelný body)
     api_call() {
         _method="$1"; _endpoint="$2"; _body="${3:-}"
-        _token=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
-            sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1)
+        _token=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null |             sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*//p' | head -n 1)
         if command -v curl >/dev/null 2>&1; then
             if [ "$_method" = "GET" ]; then
                 if [ -n "$_token" ]; then
@@ -84,54 +86,99 @@ if [ "$1" = "adb" ]; then
         fi
     }
 
+    # Cesta k extrahované binárce: appka ji publikuje do filesDir/shelldaemon.path,
+    # v guestu je to /mnt/app/shelldaemon.path (bind $FILES_DIR -> /mnt/app).
+    daemon_path() {
+        _p=""
+        for f in /mnt/app/shelldaemon.path "$HOME/shelldaemon.path"; do
+            if [ -f "$f" ]; then
+                _p=$(tr -d '
+ ' < "$f")
+                [ -n "$_p" ] && break
+            fi
+        done
+        printf '%s' "$_p"
+    }
+
+    # Token: guest ho vidi jako /mnt/app/shell_daemon.token
+    daemon_token() {
+        for f in /mnt/app/shell_daemon.token "$HOME/shell_daemon.token"; do
+            if [ -f "$f" ]; then
+                tr -d '
+ ' < "$f"
+                return 0
+            fi
+        done
+        return 1
+    }
+
     case "$SUBCMD" in
         start)
-            RESPONSE=$(api_call POST "/shizuku/daemon/start")
-            if [ -z "$RESPONSE" ]; then
-                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/start" >&2
+            if ! command -v adb >/dev/null 2>&1; then
+                echo "[-] adb neni v guestu k dispozici." >&2
+                echo "    (guest rootfs by mel mit /usr/bin/adb; jinak adb pripoj zvenku)" >&2
                 exit 1
             fi
-            echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    ok = d.get('started', False)
-    pid = d.get('pid', '?')
-    port = d.get('port', 13341)
-    if ok:
-        print(f'[+] shell_daemon started (pid={pid}, port={port})')
-    else:
-        print(f'[-] shell_daemon start selhal: {d.get(\"error\", \"neznamo\")}')
-except Exception:
-    print(f'[-] Neplatná odpověď ze serveru')
-" 2>/dev/null || echo "[-] Chyba parsování odpovědi" >&2
+            if ! adb devices 2>/dev/null | grep -q "device$"; then
+                echo "[-] adb neni pripojeny. Nejdřív spáruj:" >&2
+                echo "      adb pair <host>:<port> <pairing-code>" >&2
+                echo "      adb connect <host>:<port>" >&2
+                exit 1
+            fi
+            DAEMON=$(daemon_path)
+            if [ -z "$DAEMON" ]; then
+                echo "[-] Neznám cestu k libshelldaemon.so." >&2
+                echo "    Spusť appku aspoň jednou (publikuje /mnt/app/shelldaemon.path)." >&2
+                exit 1
+            fi
+            TOKEN=$(daemon_token) || {
+                echo "[-] Chybí token /mnt/app/shell_daemon.token (spusť appku)." >&2
+                exit 1
+            }
+            if [ -z "$TOKEN" ]; then
+                echo "[-] Token je prázdný." >&2
+                exit 1
+            fi
+
+            # Uz bezi? (idempotentni start)
+            pid=$(adb shell "pidof libshelldaemon.so 2>/dev/null || pidof libshelldaemon 2>/dev/null" 2>/dev/null | tr -d '
+ ')
+            if [ -z "$pid" ]; then
+                echo "[*] Startuji libshelldaemon.so pod shell UID (non-root) ..."
+                adb shell "nohup $DAEMON --port=13341 --token=$TOKEN >/dev/null 2>&1 &" >/dev/null 2>&1
+                sleep 2
+                pid=$(adb shell "pidof libshelldaemon.so 2>/dev/null || pidof libshelldaemon 2>/dev/null" 2>/dev/null | tr -d '
+ ')
+            fi
+
+            if [ -n "$pid" ]; then
+                duid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '
+ ')
+                echo "[+] shell_daemon běží (pid=$pid, uid=${duid:-?}, non-root)"
+                echo "    Příkazy: ashell adb -c "<cmd>"  (TCP 127.0.0.1:13341)"
+                exit 0
+            fi
+            echo "[-] shell_daemon nenabehl." >&2
+            echo "    Binarka: $DAEMON" >&2
+            echo "    Zkus: adb shell $DAEMON --no-fork --port=13341 --token=$TOKEN" >&2
+            exit 1
             ;;
         stop)
-            RESPONSE=$(api_call POST "/shizuku/daemon/stop")
-            if [ -z "$RESPONSE" ]; then
-                echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/stop" >&2
+            if ! command -v adb >/dev/null 2>&1; then
+                echo "[-] adb neni v guestu k dispozici." >&2
                 exit 1
             fi
-            echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    ok = d.get('stopped', False)
-    if ok:
-        print('[+] shell_daemon stopped')
-    else:
-        print(f'[-] shell_daemon stop selhal: {d.get(\"error\", \"neznamo\")}')
-except Exception:
-    print(f'[-] Neplatná odpověď ze serveru')
-" 2>/dev/null || echo "[-] Chyba parsování odpovědi" >&2
+            adb shell "pkill -f libshelldaemon 2>/dev/null || pkill -x shell_daemon 2>/dev/null || true" >/dev/null 2>&1
+            echo "[+] shell_daemon stopped"
             ;;
         status)
+            # Status zjistíme TCP probem z appky (app se jen připojí, nic nespouští).
             RESPONSE=$(api_call GET "/shizuku/daemon/status")
             if [ -z "$RESPONSE" ]; then
                 echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/status" >&2
                 exit 1
             fi
-            echo "$RESPONSE" | python3 -c "
+            printf '%s' "$RESPONSE" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -143,17 +190,13 @@ try:
     else:
         print('[-] shell_daemon neběží')
 except Exception:
-    print(f'[-] Neplatná odpověď ze serveru')
+    print('[-] Neplatná odpověď ze serveru')
 " 2>/dev/null || echo "[-] Chyba parsování odpovědi" >&2
             ;;
         shell)
             echo "[*] Otevírám nové terminálové okno pod uid 2000 (shell_daemon)..."
             if command -v cmd >/dev/null 2>&1; then
-                cmd activity start-activity -n "$ACTIVITY" \
-                    --es rootfsDirName "ashell-adb" \
-                    --ez mountStorage false \
-                    --ez ashellMode true \
-                    >/dev/null 2>&1
+                cmd activity start-activity -n "$ACTIVITY"                     --es rootfsDirName "ashell-adb"                     --ez mountStorage false                     --ez ashellMode true                     >/dev/null 2>&1
                 RC=$?
                 if [ $RC -eq 0 ]; then
                     echo "[+] ADB shell opened (via cmd activity)"
@@ -161,7 +204,6 @@ except Exception:
                 fi
                 echo "[!] cmd activity selhal (RC=$RC), zkouším fallback..." >&2
             fi
-            # Fallback: POST /ashell s JSON body
             RESPONSE=$(api_call POST "/ashell" '{"mode":"adb-shell"}')
             if [ -z "$RESPONSE" ]; then
                 echo "[-] LocalApiServer neodpovídá na ${API_URL}/ashell" >&2
@@ -172,7 +214,7 @@ except Exception:
         -c|--cmd)
             shift
             CMD="$*"
-            [ -z "$CMD" ] && { echo "[-] Usage: ashell adb -c '<prikaz>'" >&2; echo "    Např: ashell adb -c \"pm list packages\"" >&2; exit 1; }
+            [ -z "$CMD" ] && { echo "[-] Usage: ashell adb -c '<prikaz>'" >&2; echo "    Např: ashell adb -c "pm list packages"" >&2; exit 1; }
             RESPONSE=$(api_call POST "/shizuku/daemon/exec" "$CMD")
             if [ -z "$RESPONSE" ]; then
                 echo "[-] LocalApiServer neodpovídá na ${API_URL}/shizuku/daemon/exec" >&2
@@ -184,15 +226,18 @@ data = sys.stdin.read()
 try:
     d = json.loads(data)
 except Exception as e:
-    sys.stderr.write('Chyba parsování odpovědi: %s\n' % e)
-    sys.stderr.write('Raw: %s\n' % data[:400])
+    sys.stderr.write('Chyba parsování odpovědi: %s
+' % e)
+    sys.stderr.write('Raw: %s
+' % data[:400])
     sys.exit(1)
 if 'error' in d and 'exit_code' not in d:
     out = d.get('stdout',''); err = d.get('stderr','')
     if out: sys.stdout.write(out)
     if err: sys.stderr.write(err)
     if not out and not err:
-        sys.stderr.write(d['error'] + '\n')
+        sys.stderr.write(d['error'] + '
+')
     sys.exit(1)
 out = d.get('stdout',''); err = d.get('stderr','')
 rc = d.get('exit_code', 0)

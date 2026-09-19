@@ -2367,10 +2367,12 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "startAdbShellSession: shell pod uid 2000 přes shell_daemon")
         val cwd = filesDir
         
-        // Spustit shell_daemon --attach jako command pro TerminalSession
-        val daemonBin = File(filesDir, "shell_daemon")
+        // Spustit libshelldaemon.so --attach jako command pro TerminalSession.
+        // Binarka je extrahovana z jniLibs do nativeLibraryDir (deploy cestou
+        // Shizuku libshizuku.so), NIKOLI v filesDir.
+        val daemonBin = com.linux_core.core.ShellDaemonClient.binaryPath(applicationContext)
         if (!daemonBin.exists()) {
-            showError("shell_daemon binárka nenalezena v filesDir")
+            showError("libshelldaemon.so nenalezena v nativeLibraryDir")
             return
         }
         
@@ -2990,7 +2992,8 @@ class TerminalActivity : ComponentActivity() {
                 updateAllServiceIndicators()
                 if (!ok) {
                     android.widget.Toast.makeText(this@TerminalActivity,
-                        "shell_daemon start failed. Check logs.", android.widget.Toast.LENGTH_LONG).show()
+                        "App neumí spustit uid 2000 — v guestu: ashell adb start",
+                        android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
