@@ -45,9 +45,7 @@ docs/plan-1.md
 /kali-armhf/
 !.pi/**/**
 # Python environment
-__pycache__/
 *.pyc
-tools/__*
 # Copilot/Gemini session artifacts
 .copilot/
 .tasks/
@@ -57,6 +55,9 @@ docs/prompt.md
 ignore-archi
 v.tar
 !tools/**/**
+# Python cache (az za negaci tools, aby ho neprebila)
+__pycache__/
+*.pyc
 # IDE, AI tools, and plugin directories
 /.ai/
 /.explyt/
