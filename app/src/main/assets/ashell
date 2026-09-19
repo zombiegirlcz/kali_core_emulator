@@ -90,11 +90,31 @@ if [ "$1" = "adb" ]; then
     #   1) $SHELLDAEMON_NATIVE_DIR (explicitni override)
     #   2) dumpsys package com.linux_core (vzdy dostupne, uid 2000 to smi)
     native_dir() {
+        # (1) explicitni override
         if [ -n "${SHELLDAEMON_NATIVE_DIR:-}" ]; then
             printf '%s' "$SHELLDAEMON_NATIVE_DIR"
             return 0
         fi
-        adb shell "dumpsys package com.linux_core 2>/dev/null | grep -m1 nativeLibraryDir | sed 's/.*=//'" 2>/dev/null | tr -d '\r\n '
+        # (2) z dumpsys. Pozor: Android 10+ v "dumpsys package" casto vypisuje
+        #     JEN "legacyNativeLibraryDir" (ne "nativeLibraryDir"), a to jeste
+        #     bez /arm64 suffixu. Hledame proto case-insensitive a suffix
+        #     doplnime podle primaryCpuAbi.
+        # POZOR: cesta obsahuje "==" (data/app/~~x==/...), takze `sed 's/.*=//'`
+        # je greedy a vrati jen "/lib". Musime strihat jen do PRVNIHO '='.
+        _abi=$(adb shell "dumpsys package com.linux_core 2>/dev/null | grep -m1 -i 'primaryCpuAbi' | sed 's/^[^=]*=//'" 2>/dev/null | tr -d '\r\n ')
+        _base=$(adb shell "dumpsys package com.linux_core 2>/dev/null | grep -m1 -i 'nativeLibraryDir' | sed 's/^[^=]*=//'" 2>/dev/null | tr -d '\r\n ')
+        [ -z "$_base" ] && return 1
+        # pokud uz cesta obsahuje abi slozku, nechame ji
+        case "$_base" in
+            */arm64|*/arm|*/x86|*/x86_64) printf '%s' "$_base"; return 0 ;;
+        esac
+        case "$_abi" in
+            arm64-v8a)   printf '%s/arm64' "$_base" ;;
+            armeabi-v7a) printf '%s/arm' "$_base" ;;
+            x86_64)      printf '%s/x86_64' "$_base" ;;
+            x86)         printf '%s/x86' "$_base" ;;
+            *)           printf '%s' "$_base" ;;
+        esac
     }
 
     daemon_path() {

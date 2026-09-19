@@ -41,11 +41,12 @@ object ShellDaemonClient {
     const val PORT = 13341
 
     /**
-     * Token zapisujeme do `nativeLibraryDir/libtoken.so` — tam ho uvidí jak
-     * appka, tak `adb shell` (uid 2000). Zadny bind, zadny filesDir.
-     * V jniLibs je placeholder, aby ho Android vubec extrahoval.
+     * Token žije v `filesDir/shell_daemon.token` — `nativeLibraryDir` je
+     * read-only (system:system 755), appka tam zapsat NEMŮŽE (EACCES).
+     * `adb shell` (uid 2000) filesDir nepřečte, proto se token vydává
+     * přes `GET /shelldaemon/info` na 127.0.0.1:1337 (kam se uid 2000 dovolá).
      */
-    private const val TOKEN_SO_NAME = "libtoken.so"
+    private const val TOKEN_FILE_NAME = "shell_daemon.token"
 
     /** Název v jniLibs — Android ho extrahuje do nativeLibraryDir pod stejným jménem. */
     private const val SO_NAME = "libshelldaemon.so"
@@ -65,13 +66,12 @@ object ShellDaemonClient {
         File(context.applicationInfo.nativeLibraryDir, SO_NAME)
 
     /**
-     * Token file v nativeLibraryDir (`libtoken.so`). Appka i `adb shell`
-     * (uid 2000) ho vidi na stejne ceste. Placeholder v jniLibs zajisti,
-     * ze ho Android pri instalaci extrahuje.
+     * Token file v `filesDir/shell_daemon.token` (tam appka zapisovat umí).
+     * Pro `adb shell` (uid 2000) ho vydává `GET /shelldaemon/info`.
      */
     @JvmStatic
     fun tokenFile(context: Context): File =
-        File(context.applicationInfo.nativeLibraryDir, TOKEN_SO_NAME)
+        File(context.filesDir, TOKEN_FILE_NAME)
 
     /**
      * Vrátí (případně vygeneruje) perzistentní token pro autentizaci daemona.

@@ -565,6 +565,7 @@ object LocalApiServer {
 
                 // ─── shell_daemon (uid 2000, non-root) ──────────────────────
                 path == "/shelldaemon/status" && method == "GET" -> handleShellDaemonStatus(out)
+                path == "/shelldaemon/info" && method == "GET" -> handleShellDaemonInfo(context, out)
                 path == "/shelldaemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
                 path == "/shelldaemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
                 path == "/shelldaemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
@@ -1186,6 +1187,26 @@ object LocalApiServer {
      * `shell_daemon` je persistentni shell UID 2000 daemon. Startuje ho guest
      * pres `ashell adb start` (zadny su). App ho jen detekuje TCP probem.
      */
+    /**
+     * GET /shelldaemon/info
+     *   → { path, token, port, running }
+     *
+     * Vydá `adb shell` (uid 2000) absolutní cestu k `libshelldaemon.so`
+     * a aktuální token. `nativeLibraryDir` je pro shell čitelný, ale token
+     * v `filesDir` ne — proto ho posíláme tudy. Endpoint je na loopbacku
+     * a chráněný stejným Bearer tokenem jako zbytek API.
+     */
+    private fun handleShellDaemonInfo(context: Context, out: OutputStream) {
+        val bin = ShellDaemonClient.binaryPath(context)
+        val token = ShellDaemonClient.ensureToken(context)
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("path", bin.absolutePath)
+            put("token", token)
+            put("port", ShellDaemonClient.PORT)
+            put("running", ShellDaemonClient.status().running)
+        }.toString())
+    }
+
     private fun handleShellDaemonStatus(out: OutputStream) {
         val st = ShellDaemonClient.status()
         sendResponse(out, 200, "OK", JSONObject().apply {
