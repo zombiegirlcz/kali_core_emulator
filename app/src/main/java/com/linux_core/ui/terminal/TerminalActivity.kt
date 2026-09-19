@@ -119,30 +119,29 @@ class TerminalActivity : ComponentActivity() {
     private val servicesUpdateHandler = Handler(Looper.getMainLooper())
     private val servicesPoller = object : Runnable {
         override fun run() {
-            if (!isServicesExpanded) return
-            // Run status checks on background thread — process spawning blocks
+            // ADB indikátor se musí aktualizovat VŽDY (i při sbaleném panelu) —
+            // jinak tečka zůstane svítit, i když daemon spadl. TCP probe je levná.
+            // code-server status spawnuje proot (drahé) → jen když je panel otevřený.
             thread {
                 try {
                     val adbSt = com.linux_core.core.ShellDaemonClient.status()
-                    val codeRaw = runCodeServerCtl("status")
-                    val codeRunning = codeRaw.contains("running", ignoreCase = true) ||
-                            codeRaw.contains("pid", ignoreCase = true)
+                    runOnUiThread { updateServiceIndicator("adb", btnAdb, adbSt.running) }
 
-                    runOnUiThread {
-                        updateServiceIndicator("adb", btnAdb, adbSt.running)
-                        updateServiceIndicator("code", btnCode, codeRunning)
-                        updateServiceIndicator("phoenix", btnPhoenix, false)
-
-                        val svc = expandedService
-                        if (svc != null) {
-                            updateServiceDetail(svc)
+                    if (isServicesExpanded) {
+                        val codeRaw = runCodeServerCtl("status")
+                        val codeRunning = codeRaw.contains("running", ignoreCase = true) ||
+                                codeRaw.contains("pid", ignoreCase = true)
+                        runOnUiThread {
+                            updateServiceIndicator("code", btnCode, codeRunning)
+                            updateServiceIndicator("phoenix", btnPhoenix, false)
+                            expandedService?.let { updateServiceDetail(it) }
                         }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "servicesPoller error: ${e.message}")
                 }
             }
-            servicesUpdateHandler.postDelayed(this, 5000)
+            servicesUpdateHandler.postDelayed(this, if (isServicesExpanded) 5000 else 15000)
         }
     }
 
@@ -913,10 +912,9 @@ class TerminalActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (isServicesExpanded) {
-            updateAllServiceIndicators()
-            servicesUpdateHandler.post(servicesPoller)
-        }
+        // Poller běží vždy (i se sbaleným panelem) — ADB tečka musí odpovídat realitě.
+        servicesUpdateHandler.removeCallbacks(servicesPoller)
+        servicesUpdateHandler.post(servicesPoller)
         Log.d(TAG, "onResume - requesting focus")
         terminalView.requestFocus()
         if (specialKeypadPanel.visibility != View.VISIBLE) {
@@ -2675,11 +2673,13 @@ class TerminalActivity : ComponentActivity() {
 
         if (isServicesExpanded) {
             updateAllServiceIndicators()
+            servicesUpdateHandler.removeCallbacks(servicesPoller)
             servicesUpdateHandler.post(servicesPoller)
         } else {
             servicesDetailPanel.visibility = View.GONE
             expandedService = null
-            servicesUpdateHandler.removeCallbacks(servicesPoller)
+            // Poller necháváme běžet (jen pomalejší interval) — indikátor ADB
+            // musí svítit/zhasínat i se sbaleným panelem.
         }
     }
 
@@ -2796,8 +2796,7 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShellDaemonClient.stopDaemon(applicationContext)
-                            updateAllServiceIndicators()
+                            stopDaemonInGuest()
                         }
                     })
                 } else {
@@ -2987,28 +2986,49 @@ class TerminalActivity : ComponentActivity() {
 
     /**
      * App UID (10323) NEMUZE spawnout proces pod uid 2000. Tlacitko START
-     * proto otevre novou terminal session v guestu a posle do ni
-     * `ashell adb start` — to provede `adb shell nohup <nativeLibDir>/libshelldaemon.so`
-     * pod uid 2000. Po startu se novou session da rovnou pouzivat.
+     * proto spusti `ashell adb start` JEDNORAZOVE pres boot skript na pozadi
+     * (žádná nová terminal session): boot nastartuje proot, provede příkaz
+     * pod uid 2000 a hned zemře. Daemon se odpoutá (setsid + daemonize)
+     * a běží dál. Indikátor se aktualizuje pollerem.
      */
     private fun startDaemonInGuest() {
-        Log.i(TAG, "startDaemonInGuest: otevru session a spustim 'ashell adb start'")
-        try {
-            pendingNanoCommand = "ashell adb start"
-            val distroId = "kali"
-            val bootMode = loadBootMode(this@TerminalActivity, distroId, DEFAULT_BOOT_MODE)
-            val result = ProotManager.setupProotEnvironment(
-                this@TerminalActivity,
-                "nh/distro/$distroId",
-                false, null, false, false, bootMode
-            )
-            startTerminalSession(result)
-        } catch (e: Exception) {
-            Log.e(TAG, "startDaemonInGuest failed: ${e.message}")
-            android.widget.Toast.makeText(this@TerminalActivity,
-                "Nelze otevrit session: ${e.message}",
-                android.widget.Toast.LENGTH_LONG).show()
-        }
+        Log.i(TAG, "startDaemonInGuest: one-shot 'ashell adb start' na pozadi")
+        Thread {
+            try {
+                val res = com.linux_core.core.ExecCore.guestExec(
+                    applicationContext, "kali", "ashell adb start", 30_000L
+                )
+                Log.i(TAG, "startDaemonInGuest result: $res")
+            } catch (e: Exception) {
+                Log.e(TAG, "startDaemonInGuest failed: ${e.message}")
+            }
+            runOnUiThread {
+                servicesUpdateHandler.removeCallbacks(servicesPoller)
+                servicesUpdateHandler.post(servicesPoller)
+            }
+        }.start()
+    }
+
+    /**
+     * STOP: jednorazove `ashell adb stop` pres boot skript na pozadi
+     * (pkill daemona pod uid 2000). Zadna nova session.
+     */
+    private fun stopDaemonInGuest() {
+        Log.i(TAG, "stopDaemonInGuest: one-shot 'ashell adb stop' na pozadi")
+        Thread {
+            try {
+                val res = com.linux_core.core.ExecCore.guestExec(
+                    applicationContext, "kali", "ashell adb stop", 20_000L
+                )
+                Log.i(TAG, "stopDaemonInGuest result: $res")
+            } catch (e: Exception) {
+                Log.e(TAG, "stopDaemonInGuest failed: ${e.message}")
+            }
+            runOnUiThread {
+                servicesUpdateHandler.removeCallbacks(servicesPoller)
+                servicesUpdateHandler.post(servicesPoller)
+            }
+        }.start()
     }
 
     private fun startDaemonAsync(callback: ((Boolean) -> Unit)? = null) {
