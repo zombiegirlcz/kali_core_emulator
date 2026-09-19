@@ -382,6 +382,18 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
+    # shell_daemon (persistentni shell-UID daemon, obdoba su_daemon pro uid 2000)
+    print("─" * 60)
+    print("[native-bin] Building shell_daemon...")
+    sdaemon_src = os.path.join(cpp_dir, "shell_daemon.c")
+    sdaemon_bin_path = os.path.join(assets_dir, "shell_daemon")
+    if not os.path.exists(sdaemon_src):
+        print(f"[native-bin] {sdaemon_src} chybí — shell_daemon PŘESKOČEN")
+    else:
+        cmd = [cc, "-o", sdaemon_bin_path, sdaemon_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(sdaemon_bin_path):,} B)")
 
 
 @app.function(
@@ -1140,8 +1152,10 @@ _NATIVE_COMPONENTS = {
         "sources": ["app/src/main/cpp/usb_bridge.c",
                      "app/src/main/cpp/su_daemon.c",
                      "app/src/main/cpp/su_wrapper.c",
-                     "app/src/main/cpp/ashell_pty.c"],
+                     "app/src/main/cpp/ashell_pty.c",
+                     "app/src/main/cpp/shell_daemon.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
+                     "app/src/main/assets/shell_daemon",
                      "app/src/main/assets/su_daemon",
                      "app/src/main/assets/su_wrapper",
                      "app/src/main/assets/ashell_pty"],

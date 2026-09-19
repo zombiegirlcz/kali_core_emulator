@@ -571,6 +571,10 @@ object LocalApiServer {
                 path == "/shizuku/mode" && method == "POST" -> handleShizukuMode(context, body, out)
                 path == "/shizuku/stop" && method == "POST" -> handleShizukuStop(context, out)
                 path == "/shizuku/exec" && method == "POST" -> handleShizukuExec(context, body, out)
+                path == "/shizuku/daemon/status" && method == "GET" -> handleShellDaemonStatus(out)
+                path == "/shizuku/daemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
+                path == "/shizuku/daemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
+                path == "/shizuku/daemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
 
                 // ─── USB Host endpoints ─────────────────────────────────────
                 path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
@@ -1324,6 +1328,76 @@ object LocalApiServer {
             ) ?: ShizukuMode.NONE
 
         val json = ShizukuManager.execAs(context, mode, command)
+        sendResponse(out, statusFor(json), "OK", json)
+    }
+
+    // ─── shell_daemon (persistentní uid 2000) ────────────────────────────
+
+    /**
+     * GET /shizuku/daemon/status
+     *   → { running: bool, port: int }
+     *
+     * `shell_daemon` je ekvivalent Shizuku/adb démona: po jednorázovém startu
+     * (přes `nh shi start --none` z guestu nebo `su 2000 -c` na root zařízení)
+     * běží pod uid 2000 do rebootu a všechny exekuce jdou přes něj.
+     */
+    private fun handleShellDaemonStatus(out: OutputStream) {
+        val st = ShellDaemonClient.status()
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("running", st.running)
+            put("port", st.port)
+        }.toString())
+    }
+
+    /** POST /shizuku/daemon/start → zkusí nastartovat daemon (jen pokud je su). */
+    private fun handleShellDaemonStart(context: Context, out: OutputStream) {
+        val ok = ShellDaemonClient.startDaemon(context)
+        sendResponse(out, if (ok) 200 else 500, if (ok) "OK" else "Error",
+            JSONObject().apply {
+                put("started", ok)
+                put("running", ShellDaemonClient.status().running)
+                put("port", ShellDaemonClient.PORT)
+            }.toString())
+    }
+
+    /** POST /shizuku/daemon/stop → pkill pod uid 2000. */
+    private fun handleShellDaemonStop(context: Context, out: OutputStream) {
+        val ok = ShellDaemonClient.stopDaemon(context)
+        sendResponse(out, 200, "OK", "{\"stopped\":$ok}")
+    }
+
+    /**
+     * POST /shizuku/daemon/exec
+     *   body = command (holý string) nebo JSON {command, cwd}
+     *   → { stdout, stderr, exit_code, mode="shell_daemon" }
+     */
+    private fun handleShellDaemonExec(context: Context, body: String, out: OutputStream) {
+        val raw = body.trim()
+        if (raw.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+            return
+        }
+        var command = raw
+        var cwd = ""
+        if (raw.startsWith("{")) {
+            try {
+                val obj = JSONObject(raw)
+                command = obj.optString("command", "")
+                cwd = obj.optString("cwd", "")
+            } catch (_: Exception) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+                return
+            }
+        }
+        if (command.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+            return
+        }
+        if (command.length > MAX_SHI_CMD_LEN) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long\"}")
+            return
+        }
+        val json = ShellDaemonClient.exec(context, command, cwd)
         sendResponse(out, statusFor(json), "OK", json)
     }
 

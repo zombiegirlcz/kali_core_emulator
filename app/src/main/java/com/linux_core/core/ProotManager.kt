@@ -1235,6 +1235,9 @@ object ProotManager {
         // Deploy su/sudo UNIX socket IPC bridge
         deploySuBridge(context, rootfsDir)
 
+        // Deploy shell_daemon (persistentní uid 2000 daemon) + jeho token
+        deployShellDaemon(context)
+
         // Create backward-compat symlinks pointing to nh
         val compatNames =
             listOf(
@@ -1516,6 +1519,23 @@ object ProotManager {
             }
         } catch (e: Exception) {
             Log.w(TAG, "su_daemon asset not available: ${e.message}")
+        }
+    }
+
+    /**
+     * Nasaď `shell_daemon` (persistentní shell UID 2000 daemon) + jeho token
+     * do filesDir. Guest ho uvidí jako `/mnt/app/shell_daemon` a
+     * `/mnt/app/shell_daemon.token` (bind `$FILES_DIR → /mnt/app` z boot
+     * skriptu), takže `nh shi start --none` ho přes `adb push` nahraje do
+     * `/data/local/tmp` a spustí pod uid 2000. Nahrazuje Shizuku server.
+     */
+    private fun deployShellDaemon(context: Context) {
+        try {
+            ShellDaemonClient.deployBinary(context)
+            ShellDaemonClient.ensureToken(context)
+            Log.i(TAG, "Deployed shell_daemon + token to filesDir")
+        } catch (e: Exception) {
+            Log.w(TAG, "shell_daemon deploy failed: ${e.message}")
         }
     }
 
