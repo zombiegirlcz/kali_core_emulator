@@ -678,6 +678,9 @@ static int load_token(const char *path) {
 int main(int argc, char **argv) {
     const char *token_file = NULL;
     int no_fork = 0;
+    int attach_mode = 0;
+    const char *attach_host = NULL;
+    const char *attach_cmd = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--port=", 7) == 0) {
@@ -689,8 +692,15 @@ int main(int argc, char **argv) {
             token_file = argv[i] + 13;
         } else if (strcmp(argv[i], "--no-fork") == 0) {
             no_fork = 1;
+        } else if (strcmp(argv[i], "--attach") == 0) {
+            attach_mode = 1;
+        } else if (strncmp(argv[i], "--attach-host=", 14) == 0) {
+            attach_host = argv[i] + 14;
+        } else if (strncmp(argv[i], "--attach-cmd=", 13) == 0) {
+            attach_cmd = argv[i] + 13;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("shell_daemon [--port=N] [--token=HEX] [--token-file=PATH] [--no-fork]\n");
+            printf("shell_daemon [--port=N] [--token=HEX] [--token-file=PATH] [--no-fork]\n"
+                   "shell_daemon --attach [--attach-host=127.0.0.1] [--port=N] [--token=HEX] [--attach-cmd=CMD]\n");
             return 0;
         }
     }
@@ -701,6 +711,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[shell_daemon] FATAL: chybi token (--token= nebo --token-file=%s)\n", tf);
             return 2;
         }
+    }
+
+    /* Klientsky rezim: pripoj se k bezicimu daemonu a predej mu PTY most. */
+    if (attach_mode) {
+        const char *h = attach_host ? attach_host : "127.0.0.1";
+        return run_attach_client(h, g_port, attach_cmd);
     }
 
     uid_t uid = getuid();

@@ -1449,7 +1449,10 @@ object LocalApiServer {
      * což donutí TerminalService vytvořit nový ProcessBuilder, který NEpoužívá
      * PRoot, ale přímo /system/bin/sh s cestou k host filesDir.
      *
-     * Vstup: POST /ashell  (body ignorováno, ashell je vždy interaktivní).
+     * Vstup: POST /ashell  s volitelným JSON body {"mode":"ashell-host|adb-shell"}.
+     *   - "adb-shell" (default z `ashell adb shell`) → rootfsDirName="ashell-adb",
+     *     terminal poběží pod uid 2000 přes shell_daemon (--attach).
+     *   - cokoli jiného / prázdné → rootfsDirName="ashell-host" (app uid).
      * Výstup: 200 + JSON s {status, pwd, uid}.
      */
     private fun handleAshell(context: Context, body: String, out: OutputStream) {
@@ -1458,23 +1461,29 @@ object LocalApiServer {
             return
         }
         try {
-            // Spustíme novou TerminalActivity v "ashell módu" (rootfsDirName="ashell-host")
+            val adbShell = try {
+                JSONObject(body.ifBlank { "{}" }).optString("mode", "") == "adb-shell"
+            } catch (_: Exception) { false }
+
+            val rootfsDirName = if (adbShell) "ashell-adb" else "ashell-host"
+            // Spustíme novou TerminalActivity v "ashell módu".
             // FLAG_ACTIVITY_NEW_TASK + FLAG_ACTIVITY_NEW_DOCUMENT + FLAG_ACTIVITY_MULTIPLE_TASK
             // překoná singleTask launchMode a otevře novou instanci pro ashell escape.
             val intent = Intent(ctx, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
                 addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-                putExtra("rootfsDirName", "ashell-host")
+                putExtra("rootfsDirName", rootfsDirName)
                 putExtra("mountStorage", false)
                 putExtra("ashellMode", true)
             }
             ctx.startActivity(intent)
             sendResponse(out, 200, "OK", JSONObject().apply {
-                put("status", "ashell_started")
-                put("uid", Process.myUid())
+                put("status", if (adbShell) "adb_shell_started" else "ashell_started")
+                put("mode", if (adbShell) "adb-shell" else "ashell-host")
+                put("uid", if (adbShell) 2000 else Process.myUid())
                 put("pwd", ctx.filesDir.absolutePath)
-                put("user", "app")
+                put("user", if (adbShell) "shell" else "app")
             }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
