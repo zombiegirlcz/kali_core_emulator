@@ -1353,22 +1353,26 @@ object ProotManager {
         var wrapperTarget: File? = null
         try {
             val wrapperTargetLocal = File(binDir, "su_wrapper")
-            var shouldDeploy = !wrapperTargetLocal.exists() || wrapperTargetLocal.length() == 0L
-            if (!shouldDeploy) {
-                try {
-                    val assetSize = context.assets.open("su_wrapper").use { it.available().toLong() }
-                    if (wrapperTargetLocal.length() != assetSize) shouldDeploy = true
-                } catch (e: Exception) {
-                    shouldDeploy = true
+            // Hash-gated deploy (asset MD5 vs. deployed MD5). Size-only comparison
+            // missed rebuilt binaries of equal length (e.g. NDK r27d vs r28 — both
+            // ~2.2 MB) and silently kept a stale, unexecutable wrapper in place.
+            val wrapperNewHash = assetMd5(context, "su_wrapper")
+            val wrapperCurHash =
+                if (wrapperTargetLocal.exists() && wrapperTargetLocal.length() > 0L) {
+                    fileMd5(wrapperTargetLocal)
+                } else {
+                    ""
                 }
-            }
+            val shouldDeploy = wrapperCurHash != wrapperNewHash
             if (shouldDeploy) {
                 context.assets.open("su_wrapper").use { input ->
                     wrapperTargetLocal.outputStream().use { output -> input.copyTo(output) }
                 }
                 wrapperTargetLocal.setExecutable(true, false)
                 wrapperTargetLocal.setReadable(true, false)
-                Log.i(TAG, "Deployed su_wrapper binary (${wrapperTargetLocal.length()} bytes)")
+                Log.i(TAG, "Deployed su_wrapper binary (md5=$wrapperNewHash, ${wrapperTargetLocal.length()} bytes)")
+            } else {
+                Log.i(TAG, "Skip su_wrapper (hash unchanged: $wrapperNewHash)")
             }
             wrapperTarget = wrapperTargetLocal
         } catch (e: Exception) {
@@ -1436,22 +1440,24 @@ object ProotManager {
         // 3. Deploy su_daemon to host filesDir
         try {
             val daemonTarget = File(context.filesDir, "su_daemon")
-            var shouldDeploy = !daemonTarget.exists() || daemonTarget.length() == 0L
-            if (!shouldDeploy) {
-                try {
-                    val assetSize = context.assets.open("su_daemon").use { it.available().toLong() }
-                    if (daemonTarget.length() != assetSize) shouldDeploy = true
-                } catch (e: Exception) {
-                    shouldDeploy = true
+            // Hash-gated deploy (asset MD5 vs. deployed MD5) — see su_wrapper above.
+            val daemonNewHash = assetMd5(context, "su_daemon")
+            val daemonCurHash =
+                if (daemonTarget.exists() && daemonTarget.length() > 0L) {
+                    fileMd5(daemonTarget)
+                } else {
+                    ""
                 }
-            }
+            val shouldDeploy = daemonCurHash != daemonNewHash
             if (shouldDeploy) {
                 context.assets.open("su_daemon").use { input ->
                     daemonTarget.outputStream().use { output -> input.copyTo(output) }
                 }
                 daemonTarget.setExecutable(true, false)
                 daemonTarget.setReadable(true, false)
-                Log.i(TAG, "Deployed su_daemon binary to host (${daemonTarget.length()} bytes)")
+                Log.i(TAG, "Deployed su_daemon binary to host (md5=$daemonNewHash, ${daemonTarget.length()} bytes)")
+            } else {
+                Log.i(TAG, "Skip su_daemon (hash unchanged: $daemonNewHash)")
             }
         } catch (e: Exception) {
             Log.w(TAG, "su_daemon asset not available: ${e.message}")

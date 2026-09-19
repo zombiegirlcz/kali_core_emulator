@@ -52,11 +52,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-          test -n "$ndk_root"
+          # Pin the NDK explicitly to the version installed above (r28).
+          # Do NOT trust ANDROID_NDK_HOME on ubuntu-latest: it points at a
+          # preinstalled r27 whose static Bionic emits a PT_TLS segment with
+          # p_align=8, which the Android linker rejects at runtime with
+          # "executable's TLS segment is underaligned ... needs to be at least 64
+          # for ARM64 Bionic". r28 does not emit that segment for these binaries.
+          ndk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/ndk/28.0.13004108"
+          test -d "$ndk_root"
           ndk_bin="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin"
           cc="$ndk_bin/aarch64-linux-android24-clang"
           test -x "$cc"
+          echo "Using NDK: $ndk_root"
+          "$cc" --version | head -1
 
           assets="app/src/main/assets"
           jni="app/src/main/jniLibs/arm64-v8a"
