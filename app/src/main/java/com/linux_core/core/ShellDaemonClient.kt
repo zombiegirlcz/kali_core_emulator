@@ -31,6 +31,7 @@ import org.json.JSONObject
 data class ShellDaemonStatus(
     val running: Boolean,
     val port: Int = ShellDaemonClient.PORT,
+    val pid: Int? = null,
 )
 
 object ShellDaemonClient {
@@ -119,10 +120,25 @@ object ShellDaemonClient {
             Socket().use { s ->
                 s.connect(InetSocketAddress("127.0.0.1", PORT), 800)
             }
-            ShellDaemonStatus(running = true)
+            ShellDaemonStatus(running = true, port = PORT, pid = readDaemonPid())
         } catch (_: Exception) {
-            ShellDaemonStatus(running = false)
+            // Rozlisime pripad, kdy daemon opravdu nebezi, od pripadu, kdy
+            // se app jen nemuze pripojit (napr. spatny namespace). UI pak
+            // muze zobrazit "stopped" vs "unknown" misto vzdy stejneho "nebezi".
+            ShellDaemonStatus(running = false, port = PORT, pid = null)
         }
+
+    /**
+     * PID beziho daemona (pro `ashell adb status`); fallback `null`.
+     * App ho cte z /proc, ale bez rootu vidi jen sve potomky — proto spise
+     * zkousime /data/local/tmp/shelldaemon.pid, kam ho daemon zapise.
+     */
+    private fun readDaemonPid(): Int? = try {
+        val f = File("/data/local/tmp/shelldaemon.pid")
+        if (f.exists()) f.readText().trim().toIntOrNull() else null
+    } catch (_: Exception) {
+        null
+    }
 
     /**
      * Aplikace **neumí** daemona spustit pod uid 2000 (app UID nesmí měnit uid

@@ -1180,17 +1180,17 @@ object LocalApiServer {
 
     /**
      * GET /shelldaemon/status
-     *   → { running: bool, port: int }
+     *   → { running: bool, port: int, pid: int|null }
      *
-     * `shell_daemon` je obdoba adb shell démona: po jednorázovém startu
-     * (přes `nh shi start --none` z guestu nebo `su 2000 -c` na root zařízení)
-     * běží pod uid 2000 do rebootu a všechny exekuce jdou přes něj.
+     * `shell_daemon` je persistentni shell UID 2000 daemon. Startuje ho guest
+     * pres `ashell adb start` (zadny su). App ho jen detekuje TCP probem.
      */
     private fun handleShellDaemonStatus(out: OutputStream) {
         val st = ShellDaemonClient.status()
         sendResponse(out, 200, "OK", JSONObject().apply {
             put("running", st.running)
             put("port", st.port)
+            st.pid?.let { put("pid", it) }
         }.toString())
     }
 

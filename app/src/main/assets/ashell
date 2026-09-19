@@ -86,9 +86,20 @@ if [ "$1" = "adb" ]; then
         fi
     }
 
-    # Cesta k extrahované binárce: appka ji publikuje do filesDir/shelldaemon.path,
-    # v guestu je to /mnt/app/shelldaemon.path (bind $FILES_DIR -> /mnt/app).
+    # Cesta k extrahované binárce.
+    #
+    # Zdroje v poradi priorit:
+    #   1) $SHELLDAEMON_PATH (explicitni override z prostredi)
+    #   2) /mnt/app/shelldaemon.path — appka publikuje pri startu; v guestu
+    #      viditelne JEN kdyz je zapnuty bind_app (RootBridge -> "App Data")
+    #   3) $HOME/shelldaemon.path — fallback pro pripad, ze si ji tam user zkopiruje
+    #
+    # Kdyz nic z toho neni, vratime prazdno a `start` vypise presny navod.
     daemon_path() {
+        if [ -n "${SHELLDAEMON_PATH:-}" ] && [ -x "$SHELLDAEMON_PATH" ]; then
+            printf '%s' "$SHELLDAEMON_PATH"
+            return 0
+        fi
         _p=""
         for f in /mnt/app/shelldaemon.path "$HOME/shelldaemon.path"; do
             if [ -f "$f" ]; then
@@ -128,7 +139,20 @@ if [ "$1" = "adb" ]; then
             DAEMON=$(daemon_path)
             if [ -z "$DAEMON" ]; then
                 echo "[-] Neznám cestu k libshelldaemon.so." >&2
-                echo "    Spusť appku aspoň jednou (publikuje /mnt/app/shelldaemon.path)." >&2
+                echo "" >&2
+                echo "    Duvod: v guestu neni videt /mnt/app (bind_app je vypnuty)." >&2
+                echo "    Řešení (vyber jedno):" >&2
+                echo "      a) V appce: Root Bridge -> zapni 'App Data' (bind_app)," >&2
+                echo "         pak restartuj session (nh distro kill && nh distro start)." >&2
+                echo "      b) Zjisti cestu z hostu:" >&2
+                echo "           adb shell cat /data/data/com.linux_core/files/shelldaemon.path" >&2
+                echo "         a nastav ji v guestu:" >&2
+                echo "           export SHELLDAEMON_PATH=<ta cesta>" >&2
+                exit 1
+            fi
+            if ! adb shell "test -x $DAEMON" 2>/dev/null; then
+                echo "[-] Binarka neni spustitelna v host kontextu: $DAEMON" >&2
+                echo "    Zkontroluj, ze APK ma extractNativeLibs (useLegacyPackaging=true)." >&2
                 exit 1
             fi
             TOKEN=$(daemon_token) || {
@@ -140,22 +164,32 @@ if [ "$1" = "adb" ]; then
                 exit 1
             fi
 
-            # Uz bezi? (idempotentni start)
-            pid=$(adb shell "pidof libshelldaemon.so 2>/dev/null || pidof libshelldaemon 2>/dev/null" 2>/dev/null | tr -d '
- ')
-            if [ -z "$pid" ]; then
+            # Uz bezi? Cteme PID file, ktery daemon zapisuje do
+            # /data/local/tmp/shelldaemon.pid. `pidof libshelldaemon.so`
+            # nefunguje — Android comm je orezany na 15 znaku.
+            PIDFILE=/data/local/tmp/shelldaemon.pid
+            daemon_pid() {
+                adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n '
+            }
+            daemon_alive() {
+                _p=$(daemon_pid)
+                [ -n "$_p" ] || return 1
+                # over, ze proces opravdu existuje a je to nas daemon
+                adb shell "test -d /proc/$_p && grep -q shell_daemon /proc/$_p/cmdline 2>/dev/null || grep -q libshelldaemon /proc/$_p/cmdline 2>/dev/null" 2>/dev/null
+            }
+
+            pid=$(daemon_pid)
+            if ! daemon_alive; then
                 echo "[*] Startuji libshelldaemon.so pod shell UID (non-root) ..."
                 adb shell "nohup $DAEMON --port=13341 --token=$TOKEN >/dev/null 2>&1 &" >/dev/null 2>&1
                 sleep 2
-                pid=$(adb shell "pidof libshelldaemon.so 2>/dev/null || pidof libshelldaemon 2>/dev/null" 2>/dev/null | tr -d '
- ')
+                pid=$(daemon_pid)
             fi
 
-            if [ -n "$pid" ]; then
-                duid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '
- ')
+            if [ -n "$pid" ] && daemon_alive; then
+                duid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '\r\n ')
                 echo "[+] shell_daemon běží (pid=$pid, uid=${duid:-?}, non-root)"
-                echo "    Příkazy: ashell adb -c "<cmd>"  (TCP 127.0.0.1:13341)"
+                echo '    Příkazy: ashell adb -c "<cmd>"  (TCP 127.0.0.1:13341)'
                 exit 0
             fi
             echo "[-] shell_daemon nenabehl." >&2
@@ -168,7 +202,14 @@ if [ "$1" = "adb" ]; then
                 echo "[-] adb neni v guestu k dispozici." >&2
                 exit 1
             fi
-            adb shell "pkill -f libshelldaemon 2>/dev/null || pkill -x shell_daemon 2>/dev/null || true" >/dev/null 2>&1
+            PIDFILE=/data/local/tmp/shelldaemon.pid
+            _p=$(adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n ')
+            if [ -n "$_p" ]; then
+                adb shell "kill $_p 2>/dev/null || true" >/dev/null 2>&1
+                adb shell "rm -f $PIDFILE" >/dev/null 2>&1
+            fi
+            # fallback pro pripad, ze pid file chybi
+            adb shell "pkill -f libshelldaemon 2>/dev/null || true" >/dev/null 2>&1
             echo "[+] shell_daemon stopped"
             ;;
         status)

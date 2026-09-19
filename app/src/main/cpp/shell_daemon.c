@@ -754,6 +754,8 @@ int main(int argc, char **argv) {
     /* Daemonizace (pokud není --no-fork): odpoj od terminálu, ať přežije
      * zavření `adb shell` okna. Debug: --no-fork běží v popředí. */
     if (!no_fork) {
+        /* PID file zapisujeme az v diteti (po fork), aby obsahoval PID
+         * skutecneho daemona, ne parenta, ktery hned zmizi. */
         pid_t dfork = fork();
         if (dfork < 0) {
             perror("[shell_daemon] fork (daemonize)");
@@ -770,6 +772,19 @@ int main(int argc, char **argv) {
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
             if (devnull > STDERR_FILENO) close(devnull);
+        }
+    }
+
+    /* PID file pro appku (LocalApiServer status) i pro `ashell adb stop`.
+     * /data/local/tmp je world-writable, takze ho uid 2000 muze zapsat. */
+    {
+        const char *pid_path = getenv("SHELLDAEMON_PID_FILE");
+        if (pid_path == NULL || pid_path[0] == '\0') pid_path = "/data/local/tmp/shelldaemon.pid";
+        FILE *pf = fopen(pid_path, "w");
+        if (pf) {
+            fprintf(pf, "%d\n", (int)getpid());
+            fclose(pf);
+            chmod(pid_path, 0644);
         }
     }
 

@@ -2800,7 +2800,7 @@ class TerminalActivity : ComponentActivity() {
                     })
                 } else {
                     row.addView(Button(this).apply {
-                        text = "\u25B6 START"
+                        text = "\u25B6 START (guest)"
                         textSize = 9f
                         setTextColor(Color.parseColor("#00FF41"))
                         background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
@@ -2811,8 +2811,7 @@ class TerminalActivity : ComponentActivity() {
                         )
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
-                            updateAllServiceIndicators()
+                            startDaemonInGuest()
                         }
                     })
                 }
@@ -2982,6 +2981,32 @@ class TerminalActivity : ComponentActivity() {
             }
             .setNegativeButton("CANCEL", null)
             .show()
+    }
+
+    /**
+     * App UID (10323) NEMUZE spawnout proces pod uid 2000. Tlacitko START
+     * proto otevre novou terminal session v guestu a posle do ni
+     * `ashell adb start` — to provede `adb shell nohup <nativeLibDir>/libshelldaemon.so`
+     * pod uid 2000. Po startu se novou session da rovnou pouzivat.
+     */
+    private fun startDaemonInGuest() {
+        Log.i(TAG, "startDaemonInGuest: otevru session a spustim 'ashell adb start'")
+        try {
+            pendingNanoCommand = "ashell adb start"
+            val distroId = "kali"
+            val bootMode = loadBootMode(this@TerminalActivity, distroId, DEFAULT_BOOT_MODE)
+            val result = ProotManager.setupProotEnvironment(
+                this@TerminalActivity,
+                "nh/distro/$distroId",
+                false, null, false, false, bootMode
+            )
+            startTerminalSession(result)
+        } catch (e: Exception) {
+            Log.e(TAG, "startDaemonInGuest failed: ${e.message}")
+            android.widget.Toast.makeText(this@TerminalActivity,
+                "Nelze otevrit session: ${e.message}",
+                android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun startDaemonAsync(callback: ((Boolean) -> Unit)? = null) {

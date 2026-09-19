@@ -446,7 +446,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindTmp by remember { mutableStateOf(prefs.getBoolean("bind_tmp", false)) }
     var bindUsb by remember { mutableStateOf(prefs.getBoolean("bind_usb", true)) }
     var bindBluetooth by remember { mutableStateOf(prefs.getBoolean("bind_bluetooth", false)) }
-    var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", false)) }
+    var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", true)) }
     var bindAiApp by remember { mutableStateOf(prefs.getBoolean("bind_aiapp", false)) }
     var bindData by remember { mutableStateOf(prefs.getBoolean("bind_data", false)) }
 

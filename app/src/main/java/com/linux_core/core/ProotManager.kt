@@ -334,7 +334,8 @@ object ProotManager {
                 ) {
                     append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
                 }
-                if (rootPrefs.getBoolean("bind_app", false)) append(" -b /data/user/0/com.linux_core:/mnt/app")
+                // bind_app default true: /mnt/app je nutne pro shell_daemon (path + token)
+                if (rootPrefs.getBoolean("bind_app", true)) append(" -b /data/user/0/com.linux_core:/mnt/app")
                 if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
                 // /data is only readable under real root (DAC + SELinux), so this
                 // mount is useful inside a sudo session (su_daemon re-entry), not
