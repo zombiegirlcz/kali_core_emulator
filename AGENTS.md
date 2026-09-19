@@ -222,6 +222,48 @@ unset LD_LIBRARY_PATH
 - Interaktivní host shell čte config z `.ashell_env` přes `ENV=` (unset přebije spawn `LD_LIBRARY_PATH`).
 - Test parseru: `app/src/test/java/com/linux_core/core/AshellConfigParserTest.kt`.
 
+### 9b. `ashell adb` — shell_daemon pod uid 2000 (non-root)
+
+Persistentní démon, který appce dává **shell UID (2000)** — stejná práva jako `adb shell`
+(`pm`, `settings`, `cmd`, `dumpsys`, `logcat`), bez roota a bez reálného adb.
+
+- **Binárka:** `app/src/main/jniLibs/arm64-v8a/libshelldaemon.so` (ELF s `main`, ne JNI lib).
+  Android ji extrahuje do `applicationInfo.nativeLibraryDir` (`useLegacyPackaging=true`).
+  **Nespouští ji appka** (app UID 10323 nedokáže spawnout uid 2000) — spouští ji guest:
+  `ashell adb start` → `adb shell "nohup <nativeLibraryDir>/arm64/libshelldaemon.so … &"`.
+- **Protokol:** TCP `127.0.0.1:13341`, binární (magic `SHLL`, mode `EXEC`/`ATTACH`/`INSTALL`,
+  length-prefixed bloby) — viz `app/src/main/cpp/shell_daemon.c`. TCP místo UNIX socketu proto,
+  že uid 2000 nesmí zapisovat do `filesDir` appky.
+- **Token:** `filesDir/shell_daemon.token` (appka zapisuje), uid 2000 ho dostane přes
+  `GET /shelldaemon/info` na `127.0.0.1:1337`. `nativeLibraryDir` je read-only (system:system).
+- **`ashell adb <cmd>`** = `daemon_exec()` v ashellu → `POST /shelldaemon/exec`. Sdílená funkce
+  pro `<cmd>`, `shell <cmd>` i `-c <cmd>`; parsuje `{stdout,stderr,exit_code}`.
+- **`ashell adb shell`** (bez args) otevře `TerminalActivity` → `startAdbShellSession()` →
+  `libshelldaemon.so --attach` → PTY shell pod uid 2000.
+
+**UI nikdy neběží pod uid 2000** — WindowManager přiděluje okno jen procesu s app identitou.
+Rozdělení: *emulace + render* v app procesu (Termux `terminal-emulator`/`terminal-view`, uid 10323),
+*spouštění příkazů + PTY* v daemonu (uid 2000). Attach klient (`--attach`) běží jako dítě appky
+(uid 10323) a jen tuneluje bajty; shell za ním je uid 2000. Perzistence screen state by vyžadovala
+emulátor v daemonu (tmux model) — dnes `handle_attach` po zavření socketu shell **zabíjí**.
+
+**Co nevrátit zpět (pitfalls):**
+
+- `ashell adb shell <cmd>` **nesmí** otevírat okno — s argumenty musí jít přes `daemon_exec`.
+  Vnější `case "$SUBCMD"` matchne `shell)` dřív než passthrough `*)`.
+- `LocalApiServer.handleAshell` **nesmí** posílat `ashellMode=true` pro `adb-shell` — patří jen
+  `ashell-host`. Jinak `TerminalActivity` spustí `startAshellSession()` (uid 10323) místo
+  `startAdbShellSession()` (uid 2000). Platí i pro `cmd activity start-activity` v ashellu
+  (tam `--ez ashellMode true` u `ashell-adb` nepatří).
+- V `TerminalActivity` (`onNewIntent` i `setupAndStartSession`) musí být `rootfsDirName == "ashell-adb"`
+  vyhodnoceno **před** `ashellMode` (přidána i explicitní podmínka `!= "ashell-adb"`).
+- **Přežití vypnutí wireless debugging:** proces spuštěný přes `adb shell` žije v adbd session
+  cgroup (`/sys/fs/cgroup/uid_0/pid_<adbd>`); vypnutí wireless debugging ukončí adbd → cgroup se
+  zabije → daemon umře. Trvalé přežití = spustit/přesunout daemona do root cgroup (`su 2000 -c …`
+  nebo zápis do `/sys/fs/cgroup/cgroup.procs` jako root) + `oom_score_adj=-1000`. Bez roota nelze.
+- Diagnostika: `ashell -c 'curl -s 127.0.0.1:1337/shelldaemon/info'` (nezávislé na adb),
+  PID file `/data/local/tmp/shelldaemon.pid`.
+
 ## 10. Diagnostika a CLI
 
 - `nethunter-log [-n N] [-g VZOR]` — barevný logcat (V šedá, D modrá, I zelená, W žlutá, E/F červená;
