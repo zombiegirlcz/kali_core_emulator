@@ -499,6 +499,18 @@ static void handle_attach(int client_fd, const char *cmd) {
 }
 
 
+/* Reaper pro worker child processes. Bez tohoto by každý fork-per-connection
+ * worker po skončení zůstal jako zombie (parent ho nikdy nečeká) — přesně
+ * tenhle problém měl su_daemon.c, opraveno identicky (viz su_daemon.c
+ * sigchld_reaper). Worker si hned po forku přepne SIGCHLD na SIG_DFL, aby
+ * mohl sám waitpid() svého command/PTY childa a získat exit kód. */
+static void sigchld_reaper(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    while (waitpid(-1, NULL, WNOHANG) > 0) { }
+    errno = saved_errno;
+}
+
 /* ── Streamovany install (jako adb install / INSTALL_STREAM) ──────────────
  *
  * adb otevre sluzbu `exec:cmd package install -S <size>` a posle APK po
@@ -925,6 +937,18 @@ int main(int argc, char **argv) {
     fflush(stderr);
 
     signal(SIGPIPE, SIG_IGN);
+
+    /* Reaper pro worker child processes — zabraňuje hromadění zombie.
+     * SA_NOCLDSTOP: nereaguj na stop/continue (jen na exit).
+     * SA_RESTART: nezruš accept() při doručení signálu. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = sigchld_reaper;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+        sigaction(SIGCHLD, &sa, NULL);
+    }
 
     while (1) {
         int client_fd = accept(listen_fd, NULL, NULL);
