@@ -61,6 +61,59 @@ class ShellDaemonProtocolTest {
     }
 
     @Test
+    fun `mode stop je stejny v C i Kotlinu`() {
+        // SH_MODE_STOP umoznuje `ashell adb stop` ukoncit daemona bez adb
+        // (bez wireless debugingu stary `adb shell pkill` tise selhal).
+        assertEquals(
+            "SH_MODE_STOP se rozesel mezi shell_daemon.c a ShellDaemonClient.kt",
+            cDefine(cSource(), "SH_MODE_STOP"),
+            ktConst(ktSource(), "SH_MODE_STOP")
+        )
+    }
+
+    @Test
+    fun `stop rezim posila mode byte za magic`() {
+        val kt = ktSource()
+        val magicIdx = kt.indexOf("out.writeInt(SH_MAGIC)", kt.indexOf("fun stopDaemon"))
+        val modeIdx = kt.indexOf("out.writeByte(SH_MODE_STOP)", kt.indexOf("fun stopDaemon"))
+        assertTrue("stopDaemon: writeInt(SH_MAGIC) chybi", magicIdx >= 0)
+        assertTrue("stopDaemon: writeByte(SH_MODE_STOP) chybi", modeIdx >= 0)
+        assertTrue("stopDaemon: mode byte musi nasledovat az za magic", modeIdx > magicIdx)
+    }
+
+    @Test
+    fun `C daemon ma SIGCHLD reaper proti zombie`() {
+        // Fork-per-connection bez reaperu hromadi zombie workery (Z libshelldaemon.).
+        val c = cSource()
+        assertTrue("sigchld_reaper chybi", c.contains("sigchld_reaper"))
+        assertTrue("SIGCHLD handler se neinstaluje", c.contains("sigaction(SIGCHLD"))
+        assertTrue("reaper musi volat waitpid", c.contains("waitpid(-1, NULL, WNOHANG)"))
+    }
+
+    @Test
+    fun `C daemon uklidi PID file pri SIGTERM`() {
+        val c = cSource()
+        assertTrue("sigterm_cleanup chybi", c.contains("sigterm_cleanup"))
+        assertTrue("SIGTERM handler se neinstaluje", c.contains("sigaction(SIGTERM"))
+    }
+
+    @Test
+    fun `ashell stop a status nevyzaduji adb`() {
+        // Regrese: `ashell adb stop` drive volal `adb shell kill` — bez
+        // pripojeneho adb tise selhal a daemon bezel dal. Stop i zjisteni
+        // stavu musi primarne jit pres LocalApiServer.
+        val sh = File("src/main/assets/ashell").readText()
+        assertTrue(
+            "ashell stop musi volat API /shelldaemon/stop",
+            sh.contains("POST \"/shelldaemon/stop\"")
+        )
+        assertTrue(
+            "daemon_alive musi primarne pouzit API /shelldaemon/status",
+            sh.contains("daemon_api_json") && sh.contains("/shelldaemon/status")
+        )
+    }
+
+    @Test
     fun `exec rezim posila mode byte za magic`() {
         val kt = ktSource()
         val magicIdx = kt.indexOf("out.writeInt(SH_MAGIC)")

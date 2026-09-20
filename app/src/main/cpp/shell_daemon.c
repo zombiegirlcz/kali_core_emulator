@@ -79,9 +79,12 @@
 #define SH_MODE_EXEC   0u      /* jednorazovy prikaz (stdout/stderr/exit) */
 #define SH_MODE_ATTACH 1u      /* interaktivni PTY shell pod uid 2000 */
 #define SH_MODE_INSTALL 2u     /* streamovany install: cmd package install -S */
+#define SH_MODE_STOP   3u      /* zastav daemona (bez adb; pouziva ashell adb stop) */
 
 static char g_token[MAX_TOKEN] = {0};
 static int g_port = DEFAULT_PORT;
+/* Cesta k PID file — potrebuje ji SIGTERM handler pro uklid. */
+static char g_pid_path[512] = "/data/local/tmp/shelldaemon.pid";
 
 /* ── PTY helpers (pro attach rezim) ─────────────────────────────────────── */
 
@@ -511,6 +514,13 @@ static void sigchld_reaper(int sig) {
     errno = saved_errno;
 }
 
+/* Uklid PID file pri ukonceni daemona (SIGTERM z SH_MODE_STOP nebo rucni kill). */
+static void sigterm_cleanup(int sig) {
+    (void)sig;
+    unlink(g_pid_path);
+    _exit(0);
+}
+
 /* ── Streamovany install (jako adb install / INSTALL_STREAM) ──────────────
  *
  * adb otevre sluzbu `exec:cmd package install -S <size>` a posle APK po
@@ -676,6 +686,22 @@ static void handle_client(int client_fd) {
 
     if (mode == SH_MODE_INSTALL) {
         handle_install(client_fd);
+        return;
+    }
+
+    if (mode == SH_MODE_STOP) {
+        /* Klient (ashell adb stop) chce daemona ukoncit — bez adb.
+         * Worker nemuze jen _exit (to by zabilo jen sebe), musi ukoncit
+         * parenta (skutecneho daemona). Posle mu SIGTERM; parentuv handler
+         * uklidi PID file a skonci. Odpovime jeste predtim, aby klient
+         * dostal potvrzeni. */
+        fprintf(stderr, "[shell_daemon] STOP pozadavek — ukoncuji daemona\n");
+        int32_t rc = 0;
+        write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "stopping", 8);
+        write_blob(client_fd, "", 0);
+        pid_t parent = getppid();
+        if (parent > 1) kill(parent, SIGTERM);
         return;
     }
 
@@ -923,11 +949,13 @@ int main(int argc, char **argv) {
     {
         const char *pid_path = getenv("SHELLDAEMON_PID_FILE");
         if (pid_path == NULL || pid_path[0] == '\0') pid_path = "/data/local/tmp/shelldaemon.pid";
-        FILE *pf = fopen(pid_path, "w");
+        strncpy(g_pid_path, pid_path, sizeof(g_pid_path) - 1);
+        g_pid_path[sizeof(g_pid_path) - 1] = '\0';
+        FILE *pf = fopen(g_pid_path, "w");
         if (pf) {
             fprintf(pf, "%d\n", (int)getpid());
             fclose(pf);
-            chmod(pid_path, 0644);
+            chmod(g_pid_path, 0644);
         }
     }
 
@@ -937,6 +965,19 @@ int main(int argc, char **argv) {
     fflush(stderr);
 
     signal(SIGPIPE, SIG_IGN);
+
+    /* SIGTERM/SIGINT → uklid PID file a skonci. Potrebuje to SH_MODE_STOP
+     * (worker posle parentovi SIGTERM) i rucni `kill` z ashellu. Bez toho
+     * by po sobe daemon nechal osirely PID file a status by lhal. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = sigterm_cleanup;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
+    }
 
     /* Reaper pro worker child processes — zabraňuje hromadění zombie.
      * SA_NOCLDSTOP: nereaguj na stop/continue (jen na exit).

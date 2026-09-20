@@ -159,13 +159,43 @@ if [ "$1" = "adb" ]; then
     # `pidof libshelldaemon.so` nefunguje — Android comm je orezany na 15 znaku.
     # Definujeme PRED case, aby je videly vsechny vetve (start/stop/passthrough).
     PIDFILE=/data/local/tmp/shelldaemon.pid
+
+    # Stav daemona primarne pres LocalApiServer (BEZ adb / wireless debug).
+    # Appka umi TCP probe na 127.0.0.1:13341 — to je jediny spolehlivy zdroj
+    # pravdy. `adb shell cat /proc/...` funguje jen s pripojenym adb, takze
+    # byvaly fallback hlasil "nebezi", i kdyz daemon zil.
+    daemon_api_json() {
+        api_call GET "/shelldaemon/status" 2>/dev/null
+    }
     daemon_pid() {
+        _j=$(daemon_api_json)
+        if [ -n "$_j" ]; then
+            _p=$(printf '%s' "$_j" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+    print(d.get("pid","") if d.get("running") else "")
+except Exception:
+    print("")' 2>/dev/null)
+            if [ -n "$_p" ]; then printf '%s' "$_p"; return 0; fi
+        fi
+        # fallback: PID file pres adb (jen kdyz je adb pripojeny)
+        command -v adb >/dev/null 2>&1 || return 1
         adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n '
     }
     daemon_alive() {
-        _p=$(daemon_pid)
+        _j=$(daemon_api_json)
+        if [ -n "$_j" ]; then
+            _r=$(printf '%s' "$_j" | python3 -c 'import sys,json
+try:
+    print("1" if json.load(sys.stdin).get("running") else "")
+except Exception:
+    print("")' 2>/dev/null)
+            [ "$_r" = "1" ] && return 0
+        fi
+        # fallback bez API: PID file + /proc (jen s pripojenym adb)
+        command -v adb >/dev/null 2>&1 || return 1
+        _p=$(adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n ')
         [ -n "$_p" ] || return 1
-        # over, ze proces opravdu existuje a je to nas daemon
         adb shell "test -d /proc/$_p" 2>/dev/null && \
         adb shell "grep -q shell_daemon /proc/$_p/cmdline 2>/dev/null || grep -q libshelldaemon /proc/$_p/cmdline 2>/dev/null" 2>/dev/null
     }
@@ -265,17 +295,28 @@ sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
             exit 1
             ;;
         stop)
-            if ! command -v adb >/dev/null 2>&1; then
-                echo "[-] adb neni v guestu k dispozici." >&2
-                exit 1
+            # Primarne pres API: appka posle daemonu STOP pozadavek na jeho
+            # vlastni socket (SH_MODE_STOP) a daemon se ukonci sam. Funguje
+            # i bez adb/wireless debug — stary `adb shell pkill` tise selhal,
+            # kdyz adb nebyl pripojeny, a daemon pak bezel dal.
+            RESPONSE=$(api_call POST "/shelldaemon/stop")
+            if [ -n "$RESPONSE" ]; then
+                if daemon_alive; then
+                    echo "[!] shell_daemon stale bezi (API stop nedoběhl)." >&2
+                else
+                    echo "[+] shell_daemon stopped"
+                fi
+                exit 0
             fi
-            _p=$(daemon_pid)
-            if [ -n "$_p" ]; then
-                adb shell "kill $_p 2>/dev/null || true" >/dev/null 2>&1
-                adb shell "rm -f $PIDFILE" >/dev/null 2>&1
+            # Fallback: API neodpovida (appka nebezi) → zkus adb, je-li.
+            if command -v adb >/dev/null 2>&1; then
+                _p=$(adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n ')
+                if [ -n "$_p" ]; then
+                    adb shell "kill $_p 2>/dev/null || true" >/dev/null 2>&1
+                    adb shell "rm -f $PIDFILE" >/dev/null 2>&1
+                fi
+                adb shell "pkill -f libshelldaemon 2>/dev/null || true" >/dev/null 2>&1
             fi
-            # fallback pro pripad, ze pid file chybi
-            adb shell "pkill -f libshelldaemon 2>/dev/null || true" >/dev/null 2>&1
             echo "[+] shell_daemon stopped"
             ;;
         status)
@@ -375,13 +416,10 @@ sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
             #   ashell adb devices         -> daemon: (n/a) -> prazdny seznam
             #   ashell adb --help / help   -> vypis nasich prikazu
             #
-            # Cesta k daemonu + token se resolvuje stejne jako u start.
-            _d=$(native_dir)
-            if [ -z "$_d" ]; then
-                echo "[-] Neznám nativeLibraryDir (dumpsys selhal)." >&2
-                exit 1
-            fi
-            # Daemon musi bezet (spousti ho `ashell adb start` pres adb shell).
+            # Cestu k daemonu/token resi daemon_exec() sam pres API
+            # (/shelldaemon/info) — zadne dumpsys ani nativeLibraryDir tu
+            # neni potreba. (Driv tu byl zbytecny `native_dir` check, ktery
+            # bez pripojeneho adb shodil i `ashell adb devices`.)
             if ! daemon_alive; then
                 echo "[-] shell_daemon nebezi. Spust: ashell adb start" >&2
                 exit 1

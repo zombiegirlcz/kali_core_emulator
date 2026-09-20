@@ -56,6 +56,7 @@ object ShellDaemonClient {
     private const val SH_MODE_EXEC = 0
     private const val SH_MODE_INSTALL = 2
     private const val SH_MODE_ATTACH = 1
+    private const val SH_MODE_STOP = 3
 
     /**
      * Absolutní cesta k extrahované binárce v `nativeLibraryDir`.
@@ -170,13 +171,54 @@ object ShellDaemonClient {
     }
 
     /**
-     * Zastavení daemona z appky není možné (běží pod uid 2000). Guest použije
-     * `ashell adb stop` (adb shell pkill). Best-effort: publikuj cestu + token.
+     * Zastaví daemon pres jeho vlastni socket (SH_MODE_STOP) — bez adb.
+     * App sice uid 2000 nespawne, ale bezicimu daemonu muze poslat STOP
+     * pozadavek; daemon se pak ukonci sam (worker posle parentovi SIGTERM,
+     * parent uklidi PID file). Funguje i kdyz wireless debugging neni
+     * pripojeny (presne ten pripad, kdy stary `adb shell pkill` selhal).
+     *
+     * @return true kdyz daemon po pozadavku uz nebezi.
      */
     @JvmStatic
     fun stopDaemon(context: Context): Boolean {
-        // App uid 2000 nespawne; zastavi ho guest pres `ashell adb stop`.
-        return false
+        if (!status().running) {
+            // Neni co zastavovat, ale uklid osirely PID file po sobe.
+            try { File("/data/local/tmp/shelldaemon.pid").delete() } catch (_: Exception) {}
+            return true
+        }
+        val token = ensureToken(context)
+        val sent = try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress("127.0.0.1", PORT), 2500)
+                s.soTimeout = 5000
+                val out = DataOutputStream(s.getOutputStream())
+                out.writeInt(SH_MAGIC)
+                out.writeByte(SH_MODE_STOP)
+                writeBlob(out, token.toByteArray(Charsets.UTF_8))
+                out.flush()
+                // Precti potvrzeni (int32 + 2 bloby) — ne kriticke, jen aby
+                // worker stihl poslat SIGTERM parentovi.
+                try {
+                    val inp = DataInputStream(s.getInputStream())
+                    inp.readInt(); readBlob(inp); readBlob(inp)
+                } catch (_: Exception) { }
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "stopDaemon: STOP pozadavek selhal: ${e.message}")
+            false
+        }
+        // Dej daemonu chvili na uklid, pak over, ze uz nebezi.
+        if (sent) {
+            repeat(20) {
+                if (!status().running) return true
+                try { Thread.sleep(100) } catch (_: InterruptedException) { return !status().running }
+            }
+        }
+        // Fallback: rucni kill pres ShellDaemonClient PID file nema smysl bez
+        // adb; aspon uklid PID file, aby status nelhal.
+        try { File("/data/local/tmp/shelldaemon.pid").delete() } catch (_: Exception) {}
+        return !status().running
     }
 
     /**
