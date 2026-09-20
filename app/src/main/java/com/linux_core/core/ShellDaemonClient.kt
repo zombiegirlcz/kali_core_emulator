@@ -113,18 +113,24 @@ object ShellDaemonClient {
         return bin
     }
 
-    /** Zkus TCP connect na daemon (žádný token zatím, jen existence). */
+    /** Zkus TCP connect na daemon + ověření PID file. */
     @JvmStatic
     fun status(): ShellDaemonStatus =
         try {
             Socket().use { s ->
                 s.connect(InetSocketAddress("127.0.0.1", PORT), 800)
             }
-            ShellDaemonStatus(running = true, port = PORT, pid = readDaemonPid())
+            // TCP connect uspěl, ale ověříme i PID file.
+            // Pokud PID file chybí, jde pravděpodobně o zombie listener
+            // nebo starý socket — daemon reálně neběží.
+            val pid = readDaemonPid()
+            if (pid == null) {
+                ShellDaemonStatus(running = false, port = PORT, pid = null)
+            } else {
+                ShellDaemonStatus(running = true, port = PORT, pid = pid)
+            }
         } catch (_: Exception) {
-            // Rozlisime pripad, kdy daemon opravdu nebezi, od pripadu, kdy
-            // se app jen nemuze pripojit (napr. spatny namespace). UI pak
-            // muze zobrazit "stopped" vs "unknown" misto vzdy stejneho "nebezi".
+            // Connect selhal → daemon určitě neběží.
             ShellDaemonStatus(running = false, port = PORT, pid = null)
         }
 
