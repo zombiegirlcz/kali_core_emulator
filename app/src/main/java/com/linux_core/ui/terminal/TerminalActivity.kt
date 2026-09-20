@@ -2765,13 +2765,22 @@ class TerminalActivity : ComponentActivity() {
      * a běží dál. Indikátor se aktualizuje pollerem.
      */
     private fun startDaemonInGuest() {
-        Log.i(TAG, "startDaemonInGuest: one-shot 'ashell adb start' na pozadi")
+        Log.i(TAG, "startDaemonInGuest: boot -- ashell adb start (bez su)")
         Thread {
             try {
-                val res = com.linux_core.core.ExecCore.guestExec(
-                    applicationContext, "kali", "ashell adb start", 30_000L
-                )
-                Log.i(TAG, "startDaemonInGuest result: $res")
+                val boot = java.io.File(applicationContext.filesDir, "usr/bin/boot")
+                if (!boot.exists()) {
+                    Log.e(TAG, "boot script not found at ${boot.absolutePath}")
+                    return@Thread
+                }
+                val pb = ProcessBuilder("sh", boot.absolutePath, "--", "ashell", "adb", "start")
+                pb.directory(applicationContext.filesDir)
+                pb.redirectErrorStream(true)
+                val proc = pb.start()
+                val out = proc.inputStream.bufferedReader().readText()
+                val completed = proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                if (!completed) proc.destroyForcibly()
+                Log.i(TAG, "startDaemonInGuest: $out")
             } catch (e: Exception) {
                 Log.e(TAG, "startDaemonInGuest failed: ${e.message}")
             }
@@ -2787,13 +2796,22 @@ class TerminalActivity : ComponentActivity() {
      * (pkill daemona pod uid 2000). Zadna nova session.
      */
     private fun stopDaemonInGuest() {
-        Log.i(TAG, "stopDaemonInGuest: one-shot 'ashell adb stop' na pozadi")
+        Log.i(TAG, "stopDaemonInGuest: boot -- ashell adb stop (bez su)")
         Thread {
             try {
-                val res = com.linux_core.core.ExecCore.guestExec(
-                    applicationContext, "kali", "ashell adb stop", 20_000L
-                )
-                Log.i(TAG, "stopDaemonInGuest result: $res")
+                val boot = java.io.File(applicationContext.filesDir, "usr/bin/boot")
+                if (!boot.exists()) {
+                    Log.e(TAG, "boot script not found at ${boot.absolutePath}")
+                    return@Thread
+                }
+                val pb = ProcessBuilder("sh", boot.absolutePath, "--", "ashell", "adb", "stop")
+                pb.directory(applicationContext.filesDir)
+                pb.redirectErrorStream(true)
+                val proc = pb.start()
+                val out = proc.inputStream.bufferedReader().readText()
+                val completed = proc.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)
+                if (!completed) proc.destroyForcibly()
+                Log.i(TAG, "stopDaemonInGuest: $out")
             } catch (e: Exception) {
                 Log.e(TAG, "stopDaemonInGuest failed: ${e.message}")
             }
