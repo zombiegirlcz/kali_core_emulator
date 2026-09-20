@@ -1,0 +1,75 @@
+name: Build libshelldaemon.so
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if binary exists'
+        required: false
+        default: 'false'
+
+jobs:
+  build-native:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Install NDK r28
+      run: |
+        echo "Downloading Android NDK r28..."
+        wget -q https://dl.google.com/android/repository/android-ndk-r28-linux.zip -O /tmp/ndk.zip
+        unzip -q /tmp/ndk.zip -d /opt/
+        rm /tmp/ndk.zip
+        echo "NDK installed at /opt/android-ndk-r28"
+    
+    - name: Check existing binary
+      id: check
+      run: |
+        BIN="app/src/main/jniLibs/arm64-v8a/libshelldaemon.so"
+        if [ -f "$BIN" ] && [ "$(stat -c%s "$BIN")" -gt 1000 ] && [ "${{ github.event.inputs.force_rebuild }}" != "true" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Binary already exists ($(stat -c%s "$BIN") B), skipping build"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Build libshelldaemon.so
+      if: steps.check.outputs.exists == 'false'
+      run: |
+        mkdir -p app/src/main/jniLibs/arm64-v8a
+        
+        NDK_CLANG="/opt/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang"
+        NDK_SYSROOT="/opt/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+        
+        echo "Building shell_daemon.c..."
+        $NDK_CLANG \
+          --target=aarch64-linux-android28 \
+          --sysroot=$NDK_SYSROOT \
+          -o app/src/main/jniLibs/arm64-v8a/libshelldaemon.so \
+          app/src/main/cpp/shell_daemon.c \
+          -static-libgcc
+        
+        echo "Verifying binary..."
+        file app/src/main/jniLibs/arm64-v8a/libshelldaemon.so
+        ls -lh app/src/main/jniLibs/arm64-v8a/libshelldaemon.so
+        
+        SIZE=$(stat -c%s app/src/main/jniLibs/arm64-v8a/libshelldaemon.so)
+        if [ "$SIZE" -lt 1000 ]; then
+          echo "ERROR: Binary too small ($SIZE B), build failed"
+          exit 1
+        fi
+        echo "Build successful: $SIZE bytes"
+    
+    - name: Commit and push binary
+      if: steps.check.outputs.exists == 'false'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git add -f app/src/main/jniLibs/arm64-v8a/libshelldaemon.so
+        git commit -m "add: libshelldaemon.so (shell daemon binary from CI)" || exit 0
+        git push origin HEAD:${{ github.ref }}
