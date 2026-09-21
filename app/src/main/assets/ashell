@@ -295,27 +295,32 @@ sys.exit(rc if 0 <= rc <= 255 else (1 if rc != 0 else 0))
             exit 1
             ;;
         stop)
-            # Primarne pres API: appka posle daemonu STOP pozadavek na jeho
-            # vlastni socket (SH_MODE_STOP) a daemon se ukonci sam. Funguje
-            # i bez adb/wireless debug — stary `adb shell pkill` tise selhal,
-            # kdyz adb nebyl pripojeny, a daemon pak bezel dal.
+            # 1) Primarne pres API: appka posle daemonu STOP pozadavek na jeho
+            # vlastni socket (SH_MODE_STOP) a daemon se ukonci sam (SIGTERM
+            # parentovi + uklid PID file). Funguje i bez adb/wireless debug.
             RESPONSE=$(api_call POST "/shelldaemon/stop")
-            if [ -n "$RESPONSE" ]; then
-                if daemon_alive; then
-                    echo "[!] shell_daemon stale bezi (API stop nedoběhl)." >&2
-                else
-                    echo "[+] shell_daemon stopped"
-                fi
+            if [ -n "$RESPONSE" ] && ! daemon_alive; then
+                echo "[+] shell_daemon stopped"
                 exit 0
             fi
-            # Fallback: API neodpovida (appka nebezi) → zkus adb, je-li.
-            if command -v adb >/dev/null 2>&1; then
+            # 2) Fallback (stary demon bez SH_MODE_STOP, appka nebezi, nebo API
+            #    stop nedobehl): zabij daemona pres `adb shell`. adb shell bezi
+            #    pod uid 2000 (shell) -> dosahne na uid 2000 proces (NON-ROOT).
+            #    PID z PID file; kdyz chybi, pkill -f podle cmdline.
+            if command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
                 _p=$(adb shell "cat $PIDFILE 2>/dev/null" 2>/dev/null | tr -d '\r\n ')
                 if [ -n "$_p" ]; then
-                    adb shell "kill $_p 2>/dev/null || true" >/dev/null 2>&1
-                    adb shell "rm -f $PIDFILE" >/dev/null 2>&1
+                    adb shell "kill $_p 2>/dev/null; sleep 1; kill -9 $_p 2>/dev/null || true" >/dev/null 2>&1
                 fi
+                # pkill -f: comm je orezany na 15 znaku (libshelldaemon.), takze
+                # pkill -x by nematchoval; -f matchuje cely cmdline.
                 adb shell "pkill -f libshelldaemon 2>/dev/null || true" >/dev/null 2>&1
+                adb shell "rm -f $PIDFILE 2>/dev/null || true" >/dev/null 2>&1
+                sleep 1
+            fi
+            if daemon_alive; then
+                echo "[!] shell_daemon stale bezi (stop se nezdaril)." >&2
+                exit 1
             fi
             echo "[+] shell_daemon stopped"
             ;;

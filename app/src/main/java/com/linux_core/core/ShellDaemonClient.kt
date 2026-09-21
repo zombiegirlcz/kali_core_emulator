@@ -215,8 +215,28 @@ object ShellDaemonClient {
                 try { Thread.sleep(100) } catch (_: InterruptedException) { return !status().running }
             }
         }
-        // Fallback: rucni kill pres ShellDaemonClient PID file nema smysl bez
-        // adb; aspon uklid PID file, aby status nelhal.
+        // Fallback pro stary daemon bez SH_MODE_STOP (mode=3 propadne do
+        // handle_exec a socket se resetuje) i pri token mismatch: posli
+        // daemonu pres SH_MODE_EXEC prikaz `kill <pid>`. Worker, ktery spojeni
+        // obsluhuje, i jeho command child bezi pod STEJNYM uid jako daemon
+        // (uid 2000), takze smi poslat SIGTERM/SIGKILL svemu parentovi.
+        // Zadny adb ani root — plne non-root, funguje i bez wireless debug.
+        val pid = readDaemonPid()
+        if (pid != null) {
+            try {
+                exec(context, "kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null; true")
+            } catch (e: Exception) {
+                Log.w(TAG, "stopDaemon: EXEC kill fallback selhal: ${e.message}")
+            }
+            repeat(20) {
+                if (!status().running) {
+                    try { File("/data/local/tmp/shelldaemon.pid").delete() } catch (_: Exception) {}
+                    return true
+                }
+                try { Thread.sleep(100) } catch (_: InterruptedException) { }
+            }
+        }
+        // Posledni moznost: aspon uklid osirely PID file, aby status nelhal.
         try { File("/data/local/tmp/shelldaemon.pid").delete() } catch (_: Exception) {}
         return !status().running
     }
