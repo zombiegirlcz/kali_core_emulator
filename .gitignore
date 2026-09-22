@@ -52,8 +52,7 @@ docs/plan-1.md
 GEMINI.md
 docs/prompt.md
 # Local backup archive
-ignore-archi
-v.tar
+ignore-archiv.tar
 !tools/**/**
 # Python cache (az za negaci tools, aby ho neprebila)
 __pycache__/
@@ -105,8 +104,6 @@ window_dump.xml
 *.txt
 !app/src/main/linux-x11/**
 *.png
-*.log
-*.zip
 # Exemptions
 !app/src/main/res/xml/*.xml
 !windows_app/
@@ -163,10 +160,12 @@ models/
 format_raw_commands.py
 refactor_motd_table.py
 .worktrees/
-.reď/
 
 # Stray launcher stage (canonical copy lives in /tmp/launcher_stage)
 _launcher_stage/
 
 # pi subagent artifacts (not tracked)
 .pi-subagents/
+
+# AI session dumps (accidentally committed transcripts)
+pi-session-*.html
