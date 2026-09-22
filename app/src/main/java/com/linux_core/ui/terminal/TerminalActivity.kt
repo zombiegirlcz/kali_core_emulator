@@ -2793,9 +2793,10 @@ class TerminalActivity : ComponentActivity() {
         // Spustit libshelldaemon.so --attach jako command pro TerminalSession.
         // Binarka je extrahovana z jniLibs do nativeLibraryDir (deploy cestou
         // (libshelldaemon.so z jniLibs), NIKOLI v filesDir.
-        val daemonBin =
-            com.linux_core.core.ShellDaemonClient
-                .binaryPath(applicationContext)
+        // ShellDaemonDeployTest hleda presne tento retezec "ShellDaemonClient.binaryPath"
+        // v source kodu (guard proti navratu na filesDir/shell_daemon) — nerozdelovat na 2 radky.
+        @Suppress("ktlint:standard:chain-method-continuation")
+        val daemonBin = com.linux_core.core.ShellDaemonClient.binaryPath(applicationContext)
         if (!daemonBin.exists()) {
             showError("libshelldaemon.so nenalezena v nativeLibraryDir")
             return
