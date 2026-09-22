@@ -3,6 +3,7 @@ package com.linux_core.core
 import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
+import com.linux_core.core.terminal.TerminalService
 import com.termux.terminal.TerminalSession
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap

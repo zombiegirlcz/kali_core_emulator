@@ -31,12 +31,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
-import com.linux_core.core.TerminalService
 import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
 import com.linux_core.core.rootfs.ProotConfig
 import com.linux_core.core.rootfs.ProotManager
 import com.linux_core.core.rootfs.RootfsManager
 import com.linux_core.core.rootfs.loadBootMode
+import com.linux_core.core.terminal.HistoryManager
+import com.linux_core.core.terminal.TerminalService
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.CoroutineScope
@@ -79,7 +80,7 @@ class TerminalActivity : ComponentActivity() {
     private val viewClient = TerminalViewClientImpl()
 
     // History and suggestions
-    internal lateinit var historyManager: com.linux_core.core.HistoryManager
+    internal lateinit var historyManager: HistoryManager
     internal val currentCommand = StringBuilder()
     internal lateinit var suggestionBar: HorizontalScrollView
     internal lateinit var suggestionContainer: LinearLayout
@@ -129,7 +130,7 @@ class TerminalActivity : ComponentActivity() {
                 thread {
                     try {
                         val adbSt =
-                            com.linux_core.core.ShellDaemonClient
+                            com.linux_core.core.terminal.ShellDaemonClient
                                 .status()
                         runOnUiThread { updateServiceIndicator("adb", btnAdb, adbSt.running) }
 
@@ -212,7 +213,7 @@ class TerminalActivity : ComponentActivity() {
         terminalFontSizeFloat = prefs.getFloat("font_size", 32f)
 
         viewClient.setActivity(this)
-        historyManager = com.linux_core.core.HistoryManager(this)
+        historyManager = HistoryManager(this)
 
         // Root DrawerLayout container
         drawerLayout =
@@ -1317,14 +1318,14 @@ class TerminalActivity : ComponentActivity() {
         // ShellDaemonDeployTest hleda presne tento retezec "ShellDaemonClient.binaryPath"
         // v source kodu (guard proti navratu na filesDir/shell_daemon) — nerozdelovat na 2 radky.
         @Suppress("ktlint:standard:chain-method-continuation")
-        val daemonBin = com.linux_core.core.ShellDaemonClient.binaryPath(applicationContext)
+        val daemonBin = com.linux_core.core.terminal.ShellDaemonClient.binaryPath(applicationContext)
         if (!daemonBin.exists()) {
             showError("libshelldaemon.so nenalezena v nativeLibraryDir")
             return
         }
 
         val token =
-            com.linux_core.core.ShellDaemonClient
+            com.linux_core.core.terminal.ShellDaemonClient
                 .ensureToken(applicationContext)
         val cmd =
             arrayOf(

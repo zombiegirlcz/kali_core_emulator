@@ -14,7 +14,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import com.linux_core.core.KeyType
+import com.linux_core.core.terminal.KeyType
 
 /**
  * Klávesnicová lišta nad terminálem (ESC/TAB/CTRL/ALT/SHIFT stránkovaný

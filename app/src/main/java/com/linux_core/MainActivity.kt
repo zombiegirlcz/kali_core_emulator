@@ -207,9 +207,9 @@ class MainActivity : ComponentActivity() {
         // BOOT_COMPLETED / START_STICKY race can't spawn a duplicate.
         val prefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         if (prefs.getBoolean("boot_autostart", true) &&
-            com.linux_core.core.TerminalService.backgroundBootSessionId == null
+            com.linux_core.core.terminal.TerminalService.backgroundBootSessionId == null
         ) {
-            com.linux_core.core.BackgroundBoot.start(applicationContext)
+            com.linux_core.core.terminal.BackgroundBoot.start(applicationContext)
         }
 
         setContent {
@@ -434,7 +434,7 @@ fun MainScreen() {
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     hasStoragePermission = hasAllFilesAccess(context)
-                    activeSessionCount = com.linux_core.core.TerminalService.sessions.size
+                    activeSessionCount = com.linux_core.core.terminal.TerminalService.sessions.size
                     // Skenovat existující Docker image adresáře (nový layout nh/distro/docker + legacy)
                     val filesDir = context.filesDir
                     val newDockerDir = File(filesDir, "nh/distro/docker")

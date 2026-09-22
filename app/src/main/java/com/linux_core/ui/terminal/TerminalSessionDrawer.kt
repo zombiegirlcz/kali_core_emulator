@@ -12,11 +12,11 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
-import com.linux_core.core.HackerKeyboardRows
-import com.linux_core.core.TerminalService
 import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
 import com.linux_core.core.rootfs.ProotManager
 import com.linux_core.core.rootfs.loadBootMode
+import com.linux_core.core.terminal.HackerKeyboardRows
+import com.linux_core.core.terminal.TerminalService
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

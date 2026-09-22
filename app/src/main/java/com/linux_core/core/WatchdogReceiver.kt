@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.linux_core.core.terminal.BackgroundBoot
+import com.linux_core.core.terminal.TerminalService
 
 /**
  * Watchdog — periodicke buzeni pres AlarmManager (exact + allow-while-idle).

@@ -164,7 +164,7 @@ internal fun TerminalActivity.updateServiceIndicator(
     val running =
         when (service) {
             "adb" -> {
-                com.linux_core.core.ShellDaemonClient
+                com.linux_core.core.terminal.ShellDaemonClient
                     .status()
                     .running
             }
@@ -222,7 +222,7 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
     when (service) {
         "adb" -> {
             val st =
-                com.linux_core.core.ShellDaemonClient
+                com.linux_core.core.terminal.ShellDaemonClient
                     .status()
             val icon = if (st.running) "●" else "○"
             val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
@@ -366,7 +366,7 @@ internal fun TerminalActivity.stopDaemonInGuest() {
 internal fun TerminalActivity.startDaemonAsync(callback: ((Boolean) -> Unit)? = null) {
     Thread {
         val ok =
-            com.linux_core.core.ShellDaemonClient
+            com.linux_core.core.terminal.ShellDaemonClient
                 .startDaemon(applicationContext)
         runOnUiThread {
             callback?.invoke(ok)
@@ -385,7 +385,7 @@ internal fun TerminalActivity.startDaemonAsync(callback: ((Boolean) -> Unit)? = 
 
 internal fun TerminalActivity.startAllServices() {
     Thread {
-        com.linux_core.core.ShellDaemonClient
+        com.linux_core.core.terminal.ShellDaemonClient
             .startDaemon(applicationContext)
         runOnUiThread { updateAllServiceIndicators() }
     }.start()

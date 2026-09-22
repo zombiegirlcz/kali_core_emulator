@@ -6,6 +6,7 @@ import android.util.Log
 import com.linux_core.core.ai.AIBrainWorker
 import com.linux_core.core.mitm.TlsMitmEngine
 import com.linux_core.core.mitm.TlsMitmSession
+import com.linux_core.core.terminal.TerminalService
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress

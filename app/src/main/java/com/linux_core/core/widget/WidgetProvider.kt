@@ -11,8 +11,8 @@ import android.widget.RemoteViews
 import android.os.Binder
 import android.os.Process
 import com.linux_core.R
-import com.linux_core.core.TerminalService
 import com.linux_core.core.VpnCaptureService
+import com.linux_core.core.terminal.TerminalService
 import com.linux_core.ui.terminal.TerminalActivity
 import java.io.File
 
