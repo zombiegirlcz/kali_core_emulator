@@ -365,7 +365,7 @@ internal fun TerminalActivity.createCircularDrawable(
 
 internal fun TerminalActivity.updateTopbarTitle() {
     runOnUiThread {
-        if (!::statusTitle.isInitialized) return@runOnUiThread
+        if (!isStatusTitleInitialized) return@runOnUiThread
         val session = currentSession
         if (session != null) {
             val distro = TerminalService.getSessionDistro(session)

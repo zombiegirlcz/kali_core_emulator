@@ -109,6 +109,11 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var topBar: LinearLayout
     internal lateinit var statusTitle: TextView
 
+    // ::statusTitle.isInitialized funguje jen lexikálně uvnitř této třídy —
+    // extension funkce v jiném souboru (TerminalSessionDrawer.kt) se musí ptát přes tohle.
+    internal val isStatusTitleInitialized: Boolean
+        get() = ::statusTitle.isInitialized
+
     // ── Services Panel State ──
     private var isServicesExpanded = false
     private var expandedService: String? = null // "adb" or null
