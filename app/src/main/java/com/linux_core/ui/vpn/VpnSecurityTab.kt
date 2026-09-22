@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.linux_core.core.*
+import com.linux_core.core.mitm.TlsMitmEngine
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*

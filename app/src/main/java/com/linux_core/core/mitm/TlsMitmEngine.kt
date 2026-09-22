@@ -1,8 +1,11 @@
-package com.linux_core.core
+package com.linux_core.core.mitm
 
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
+import com.linux_core.core.VpnCaptureService
+import com.linux_core.core.VpnLogManager
+import com.linux_core.core.VpnNatEngine
 import com.linux_core.security.RootCaInstaller
 import com.linux_core.security.TlsClientHelloParser
 import com.linux_core.security.VpnSettings

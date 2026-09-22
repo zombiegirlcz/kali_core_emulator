@@ -1,6 +1,8 @@
 package com.linux_core.core
 
 import android.content.ClipboardManager
+import com.linux_core.core.mitm.MitmTrafficStore
+import com.linux_core.core.mitm.TlsMitmEngine
 import com.linux_core.core.usb.UsbHostManager
 import android.content.Context
 import android.content.Intent
@@ -2507,7 +2509,7 @@ object LocalApiServer {
         try {
             val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val enabled = prefs.getBoolean("enable_mitm", com.linux_core.BuildConfig.ENABLE_MITM)
-            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
             val json = JSONObject().apply {
                 put("mitm", if (enabled) "on" else "off")
                 put("active_sessions", sessions.size)
@@ -2549,7 +2551,7 @@ object LocalApiServer {
             }
 
             if (fmt == "legacy") {
-                val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+                val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
                 val sb = StringBuilder()
                 for ((port, snippet) in sessions) {
                     sb.append("=== Port $port ===\n")
