@@ -1,6 +1,7 @@
 package com.linux_core.core
 
 import android.content.ClipboardManager
+import com.linux_core.core.usb.UsbHostManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
