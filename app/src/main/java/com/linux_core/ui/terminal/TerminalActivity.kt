@@ -1,5 +1,6 @@
 package com.linux_core.ui.terminal
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
@@ -7,7 +8,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import kotlin.concurrent.thread
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -16,61 +16,63 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.ProgressBar
 import android.widget.Toast
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.webkit.WebSettings
-import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.drawerlayout.widget.DrawerLayout
+import androidx.lifecycle.lifecycleScope
+import com.linux_core.core.DEFAULT_BOOT_MODE
+import com.linux_core.core.HackerKeyboardRows
+import com.linux_core.core.KeyType
+import com.linux_core.core.ProotConfig
+import com.linux_core.core.ProotManager
+import com.linux_core.core.RootfsManager
+import com.linux_core.core.TerminalService
+import com.linux_core.core.loadBootMode
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
-import com.linux_core.core.ProotConfig
-import com.linux_core.core.ProotManager
-import com.linux_core.core.loadBootMode
-import com.linux_core.core.DEFAULT_BOOT_MODE
-import com.linux_core.core.TerminalService
-import com.linux_core.core.KeyType
-import com.linux_core.core.HackerKeyboardRows
-import com.linux_core.core.RootfsManager
-import java.io.File
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.cancel
-import androidx.lifecycle.lifecycleScope
-
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class TerminalActivity : ComponentActivity() {
     companion object {
         private const val TAG = "TerminalActivity"
+
         @Volatile
         var instance: TerminalActivity? = null
     }
 
-
-    private val vpnPrepareLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK) {
-            startVpnServiceDirectly()
-        } else {
-            android.widget.Toast.makeText(this, "VPN permission denied", android.widget.Toast.LENGTH_SHORT).show()
+    private val vpnPrepareLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            if (result.resultCode == RESULT_OK) {
+                startVpnServiceDirectly()
+            } else {
+                android.widget.Toast
+                    .makeText(this, "VPN permission denied", android.widget.Toast.LENGTH_SHORT)
+                    .show()
+            }
         }
-    }
 
     private lateinit var terminalView: TerminalView
     private lateinit var errorLayout: LinearLayout
@@ -84,6 +86,7 @@ class TerminalActivity : ComponentActivity() {
     private val currentCommand = StringBuilder()
     private lateinit var suggestionBar: HorizontalScrollView
     private lateinit var suggestionContainer: LinearLayout
+
     // Debounce handler pro návrhový bar. Vytváření Buttonů na main threadu
     // PŘI každém code pointu (uvnitř IME commitText → inputCodePoint) MIUI
     // vyhodnotí jako jank a zkompenzuje to re-komitováním znaku → „multi input“
@@ -115,36 +118,40 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var btnServicesToggle: Button
     private lateinit var btnAdb: Button
     private val servicesUpdateHandler = Handler(Looper.getMainLooper())
-    private val servicesPoller = object : Runnable {
-        override fun run() {
-            // ADB indikátor se musí aktualizovat VŽDY (i při sbaleném panelu) —
-            // jinak tečka zůstane svítit, i když daemon spadl. TCP probe je levná.
-            // Detail se obnoví jen když je panel otevřený.
-            thread {
-                try {
-                    val adbSt = com.linux_core.core.ShellDaemonClient.status()
-                    runOnUiThread { updateServiceIndicator("adb", btnAdb, adbSt.running) }
+    private val servicesPoller =
+        object : Runnable {
+            override fun run() {
+                // ADB indikátor se musí aktualizovat VŽDY (i při sbaleném panelu) —
+                // jinak tečka zůstane svítit, i když daemon spadl. TCP probe je levná.
+                // Detail se obnoví jen když je panel otevřený.
+                thread {
+                    try {
+                        val adbSt =
+                            com.linux_core.core.ShellDaemonClient
+                                .status()
+                        runOnUiThread { updateServiceIndicator("adb", btnAdb, adbSt.running) }
 
-                    if (isServicesExpanded) {
-                        runOnUiThread { expandedService?.let { updateServiceDetail(it) } }
+                        if (isServicesExpanded) {
+                            runOnUiThread { expandedService?.let { updateServiceDetail(it) } }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "servicesPoller error: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "servicesPoller error: ${e.message}")
                 }
+                servicesUpdateHandler.postDelayed(this, if (isServicesExpanded) 5000 else 15000)
             }
-            servicesUpdateHandler.postDelayed(this, if (isServicesExpanded) 5000 else 15000)
         }
-    }
 
     private var drawerUpdateHandler = Handler(Looper.getMainLooper())
-    private val drawerRamUpdater = object : Runnable {
-        override fun run() {
-            if (drawerLayout.isDrawerOpen(Gravity.START)) {
-                updateSessionDrawer()
-                drawerUpdateHandler.postDelayed(this, 3000)
+    private val drawerRamUpdater =
+        object : Runnable {
+            override fun run() {
+                if (drawerLayout.isDrawerOpen(Gravity.START)) {
+                    updateSessionDrawer()
+                    drawerUpdateHandler.postDelayed(this, 3000)
+                }
             }
         }
-    }
 
     // Keyboard Toolbar and Special Keypad Panel states
     var customCtrlActive = false
@@ -174,6 +181,7 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var toolbarScroll: View
     private val guiScope = CoroutineScope(Dispatchers.Main + Job())
     private var pendingNanoCommand: String? = null
+
     // PiP: uložené visibility chrome prvků před vstupem do PiP (obnovení při návratu)
     private val pipSavedVisibility = HashMap<View, Int>()
 
@@ -196,7 +204,8 @@ class TerminalActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         instance = this
         super.onCreate(savedInstanceState)
-        com.linux_core.core.ImmersiveMode.enterImmersive(this)
+        com.linux_core.core.ImmersiveMode
+            .enterImmersive(this)
         val prefs = getSharedPreferences("terminal_prefs", MODE_PRIVATE)
         terminalFontSizeFloat = prefs.getFloat("font_size", 32f)
 
@@ -204,182 +213,204 @@ class TerminalActivity : ComponentActivity() {
         historyManager = com.linux_core.core.HistoryManager(this)
 
         // Root DrawerLayout container
-        drawerLayout = androidx.drawerlayout.widget.DrawerLayout(this).apply {
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
+        drawerLayout =
+            androidx.drawerlayout.widget.DrawerLayout(this).apply {
+                layoutParams =
+                    ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            }
 
         // Main content vertical container
-        val mainLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.BLACK)
-            layoutParams = DrawerLayout.LayoutParams(
-                DrawerLayout.LayoutParams.MATCH_PARENT, DrawerLayout.LayoutParams.MATCH_PARENT)
-        }
+        val mainLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.BLACK)
+                layoutParams =
+                    DrawerLayout.LayoutParams(DrawerLayout.LayoutParams.MATCH_PARENT, DrawerLayout.LayoutParams.MATCH_PARENT)
+            }
 
         // Active top bar with menu button, spacer, and GUI switch
-        topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = createRoundedDrawable(Color.parseColor("#07080a"), 0f)
-            val padVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
-            setPadding(8, padVert, 8, padVert)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            gravity = Gravity.CENTER_VERTICAL
-            visibility = View.VISIBLE // Visible by default in both CLI and GUI
-        }
+        topBar =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                background = createRoundedDrawable(Color.parseColor("#07080a"), 0f)
+                val padVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
+                setPadding(8, padVert, 8, padVert)
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.VISIBLE // Visible by default in both CLI and GUI
+            }
 
         // Hamburger Menu button on the left of topBar to slide drawer open
-        val btnMenu = Button(this).apply {
-            text = "☰"
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#00FF41"))
-            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
-            setPadding(12, 0, 12, 0)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-            ).apply {
-                setMargins(8, 0, 8, 0)
+        val btnMenu =
+            Button(this).apply {
+                text = "☰"
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor("#00FF41"))
+                background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
+                setPadding(12, 0, 12, 0)
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
+                        ).apply {
+                            setMargins(8, 0, 8, 0)
+                        }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    isDrawerExpanded = true
+                    val maxWidthPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 280f, resources.displayMetrics).toInt()
+                    val dParams = drawerView.layoutParams as DrawerLayout.LayoutParams
+                    dParams.width = maxWidthPx
+                    drawerView.layoutParams = dParams
+                    drawerView.requestLayout()
+                    updateSessionDrawer()
+                    drawerLayout.openDrawer(Gravity.START)
+                }
             }
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                isDrawerExpanded = true
-                val maxWidthPx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 280f, resources.displayMetrics).toInt()
-                val dParams = drawerView.layoutParams as DrawerLayout.LayoutParams
-                dParams.width = maxWidthPx
-                drawerView.layoutParams = dParams
-                drawerView.requestLayout()
-                updateSessionDrawer()
-                drawerLayout.openDrawer(Gravity.START)
-            }
-        }
         topBar.addView(btnMenu)
 
         // Menu button to finish activity and return to MainActivity
-        val btnGoToMenu = Button(this).apply {
-            text = "🏠"
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
-            setPadding(12, 0, 12, 0)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-            ).apply {
-                setMargins(0, 0, 8, 0)
+        val btnGoToMenu =
+            Button(this).apply {
+                text = "🏠"
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+                background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#1e2026"), 1f)
+                setPadding(12, 0, 12, 0)
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
+                        ).apply {
+                            setMargins(0, 0, 8, 0)
+                        }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    finish()
+                }
             }
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                finish()
-            }
-        }
         topBar.addView(btnGoToMenu)
 
-        val spacer1 = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        }
+        val spacer1 =
+            View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+            }
         topBar.addView(spacer1)
 
         // ── Distro title + Services toggle ──
-        val distroRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
+        val distroRow =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+            }
 
-        statusTitle = TextView(this).apply {
-            text = "🐉 KALI"
-            textSize = 11f
-            typeface = Typeface.MONOSPACE
-            setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD))
-            setTextColor(Color.parseColor("#00FF41"))
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
+        statusTitle =
+            TextView(this).apply {
+                text = "🐉 KALI"
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD))
+                setTextColor(Color.parseColor("#00FF41"))
+                gravity = Gravity.CENTER
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+            }
         distroRow.addView(statusTitle)
 
-        btnServicesToggle = Button(this).apply {
-            text = "▼"
-            textSize = 9f
-            setTextColor(Color.parseColor("#00FF41"))
-            background = null
-            setPadding(4, 0, 4, 0)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                toggleServicesPanel()
+        btnServicesToggle =
+            Button(this).apply {
+                text = "▼"
+                textSize = 9f
+                setTextColor(Color.parseColor("#00FF41"))
+                background = null
+                setPadding(4, 0, 4, 0)
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    toggleServicesPanel()
+                }
             }
-        }
         distroRow.addView(btnServicesToggle)
 
         topBar.addView(distroRow)
 
-        val spacer2 = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        }
+        val spacer2 =
+            View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+            }
         topBar.addView(spacer2)
 
         // CLI/GUI Switch on the right side of topBar
-        val guiToggleLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
-            setPadding(2, 2, 2, 2)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(8, 0, 8, 0)
+        val guiToggleLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
+                setPadding(2, 2, 2, 2)
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                        setMargins(8, 0, 8, 0)
+                    }
+                gravity = Gravity.CENTER
             }
-            gravity = Gravity.CENTER
-        }
 
-        btnCli = Button(this).apply {
-            text = "🐚 CLI"
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            setTextColor(Color.BLACK)
-            background = createRoundedDrawable(Color.parseColor("#00FF41"), 4f)
-            setPadding(10, 0, 10, 0)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt()
-            )
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                switchViewMode("CLI")
+        btnCli =
+            Button(this).apply {
+                text = "🐚 CLI"
+                textSize = 10f
+                typeface = Typeface.MONOSPACE
+                setTextColor(Color.BLACK)
+                background = createRoundedDrawable(Color.parseColor("#00FF41"), 4f)
+                setPadding(10, 0, 10, 0)
+                val params =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt(),
+                    )
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    switchViewMode("CLI")
+                }
             }
-        }
 
-        btnGui = Button(this).apply {
-            text = "🖥️ GUI"
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
-            setPadding(10, 0, 10, 0)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt()
-            )
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                switchViewMode("GUI")
+        btnGui =
+            Button(this).apply {
+                text = "🖥️ GUI"
+                textSize = 10f
+                typeface = Typeface.MONOSPACE
+                setTextColor(Color.WHITE)
+                background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
+                setPadding(10, 0, 10, 0)
+                val params =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 28f, resources.displayMetrics).toInt(),
+                    )
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    switchViewMode("GUI")
+                }
             }
-        }
 
         guiToggleLayout.addView(btnCli)
         guiToggleLayout.addView(btnGui)
@@ -395,27 +426,32 @@ class TerminalActivity : ComponentActivity() {
         servicesDetailPanel = buildServicesDetailPanel()
         mainLayout.addView(servicesDetailPanel)
 
-        val topBarDivider = View(this).apply {
-            setBackgroundColor(Color.parseColor("#1e2026"))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt()
-            )
-        }
+        val topBarDivider =
+            View(this).apply {
+                setBackgroundColor(Color.parseColor("#1e2026"))
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
+                    )
+            }
         mainLayout.addView(topBarDivider)
 
         // Terminal view container (takes weight = 1f to fill remaining screen space)
-        val terminalContainer = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-        }
+        val terminalContainer =
+            FrameLayout(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            }
 
         terminalView = TerminalView(this, null)
         // Zapni mouse reporting v Termux TerminalView (stejne jako Termux:Preferences -> Mouse),
         // aby nano s "set mouse" reagovalo na dotyk/tah (pohyb kurzoru) misto scrollovani.
         try {
             getSharedPreferences("termux_preferences", MODE_PRIVATE)
-                .edit().putBoolean("mouse_enabled", true).apply()
+                .edit()
+                .putBoolean("mouse_enabled", true)
+                .apply()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to enable mouse pref: ${e.message}")
         }
@@ -424,7 +460,7 @@ class TerminalActivity : ComponentActivity() {
         terminalView.setTerminalViewClient(viewClient)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
-        
+
         terminalView.setOnClickListener {
             Log.d(TAG, "TerminalView clicked - requesting focus")
             if (specialKeypadPanel.visibility == View.VISIBLE) {
@@ -434,88 +470,108 @@ class TerminalActivity : ComponentActivity() {
             }
         }
 
-        terminalContainer.addView(terminalView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        terminalContainer.addView(
+            terminalView,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
 
         errorLayout = buildErrorOverlay()
-        terminalContainer.addView(errorLayout, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        terminalContainer.addView(
+            errorLayout,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
 
         // Add GUI webview container
-        guiContainer = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            visibility = View.GONE
-        }
-
-
+        guiContainer =
+            FrameLayout(this).apply {
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                visibility = View.GONE
+            }
 
         // Custom Cyber-styled VNC Placeholder
-        guiPlaceholderLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#07080A"))
-            setPadding(32, 32, 32, 32)
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        }
-
-        guiPlaceholderTitle = TextView(this).apply {
-            text = "X11 Graphical Desktop"
-            setTextColor(Color.parseColor("#00FF41"))
-            textSize = 20f
-            setTypeface(Typeface.DEFAULT_BOLD)
-            gravity = Gravity.CENTER
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 8)
+        guiPlaceholderLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.parseColor("#07080A"))
+                setPadding(32, 32, 32, 32)
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
-            layoutParams = params
-        }
+
+        guiPlaceholderTitle =
+            TextView(this).apply {
+                text = "X11 Graphical Desktop"
+                setTextColor(Color.parseColor("#00FF41"))
+                textSize = 20f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                gravity = Gravity.CENTER
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 0, 0, 8)
+                        }
+                layoutParams = params
+            }
         guiPlaceholderLayout.addView(guiPlaceholderTitle)
 
-        guiPlaceholderDesc = TextView(this).apply {
-            text = "Start a fully interactive XFCE4 desktop inside Kali/Parrot.\n(On the first boot, packages will be installed automatically)"
-            setTextColor(Color.parseColor("#A9B1D6"))
-            textSize = 13f
-            gravity = Gravity.CENTER
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 24)
+        guiPlaceholderDesc =
+            TextView(this).apply {
+                text =
+                    "Start a fully interactive XFCE4 desktop inside Kali/Parrot.\n(On the first boot, packages will be installed automatically)"
+                setTextColor(Color.parseColor("#A9B1D6"))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 0, 0, 24)
+                        }
+                layoutParams = params
             }
-            layoutParams = params
-        }
         guiPlaceholderLayout.addView(guiPlaceholderDesc)
 
-        guiProgress = ProgressBar(this).apply {
-            visibility = View.GONE
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 16)
+        guiProgress =
+            ProgressBar(this).apply {
+                visibility = View.GONE
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 0, 0, 16)
+                        }
+                layoutParams = params
             }
-            layoutParams = params
-        }
         guiPlaceholderLayout.addView(guiProgress)
 
-        btnStartGui = Button(this).apply {
-            text = "OPEN DESKTOP LAUNCHER"
-            setTextColor(Color.BLACK)
-            setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
-            textSize = 12f
-            setTypeface(Typeface.DEFAULT_BOLD)
-            setPadding(24, 12, 24, 12)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                onEnterGuiMode()
+        btnStartGui =
+            Button(this).apply {
+                text = "OPEN DESKTOP LAUNCHER"
+                setTextColor(Color.BLACK)
+                setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
+                textSize = 12f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setPadding(24, 12, 24, 12)
+                val params =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    onEnterGuiMode()
+                }
             }
-        }
         guiPlaceholderLayout.addView(btnStartGui)
 
         guiContainer.addView(guiPlaceholderLayout)
@@ -536,51 +592,65 @@ class TerminalActivity : ComponentActivity() {
         mainLayout.addView(keypadPanel)
 
         // Left drawer container (takes 70dp width initially, sliding from START)
-        drawerView = FrameLayout(this).apply {
-            val params = DrawerLayout.LayoutParams(
-                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 70f, resources.displayMetrics).toInt(),
-                DrawerLayout.LayoutParams.MATCH_PARENT
-            ).apply {
-                gravity = Gravity.START
+        drawerView =
+            FrameLayout(this).apply {
+                val params =
+                    DrawerLayout
+                        .LayoutParams(
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 70f, resources.displayMetrics).toInt(),
+                            DrawerLayout.LayoutParams.MATCH_PARENT,
+                        ).apply {
+                            gravity = Gravity.START
+                        }
+                layoutParams = params
+                setBackgroundColor(Color.parseColor("#08090d"))
             }
-            layoutParams = params
-            setBackgroundColor(Color.parseColor("#08090d"))
-        }
 
-        drawerViewContentLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-            )
-            setPadding(8, 16, 8, 16)
-        }
+        drawerViewContentLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams =
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                    )
+                setPadding(8, 16, 8, 16)
+            }
         drawerView.addView(drawerViewContentLayout)
 
-        drawerHeader = TextView(this).apply {
-            text = "🐚 NETHUNTER SESSIONS"
-            setTextColor(Color.parseColor("#00FF41"))
-            textSize = 15f
-            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-            gravity = Gravity.CENTER_HORIZONTAL
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 24)
+        drawerHeader =
+            TextView(this).apply {
+                text = "🐚 NETHUNTER SESSIONS"
+                setTextColor(Color.parseColor("#00FF41"))
+                textSize = 15f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                gravity = Gravity.CENTER_HORIZONTAL
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 0, 0, 24)
+                        }
+                layoutParams = params
             }
-            layoutParams = params
-        }
         drawerViewContentLayout.addView(drawerHeader)
 
-        tabLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 0, 0, 16)
+        tabLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 0, 0, 16)
+                        }
+                layoutParams = params
+                weightSum = 3f
             }
-            layoutParams = params
-            weightSum = 3f
-        }
 
         val createDrawerTabButton = { title: String, tabCode: String ->
             val btn = Button(this)
@@ -589,11 +659,15 @@ class TerminalActivity : ComponentActivity() {
                 textSize = 9f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                 setPadding(0, 4, 0, 4)
-                val params = LinearLayout.LayoutParams(
-                    0, TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(), 1f
-                ).apply {
-                    setMargins(2, 0, 2, 0)
-                }
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            0,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
+                            1f,
+                        ).apply {
+                            setMargins(2, 0, 2, 0)
+                        }
                 layoutParams = params
                 setOnClickListener {
                     btn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -617,51 +691,60 @@ class TerminalActivity : ComponentActivity() {
         tabLayout.addView(tabParrot)
         drawerViewContentLayout.addView(tabLayout)
 
-        val drawerScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            isVerticalScrollBarEnabled = true
-        }
-        
-        sessionDrawerContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
+        val drawerScroll =
+            ScrollView(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                isVerticalScrollBarEnabled = true
+            }
+
+        sessionDrawerContainer =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            }
         drawerScroll.addView(sessionDrawerContainer)
         drawerViewContentLayout.addView(drawerScroll)
 
-        btnAddSession = Button(this).apply {
-            text = "+ NEW SESSION"
-            setTextColor(Color.BLACK)
-            setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
-            textSize = 12f
-            setTypeface(Typeface.DEFAULT_BOLD)
-            setPadding(24, 12, 24, 12)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 16, 0, 0)
+        btnAddSession =
+            Button(this).apply {
+                text = "+ NEW SESSION"
+                setTextColor(Color.BLACK)
+                setBackgroundColor(Color.parseColor("#00FF41")) // Sleek green action button
+                textSize = 12f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setPadding(24, 12, 24, 12)
+                val params =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            setMargins(0, 16, 0, 0)
+                        }
+                layoutParams = params
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    addNewSession()
+                }
             }
-            layoutParams = params
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                addNewSession()
-            }
-        }
         drawerViewContentLayout.addView(btnAddSession)
 
-        val dragHandle = View(this).apply {
-            val params = FrameLayout.LayoutParams(
-                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
-                FrameLayout.LayoutParams.MATCH_PARENT
-            ).apply {
-                gravity = Gravity.END
+        val dragHandle =
+            View(this).apply {
+                val params =
+                    FrameLayout
+                        .LayoutParams(
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                        ).apply {
+                            gravity = Gravity.END
+                        }
+                layoutParams = params
+                setBackgroundColor(Color.TRANSPARENT)
             }
-            layoutParams = params
-            setBackgroundColor(Color.TRANSPARENT)
-        }
-        
+
         var dragStartX = 0f
         var initialWidth = 0
         dragHandle.setOnTouchListener { _, event ->
@@ -675,10 +758,11 @@ class TerminalActivity : ComponentActivity() {
                     initialWidth = drawerView.width
                     true
                 }
+
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - dragStartX
                     val newWidth = (initialWidth + dx.toInt()).coerceIn(minWidthPx, maxWidthPx)
-                    
+
                     val params = drawerView.layoutParams as DrawerLayout.LayoutParams
                     params.width = newWidth
                     drawerView.layoutParams = params
@@ -691,6 +775,7 @@ class TerminalActivity : ComponentActivity() {
                     }
                     true
                 }
+
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val finalWidth = if (isDrawerExpanded) maxWidthPx else minWidthPx
                     val params = drawerView.layoutParams as DrawerLayout.LayoutParams
@@ -700,7 +785,10 @@ class TerminalActivity : ComponentActivity() {
                     updateSessionDrawer()
                     true
                 }
-                else -> false
+
+                else -> {
+                    false
+                }
             }
         }
         drawerView.addView(dragHandle)
@@ -710,14 +798,17 @@ class TerminalActivity : ComponentActivity() {
         drawerLayout.addView(drawerView)
         setContentView(drawerLayout)
 
-        drawerLayout.addDrawerListener(object : androidx.drawerlayout.widget.DrawerLayout.SimpleDrawerListener() {
-            override fun onDrawerOpened(drawerView: View) {
-                startDrawerRamUpdateLoop()
-            }
-            override fun onDrawerClosed(drawerView: View) {
-                stopDrawerRamUpdateLoop()
-            }
-        })
+        drawerLayout.addDrawerListener(
+            object : androidx.drawerlayout.widget.DrawerLayout.SimpleDrawerListener() {
+                override fun onDrawerOpened(drawerView: View) {
+                    startDrawerRamUpdateLoop()
+                }
+
+                override fun onDrawerClosed(drawerView: View) {
+                    stopDrawerRamUpdateLoop()
+                }
+            },
+        )
 
         handleFileIntent(intent)
         registerFloatCallbacks()
@@ -764,12 +855,13 @@ class TerminalActivity : ComponentActivity() {
             btnGui.background = createRoundedDrawable(Color.parseColor("#0c0d12"), 4f)
 
             terminalView.visibility = View.VISIBLE
-            suggestionBar.visibility = if (historyManager.getSuggestions(currentCommand.toString()).isNotEmpty()) View.VISIBLE else View.GONE
+            suggestionBar.visibility =
+                if (historyManager.getSuggestions(currentCommand.toString()).isNotEmpty()) View.VISIBLE else View.GONE
             toolbarScroll.visibility = View.VISIBLE
             guiContainer.visibility = View.GONE
 
             topBar.visibility = View.VISIBLE
-            
+
             showSoftKeyboard()
         } else {
             btnGui.setTextColor(Color.BLACK)
@@ -794,13 +886,12 @@ class TerminalActivity : ComponentActivity() {
         updateTopbarTitle()
     }
 
-    private fun isPortOpen(port: Int): Boolean {
-        return try {
+    private fun isPortOpen(port: Int): Boolean =
+        try {
             java.net.Socket("127.0.0.1", port).use { true }
         } catch (_: Exception) {
             false
         }
-    }
 
     /**
      * Called when the user enters GUI mode (or taps the desktop button).
@@ -815,28 +906,30 @@ class TerminalActivity : ComponentActivity() {
         guiProgress.visibility = View.VISIBLE
         guiScope.launch {
             try {
-                val desktopReady = withContext(Dispatchers.IO) {
-                    ensureDesktopStarted()
-                    // Wait for the X server (Linux-X11 port 6000) to accept connections
-                    // before launching the renderer. Without this the launcher is
-                    // started too early and hits "connection refused"; the desktop
-                    // session may also be reaped before the launcher retries.
-                    var waitedMs = 0L
-                    while (!isPortOpen(6000) && waitedMs < 30000) {
-                        delay(500)
-                        waitedMs += 500
+                val desktopReady =
+                    withContext(Dispatchers.IO) {
+                        ensureDesktopStarted()
+                        // Wait for the X server (Linux-X11 port 6000) to accept connections
+                        // before launching the renderer. Without this the launcher is
+                        // started too early and hits "connection refused"; the desktop
+                        // session may also be reaped before the launcher retries.
+                        var waitedMs = 0L
+                        while (!isPortOpen(6000) && waitedMs < 30000) {
+                            delay(500)
+                            waitedMs += 500
+                        }
+                        isPortOpen(6000)
                     }
-                    isPortOpen(6000)
-                }
                 if (desktopReady) {
                     launchExternalLauncher()
                 } else {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(
-                            this@TerminalActivity,
-                            "Desktop did not start (Linux-X11 port 6000 not listening). Check 'nh desktop status'.",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        Toast
+                            .makeText(
+                                this@TerminalActivity,
+                                "Desktop did not start (Linux-X11 port 6000 not listening). Check 'nh desktop status'.",
+                                Toast.LENGTH_LONG,
+                            ).show()
                     }
                 }
             } finally {
@@ -882,9 +975,10 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun startVpnServiceDirectly() {
-        val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-            action = com.linux_core.core.VpnCaptureService.ACTION_START
-        }
+        val intent =
+            Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
+                action = com.linux_core.core.VpnCaptureService.ACTION_START
+            }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -893,13 +987,12 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun stopVpnService() {
-        val intent = Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-            action = com.linux_core.core.VpnCaptureService.ACTION_STOP
-        }
+        val intent =
+            Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
+                action = com.linux_core.core.VpnCaptureService.ACTION_STOP
+            }
         startService(intent)
     }
-
-
 
     override fun onResume() {
         super.onResume()
@@ -912,10 +1005,11 @@ class TerminalActivity : ComponentActivity() {
             showSoftKeyboard()
         }
 
-        val serviceSessions = TerminalService.sessions.filter {
-            val sid = TerminalService.getSessionId(it)
-            sid == null || !TerminalService.floatedSessionIds.contains(sid)
-        }
+        val serviceSessions =
+            TerminalService.sessions.filter {
+                val sid = TerminalService.getSessionId(it)
+                sid == null || !TerminalService.floatedSessionIds.contains(sid)
+            }
         if (serviceSessions.isNotEmpty()) {
             if (currentSession == null) {
                 switchToSession(serviceSessions[0])
@@ -942,9 +1036,10 @@ class TerminalActivity : ComponentActivity() {
         if (!isInPictureInPictureMode && currentSession?.isRunning == true) {
             try {
                 enterPictureInPictureMode(
-                    android.app.PictureInPictureParams.Builder()
+                    android.app.PictureInPictureParams
+                        .Builder()
                         .setAspectRatio(android.util.Rational(16, 9))
-                        .build()
+                        .build(),
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "PiP enter failed: ${e.message}")
@@ -954,23 +1049,27 @@ class TerminalActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
-        newConfig: android.content.res.Configuration
+        newConfig: android.content.res.Configuration,
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         // V PiP schováme všechen chrome (topbar, panely, lišty, drawer) —
         // zůstane jen terminál. Původní visibility si pamatujeme pro návrat.
-        val chrome = listOfNotNull(
-            if (::topBar.isInitialized) topBar else null,
-            if (::servicesPanel.isInitialized) servicesPanel else null,
-            if (::servicesDetailPanel.isInitialized) servicesDetailPanel else null,
-            if (::suggestionBar.isInitialized) suggestionBar else null,
-            if (::toolbarScroll.isInitialized) toolbarScroll else null,
-            if (::specialKeypadPanel.isInitialized) specialKeypadPanel else null,
-            if (::drawerView.isInitialized) drawerView else null
-        )
+        val chrome =
+            listOfNotNull(
+                if (::topBar.isInitialized) topBar else null,
+                if (::servicesPanel.isInitialized) servicesPanel else null,
+                if (::servicesDetailPanel.isInitialized) servicesDetailPanel else null,
+                if (::suggestionBar.isInitialized) suggestionBar else null,
+                if (::toolbarScroll.isInitialized) toolbarScroll else null,
+                if (::specialKeypadPanel.isInitialized) specialKeypadPanel else null,
+                if (::drawerView.isInitialized) drawerView else null,
+            )
         if (isInPictureInPictureMode) {
             pipSavedVisibility.clear()
-            chrome.forEach { v -> pipSavedVisibility[v] = v.visibility; v.visibility = View.GONE }
+            chrome.forEach { v ->
+                pipSavedVisibility[v] = v.visibility
+                v.visibility = View.GONE
+            }
             drawerLayout.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
         } else {
             chrome.forEach { v -> pipSavedVisibility[v]?.let { v.visibility = it } }
@@ -985,9 +1084,12 @@ class TerminalActivity : ComponentActivity() {
         setIntent(intent)
         // ashell escape: pokud je extra nastavený na novém intentu (např. singleTask
         // nedovolil vytvoření nové instance), spustíme ashell session v téhle aktivitě
-        if ((intent.getBooleanExtra("ashellMode", false) ||
-             intent.getStringExtra("rootfsDirName") == "ashell-host")
-            && intent.getStringExtra("rootfsDirName") != "ashell-adb") {
+        if ((
+                intent.getBooleanExtra("ashellMode", false) ||
+                    intent.getStringExtra("rootfsDirName") == "ashell-host"
+            ) &&
+            intent.getStringExtra("rootfsDirName") != "ashell-adb"
+        ) {
             startAshellSession()
             return
         }
@@ -1006,31 +1108,32 @@ class TerminalActivity : ComponentActivity() {
         if (Intent.ACTION_VIEW == action || Intent.ACTION_EDIT == action) {
             val uri = intent.data ?: return
             val fileName = getFileNameFromUri(uri)
-            
+
             // Ensure layout migration before resolving rootfs paths
             RootfsManager.ensureMigrated(applicationContext)
-            
+
             // Determine rootfs directory name
             var rootfsDirName = intent.getStringExtra("rootfsDirName")
             if (rootfsDirName == null) {
                 val kaliSetup = File(filesDir, "nh/distro/kali/root/.setup_done")
                 val parrotSetup = File(filesDir, "nh/distro/parrot/root/.setup_done")
-                rootfsDirName = when {
-                    kaliSetup.exists() -> "nh/distro/kali"
-                    parrotSetup.exists() -> "nh/distro/parrot"
-                    else -> "nh/distro/kali"
-                }
+                rootfsDirName =
+                    when {
+                        kaliSetup.exists() -> "nh/distro/kali"
+                        parrotSetup.exists() -> "nh/distro/parrot"
+                        else -> "nh/distro/kali"
+                    }
             }
-            
+
             val copiedFile = copyUriToChrootTmp(uri, fileName, rootfsDirName)
             if (copiedFile != null) {
                 val command = "nano /tmp/nethunter_edit_$fileName"
-                
+
                 // If GUI is active, automatically switch to CLI so they see the editor
                 if (activeViewMode != "CLI") {
                     switchViewMode("CLI")
                 }
-                
+
                 val activeSession = currentSession ?: TerminalService.sessions.firstOrNull()
                 if (activeSession != null) {
                     // Send command to active session
@@ -1076,7 +1179,11 @@ class TerminalActivity : ComponentActivity() {
         return (result ?: "unnamed_file").replace(Regex("[^a-zA-Z0-9._-]"), "_")
     }
 
-    private fun copyUriToChrootTmp(uri: android.net.Uri, fileName: String, rootfsDirName: String): File? {
+    private fun copyUriToChrootTmp(
+        uri: android.net.Uri,
+        fileName: String,
+        rootfsDirName: String,
+    ): File? {
         try {
             val destDir = File(filesDir, "$rootfsDirName/tmp")
             if (!destDir.exists()) {
@@ -1113,20 +1220,22 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun buildSuggestionBar(): HorizontalScrollView {
-        suggestionBar = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#1a1b26"))
-            isHorizontalScrollBarEnabled = false
-            visibility = View.GONE
-        }
+        suggestionBar =
+            HorizontalScrollView(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setBackgroundColor(Color.parseColor("#1a1b26"))
+                isHorizontalScrollBarEnabled = false
+                visibility = View.GONE
+            }
 
-        suggestionContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            setPadding(8, 4, 8, 4)
-        }
+        suggestionContainer =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+                setPadding(8, 4, 8, 4)
+            }
 
         suggestionBar.addView(suggestionContainer)
         return suggestionBar
@@ -1153,25 +1262,28 @@ class TerminalActivity : ComponentActivity() {
         suggestionBar.visibility = View.VISIBLE
         suggestionContainer.removeAllViews()
         for (sug in suggestions) {
-            val btn = Button(this).apply {
-                text = sug
-                textSize = 10f
-                isAllCaps = false
-                typeface = Typeface.MONOSPACE
-                setTextColor(Color.parseColor("#a9b1d6"))
-                setBackgroundColor(Color.parseColor("#24283b"))
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                        TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt()
-                ).apply {
-                    setMargins(4, 2, 4, 2)
+            val btn =
+                Button(this).apply {
+                    text = sug
+                    textSize = 10f
+                    isAllCaps = false
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(Color.parseColor("#a9b1d6"))
+                    setBackgroundColor(Color.parseColor("#24283b"))
+                    val params =
+                        LinearLayout
+                            .LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
+                            ).apply {
+                                setMargins(4, 2, 4, 2)
+                            }
+                    layoutParams = params
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        applySuggestion(sug)
+                    }
                 }
-                layoutParams = params
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    applySuggestion(sug)
-                }
-            }
             suggestionContainer.addView(btn)
         }
     }
@@ -1219,10 +1331,10 @@ class TerminalActivity : ComponentActivity() {
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
                 )
                 drawerHeader.visibility = View.VISIBLE
-                
+
                 // Futuristic console header
                 val ssb = android.text.SpannableStringBuilder()
                 ssb.append("🛰️ OPERATOR CONSOLE\n")
@@ -1230,28 +1342,31 @@ class TerminalActivity : ComponentActivity() {
                 ssb.append("[RAM: ${getTotalRamUsage()}]")
                 ssb.setSpan(
                     android.text.style.ForegroundColorSpan(Color.parseColor("#00FF41")),
-                    0, startRam,
-                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                    0,
+                    startRam,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
                 )
                 ssb.setSpan(
                     android.text.style.ForegroundColorSpan(Color.parseColor("#00E5FF")),
-                    startRam, ssb.length,
-                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                    startRam,
+                    ssb.length,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
                 )
                 drawerHeader.text = ssb
-                
+
                 tabLayout.visibility = View.VISIBLE
                 btnAddSession.visibility = View.VISIBLE
-                
+
                 // Update drawer tab button styling
                 drawerTabButtons.forEach { (tabCode, btn) ->
                     val isSel = (tabCode == activeDrawerTab)
                     btn.setTextColor(if (isSel) Color.BLACK else Color.WHITE)
-                    btn.background = if (isSel) {
-                        createRoundedDrawable(Color.parseColor("#00FF41"), 6f)
-                    } else {
-                        createRoundedDrawable(Color.parseColor("#12131a"), 6f, Color.parseColor("#1e2026"), 1f)
-                    }
+                    btn.background =
+                        if (isSel) {
+                            createRoundedDrawable(Color.parseColor("#00FF41"), 6f)
+                        } else {
+                            createRoundedDrawable(Color.parseColor("#12131a"), 6f, Color.parseColor("#1e2026"), 1f)
+                        }
                 }
             } else {
                 // Minimized mode padding & visibility
@@ -1259,7 +1374,7 @@ class TerminalActivity : ComponentActivity() {
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt(),
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
                     TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt(),
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt()
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 16f, resources.displayMetrics).toInt(),
                 )
                 drawerHeader.visibility = View.GONE
                 tabLayout.visibility = View.GONE
@@ -1271,30 +1386,32 @@ class TerminalActivity : ComponentActivity() {
 
             if (!isDrawerExpanded) {
                 // In minimized mode, add a small GUI toggle button at the top of the session list
-                val btnGuiToggleMin = Button(this).apply {
-                    text = "🖥️"
-                    textSize = 14f
-                    setTextColor(Color.WHITE)
-                    background = createCircularDrawable(Color.parseColor("#12131a"), Color.parseColor("#1e2026"), 1f)
-                    val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
-                    val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
-                        setMargins(0, 4, 0, 16)
-                        gravity = Gravity.CENTER_HORIZONTAL
+                val btnGuiToggleMin =
+                    Button(this).apply {
+                        text = "🖥️"
+                        textSize = 14f
+                        setTextColor(Color.WHITE)
+                        background = createCircularDrawable(Color.parseColor("#12131a"), Color.parseColor("#1e2026"), 1f)
+                        val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
+                        val params =
+                            LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                                setMargins(0, 4, 0, 16)
+                                gravity = Gravity.CENTER_HORIZONTAL
+                            }
+                        layoutParams = params
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            drawerLayout.closeDrawer(Gravity.START)
+                            switchViewMode("GUI")
+                        }
                     }
-                    layoutParams = params
-                    setOnClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        drawerLayout.closeDrawer(Gravity.START)
-                        switchViewMode("GUI")
-                    }
-                }
                 sessionDrawerContainer.addView(btnGuiToggleMin)
             }
 
             for (i in 0 until serviceSessions.size) {
                 val session = serviceSessions[i]
                 val distro = TerminalService.getSessionDistro(session)
-                
+
                 // Filtering based on active tab (only in expanded mode)
                 if (isDrawerExpanded) {
                     if (activeDrawerTab == "KALI" && !distro.contains("kali")) continue
@@ -1305,133 +1422,174 @@ class TerminalActivity : ComponentActivity() {
                 val isIgnored = TerminalService.isSessionVpnIgnored(session)
                 val isParrot = distro.contains("parrot")
                 val distroBadge = if (isParrot) "🦜" else "🐉"
-                val memBytes = com.linux_core.core.ProcessResolver.getSessionMemoryUsage(session)
+                val memBytes =
+                    com.linux_core.core.ProcessResolver
+                        .getSessionMemoryUsage(session)
                 val memMb = memBytes.toDouble() / (1024.0 * 1024.0)
                 val memStr = String.format(java.util.Locale.US, "%.1f MB", memMb)
-                
+
                 // Vertical container row for the session card
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    
-                    val pxPaddingHoriz = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 12f else 6f, resources.displayMetrics).toInt()
-                    val pxPaddingVert = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, if (isDrawerExpanded) 12f else 8f, resources.displayMetrics).toInt()
-                    setPadding(pxPaddingHoriz, pxPaddingVert, pxPaddingHoriz, pxPaddingVert)
-                    
-                    background = if (isActive) {
-                        createRoundedDrawable(Color.parseColor("#121b16"), 8f, Color.parseColor("#00FF41"), 1f)
-                    } else if (isIgnored) {
-                        createRoundedDrawable(Color.parseColor("#1c150c"), 8f, Color.parseColor("#FF9900"), 1f)
-                    } else {
-                        createRoundedDrawable(Color.parseColor("#090a0f"), 8f, Color.parseColor("#1e2026"), 1f)
+                val row =
+                    LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+
+                        val pxPaddingHoriz =
+                            TypedValue
+                                .applyDimension(
+                                    TypedValue.COMPLEX_UNIT_DIP,
+                                    if (isDrawerExpanded) 12f else 6f,
+                                    resources.displayMetrics,
+                                ).toInt()
+                        val pxPaddingVert =
+                            TypedValue
+                                .applyDimension(
+                                    TypedValue.COMPLEX_UNIT_DIP,
+                                    if (isDrawerExpanded) 12f else 8f,
+                                    resources.displayMetrics,
+                                ).toInt()
+                        setPadding(pxPaddingHoriz, pxPaddingVert, pxPaddingHoriz, pxPaddingVert)
+
+                        background =
+                            if (isActive) {
+                                createRoundedDrawable(Color.parseColor("#121b16"), 8f, Color.parseColor("#00FF41"), 1f)
+                            } else if (isIgnored) {
+                                createRoundedDrawable(Color.parseColor("#1c150c"), 8f, Color.parseColor("#FF9900"), 1f)
+                            } else {
+                                createRoundedDrawable(Color.parseColor("#090a0f"), 8f, Color.parseColor("#1e2026"), 1f)
+                            }
+
+                        val params =
+                            LinearLayout
+                                .LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                                ).apply {
+                                    setMargins(0, 6, 0, 6)
+                                }
+                        layoutParams = params
                     }
-                    
-                    val params = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        setMargins(0, 6, 0, 6)
-                    }
-                    layoutParams = params
-                }
 
                 // Glow/Indicator vertical line on the left side of the row (only in expanded mode)
                 if (isDrawerExpanded) {
-                    val indicator = View(this).apply {
-                        val colorStr = if (isActive) "#00FF41" else if (isIgnored) "#FF9900" else "#20222e"
-                        background = createRoundedDrawable(Color.parseColor(colorStr), 2f)
-                        val params = LinearLayout.LayoutParams(
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
-                        ).apply {
-                            setMargins(0, 0, 10, 0)
+                    val indicator =
+                        View(this).apply {
+                            val colorStr =
+                                if (isActive) {
+                                    "#00FF41"
+                                } else if (isIgnored) {
+                                    "#FF9900"
+                                } else {
+                                    "#20222e"
+                                }
+                            background = createRoundedDrawable(Color.parseColor(colorStr), 2f)
+                            val params =
+                                LinearLayout
+                                    .LayoutParams(
+                                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt(),
+                                    ).apply {
+                                        setMargins(0, 0, 10, 0)
+                                    }
+                            layoutParams = params
                         }
-                        layoutParams = params
-                    }
                     row.addView(indicator)
                 }
 
                 if (isDrawerExpanded) {
-                    val label = TextView(this).apply {
-                        val customName = TerminalService.getSessionName(session)
-                        val baseText = if (!customName.isNullOrEmpty()) customName else "Session ${i + 1}"
-                        
-                        val ssbLabel = android.text.SpannableStringBuilder()
-                        ssbLabel.append("$distroBadge ")
-                        val nameStart = ssbLabel.length
-                        ssbLabel.append(baseText)
-                        ssbLabel.setSpan(
-                            android.text.style.ForegroundColorSpan(if (isActive) Color.parseColor("#00FF41") else Color.WHITE),
-                            nameStart, ssbLabel.length,
-                            android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
-                        
-                        ssbLabel.append("\n")
-                        val memStart = ssbLabel.length
-                        ssbLabel.append("  RAM: $memStr")
-                        ssbLabel.setSpan(
-                            android.text.style.ForegroundColorSpan(Color.parseColor("#A9B1D6")),
-                            memStart, ssbLabel.length,
-                            android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
-                        
-                        if (isIgnored) {
-                            ssbLabel.append(" ")
-                            val vpnStart = ssbLabel.length
-                            ssbLabel.append("[BYPASS]")
+                    val label =
+                        TextView(this).apply {
+                            val customName = TerminalService.getSessionName(session)
+                            val baseText = if (!customName.isNullOrEmpty()) customName else "Session ${i + 1}"
+
+                            val ssbLabel = android.text.SpannableStringBuilder()
+                            ssbLabel.append("$distroBadge ")
+                            val nameStart = ssbLabel.length
+                            ssbLabel.append(baseText)
                             ssbLabel.setSpan(
-                                android.text.style.ForegroundColorSpan(Color.parseColor("#FF9900")),
-                                vpnStart, ssbLabel.length,
-                                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                                android.text.style.ForegroundColorSpan(if (isActive) Color.parseColor("#00FF41") else Color.WHITE),
+                                nameStart,
+                                ssbLabel.length,
+                                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
                             )
+
+                            ssbLabel.append("\n")
+                            val memStart = ssbLabel.length
+                            ssbLabel.append("  RAM: $memStr")
+                            ssbLabel.setSpan(
+                                android.text.style.ForegroundColorSpan(Color.parseColor("#A9B1D6")),
+                                memStart,
+                                ssbLabel.length,
+                                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                            )
+
+                            if (isIgnored) {
+                                ssbLabel.append(" ")
+                                val vpnStart = ssbLabel.length
+                                ssbLabel.append("[BYPASS]")
+                                ssbLabel.setSpan(
+                                    android.text.style.ForegroundColorSpan(Color.parseColor("#FF9900")),
+                                    vpnStart,
+                                    ssbLabel.length,
+                                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                                )
+                            }
+
+                            text = ssbLabel
+                            textSize = 12f
+                            typeface = Typeface.MONOSPACE
+
+                            val params =
+                                LinearLayout.LayoutParams(
+                                    0,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                                    1f,
+                                )
+                            layoutParams = params
                         }
-                        
-                        text = ssbLabel
-                        textSize = 12f
-                        typeface = Typeface.MONOSPACE
-                        
-                        val params = LinearLayout.LayoutParams(
-                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                        )
-                        layoutParams = params
-                    }
                     row.addView(label)
 
                     // Quick Close Button on the right
-                    val btnClose = TextView(this).apply {
-                        text = "✕"
-                        textSize = 12f
-                        setTypeface(Typeface.DEFAULT_BOLD)
-                        setTextColor(Color.parseColor("#A9B1D6"))
-                        gravity = Gravity.CENTER
-                        background = createRoundedDrawable(Color.parseColor("#1c1d27"), 12f)
-                        val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
-                        val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
-                            setMargins(8, 0, 0, 0)
+                    val btnClose =
+                        TextView(this).apply {
+                            text = "✕"
+                            textSize = 12f
+                            setTypeface(Typeface.DEFAULT_BOLD)
+                            setTextColor(Color.parseColor("#A9B1D6"))
+                            gravity = Gravity.CENTER
+                            background = createRoundedDrawable(Color.parseColor("#1c1d27"), 12f)
+                            val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 24f, resources.displayMetrics).toInt()
+                            val params =
+                                LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                                    setMargins(8, 0, 0, 0)
+                                }
+                            layoutParams = params
+                            setOnClickListener {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                closeSession(session)
+                            }
                         }
-                        layoutParams = params
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            closeSession(session)
-                        }
-                    }
                     row.addView(btnClose)
                 } else {
                     // Minimized Mode: Show ONLY the distro badge emoji centered in a circular outline
-                    val emojiLabel = TextView(this).apply {
-                        text = distroBadge
-                        textSize = 18f
-                        gravity = Gravity.CENTER
-                        background = if (isActive) {
-                            createCircularDrawable(Color.parseColor("#121b16"), Color.parseColor("#00FF41"), 1.5f)
-                        } else {
-                            createCircularDrawable(Color.parseColor("#090a0f"), Color.parseColor("#1e2026"), 1f)
+                    val emojiLabel =
+                        TextView(this).apply {
+                            text = distroBadge
+                            textSize = 18f
+                            gravity = Gravity.CENTER
+                            background =
+                                if (isActive) {
+                                    createCircularDrawable(Color.parseColor("#121b16"), Color.parseColor("#00FF41"), 1.5f)
+                                } else {
+                                    createCircularDrawable(Color.parseColor("#090a0f"), Color.parseColor("#1e2026"), 1f)
+                                }
+                            val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
+                            val params =
+                                LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                                    gravity = Gravity.CENTER_HORIZONTAL
+                                }
+                            layoutParams = params
                         }
-                        val sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt()
-                        val params = LinearLayout.LayoutParams(sizePx, sizePx).apply {
-                            gravity = Gravity.CENTER_HORIZONTAL
-                        }
-                        layoutParams = params
-                    }
                     row.addView(emojiLabel)
                 }
 
@@ -1458,40 +1616,49 @@ class TerminalActivity : ComponentActivity() {
         backgroundColor: Int,
         cornerRadiusDp: Float,
         strokeColor: Int = 0,
-        strokeWidthDp: Float = 0f
-    ): android.graphics.drawable.GradientDrawable {
-        return android.graphics.drawable.GradientDrawable().apply {
+        strokeWidthDp: Float = 0f,
+    ): android.graphics.drawable.GradientDrawable =
+        android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
             setColor(backgroundColor)
-            val radiusPx = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, cornerRadiusDp, resources.displayMetrics
-            )
+            val radiusPx =
+                TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP,
+                    cornerRadiusDp,
+                    resources.displayMetrics,
+                )
             setCornerRadius(radiusPx)
             if (strokeColor != 0 && strokeWidthDp > 0f) {
-                val strokeWidthPx = TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, strokeWidthDp, resources.displayMetrics
-                ).toInt()
+                val strokeWidthPx =
+                    TypedValue
+                        .applyDimension(
+                            TypedValue.COMPLEX_UNIT_DIP,
+                            strokeWidthDp,
+                            resources.displayMetrics,
+                        ).toInt()
                 setStroke(strokeWidthPx, strokeColor)
             }
         }
-    }
 
     private fun createCircularDrawable(
         backgroundColor: Int,
         strokeColor: Int = 0,
-        strokeWidthDp: Float = 0f
-    ): android.graphics.drawable.GradientDrawable {
-        return android.graphics.drawable.GradientDrawable().apply {
+        strokeWidthDp: Float = 0f,
+    ): android.graphics.drawable.GradientDrawable =
+        android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.OVAL
             setColor(backgroundColor)
             if (strokeColor != 0 && strokeWidthDp > 0f) {
-                val strokeWidthPx = TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, strokeWidthDp, resources.displayMetrics
-                ).toInt()
+                val strokeWidthPx =
+                    TypedValue
+                        .applyDimension(
+                            TypedValue.COMPLEX_UNIT_DIP,
+                            strokeWidthDp,
+                            resources.displayMetrics,
+                        ).toInt()
                 setStroke(strokeWidthPx, strokeColor)
             }
         }
-    }
 
     private fun updateTopbarTitle() {
         runOnUiThread {
@@ -1501,7 +1668,7 @@ class TerminalActivity : ComponentActivity() {
                 val distro = TerminalService.getSessionDistro(session)
                 val isParrot = distro.contains("parrot")
                 val distroBadge = if (isParrot) "🦜 PARROT OS" else "🐉 KALI NetHunter"
-                statusTitle.text = "$distroBadge [${activeViewMode}]"
+                statusTitle.text = "$distroBadge [$activeViewMode]"
                 statusTitle.setTextColor(if (isParrot) Color.parseColor("#00E5FF") else Color.parseColor("#00FF41"))
             } else {
                 statusTitle.text = "🐉 NETHUNTER OPERATOR"
@@ -1510,8 +1677,8 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    private fun getTotalRamUsage(): String {
-        return try {
+    private fun getTotalRamUsage(): String =
+        try {
             val actManager = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             val memInfo = android.app.ActivityManager.MemoryInfo()
             actManager.getMemoryInfo(memInfo)
@@ -1524,7 +1691,6 @@ class TerminalActivity : ComponentActivity() {
         } catch (e: Exception) {
             "RAM: N/A"
         }
-    }
 
     private fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"
@@ -1542,23 +1708,33 @@ class TerminalActivity : ComponentActivity() {
         drawerUpdateHandler.removeCallbacks(drawerRamUpdater)
     }
 
-    private fun showRenameDialog(session: TerminalSession, defaultIndex: Int) {
+    private fun showRenameDialog(
+        session: TerminalSession,
+        defaultIndex: Int,
+    ) {
         val currentName = TerminalService.getSessionName(session) ?: "Session $defaultIndex"
-        val input = android.widget.EditText(this).apply {
-            setText(currentName)
-            setSingleLine(true)
-            setSelection(currentName.length)
-        }
-        
-        val container = android.widget.FrameLayout(this).apply {
-            val padding = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, 20f, resources.displayMetrics
-            ).toInt()
-            setPadding(padding, padding / 2, padding, padding / 2)
-            addView(input)
-        }
+        val input =
+            android.widget.EditText(this).apply {
+                setText(currentName)
+                setSingleLine(true)
+                setSelection(currentName.length)
+            }
 
-        android.app.AlertDialog.Builder(this)
+        val container =
+            android.widget.FrameLayout(this).apply {
+                val padding =
+                    TypedValue
+                        .applyDimension(
+                            TypedValue.COMPLEX_UNIT_DIP,
+                            20f,
+                            resources.displayMetrics,
+                        ).toInt()
+                setPadding(padding, padding / 2, padding, padding / 2)
+                addView(input)
+            }
+
+        android.app.AlertDialog
+            .Builder(this)
             .setTitle("Rename Session")
             .setMessage("Enter custom name for this session:")
             .setView(container)
@@ -1568,11 +1744,9 @@ class TerminalActivity : ComponentActivity() {
                     TerminalService.setSessionName(session, newName)
                 }
                 dialog.dismiss()
-            }
-            .setNegativeButton("Cancel") { dialog, _ ->
+            }.setNegativeButton("Cancel") { dialog, _ ->
                 dialog.dismiss()
-            }
-            .show()
+            }.show()
     }
 
     private fun addNewSession() {
@@ -1583,31 +1757,42 @@ class TerminalActivity : ComponentActivity() {
         // rootfs, který si uživatel prohlíží.
         val sid = currentSession?.let { TerminalService.getSessionId(it) }
         val distroName = if (sid != null) TerminalService.sessionDistros[sid] ?: "nh/distro/kali" else "nh/distro/kali"
-        val isDocker = distroName.startsWith("docker-") ||
-                       distroName.startsWith("oci-") ||
-                       distroName.startsWith("nh/distro/docker/")
+        val isDocker =
+            distroName.startsWith("docker-") ||
+                distroName.startsWith("oci-") ||
+                distroName.startsWith("nh/distro/docker/")
         val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
         lifecycleScope.launch(Dispatchers.IO) {
-            val cfg = try {
-                val distroId1 = distroName.substringAfterLast("/")
-                val bootMode1 = loadBootMode(this@TerminalActivity, distroId1, DEFAULT_BOOT_MODE)
-                ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker, bootMode1)
-            } catch (e: Exception) {
-                Log.e(TAG, "addNewSession setup failed for $distroName", e)
-                null
-            }
+            val cfg =
+                try {
+                    val distroId1 = distroName.substringAfterLast("/")
+                    val bootMode1 = loadBootMode(this@TerminalActivity, distroId1, DEFAULT_BOOT_MODE)
+                    ProotManager.setupProotEnvironment(
+                        this@TerminalActivity,
+                        distroName,
+                        mountStorageSaved,
+                        null,
+                        false,
+                        isDocker,
+                        bootMode1,
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "addNewSession setup failed for $distroName", e)
+                    null
+                }
             withContext(Dispatchers.Main) {
                 if (cfg == null) {
                     showError("Setup failed: $distroName")
                     return@withContext
                 }
                 config = cfg
-                val session = try {
-                    TerminalService.createSession(this@TerminalActivity, cfg, terminalView) { showError(it) }
-                } catch (e: Exception) {
-                    showError("Session error: ${e.message}")
-                    return@withContext
-                }
+                val session =
+                    try {
+                        TerminalService.createSession(this@TerminalActivity, cfg, terminalView) { showError(it) }
+                    } catch (e: Exception) {
+                        showError("Session error: ${e.message}")
+                        return@withContext
+                    }
                 switchToSession(session)
                 updateSessionDrawer()
             }
@@ -1644,8 +1829,11 @@ class TerminalActivity : ComponentActivity() {
     fun onSessionEnded(session: TerminalSession) {
         val remaining = TerminalService.sessions
         if (!remaining.contains(session)) {
-            if (remaining.isEmpty()) finish()
-            else updateSessionDrawer()
+            if (remaining.isEmpty()) {
+                finish()
+            } else {
+                updateSessionDrawer()
+            }
             return
         }
         if (remaining.isEmpty()) {
@@ -1661,166 +1849,196 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun buildExtraKeysToolbar(): View {
-        val rootContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setBackgroundColor(Color.parseColor("#090a0f"))
-            setPadding(0, 4, 0, 4)
-        }
+        val rootContainer =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setBackgroundColor(Color.parseColor("#090a0f"))
+                setPadding(0, 4, 0, 4)
+            }
 
         // Setup ViewPager2
-        val viewPager = androidx.viewpager2.widget.ViewPager2(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 48f, resources.displayMetrics).toInt())
-        }
+        val viewPager =
+            androidx.viewpager2.widget.ViewPager2(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 48f, resources.displayMetrics).toInt(),
+                    )
+            }
 
         // Setup Dot indicator layout
-        val dotsLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt()
-            ).apply {
-                setMargins(0, 2, 0, 4)
+        val dotsLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                layoutParams =
+                    LinearLayout
+                        .LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt(),
+                        ).apply {
+                            setMargins(0, 2, 0, 4)
+                        }
             }
-        }
 
         // Define Pages
-        val page1 = listOf(
-            "ESC" to { sendKey("\u001b") },
-            "TAB" to { sendKey("\t") },
-            "CTRL" to { toggleCtrlModifier() },
-            "ALT" to { toggleAltModifier() },
-            "SHIFT" to { toggleShiftModifier() },
-            "⌨️" to { toggleSpecialKeypad(specialKeypadPanel.visibility == View.GONE) }
-        )
+        val page1 =
+            listOf(
+                "ESC" to { sendKey("\u001b") },
+                "TAB" to { sendKey("\t") },
+                "CTRL" to { toggleCtrlModifier() },
+                "ALT" to { toggleAltModifier() },
+                "SHIFT" to { toggleShiftModifier() },
+                "⌨️" to { toggleSpecialKeypad(specialKeypadPanel.visibility == View.GONE) },
+            )
 
-        val page2 = listOf(
-            "|" to { sendKey("|") },
-            "/" to { sendKey("/") },
-            "\\" to { sendKey("\\") },
-            ":" to { sendKey(":") },
-            "-" to { sendKey("-") },
-            "_" to { sendKey("_") },
-            "~" to { sendKey("~") },
-            "=" to { sendKey("=") }
-        )
+        val page2 =
+            listOf(
+                "|" to { sendKey("|") },
+                "/" to { sendKey("/") },
+                "\\" to { sendKey("\\") },
+                ":" to { sendKey(":") },
+                "-" to { sendKey("-") },
+                "_" to { sendKey("_") },
+                "~" to { sendKey("~") },
+                "=" to { sendKey("=") },
+            )
 
-        val page3 = listOf(
-            "←" to { sendKey("\u001b[D") },
-            "↑" to { sendKey("\u001b[A") },
-            "↓" to { sendKey("\u001b[B") },
-            "→" to { sendKey("\u001b[C") },
-            "Home" to { sendKey("\u001b[H") },
-            "End" to { sendKey("\u001b[F") }
-        )
+        val page3 =
+            listOf(
+                "←" to { sendKey("\u001b[D") },
+                "↑" to { sendKey("\u001b[A") },
+                "↓" to { sendKey("\u001b[B") },
+                "→" to { sendKey("\u001b[C") },
+                "Home" to { sendKey("\u001b[H") },
+                "End" to { sendKey("\u001b[F") },
+            )
 
-        val page4 = listOf(
-            "F1" to { sendKey("\u001bOP") },
-            "F2" to { sendKey("\u001bOQ") },
-            "F3" to { sendKey("\u001bOR") },
-            "F4" to { sendKey("\u001bOS") },
-            "F5" to { sendKey("\u001b[15~") },
-            "F6" to { sendKey("\u001b[17~") },
-            "F7" to { sendKey("\u001b[18~") },
-            "F8" to { sendKey("\u001b[19~") }
-        )
+        val page4 =
+            listOf(
+                "F1" to { sendKey("\u001bOP") },
+                "F2" to { sendKey("\u001bOQ") },
+                "F3" to { sendKey("\u001bOR") },
+                "F4" to { sendKey("\u001bOS") },
+                "F5" to { sendKey("\u001b[15~") },
+                "F6" to { sendKey("\u001b[17~") },
+                "F7" to { sendKey("\u001b[18~") },
+                "F8" to { sendKey("\u001b[19~") },
+            )
 
         val pages = listOf(page1, page2, page3, page4)
 
         // ViewPager2 Adapter
-        viewPager.adapter = object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
-            override fun getItemCount(): Int = pages.size
+        viewPager.adapter =
+            object : androidx.recyclerview.widget.RecyclerView.Adapter<androidx.recyclerview.widget.RecyclerView.ViewHolder>() {
+                override fun getItemCount(): Int = pages.size
 
-            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): androidx.recyclerview.widget.RecyclerView.ViewHolder {
-                val container = LinearLayout(parent.context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(12, 0, 12, 0)
+                override fun onCreateViewHolder(
+                    parent: ViewGroup,
+                    viewType: Int,
+                ): androidx.recyclerview.widget.RecyclerView.ViewHolder {
+                    val container =
+                        LinearLayout(parent.context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            layoutParams =
+                                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                            gravity = Gravity.CENTER_VERTICAL
+                            setPadding(12, 0, 12, 0)
+                        }
+                    return object : androidx.recyclerview.widget.RecyclerView.ViewHolder(container) {}
                 }
-                return object : androidx.recyclerview.widget.RecyclerView.ViewHolder(container) {}
-            }
 
-            override fun onBindViewHolder(holder: androidx.recyclerview.widget.RecyclerView.ViewHolder, position: Int) {
-                val container = holder.itemView as LinearLayout
-                container.removeAllViews()
-                
-                val keys = pages[position]
-                for ((label, action) in keys) {
-                    val btn = Button(holder.itemView.context).apply {
-                        text = label
-                        textSize = 12f
-                        typeface = Typeface.MONOSPACE
-                        setTextColor(Color.WHITE)
-                        
-                        // Premium Visual style: dark cards with rounded corners
-                        val isModifier = label == "CTRL" || label == "ALT" || label == "SHIFT"
-                        val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
-                            setColor(Color.parseColor(if (isModifier) "#121320" else "#1c1d30"))
-                            cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics)
-                            setStroke(
-                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
-                                Color.parseColor("#2a2b45")
-                            )
-                        }
-                        background = bgDrawable
+                override fun onBindViewHolder(
+                    holder: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+                    position: Int,
+                ) {
+                    val container = holder.itemView as LinearLayout
+                    container.removeAllViews()
 
-                        val params = LinearLayout.LayoutParams(0, TypedValue.applyDimension(
-                            TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt(), 1f
-                        ).apply {
-                            setMargins(4, 2, 4, 2)
-                        }
-                        layoutParams = params
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            action()
-                        }
+                    val keys = pages[position]
+                    for ((label, action) in keys) {
+                        val btn =
+                            Button(holder.itemView.context).apply {
+                                text = label
+                                textSize = 12f
+                                typeface = Typeface.MONOSPACE
+                                setTextColor(Color.WHITE)
+
+                                // Premium Visual style: dark cards with rounded corners
+                                val isModifier = label == "CTRL" || label == "ALT" || label == "SHIFT"
+                                val bgDrawable =
+                                    android.graphics.drawable.GradientDrawable().apply {
+                                        setColor(Color.parseColor(if (isModifier) "#121320" else "#1c1d30"))
+                                        cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics)
+                                        setStroke(
+                                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
+                                            Color.parseColor("#2a2b45"),
+                                        )
+                                    }
+                                background = bgDrawable
+
+                                val params =
+                                    LinearLayout
+                                        .LayoutParams(
+                                            0,
+                                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 40f, resources.displayMetrics).toInt(),
+                                            1f,
+                                        ).apply {
+                                            setMargins(4, 2, 4, 2)
+                                        }
+                                layoutParams = params
+                                setOnClickListener {
+                                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    action()
+                                }
+                            }
+
+                        if (label == "CTRL") btnCtrl = btn
+                        if (label == "ALT") btnAlt = btn
+                        if (label == "SHIFT") btnShift = btn
+                        if (label == "⌨️") btnToggleKeypad = btn
+
+                        container.addView(btn)
                     }
-
-                    if (label == "CTRL") btnCtrl = btn
-                    if (label == "ALT") btnAlt = btn
-                    if (label == "SHIFT") btnShift = btn
-                    if (label == "⌨️") btnToggleKeypad = btn
-
-                    container.addView(btn)
                 }
             }
-        }
 
         // Initialize dots indicator
         val dotViews = ArrayList<View>()
         for (i in pages.indices) {
-            val dot = View(this).apply {
-                val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
-                val params = LinearLayout.LayoutParams(size, size).apply {
-                    setMargins(6, 0, 6, 0)
+            val dot =
+                View(this).apply {
+                    val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt()
+                    val params =
+                        LinearLayout.LayoutParams(size, size).apply {
+                            setMargins(6, 0, 6, 0)
+                        }
+                    layoutParams = params
+                    val drawable =
+                        android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(Color.parseColor("#44475a"))
+                        }
+                    background = drawable
                 }
-                layoutParams = params
-                val drawable = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL
-                    setColor(Color.parseColor("#44475a"))
-                }
-                background = drawable
-            }
             dotsLayout.addView(dot)
             dotViews.add(dot)
         }
 
         // Listen to page changes to update active dot indicators
-        viewPager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
-            override fun onPageSelected(position: Int) {
-                for (i in dotViews.indices) {
-                    val active = (i == position)
-                    val drawable = dotViews[i].background as android.graphics.drawable.GradientDrawable
-                    drawable.setColor(Color.parseColor(if (active) "#00FF41" else "#44475a"))
+        viewPager.registerOnPageChangeCallback(
+            object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
+                override fun onPageSelected(position: Int) {
+                    for (i in dotViews.indices) {
+                        val active = (i == position)
+                        val drawable = dotViews[i].background as android.graphics.drawable.GradientDrawable
+                        drawable.setColor(Color.parseColor(if (active) "#00FF41" else "#44475a"))
+                    }
                 }
-            }
-        })
+            },
+        )
 
         rootContainer.addView(viewPager)
         rootContainer.addView(dotsLayout)
@@ -1828,46 +2046,51 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun buildSpecialKeypadPanel(): LinearLayout {
-        specialKeypadPanel = LinearLayout(this).apply {
-            val heightPx = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, 200f, resources.displayMetrics).toInt()
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, heightPx)
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#08090d"))
-            visibility = View.GONE
-        }
+        specialKeypadPanel =
+            LinearLayout(this).apply {
+                val heightPx =
+                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 200f, resources.displayMetrics).toInt()
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, heightPx)
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#08090d"))
+                visibility = View.GONE
+            }
 
         // Tab bar container
-        val tabScroll = HorizontalScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(Color.parseColor("#06070a"))
-            setPadding(4, 4, 4, 4)
-        }
+        val tabScroll =
+            HorizontalScrollView(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                isHorizontalScrollBarEnabled = false
+                setBackgroundColor(Color.parseColor("#06070a"))
+                setPadding(4, 4, 4, 4)
+            }
 
-        tabContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
+        tabContainer =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            }
         tabScroll.addView(tabContainer)
         specialKeypadPanel.addView(tabScroll)
 
         // Scrollable keys container
-        val keysScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            isVerticalScrollBarEnabled = true
-        }
+        val keysScroll =
+            ScrollView(this).apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                isVerticalScrollBarEnabled = true
+            }
 
-        keysContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(8, 8, 8, 8)
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
+        keysContainer =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(8, 8, 8, 8)
+                layoutParams =
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            }
         keysScroll.addView(keysContainer)
         specialKeypadPanel.addView(keysScroll)
 
@@ -1882,32 +2105,36 @@ class TerminalActivity : ComponentActivity() {
         tabButtons.clear()
 
         for (tab in tabsList) {
-            val btn = Button(this).apply {
-                text = when (tab) {
-                    "CONTROL" -> "🎛️ Control"
-                    "SYMBOLS" -> "🔣 Symbols"
-                    "NAVIGATION" -> "🧭 Navigation"
-                    "CTRL COMBOS" -> "⚡ Combos"
-                    "F-KEYS" -> "🛠️ F-Keys"
-                    else -> tab
+            val btn =
+                Button(this).apply {
+                    text =
+                        when (tab) {
+                            "CONTROL" -> "🎛️ Control"
+                            "SYMBOLS" -> "🔣 Symbols"
+                            "NAVIGATION" -> "🧭 Navigation"
+                            "CTRL COMBOS" -> "⚡ Combos"
+                            "F-KEYS" -> "🛠️ F-Keys"
+                            else -> tab
+                        }
+                    textSize = 11f
+                    isAllCaps = false
+                    typeface = Typeface.MONOSPACE
+                    val params =
+                        LinearLayout
+                            .LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt(),
+                            ).apply {
+                                setMargins(4, 2, 4, 2)
+                            }
+                    layoutParams = params
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        activeKeyboardTab = tab
+                        updateTabStyles()
+                        renderActiveTab()
+                    }
                 }
-                textSize = 11f
-                isAllCaps = false
-                typeface = Typeface.MONOSPACE
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, TypedValue.applyDimension(
-                        TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
-                ).apply {
-                    setMargins(4, 2, 4, 2)
-                }
-                layoutParams = params
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    activeKeyboardTab = tab
-                    updateTabStyles()
-                    renderActiveTab()
-                }
-            }
             tabContainer.addView(btn)
             tabButtons[tab] = btn
         }
@@ -1917,14 +2144,15 @@ class TerminalActivity : ComponentActivity() {
     private fun updateTabStyles() {
         for ((tab, btn) in tabButtons) {
             val isActive = (tab == activeKeyboardTab)
-            val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor(if (isActive) "#151620" else "#08090d"))
-                cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
-                setStroke(
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.5f, resources.displayMetrics).toInt(),
-                    Color.parseColor(if (isActive) "#00FF41" else "#2a2b45")
-                )
-            }
+            val bgDrawable =
+                android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor(if (isActive) "#151620" else "#08090d"))
+                    cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
+                    setStroke(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.5f, resources.displayMetrics).toInt(),
+                        Color.parseColor(if (isActive) "#00FF41" else "#2a2b45"),
+                    )
+                }
             btn.background = bgDrawable
             btn.setTextColor(if (isActive) Color.parseColor("#00FF41") else Color.WHITE)
         }
@@ -1933,63 +2161,72 @@ class TerminalActivity : ComponentActivity() {
     private fun renderActiveTab() {
         keysContainer.removeAllViews()
 
-        val keys = when (activeKeyboardTab) {
-            "CONTROL" -> HackerKeyboardRows.row1Control
-            "SYMBOLS" -> HackerKeyboardRows.row3Symbols
-            "NAVIGATION" -> HackerKeyboardRows.row4Navigation
-            "CTRL COMBOS" -> HackerKeyboardRows.row5CtrlCombos
-            "F-KEYS" -> HackerKeyboardRows.row6Function
-            else -> emptyList()
-        }
+        val keys =
+            when (activeKeyboardTab) {
+                "CONTROL" -> HackerKeyboardRows.row1Control
+                "SYMBOLS" -> HackerKeyboardRows.row3Symbols
+                "NAVIGATION" -> HackerKeyboardRows.row4Navigation
+                "CTRL COMBOS" -> HackerKeyboardRows.row5CtrlCombos
+                "F-KEYS" -> HackerKeyboardRows.row6Function
+                else -> emptyList()
+            }
 
-        val columns = when (activeKeyboardTab) {
-            "SYMBOLS", "CTRL COMBOS" -> 5
-            else -> 4
-        }
+        val columns =
+            when (activeKeyboardTab) {
+                "SYMBOLS", "CTRL COMBOS" -> 5
+                else -> 4
+            }
 
         var currentRow: LinearLayout? = null
-        val rowHeight = TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
+        val rowHeight =
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 36f, resources.displayMetrics).toInt()
 
         for (i in keys.indices) {
             if (i % columns == 0) {
-                currentRow = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, rowHeight
-                    ).apply {
-                        setMargins(0, 3, 0, 3)
+                currentRow =
+                    LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutParams =
+                            LinearLayout
+                                .LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    rowHeight,
+                                ).apply {
+                                    setMargins(0, 3, 0, 3)
+                                }
                     }
-                }
                 keysContainer.addView(currentRow)
             }
 
             val key = keys[i]
-            val btn = Button(this).apply {
-                text = key.label
-                textSize = 12f
-                isAllCaps = false
-                typeface = Typeface.MONOSPACE
-                setTextColor(Color.WHITE)
-                
-                val bgDrawable = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(Color.parseColor("#151620"))
-                    cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
-                    setStroke(
-                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
-                        Color.parseColor("#2a2b45")
-                    )
-                }
-                background = bgDrawable
+            val btn =
+                Button(this).apply {
+                    text = key.label
+                    textSize = 12f
+                    isAllCaps = false
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(Color.WHITE)
 
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    setMargins(3, 0, 3, 0)
+                    val bgDrawable =
+                        android.graphics.drawable.GradientDrawable().apply {
+                            setColor(Color.parseColor("#151620"))
+                            cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics)
+                            setStroke(
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1f, resources.displayMetrics).toInt(),
+                                Color.parseColor("#2a2b45"),
+                            )
+                        }
+                    background = bgDrawable
+
+                    layoutParams =
+                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                            setMargins(3, 0, 3, 0)
+                        }
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        handleHackerKeyPress(key)
+                    }
                 }
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    handleHackerKeyPress(key)
-                }
-            }
             currentRow?.addView(btn)
         }
 
@@ -1998,11 +2235,13 @@ class TerminalActivity : ComponentActivity() {
         if (remainder != 0 && currentRow != null) {
             val missing = columns - remainder
             for (m in 0 until missing) {
-                val spacer = View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                        setMargins(4, 0, 4, 0)
+                val spacer =
+                    View(this).apply {
+                        layoutParams =
+                            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                                setMargins(4, 0, 4, 0)
+                            }
                     }
-                }
                 currentRow.addView(spacer)
             }
         }
@@ -2013,97 +2252,261 @@ class TerminalActivity : ComponentActivity() {
             resetCurrentCommand()
         }
 
-        val sequence = when (key) {
-            // Row 1 - Control
-            KeyType.ESC -> "\u001b"
-            KeyType.TAB -> "\t"
-            KeyType.ENTER -> "\r"
-            KeyType.BACK_SPACE -> "\u007f"
-            KeyType.INSERT -> "\u001b[2~"
-            KeyType.DELETE -> "\u001b[3~"
-            KeyType.SHIFT_TAB -> "\u001b[Z"
-            KeyType.PASTE -> {
-                val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                val clipData = clipboard.primaryClip
-                if (clipData != null && clipData.itemCount > 0) {
-                    val text = clipData.getItemAt(0).text?.toString()
-                    if (!text.isNullOrEmpty()) {
-                        pasteToCurrentSession(text)
-                    }
+        val sequence =
+            when (key) {
+                // Row 1 - Control
+                KeyType.ESC -> {
+                    "\u001b"
                 }
-                return
+
+                KeyType.TAB -> {
+                    "\t"
+                }
+
+                KeyType.ENTER -> {
+                    "\r"
+                }
+
+                KeyType.BACK_SPACE -> {
+                    "\u007f"
+                }
+
+                KeyType.INSERT -> {
+                    "\u001b[2~"
+                }
+
+                KeyType.DELETE -> {
+                    "\u001b[3~"
+                }
+
+                KeyType.SHIFT_TAB -> {
+                    "\u001b[Z"
+                }
+
+                KeyType.PASTE -> {
+                    val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clipData = clipboard.primaryClip
+                    if (clipData != null && clipData.itemCount > 0) {
+                        val text = clipData.getItemAt(0).text?.toString()
+                        if (!text.isNullOrEmpty()) {
+                            pasteToCurrentSession(text)
+                        }
+                    }
+                    return
+                }
+
+                // Row 4 - Navigation
+                KeyType.PAGE_UP -> {
+                    "\u001b[5~"
+                }
+
+                KeyType.PAGE_DOWN -> {
+                    "\u001b[6~"
+                }
+
+                KeyType.ARROW_LEFT -> {
+                    "\u001b[D"
+                }
+
+                KeyType.ARROW_RIGHT -> {
+                    "\u001b[C"
+                }
+
+                KeyType.ARROW_UP -> {
+                    "\u001b[A"
+                }
+
+                KeyType.ARROW_DOWN -> {
+                    "\u001b[B"
+                }
+
+                KeyType.HOME -> {
+                    "\u001b[H"
+                }
+
+                KeyType.END -> {
+                    "\u001b[F"
+                }
+
+                // Row 5 - Ctrl Combinations
+                KeyType.CTRL_UNDERSCORE -> {
+                    "\u001f"
+                }
+
+                KeyType.CTRL_XX -> {
+                    "\u0018\u0018"
+                }
+
+                KeyType.CTRL_Z -> {
+                    "\u001a"
+                }
+
+                KeyType.CTRL_R -> {
+                    "\u0012"
+                }
+
+                KeyType.CTRL_G -> {
+                    "\u0007"
+                }
+
+                KeyType.CTRL_A -> {
+                    "\u0001"
+                }
+
+                KeyType.CTRL_B -> {
+                    "\u0002"
+                }
+
+                KeyType.CTRL_X -> {
+                    "\u0018"
+                }
+
+                KeyType.CTRL_F -> {
+                    "\u0006"
+                }
+
+                KeyType.CTRL_P -> {
+                    "\u0010"
+                }
+
+                KeyType.CTRL_N -> {
+                    "\u000e"
+                }
+
+                KeyType.CTRL_C -> {
+                    "\u0003"
+                }
+
+                KeyType.CTRL_H -> {
+                    "\u0008"
+                }
+
+                KeyType.CTRL_S -> {
+                    "\u0013"
+                }
+
+                KeyType.CTRL_Q -> {
+                    "\u0011"
+                }
+
+                KeyType.CTRL_U -> {
+                    "\u0015"
+                }
+
+                KeyType.CTRL_W -> {
+                    "\u0017"
+                }
+
+                KeyType.CTRL_L -> {
+                    "\u000c"
+                }
+
+                KeyType.CTRL_D -> {
+                    "\u0004"
+                }
+
+                // Row 6 - F-keys
+                KeyType.F1 -> {
+                    "\u001bOP"
+                }
+
+                KeyType.F2 -> {
+                    "\u001bOQ"
+                }
+
+                KeyType.F3 -> {
+                    "\u001bOR"
+                }
+
+                KeyType.F4 -> {
+                    "\u001bOS"
+                }
+
+                KeyType.F5 -> {
+                    "\u001b[15~"
+                }
+
+                KeyType.F6 -> {
+                    "\u001b[17~"
+                }
+
+                KeyType.F7 -> {
+                    "\u001b[18~"
+                }
+
+                KeyType.F8 -> {
+                    "\u001b[19~"
+                }
+
+                KeyType.F9 -> {
+                    "\u001b[20~"
+                }
+
+                KeyType.F10 -> {
+                    "\u001b[21~"
+                }
+
+                KeyType.F11 -> {
+                    "\u001b[23~"
+                }
+
+                KeyType.F12 -> {
+                    "\u001b[24~"
+                }
+
+                KeyType.F13 -> {
+                    "\u001b[25~"
+                }
+
+                KeyType.F14 -> {
+                    "\u001b[26~"
+                }
+
+                KeyType.F15 -> {
+                    "\u001b[28~"
+                }
+
+                KeyType.F16 -> {
+                    "\u001b[29~"
+                }
+
+                KeyType.F17 -> {
+                    "\u001b[31~"
+                }
+
+                KeyType.F18 -> {
+                    "\u001b[32~"
+                }
+
+                KeyType.F19 -> {
+                    "\u001b[33~"
+                }
+
+                KeyType.F20 -> {
+                    "\u001b[34~"
+                }
+
+                // Alt, Ctrl and Shift keys (as fallbacks if needed)
+                KeyType.ALT -> {
+                    toggleAltModifier()
+                    return
+                }
+
+                KeyType.CTRL -> {
+                    toggleCtrlModifier()
+                    return
+                }
+
+                KeyType.SHIFT -> {
+                    toggleShiftModifier()
+                    return
+                }
+
+                // Row 3 - Symbols
+                else -> {
+                    key.label
+                }
             }
-
-            // Row 4 - Navigation
-            KeyType.PAGE_UP -> "\u001b[5~"
-            KeyType.PAGE_DOWN -> "\u001b[6~"
-            KeyType.ARROW_LEFT -> "\u001b[D"
-            KeyType.ARROW_RIGHT -> "\u001b[C"
-            KeyType.ARROW_UP -> "\u001b[A"
-            KeyType.ARROW_DOWN -> "\u001b[B"
-            KeyType.HOME -> "\u001b[H"
-            KeyType.END -> "\u001b[F"
-
-            // Row 5 - Ctrl Combinations
-            KeyType.CTRL_UNDERSCORE -> "\u001f"
-            KeyType.CTRL_XX -> "\u0018\u0018"
-            KeyType.CTRL_Z -> "\u001a"
-            KeyType.CTRL_R -> "\u0012"
-            KeyType.CTRL_G -> "\u0007"
-            KeyType.CTRL_A -> "\u0001"
-            KeyType.CTRL_B -> "\u0002"
-            KeyType.CTRL_X -> "\u0018"
-            KeyType.CTRL_F -> "\u0006"
-            KeyType.CTRL_P -> "\u0010"
-            KeyType.CTRL_N -> "\u000e"
-            KeyType.CTRL_C -> "\u0003"
-            KeyType.CTRL_H -> "\u0008"
-            KeyType.CTRL_S -> "\u0013"
-            KeyType.CTRL_Q -> "\u0011"
-            KeyType.CTRL_U -> "\u0015"
-            KeyType.CTRL_W -> "\u0017"
-            KeyType.CTRL_L -> "\u000c"
-            KeyType.CTRL_D -> "\u0004"
-
-            // Row 6 - F-keys
-            KeyType.F1 -> "\u001bOP"
-            KeyType.F2 -> "\u001bOQ"
-            KeyType.F3 -> "\u001bOR"
-            KeyType.F4 -> "\u001bOS"
-            KeyType.F5 -> "\u001b[15~"
-            KeyType.F6 -> "\u001b[17~"
-            KeyType.F7 -> "\u001b[18~"
-            KeyType.F8 -> "\u001b[19~"
-            KeyType.F9 -> "\u001b[20~"
-            KeyType.F10 -> "\u001b[21~"
-            KeyType.F11 -> "\u001b[23~"
-            KeyType.F12 -> "\u001b[24~"
-            KeyType.F13 -> "\u001b[25~"
-            KeyType.F14 -> "\u001b[26~"
-            KeyType.F15 -> "\u001b[28~"
-            KeyType.F16 -> "\u001b[29~"
-            KeyType.F17 -> "\u001b[31~"
-            KeyType.F18 -> "\u001b[32~"
-            KeyType.F19 -> "\u001b[33~"
-            KeyType.F20 -> "\u001b[34~"
-
-            // Alt, Ctrl and Shift keys (as fallbacks if needed)
-            KeyType.ALT -> {
-                toggleAltModifier()
-                return
-            }
-            KeyType.CTRL -> {
-                toggleCtrlModifier()
-                return
-            }
-            KeyType.SHIFT -> {
-                toggleShiftModifier()
-                return
-            }
-
-            // Row 3 - Symbols
-            else -> key.label
-        }
 
         sendKey(sequence)
     }
@@ -2175,13 +2578,13 @@ class TerminalActivity : ComponentActivity() {
         if (show) {
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(terminalView.windowToken, 0)
-            
+
             specialKeypadPanel.visibility = View.VISIBLE
             btnToggleKeypad.setBackgroundColor(Color.parseColor("#ff0033"))
         } else {
             specialKeypadPanel.visibility = View.GONE
             btnToggleKeypad.setBackgroundColor(Color.parseColor("#181926"))
-            
+
             showSoftKeyboard()
         }
         terminalView.requestFocus()
@@ -2202,18 +2605,20 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun buildErrorOverlay(): LinearLayout {
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#1a1a2e"))
-            setPadding(48, 64, 48, 64)
-            gravity = Gravity.CENTER
-            visibility = View.GONE
-        }
-        errorText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTypeface(Typeface.MONOSPACE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-        }
+        val layout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#1a1a2e"))
+                setPadding(48, 64, 48, 64)
+                gravity = Gravity.CENTER
+                visibility = View.GONE
+            }
+        errorText =
+            TextView(this).apply {
+                setTextColor(Color.WHITE)
+                setTypeface(Typeface.MONOSPACE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }
         layout.addView(errorText)
         return layout
     }
@@ -2231,10 +2636,11 @@ class TerminalActivity : ComponentActivity() {
             }
         }
         // Sessiony dočasně v plovoucím okně se nesmí znovu attachnout zde
-        val activeSessions = TerminalService.sessions.filter {
-            val sid = TerminalService.getSessionId(it)
-            sid == null || !TerminalService.floatedSessionIds.contains(sid)
-        }
+        val activeSessions =
+            TerminalService.sessions.filter {
+                val sid = TerminalService.getSessionId(it)
+                sid == null || !TerminalService.floatedSessionIds.contains(sid)
+            }
         if (activeSessions.isNotEmpty()) {
             // MULTI-ROOTFS: nový intent na jiný rootfs NESMÍ zabíjet existující
             // sessiony — Kali i Parrot můžou běžet současně (drawer je umí
@@ -2244,28 +2650,39 @@ class TerminalActivity : ComponentActivity() {
             //      (ostatní distra běží dál na pozadí).
             val newRootfsDirName = intent.getStringExtra("rootfsDirName")
             if (newRootfsDirName != null) {
-                val sameRootfs = activeSessions.firstOrNull { s ->
-                    val sid = TerminalService.getSessionId(s)
-                    val d = if (sid != null) TerminalService.sessionDistros[sid] else null
-                    // null distro = stará/neznámá session — default je kali
-                    d == newRootfsDirName || (d == null && newRootfsDirName == "nh/distro/kali")
-                }
+                val sameRootfs =
+                    activeSessions.firstOrNull { s ->
+                        val sid = TerminalService.getSessionId(s)
+                        val d = if (sid != null) TerminalService.sessionDistros[sid] else null
+                        // null distro = stará/neznámá session — default je kali
+                        d == newRootfsDirName || (d == null && newRootfsDirName == "nh/distro/kali")
+                    }
                 if (sameRootfs != null) {
                     Log.i(TAG, "Attaching to existing active session (same rootfs: $newRootfsDirName)")
                     val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
                     lifecycleScope.launch(Dispatchers.IO) {
-                        val cfg = try {
-                            val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
-                                           newRootfsDirName.startsWith("docker-") ||
-                                           newRootfsDirName.startsWith("oci-") ||
-                                           newRootfsDirName.startsWith("nh/distro/docker/")
-                            val distroId2 = newRootfsDirName.substringAfterLast("/")
-                            val bootMode2 = loadBootMode(this@TerminalActivity, distroId2, DEFAULT_BOOT_MODE)
-                            ProotManager.setupProotEnvironment(this@TerminalActivity, newRootfsDirName, mountStorageSaved, null, false, isDocker, bootMode2)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Attach setup failed for $newRootfsDirName", e)
-                            null
-                        }
+                        val cfg =
+                            try {
+                                val isDocker =
+                                    intent.getBooleanExtra("isDockerImage", false) ||
+                                        newRootfsDirName.startsWith("docker-") ||
+                                        newRootfsDirName.startsWith("oci-") ||
+                                        newRootfsDirName.startsWith("nh/distro/docker/")
+                                val distroId2 = newRootfsDirName.substringAfterLast("/")
+                                val bootMode2 = loadBootMode(this@TerminalActivity, distroId2, DEFAULT_BOOT_MODE)
+                                ProotManager.setupProotEnvironment(
+                                    this@TerminalActivity,
+                                    newRootfsDirName,
+                                    mountStorageSaved,
+                                    null,
+                                    false,
+                                    isDocker,
+                                    bootMode2,
+                                )
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Attach setup failed for $newRootfsDirName", e)
+                                null
+                            }
                         withContext(Dispatchers.Main) {
                             config = cfg
                             switchToSession(sameRootfs)
@@ -2273,8 +2690,11 @@ class TerminalActivity : ComponentActivity() {
                     }
                     return
                 }
-                Log.i(TAG, "No running session for $newRootfsDirName — creating NEW session " +
-                    "(${activeSessions.size} existing session(s) of other rootfs keep running)")
+                Log.i(
+                    TAG,
+                    "No running session for $newRootfsDirName — creating NEW session " +
+                        "(${activeSessions.size} existing session(s) of other rootfs keep running)",
+                )
                 // Fall through to create new session below — nic se nemaže.
             } else {
                 // No new intent — attach to existing
@@ -2284,18 +2704,28 @@ class TerminalActivity : ComponentActivity() {
                 val distroName = if (sessionId != null) TerminalService.sessionDistros[sessionId] ?: "nh/distro/kali" else "nh/distro/kali"
                 val mountStorageSaved = getSharedPreferences("vpn_settings", MODE_PRIVATE).getBoolean("mount_storage", false)
                 lifecycleScope.launch(Dispatchers.IO) {
-                    val cfg = try {
-                        val isDocker = intent.getBooleanExtra("isDockerImage", false) ||
-                                       distroName.startsWith("docker-") ||
-                                       distroName.startsWith("oci-") ||
-                                       distroName.startsWith("nh/distro/docker/")
-                        val distroId3 = distroName.substringAfterLast("/")
-                        val bootMode3 = loadBootMode(this@TerminalActivity, distroId3, DEFAULT_BOOT_MODE)
-                        ProotManager.setupProotEnvironment(this@TerminalActivity, distroName, mountStorageSaved, null, false, isDocker, bootMode3)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Attach setup failed for $distroName", e)
-                        null
-                    }
+                    val cfg =
+                        try {
+                            val isDocker =
+                                intent.getBooleanExtra("isDockerImage", false) ||
+                                    distroName.startsWith("docker-") ||
+                                    distroName.startsWith("oci-") ||
+                                    distroName.startsWith("nh/distro/docker/")
+                            val distroId3 = distroName.substringAfterLast("/")
+                            val bootMode3 = loadBootMode(this@TerminalActivity, distroId3, DEFAULT_BOOT_MODE)
+                            ProotManager.setupProotEnvironment(
+                                this@TerminalActivity,
+                                distroName,
+                                mountStorageSaved,
+                                null,
+                                false,
+                                isDocker,
+                                bootMode3,
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Attach setup failed for $distroName", e)
+                            null
+                        }
                     withContext(Dispatchers.Main) {
                         config = cfg
                         switchToSession(lastSession)
@@ -2309,19 +2739,21 @@ class TerminalActivity : ComponentActivity() {
         val customCommand = intent.getStringExtra("customCommand")
         val ashellMode = intent.getBooleanExtra("ashellMode", false)
         // Docker image: rozpozná se podle extra, prefixu adresáře nebo fallback na .docker_image soubor
-        val isDockerImage = intent.getBooleanExtra("isDockerImage", false) ||
-                            rootfsDirName.startsWith("docker-") ||
-                            rootfsDirName.startsWith("oci-") ||
-                            rootfsDirName.startsWith("nh/distro/docker/") ||
-                            File(filesDir, "$rootfsDirName/.docker_image").exists()
+        val isDockerImage =
+            intent.getBooleanExtra("isDockerImage", false) ||
+                rootfsDirName.startsWith("docker-") ||
+                rootfsDirName.startsWith("oci-") ||
+                rootfsDirName.startsWith("nh/distro/docker/") ||
+                File(filesDir, "$rootfsDirName/.docker_image").exists()
 
         // ashell: escape z prootu do host app shellu (/system/bin/sh, bez PRoot)
         if ((ashellMode || rootfsDirName == "ashell-host") &&
-            rootfsDirName != "ashell-adb") {
+            rootfsDirName != "ashell-adb"
+        ) {
             startAshellSession()
             return
         }
-        
+
         // ashell-adb: shell pod uid 2000 přes shell_daemon
         if (rootfsDirName == "ashell-adb") {
             startAdbShellSession()
@@ -2332,16 +2764,16 @@ class TerminalActivity : ComponentActivity() {
         val setupDoneFile = File(rootfsDir, "root/.setup_done")
 
         if (!setupDoneFile.exists()) {
-            android.app.AlertDialog.Builder(this)
+            android.app.AlertDialog
+                .Builder(this)
                 .setTitle("Detekce Rootu")
-                .setMessage("Má Vaše zařízení ROOT oprávnění (Magisk / KernelSU)?\n\nPokud zvolíte 'Ano', nebudou se vytvářet falešné mock soubory pro systémové příkazy (jako systemctl, sysctl, atd.), protože je nebudete potřebovat.")
-                .setPositiveButton("Ano") { _, _ ->
+                .setMessage(
+                    "Má Vaše zařízení ROOT oprávnění (Magisk / KernelSU)?\n\nPokud zvolíte 'Ano', nebudou se vytvářet falešné mock soubory pro systémové příkazy (jako systemctl, sysctl, atd.), protože je nebudete potřebovat.",
+                ).setPositiveButton("Ano") { _, _ ->
                     startSetup(rootfsDirName, mountStorage, customCommand, true, isDockerImage)
-                }
-                .setNegativeButton("Ne") { _, _ ->
+                }.setNegativeButton("Ne") { _, _ ->
                     startSetup(rootfsDirName, mountStorage, customCommand, false, isDockerImage)
-                }
-                .setCancelable(false)
+                }.setCancelable(false)
                 .show()
         } else {
             startSetup(rootfsDirName, mountStorage, customCommand, false, isDockerImage)
@@ -2357,39 +2789,46 @@ class TerminalActivity : ComponentActivity() {
     private fun startAdbShellSession() {
         Log.i(TAG, "startAdbShellSession: shell pod uid 2000 přes shell_daemon")
         val cwd = filesDir
-        
+
         // Spustit libshelldaemon.so --attach jako command pro TerminalSession.
         // Binarka je extrahovana z jniLibs do nativeLibraryDir (deploy cestou
         // (libshelldaemon.so z jniLibs), NIKOLI v filesDir.
-        val daemonBin = com.linux_core.core.ShellDaemonClient.binaryPath(applicationContext)
+        val daemonBin =
+            com.linux_core.core.ShellDaemonClient
+                .binaryPath(applicationContext)
         if (!daemonBin.exists()) {
             showError("libshelldaemon.so nenalezena v nativeLibraryDir")
             return
         }
-        
-        val token = com.linux_core.core.ShellDaemonClient.ensureToken(applicationContext)
-        val cmd = arrayOf(
-            daemonBin.absolutePath,
-            "--attach",
-            "--port=13341",
-            "--token=$token"
-        )
-        
-        val env = mutableListOf(
-            "HOME=${filesDir.absolutePath}",
-            "USER=shell",
-            "TERM=xterm-256color",
-            "ANDROID_DATA=/data",
-            "ANDROID_ROOT=/system"
-        )
-        
-        val cfg = com.linux_core.core.ProotConfig(
-            command = cmd,
-            cwd = cwd.absolutePath,
-            env = env.toTypedArray(),
-            prootPath = "",
-            rootfsDir = "(adb-shell)"
-        )
+
+        val token =
+            com.linux_core.core.ShellDaemonClient
+                .ensureToken(applicationContext)
+        val cmd =
+            arrayOf(
+                daemonBin.absolutePath,
+                "--attach",
+                "--port=13341",
+                "--token=$token",
+            )
+
+        val env =
+            mutableListOf(
+                "HOME=${filesDir.absolutePath}",
+                "USER=shell",
+                "TERM=xterm-256color",
+                "ANDROID_DATA=/data",
+                "ANDROID_ROOT=/system",
+            )
+
+        val cfg =
+            com.linux_core.core.ProotConfig(
+                command = cmd,
+                cwd = cwd.absolutePath,
+                env = env.toTypedArray(),
+                prootPath = "",
+                rootfsDir = "(adb-shell)",
+            )
         config = cfg
         startTerminalSession(cfg)
     }
@@ -2425,9 +2864,13 @@ class TerminalActivity : ComponentActivity() {
         try {
             val conf = File(filesDir, "ashell.conf")
             if (conf.exists()) {
-                val filtered = conf.readLines()
-                    .filterNot { val t = it.trim(); t == "block" || t.startsWith("block ") || t.startsWith("block\t") }
-                    .joinToString("\n") { it.replace("\${FILES_DIR}", filesDir.absolutePath) }
+                val filtered =
+                    conf
+                        .readLines()
+                        .filterNot {
+                            val t = it.trim()
+                            t == "block" || t.startsWith("block ") || t.startsWith("block\t")
+                        }.joinToString("\n") { it.replace("\${FILES_DIR}", filesDir.absolutePath) }
                 val envFile = File(filesDir, ".ashell_env")
                 envFile.writeText(filtered + "\n")
                 ashellEnvScript = envFile.absolutePath
@@ -2436,40 +2879,57 @@ class TerminalActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "ashell.conf -> ENV failed: ${e.message}")
         }
-        val env = mutableListOf(
-            "HOME=${filesDir.absolutePath}",
-            "USER=app",
-            "PATH=$fullPath",
-            "PREFIX=${hostPrefix.absolutePath}",
-            "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}:/system/lib64:/system/lib",
-            "TERM=xterm-256color",
-            "ANDROID_DATA=/data",
-            "ANDROID_ROOT=/system"
-        )
+        val env =
+            mutableListOf(
+                "HOME=${filesDir.absolutePath}",
+                "USER=app",
+                "PATH=$fullPath",
+                "PREFIX=${hostPrefix.absolutePath}",
+                "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}:/system/lib64:/system/lib",
+                "TERM=xterm-256color",
+                "ANDROID_DATA=/data",
+                "ANDROID_ROOT=/system",
+            )
         // ENV skript se sourcuje po startu shellu — unset LD_LIBRARY_PATH z configu
         // tím bezpečně přebije spawn hodnotu výše (viz SIGBUS lesson v AGENTS.md).
         ashellEnvScript?.let { env.add("ENV=$it") }
-        val cfg = com.linux_core.core.ProotConfig(
-            command = cmd,
-            cwd = cwd.absolutePath,
-            env = env.toTypedArray(),
-            prootPath = "",
-            rootfsDir = "(host)"
-        )
+        val cfg =
+            com.linux_core.core.ProotConfig(
+                command = cmd,
+                cwd = cwd.absolutePath,
+                env = env.toTypedArray(),
+                prootPath = "",
+                rootfsDir = "(host)",
+            )
         config = cfg
         startTerminalSession(cfg)
     }
 
-    private fun startSetup(rootfsDirName: String, mountStorage: Boolean, customCommand: String?, hasRoot: Boolean, isDockerImage: Boolean = false) {
+    private fun startSetup(
+        rootfsDirName: String,
+        mountStorage: Boolean,
+        customCommand: String?,
+        hasRoot: Boolean,
+        isDockerImage: Boolean = false,
+    ) {
         lifecycleScope.launch(Dispatchers.IO) {
-            val result = try {
-                val distroId4 = rootfsDirName.substringAfterLast("/")
-                val bootMode4 = loadBootMode(this@TerminalActivity, distroId4, DEFAULT_BOOT_MODE)
-                ProotManager.setupProotEnvironment(this@TerminalActivity, rootfsDirName, mountStorage, customCommand, hasRoot, isDockerImage, bootMode4)
-            } catch (e: Exception) {
-                Log.e(TAG, "Setup failed for $rootfsDirName", e)
-                null
-            }
+            val result =
+                try {
+                    val distroId4 = rootfsDirName.substringAfterLast("/")
+                    val bootMode4 = loadBootMode(this@TerminalActivity, distroId4, DEFAULT_BOOT_MODE)
+                    ProotManager.setupProotEnvironment(
+                        this@TerminalActivity,
+                        rootfsDirName,
+                        mountStorage,
+                        customCommand,
+                        hasRoot,
+                        isDockerImage,
+                        bootMode4,
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Setup failed for $rootfsDirName", e)
+                    null
+                }
             withContext(Dispatchers.Main) {
                 if (result == null) {
                     showError("Setup failed: $rootfsDirName")
@@ -2481,12 +2941,15 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-
     private fun startTerminalSession(config: ProotConfig) {
         Log.i(TAG, "startTerminalSession")
-        val session = try {
-            TerminalService.createSession(this, config, terminalView) { showError(it) }
-        } catch (e: Exception) { showError("Session error: ${e.message}"); return }
+        val session =
+            try {
+                TerminalService.createSession(this, config, terminalView) { showError(it) }
+            } catch (e: Exception) {
+                showError("Session error: ${e.message}")
+                return
+            }
 
         switchToSession(session)
         updateSessionDrawer()
@@ -2503,6 +2966,7 @@ class TerminalActivity : ComponentActivity() {
         terminalView.requestFocus()
         terminalView.postDelayed({
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+
             @Suppress("DEPRECATION")
             val success = imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
             Log.d(TAG, "showSoftInput request sent, success=$success")
@@ -2520,96 +2984,110 @@ class TerminalActivity : ComponentActivity() {
     //  SERVICES PANEL
     // ═══════════════════════════════════════════════════════════════
 
-    private fun buildServicesPanel(): LinearLayout {
-        return LinearLayout(this).apply {
+    private fun buildServicesPanel(): LinearLayout =
+        LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
             val h = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 34f, resources.displayMetrics).toInt()
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, h
-            ).apply { setMargins(8, 2, 8, 2) }
+            layoutParams =
+                LinearLayout
+                    .LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        h,
+                    ).apply { setMargins(8, 2, 8, 2) }
 
-            btnAdb = Button(this@TerminalActivity).apply {
-                text = "\uD83D\uDCE1 ADB \u25CB"
-                textSize = 9f
-                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.GRAY)
-                background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
-                setPadding(10, 4, 10, 4)
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                )
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    toggleServiceDetail("adb")
+            btnAdb =
+                Button(this@TerminalActivity).apply {
+                    text = "\uD83D\uDCE1 ADB \u25CB"
+                    textSize = 9f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.GRAY)
+                    background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
+                    setPadding(10, 4, 10, 4)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        )
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        toggleServiceDetail("adb")
+                    }
                 }
-            }
             addView(btnAdb)
 
-            View(this@TerminalActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt(), 1
-                )
-            }.also { addView(it) }
+            View(this@TerminalActivity)
+                .apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, resources.displayMetrics).toInt(),
+                            1,
+                        )
+                }.also { addView(it) }
 
             // START ALL button
-            Button(this@TerminalActivity).apply {
-                text = "\u25B6 ALL"
-                textSize = 9f
-                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.parseColor("#00FF41"))
-                background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#00FF41"), 1f)
-                setPadding(10, 4, 10, 4)
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                )
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    startAllServices()
-                }
-            }.also { addView(it) }
+            Button(this@TerminalActivity)
+                .apply {
+                    text = "\u25B6 ALL"
+                    textSize = 9f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#00FF41"))
+                    background = createRoundedDrawable(Color.parseColor("#0f1017"), 6f, Color.parseColor("#00FF41"), 1f)
+                    setPadding(10, 4, 10, 4)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        )
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        startAllServices()
+                    }
+                }.also { addView(it) }
 
-            View(this@TerminalActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(), 1
-                )
-            }.also { addView(it) }
+            View(this@TerminalActivity)
+                .apply {
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                            1,
+                        )
+                }.also { addView(it) }
 
             // Refresh button
-            Button(this@TerminalActivity).apply {
-                text = "\u21BB"
-                textSize = 12f
-                setTextColor(Color.GRAY)
-                background = null
-                setPadding(6, 0, 6, 0)
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                )
-                setOnClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    updateAllServiceIndicators()
-                }
-            }.also { addView(it) }
+            Button(this@TerminalActivity)
+                .apply {
+                    text = "\u21BB"
+                    textSize = 12f
+                    setTextColor(Color.GRAY)
+                    background = null
+                    setPadding(6, 0, 6, 0)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        )
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        updateAllServiceIndicators()
+                    }
+                }.also { addView(it) }
         }
-    }
 
-    private fun buildServicesDetailPanel(): LinearLayout {
-        return LinearLayout(this).apply {
+    private fun buildServicesDetailPanel(): LinearLayout =
+        LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             val p = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 12f, resources.displayMetrics).toInt()
             setPadding(p, 4, p, 4)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+            layoutParams =
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                )
             setBackgroundColor(Color.parseColor("#0c0d12"))
         }
-    }
 
     private fun toggleServicesPanel() {
         isServicesExpanded = !isServicesExpanded
@@ -2648,31 +3126,48 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    private fun updateServiceIndicator(service: String, button: Button) {
-        val running = when (service) {
-            "adb" -> com.linux_core.core.ShellDaemonClient.status().running
-            else -> false
-        }
+    private fun updateServiceIndicator(
+        service: String,
+        button: Button,
+    ) {
+        val running =
+            when (service) {
+                "adb" -> {
+                    com.linux_core.core.ShellDaemonClient
+                        .status()
+                        .running
+                }
+
+                else -> {
+                    false
+                }
+            }
 
         val icon = if (running) "\u25CF" else "\u25CB"
         val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
-        button.text = when (service) {
-            "adb" -> "\uD83D\uDCE1 ADB $icon"
-            else -> button.text
-        }
+        button.text =
+            when (service) {
+                "adb" -> "\uD83D\uDCE1 ADB $icon"
+                else -> button.text
+            }
         button.setTextColor(color)
     }
 
     /**
      * Update service indicator with pre-computed running state (main-thread safe).
      */
-    private fun updateServiceIndicator(service: String, button: Button, running: Boolean) {
+    private fun updateServiceIndicator(
+        service: String,
+        button: Button,
+        running: Boolean,
+    ) {
         val icon = if (running) "\u25CF" else "\u25CB"
         val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
-        button.text = when (service) {
-            "adb" -> "\uD83D\uDCE1 ADB $icon"
-            else -> button.text
-        }
+        button.text =
+            when (service) {
+                "adb" -> "\uD83D\uDCE1 ADB $icon"
+                else -> button.text
+            }
         button.setTextColor(color)
     }
 
@@ -2682,76 +3177,91 @@ class TerminalActivity : ComponentActivity() {
     private fun updateServiceDetail(service: String) {
         servicesDetailPanel.removeAllViews()
 
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
+        val row =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+            }
 
         when (service) {
             "adb" -> {
-                val st = com.linux_core.core.ShellDaemonClient.status()
+                val st =
+                    com.linux_core.core.ShellDaemonClient
+                        .status()
                 val icon = if (st.running) "\u25CF" else "\u25CB"
                 val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
 
-                row.addView(TextView(this).apply {
-                    text = "\uD83D\uDCE1 ADB SHELL DAEMON  $icon"
-                    setTextColor(color)
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                })
+                row.addView(
+                    TextView(this).apply {
+                        text = "\uD83D\uDCE1 ADB SHELL DAEMON  $icon"
+                        setTextColor(color)
+                        textSize = 11f
+                        setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    },
+                )
 
-                row.addView(TextView(this).apply {
-                    val info = if (st.running) "  port:${st.port}" else "  stopped"
-                    text = info
-                    setTextColor(Color.LTGRAY)
-                    textSize = 10f
-                    typeface = Typeface.MONOSPACE
-                })
+                row.addView(
+                    TextView(this).apply {
+                        val info = if (st.running) "  port:${st.port}" else "  stopped"
+                        text = info
+                        setTextColor(Color.LTGRAY)
+                        textSize = 10f
+                        typeface = Typeface.MONOSPACE
+                    },
+                )
 
-                row.addView(View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-                })
+                row.addView(
+                    View(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                    },
+                )
 
                 // START/STOP button
                 if (st.running) {
-                    row.addView(Button(this).apply {
-                        text = "\u23F9 STOP"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#FF5555"))
-                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            stopDaemonInGuest()
-                        }
-                    })
+                    row.addView(
+                        Button(this).apply {
+                            text = "\u23F9 STOP"
+                            textSize = 9f
+                            setTextColor(Color.parseColor("#FF5555"))
+                            background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
+                            setPadding(10, 4, 10, 4)
+                            layoutParams =
+                                LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                                )
+                            setOnClickListener {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                stopDaemonInGuest()
+                            }
+                        },
+                    )
                 } else {
-                    row.addView(Button(this).apply {
-                        text = "\u25B6 START (guest)"
-                        textSize = 9f
-                        setTextColor(Color.parseColor("#00FF41"))
-                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
-                        setPadding(10, 4, 10, 4)
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt()
-                        )
-                        setOnClickListener {
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            startDaemonInGuest()
-                        }
-                    })
+                    row.addView(
+                        Button(this).apply {
+                            text = "\u25B6 START (guest)"
+                            textSize = 9f
+                            setTextColor(Color.parseColor("#00FF41"))
+                            background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
+                            setPadding(10, 4, 10, 4)
+                            layoutParams =
+                                LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                                )
+                            setOnClickListener {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                startDaemonInGuest()
+                            }
+                        },
+                    )
                 }
             }
-
         }
 
         servicesDetailPanel.addView(row)
@@ -2824,14 +3334,19 @@ class TerminalActivity : ComponentActivity() {
 
     private fun startDaemonAsync(callback: ((Boolean) -> Unit)? = null) {
         Thread {
-            val ok = com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
+            val ok =
+                com.linux_core.core.ShellDaemonClient
+                    .startDaemon(applicationContext)
             runOnUiThread {
                 callback?.invoke(ok)
                 updateAllServiceIndicators()
                 if (!ok) {
-                    android.widget.Toast.makeText(this@TerminalActivity,
-                        "App neumí spustit uid 2000 — v guestu: ashell adb start",
-                        android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast
+                        .makeText(
+                            this@TerminalActivity,
+                            "App neumí spustit uid 2000 — v guestu: ashell adb start",
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
                 }
             }
         }.start()
@@ -2839,7 +3354,8 @@ class TerminalActivity : ComponentActivity() {
 
     private fun startAllServices() {
         Thread {
-            com.linux_core.core.ShellDaemonClient.startDaemon(applicationContext)
+            com.linux_core.core.ShellDaemonClient
+                .startDaemon(applicationContext)
             runOnUiThread { updateAllServiceIndicators() }
         }.start()
     }
@@ -2848,50 +3364,78 @@ class TerminalActivity : ComponentActivity() {
 class TerminalViewClientImpl : TerminalViewClient {
     private var activity: TerminalActivity? = null
 
-    fun setActivity(activity: TerminalActivity) { this.activity = activity }
+    fun setActivity(activity: TerminalActivity) {
+        this.activity = activity
+    }
 
     override fun onScale(scale: Float): Float {
         activity?.changeTerminalFontSize(scale)
         return 1.0f
     }
+
     override fun onSingleTapUp(e: MotionEvent) {
         Log.d("TerminalView", "onSingleTapUp")
         if (activity?.toggleSpecialKeypad(false) == null) {
             activity?.showSoftKeyboard()
         }
     }
+
     override fun shouldBackButtonBeMappedToEscape() = false
+
     override fun shouldEnforceCharBasedInput() = false
+
     override fun shouldUseCtrlSpaceWorkaround() = false
+
     override fun isTerminalViewSelected() = true
+
     override fun copyModeChanged(copyMode: Boolean) {}
-    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
+
+    override fun onKeyDown(
+        keyCode: Int,
+        e: KeyEvent,
+        session: TerminalSession,
+    ): Boolean {
         Log.d("TerminalView", "onKeyDown: keyCode=$keyCode")
         if (keyCode == KeyEvent.KEYCODE_ENTER) {
             activity?.onTerminalEnter()
             session.write("\r")
             return true
         }
-        val arrowSequence = when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A"
-            KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B"
-            KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C"
-            KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D"
-            else -> null
-        }
+        val arrowSequence =
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C"
+                KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D"
+                else -> null
+            }
         if (arrowSequence != null) {
             session.write(arrowSequence)
             return true
         }
         return false
     }
-    override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
+
+    override fun onKeyUp(
+        keyCode: Int,
+        e: KeyEvent,
+    ) = false
+
     override fun onLongPress(event: MotionEvent) = false
+
     override fun readControlKey() = false
+
     override fun readAltKey() = false
+
     override fun readShiftKey() = activity?.customShiftActive == true
+
     override fun readFnKey() = false
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+
+    override fun onCodePoint(
+        codePoint: Int,
+        ctrlDown: Boolean,
+        session: TerminalSession,
+    ): Boolean {
         val act = activity
         val finalCtrl = ctrlDown || (act?.customCtrlActive == true)
         val finalAlt = act?.customAltActive == true
@@ -2931,14 +3475,58 @@ class TerminalViewClientImpl : TerminalViewClient {
         session.write(input)
         return true
     }
+
     override fun onEmulatorSet() {
         Log.d("TerminalView", "onEmulatorSet")
     }
-    override fun logError(tag: String, message: String) { Log.e(tag, message) }
-    override fun logWarn(tag: String, message: String) { Log.w(tag, message) }
-    override fun logInfo(tag: String, message: String) { Log.i(tag, message) }
-    override fun logDebug(tag: String, message: String) { Log.d(tag, message) }
-    override fun logVerbose(tag: String, message: String) { Log.v(tag, message) }
-    override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) { Log.e(tag, message, e) }
-    override fun logStackTrace(tag: String, e: Exception) { Log.e(tag, "Stack trace", e) }
+
+    override fun logError(
+        tag: String,
+        message: String,
+    ) {
+        Log.e(tag, message)
+    }
+
+    override fun logWarn(
+        tag: String,
+        message: String,
+    ) {
+        Log.w(tag, message)
+    }
+
+    override fun logInfo(
+        tag: String,
+        message: String,
+    ) {
+        Log.i(tag, message)
+    }
+
+    override fun logDebug(
+        tag: String,
+        message: String,
+    ) {
+        Log.d(tag, message)
+    }
+
+    override fun logVerbose(
+        tag: String,
+        message: String,
+    ) {
+        Log.v(tag, message)
+    }
+
+    override fun logStackTraceWithMessage(
+        tag: String,
+        message: String,
+        e: Exception,
+    ) {
+        Log.e(tag, message, e)
+    }
+
+    override fun logStackTrace(
+        tag: String,
+        e: Exception,
+    ) {
+        Log.e(tag, "Stack trace", e)
+    }
 }
