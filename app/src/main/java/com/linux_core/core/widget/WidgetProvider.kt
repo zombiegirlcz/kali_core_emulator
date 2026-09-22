@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.widget
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager

@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.widget
 
 import android.app.Service
 import android.appwidget.AppWidgetManager
@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.RemoteViews
 import com.linux_core.R
+import com.linux_core.core.VpnCaptureService
 import com.termux.terminal.TerminalBuffer
 
 class WidgetRenderService : Service() {

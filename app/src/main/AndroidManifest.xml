@@ -195,7 +195,7 @@
 
         <!-- Widget temporarily disabled for later
         <receiver
-            android:name=".core.WidgetProvider"
+            android:name=".core.widget.WidgetProvider"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -210,7 +210,7 @@
         </receiver>
 
         <service
-            android:name=".core.WidgetRenderService"
+            android:name=".core.widget.WidgetRenderService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
         -->

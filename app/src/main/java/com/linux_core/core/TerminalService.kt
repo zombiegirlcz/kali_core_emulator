@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.linux_core.core.widget.WidgetProvider
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView

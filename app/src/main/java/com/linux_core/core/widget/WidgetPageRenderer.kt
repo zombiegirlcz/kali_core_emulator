@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.widget
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
