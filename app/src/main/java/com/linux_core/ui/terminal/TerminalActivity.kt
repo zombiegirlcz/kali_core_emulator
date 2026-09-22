@@ -81,19 +81,19 @@ class TerminalActivity : ComponentActivity() {
     private val viewClient = TerminalViewClientImpl()
 
     // History and suggestions
-    private lateinit var historyManager: com.linux_core.core.HistoryManager
-    private val currentCommand = StringBuilder()
-    private lateinit var suggestionBar: HorizontalScrollView
-    private lateinit var suggestionContainer: LinearLayout
+    internal lateinit var historyManager: com.linux_core.core.HistoryManager
+    internal val currentCommand = StringBuilder()
+    internal lateinit var suggestionBar: HorizontalScrollView
+    internal lateinit var suggestionContainer: LinearLayout
 
     // Debounce handler pro návrhový bar. Vytváření Buttonů na main threadu
     // PŘI každém code pointu (uvnitř IME commitText → inputCodePoint) MIUI
     // vyhodnotí jako jank a zkompenzuje to re-komitováním znaku → „multi input“
     // (každé písmeno se vloží 2–5×). Srazíme záplavu keystroke na jednu
     // aktualizaci a bar přestavíme JEN když se sada návrhů skutečně změnila.
-    private val suggestionHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val rebuildSuggestionsRunnable = Runnable { rebuildSuggestions() }
-    private var lastSuggestedList: List<String>? = null
+    internal val suggestionHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    internal val rebuildSuggestionsRunnable = Runnable { rebuildSuggestions() }
+    internal var lastSuggestedList: List<String>? = null
 
     // Drawer-based Session Management
     private lateinit var drawerLayout: androidx.drawerlayout.widget.DrawerLayout
@@ -1116,110 +1116,6 @@ class TerminalActivity : ComponentActivity() {
             TerminalService.detachView(session)
         }
         currentSession = null
-    }
-
-    private fun buildSuggestionBar(): HorizontalScrollView {
-        suggestionBar =
-            HorizontalScrollView(this).apply {
-                layoutParams =
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                setBackgroundColor(Color.parseColor("#1a1b26"))
-                isHorizontalScrollBarEnabled = false
-                visibility = View.GONE
-            }
-
-        suggestionContainer =
-            LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams =
-                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-                setPadding(8, 4, 8, 4)
-            }
-
-        suggestionBar.addView(suggestionContainer)
-        return suggestionBar
-    }
-
-    fun updateSuggestions() {
-        // Debounce: zpracujeme jen poslední stav (neměnící se návrhy se
-        // nepřestavují), abychom neblokovali IME commitText main vlaknem.
-        suggestionHandler.removeCallbacks(rebuildSuggestionsRunnable)
-        suggestionHandler.post(rebuildSuggestionsRunnable)
-    }
-
-    // Beží na main threadu (postováno přes suggestionHandler).
-    private fun rebuildSuggestions() {
-        val input = currentCommand.toString()
-        val suggestions = historyManager.getSuggestions(input)
-        if (suggestions == lastSuggestedList) return
-        lastSuggestedList = suggestions
-
-        if (suggestions.isEmpty()) {
-            suggestionBar.visibility = View.GONE
-            return
-        }
-        suggestionBar.visibility = View.VISIBLE
-        suggestionContainer.removeAllViews()
-        for (sug in suggestions) {
-            val btn =
-                Button(this).apply {
-                    text = sug
-                    textSize = 10f
-                    isAllCaps = false
-                    typeface = Typeface.MONOSPACE
-                    setTextColor(Color.parseColor("#a9b1d6"))
-                    setBackgroundColor(Color.parseColor("#24283b"))
-                    val params =
-                        LinearLayout
-                            .LayoutParams(
-                                LinearLayout.LayoutParams.WRAP_CONTENT,
-                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 32f, resources.displayMetrics).toInt(),
-                            ).apply {
-                                setMargins(4, 2, 4, 2)
-                            }
-                    layoutParams = params
-                    setOnClickListener {
-                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        applySuggestion(sug)
-                    }
-                }
-            suggestionContainer.addView(btn)
-        }
-    }
-
-    private fun applySuggestion(suggestion: String) {
-        // Clear current line using Ctrl+U (\u0015)
-        currentSession?.write("\u0015")
-        currentSession?.write(suggestion)
-        currentCommand.setLength(0)
-        currentCommand.append(suggestion)
-        updateSuggestions()
-        terminalView.requestFocus()
-    }
-
-    fun onTerminalInput(codePoint: Int) {
-        if (codePoint == 127 || codePoint == 8) { // Backspace
-            if (currentCommand.isNotEmpty()) {
-                currentCommand.setLength(currentCommand.length - 1)
-            }
-        } else if (codePoint in 32..126) { // Printable chars
-            currentCommand.append(codePoint.toChar())
-        }
-        updateSuggestions()
-    }
-
-    fun onTerminalEnter() {
-        val cmd = currentCommand.toString().trim()
-        if (cmd.isNotEmpty()) {
-            historyManager.addCommand(cmd)
-        }
-        currentCommand.setLength(0)
-        updateSuggestions()
-    }
-
-    fun resetCurrentCommand() {
-        currentCommand.setLength(0)
-        updateSuggestions()
     }
 
     fun updateSessionDrawer() {
