@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.docker
 
 /**
  * Parsed container image reference (Docker Hub + custom registries).

@@ -97,7 +97,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
-import com.linux_core.core.DockerImageRef
+import com.linux_core.core.docker.DockerImageRef
 import com.linux_core.core.RemoteDistroScript
 import com.linux_core.core.RemoteRootfsCatalog
 import com.linux_core.core.RootfsManager

@@ -256,7 +256,7 @@ fun DockerPullScreen(
                                         lastFile
                                     }
                                     else -> {
-                                        val ref = com.linux_core.core.DockerImageRef.parse(rawInput)
+                                        val ref = com.linux_core.core.docker.DockerImageRef.parse(rawInput)
                                         pullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
                                         var lastFile: File? = null
                                         RootfsManager.pullDockerImage(context, ref).collect { (p, status) ->
