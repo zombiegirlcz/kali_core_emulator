@@ -54,7 +54,7 @@ import kotlin.concurrent.thread
 
 class TerminalActivity : ComponentActivity() {
     companion object {
-        private const val TAG = "TerminalActivity"
+        internal const val TAG = "TerminalActivity"
 
         @Volatile
         var instance: TerminalActivity? = null
@@ -73,11 +73,11 @@ class TerminalActivity : ComponentActivity() {
             }
         }
 
-    private lateinit var terminalView: TerminalView
+    internal lateinit var terminalView: TerminalView
     private lateinit var errorLayout: LinearLayout
     private lateinit var errorText: TextView
     private var config: ProotConfig? = null
-    private var currentSession: TerminalSession? = null
+    internal var currentSession: TerminalSession? = null
     private val viewClient = TerminalViewClientImpl()
 
     // History and suggestions
@@ -168,7 +168,7 @@ class TerminalActivity : ComponentActivity() {
     private val tabButtons = HashMap<String, Button>()
 
     // X11 Desktop (external launcher) integration fields
-    private var activeViewMode = "CLI" // "CLI" or "GUI"
+    internal var activeViewMode = "CLI" // "CLI" or "GUI"
     private lateinit var btnCli: Button
     private lateinit var btnGui: Button
     private lateinit var guiContainer: FrameLayout
@@ -179,7 +179,7 @@ class TerminalActivity : ComponentActivity() {
     private lateinit var guiProgress: ProgressBar
     private lateinit var toolbarScroll: View
     private val guiScope = CoroutineScope(Dispatchers.Main + Job())
-    private var pendingNanoCommand: String? = null
+    internal var pendingNanoCommand: String? = null
 
     // PiP: uložené visibility chrome prvků před vstupem do PiP (obnovení při návratu)
     private val pipSavedVisibility = HashMap<View, Int>()
@@ -845,7 +845,7 @@ class TerminalActivity : ComponentActivity() {
         if (s.isRunning) switchToSession(s)
     }
 
-    private fun switchViewMode(mode: String) {
+    internal fun switchViewMode(mode: String) {
         activeViewMode = mode
         if (mode == "CLI") {
             btnCli.setTextColor(Color.BLACK)
@@ -1100,106 +1100,6 @@ class TerminalActivity : ComponentActivity() {
         handleFileIntent(intent)
         // singleTask: restartovat session pokud nový intent míří na jiný rootfs
         setupAndStartSession()
-    }
-
-    private fun handleFileIntent(intent: Intent) {
-        val action = intent.action
-        if (Intent.ACTION_VIEW == action || Intent.ACTION_EDIT == action) {
-            val uri = intent.data ?: return
-            val fileName = getFileNameFromUri(uri)
-
-            // Ensure layout migration before resolving rootfs paths
-            RootfsManager.ensureMigrated(applicationContext)
-
-            // Determine rootfs directory name
-            var rootfsDirName = intent.getStringExtra("rootfsDirName")
-            if (rootfsDirName == null) {
-                val kaliSetup = File(filesDir, "nh/distro/kali/root/.setup_done")
-                val parrotSetup = File(filesDir, "nh/distro/parrot/root/.setup_done")
-                rootfsDirName =
-                    when {
-                        kaliSetup.exists() -> "nh/distro/kali"
-                        parrotSetup.exists() -> "nh/distro/parrot"
-                        else -> "nh/distro/kali"
-                    }
-            }
-
-            val copiedFile = copyUriToChrootTmp(uri, fileName, rootfsDirName)
-            if (copiedFile != null) {
-                val command = "nano /tmp/nethunter_edit_$fileName"
-
-                // If GUI is active, automatically switch to CLI so they see the editor
-                if (activeViewMode != "CLI") {
-                    switchViewMode("CLI")
-                }
-
-                val activeSession = currentSession ?: TerminalService.sessions.firstOrNull()
-                if (activeSession != null) {
-                    // Send command to active session
-                    switchToSession(activeSession)
-                    terminalView.post {
-                        terminalView.postDelayed({
-                            activeSession.write("\u0003\u0015$command\r")
-                        }, 500)
-                    }
-                } else {
-                    // Save for when the session starts
-                    pendingNanoCommand = command
-                }
-            }
-        }
-    }
-
-    private fun getFileNameFromUri(uri: android.net.Uri): String {
-        var result: String? = null
-        if (uri.scheme == "content") {
-            val cursor = contentResolver.query(uri, null, null, null, null)
-            try {
-                if (cursor != null && cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (idx != -1) {
-                        result = cursor.getString(idx)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to query displayName: ${e.message}")
-            } finally {
-                cursor?.close()
-            }
-        }
-        if (result == null) {
-            result = uri.path
-            val cut = result?.lastIndexOf('/') ?: -1
-            if (cut != -1) {
-                result = result?.substring(cut + 1)
-            }
-        }
-        // Sanitize filename to avoid weird shell characters
-        return (result ?: "unnamed_file").replace(Regex("[^a-zA-Z0-9._-]"), "_")
-    }
-
-    private fun copyUriToChrootTmp(
-        uri: android.net.Uri,
-        fileName: String,
-        rootfsDirName: String,
-    ): File? {
-        try {
-            val destDir = File(filesDir, "$rootfsDirName/tmp")
-            if (!destDir.exists()) {
-                destDir.mkdirs()
-            }
-            val destFile = File(destDir, "nethunter_edit_$fileName")
-            contentResolver.openInputStream(uri)?.use { inputStream ->
-                destFile.outputStream().use { outputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            }
-            Log.i(TAG, "Successfully copied $uri to ${destFile.absolutePath}")
-            return destFile
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to copy URI to chroot tmp: ${e.message}")
-            return null
-        }
     }
 
     override fun onDestroy() {
@@ -1798,7 +1698,7 @@ class TerminalActivity : ComponentActivity() {
         }
     }
 
-    private fun switchToSession(session: TerminalSession) {
+    internal fun switchToSession(session: TerminalSession) {
         currentSession?.let { TerminalService.detachView(it) }
         currentSession = session
         TerminalService.attachView(session, terminalView)
