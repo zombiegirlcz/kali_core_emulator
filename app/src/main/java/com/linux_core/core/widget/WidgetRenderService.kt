@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.RemoteViews
 import com.linux_core.R
+import com.linux_core.core.TerminalService
 import com.linux_core.core.VpnCaptureService
 import com.termux.terminal.TerminalBuffer
 
