@@ -98,12 +98,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.linux_core.core.docker.DockerImageRef
-import com.linux_core.core.RemoteDistroScript
+import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
+import com.linux_core.core.rootfs.RemoteDistroScript
 import com.linux_core.core.rootfs.RemoteRootfsCatalog
 import com.linux_core.core.rootfs.RootfsManager
-import com.linux_core.core.saveBootMode
-import com.linux_core.core.loadBootMode
-import com.linux_core.core.DEFAULT_BOOT_MODE
+import com.linux_core.core.rootfs.loadBootMode
+import com.linux_core.core.rootfs.saveBootMode
 import com.linux_core.ui.components.BootModeChip
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
@@ -183,13 +183,13 @@ class MainActivity : ComponentActivity() {
         com.linux_core.core.ImmersiveMode.enterImmersive(this)
 
         // Layout migration: ensure old paths are moved to nh/distro + usr/bin before any rootfs access
-        com.linux_core.core.RootfsManager.ensureMigrated(applicationContext)
+        com.linux_core.core.rootfs.RootfsManager.ensureMigrated(applicationContext)
 
         // Deploy host-side tools (proot/loader/boot/nano/rsync/sed/rg) into files/usr/bin
         // so boot and PRoot launcher are available immediately after app start.
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                com.linux_core.core.ProotManager.setupProotEnvironment(applicationContext)
+                com.linux_core.core.rootfs.ProotManager.setupProotEnvironment(applicationContext)
             } catch (e: Exception) {
                 Log.w("MainActivity", "Early ProotManager setup failed", e)
             }

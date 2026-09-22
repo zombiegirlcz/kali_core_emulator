@@ -31,12 +31,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
-import com.linux_core.core.DEFAULT_BOOT_MODE
-import com.linux_core.core.ProotConfig
 import com.linux_core.core.TerminalService
-import com.linux_core.core.loadBootMode
+import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
+import com.linux_core.core.rootfs.ProotConfig
 import com.linux_core.core.rootfs.ProotManager
 import com.linux_core.core.rootfs.RootfsManager
+import com.linux_core.core.rootfs.loadBootMode
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.CoroutineScope
@@ -1344,7 +1344,7 @@ class TerminalActivity : ComponentActivity() {
             )
 
         val cfg =
-            com.linux_core.core.ProotConfig(
+            com.linux_core.core.rootfs.ProotConfig(
                 command = cmd,
                 cwd = cwd.absolutePath,
                 env = env.toTypedArray(),
@@ -1416,7 +1416,7 @@ class TerminalActivity : ComponentActivity() {
         // tím bezpečně přebije spawn hodnotu výše (viz SIGBUS lesson v AGENTS.md).
         ashellEnvScript?.let { env.add("ENV=$it") }
         val cfg =
-            com.linux_core.core.ProotConfig(
+            com.linux_core.core.rootfs.ProotConfig(
                 command = cmd,
                 cwd = cwd.absolutePath,
                 env = env.toTypedArray(),
