@@ -1,8 +1,10 @@
-package com.linux_core.core
+package com.linux_core.core.rootfs
 
 import android.content.Context
 import android.os.Process
 import android.util.Log
+import com.linux_core.core.ShellDaemonClient
+import com.linux_core.core.UsbFdExporter
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest

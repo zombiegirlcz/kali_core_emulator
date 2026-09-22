@@ -99,8 +99,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.linux_core.core.docker.DockerImageRef
 import com.linux_core.core.RemoteDistroScript
-import com.linux_core.core.RemoteRootfsCatalog
-import com.linux_core.core.RootfsManager
+import com.linux_core.core.rootfs.RemoteRootfsCatalog
+import com.linux_core.core.rootfs.RootfsManager
 import com.linux_core.core.saveBootMode
 import com.linux_core.core.loadBootMode
 import com.linux_core.core.DEFAULT_BOOT_MODE

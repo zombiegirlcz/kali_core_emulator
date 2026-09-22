@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import com.linux_core.core.rootfs.ProotConfig
 import androidx.core.app.NotificationCompat
 import com.linux_core.core.widget.WidgetProvider
 import com.termux.terminal.TerminalSession

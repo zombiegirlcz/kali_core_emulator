@@ -4,6 +4,8 @@ import android.content.ClipboardManager
 import com.linux_core.core.ai.VerdictNotifier
 import com.linux_core.core.mitm.MitmTrafficStore
 import com.linux_core.core.mitm.TlsMitmEngine
+import com.linux_core.core.rootfs.ProotManager
+import com.linux_core.core.rootfs.RootfsManager
 import com.linux_core.core.usb.UsbHostManager
 import android.content.Context
 import android.content.Intent

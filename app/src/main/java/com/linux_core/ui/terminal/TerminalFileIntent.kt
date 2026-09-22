@@ -2,8 +2,8 @@ package com.linux_core.ui.terminal
 
 import android.content.Intent
 import android.util.Log
-import com.linux_core.core.RootfsManager
 import com.linux_core.core.TerminalService
+import com.linux_core.core.rootfs.RootfsManager
 import java.io.File
 
 /**

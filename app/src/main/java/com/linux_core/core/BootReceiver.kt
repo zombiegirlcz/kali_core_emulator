@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.linux_core.core.rootfs.RemoteRootfsSyncReceiver
 
 /**
  * Auto-starts the app in the background after device boot (and after an app

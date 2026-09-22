@@ -216,7 +216,7 @@
         -->
 
         <provider
-            android:name=".core.DistroDocumentsProvider"
+            android:name=".core.rootfs.DistroDocumentsProvider"
             android:authorities="com.linux_core.documents"
             android:exported="true"
             android:grantUriPermissions="true"
@@ -294,7 +294,7 @@
 
         <!-- Midnight auto-pull of daily rootfs + retry on failure -->
         <receiver
-            android:name=".core.RemoteRootfsSyncReceiver"
+            android:name=".core.rootfs.RemoteRootfsSyncReceiver"
             android:exported="false" />
 
         <!-- App-to-app Binder most pro kali_ai_assistant (signature permission).

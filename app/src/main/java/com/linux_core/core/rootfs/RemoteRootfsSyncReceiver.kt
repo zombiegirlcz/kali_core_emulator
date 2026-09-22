@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.rootfs
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver

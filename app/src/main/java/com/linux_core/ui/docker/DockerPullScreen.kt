@@ -49,7 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.linux_core.core.RootfsManager
+import com.linux_core.core.rootfs.RootfsManager
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.io.File

@@ -14,9 +14,9 @@ import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
 import com.linux_core.core.DEFAULT_BOOT_MODE
 import com.linux_core.core.HackerKeyboardRows
-import com.linux_core.core.ProotManager
 import com.linux_core.core.TerminalService
 import com.linux_core.core.loadBootMode
+import com.linux_core.core.rootfs.ProotManager
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

@@ -33,10 +33,10 @@ import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
 import com.linux_core.core.DEFAULT_BOOT_MODE
 import com.linux_core.core.ProotConfig
-import com.linux_core.core.ProotManager
-import com.linux_core.core.RootfsManager
 import com.linux_core.core.TerminalService
 import com.linux_core.core.loadBootMode
+import com.linux_core.core.rootfs.ProotManager
+import com.linux_core.core.rootfs.RootfsManager
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.CoroutineScope
