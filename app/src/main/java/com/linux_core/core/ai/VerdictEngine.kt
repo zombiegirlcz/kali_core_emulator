@@ -1,7 +1,9 @@
-package com.linux_core.core
+package com.linux_core.core.ai
 
 import android.content.Context
 import android.util.Log
+import com.linux_core.core.TrafficAggregator
+import com.linux_core.core.TrafficHistoryStore
 import com.linux_core.core.mitm.TlsMitmEngine
 import com.linux_core.security.CertificateManager
 import okhttp3.MediaType.Companion.toMediaType

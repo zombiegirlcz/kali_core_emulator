@@ -273,10 +273,10 @@
         </receiver>
 
         <receiver
-            android:name=".core.OffensiveActionReceiver"
+            android:name=".core.ai.OffensiveActionReceiver"
             android:exported="false" />
         <receiver
-            android:name=".core.VerdictReceiver"
+            android:name=".core.ai.VerdictReceiver"
             android:exported="false" />
         <!-- Watchdog: exact alarm každých 10 min, oživí service+cron po LMK/OEM killu -->
         <receiver

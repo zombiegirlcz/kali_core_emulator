@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.ai
 
 import android.content.Context
 import ai.onnxruntime.OnnxTensor

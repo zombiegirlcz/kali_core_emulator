@@ -1,7 +1,8 @@
-package com.linux_core.core
+package com.linux_core.core.ai
 
 import android.content.Context
 import android.util.Log
+import com.linux_core.core.TrafficHistoryStore
 
 object HistoricalAnalyst {
     private const val TAG = "HistoricalAnalyst"

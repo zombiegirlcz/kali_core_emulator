@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.ai
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.linux_core.core.TrafficAggregator
 import java.util.concurrent.ConcurrentHashMap
 
 /**

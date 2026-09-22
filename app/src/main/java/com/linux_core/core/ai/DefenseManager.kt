@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.ai
 
 import android.util.Log
 import java.io.File
