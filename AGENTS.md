@@ -288,6 +288,16 @@ nutné (apt/dpkg zálohy přes `link()`); `-0` kvůli fake root UX; tracer cost 
 (ne degradace live vs. fresh); **`LD_LIBRARY_PATH` v `hostShellEnv()` způsoboval SIGBUS** — nikdy
 nepřidávat; `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
 
+**PRoot verze — `tmux`/multiplexery vyžadují ≥ v5.1.107.91:** staré `v5.1.107.90` desynchronizuje
+syscall tracer state machine na aarch64 zařízeních se starým 4.x kernelem (`arm64 before v5.3`, tj.
+většina Android telefonů) při emulaci syscallů, které PRoot cancelluje/fejkuje (upstream fix
+`61681c64`, „syscall: don't wait for a sysenter stop the kernel skips"). Projev: `tmux attach`
+padá na `open terminal failed: not a terminal` (fd doručený přes `SCM_RIGHTS` skončí špatně
+klasifikovaný, `ioctl` na něj padá i s validním `/dev/pts/*`), zatímco stejný rootfs pod Termux
+proot-distro (má `v5.1.107.91`+) funguje bez problému — **není to SELinux ani konfigurace**, obě
+appky běží ve stejné doméně `untrusted_app_27`, je to čistě verze PRoot binárky. `PROOT_TAG` je
+teď `v5.1.107.93` (obsahuje navíc opravy přímo v `link2symlink`, viz níže) — nevracet zpět na `.90`.
+
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
 tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`,

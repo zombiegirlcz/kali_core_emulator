@@ -740,7 +740,7 @@ def _build_usrtools(assets_usr, builds_dir):
 # library and linked directly → no libtalloc.so.2 needed at runtime.
 # Loader is built separately (PROOT_UNBUNDLE_LOADER) to match existing
 # ProotManager/launcher.sh deployment model (PROOT_LOADER env var).
-PROOT_TAG = "v5.1.107.90"
+PROOT_TAG = "v5.1.107.93"
 PROOT_GIT = "https://github.com/termux/proot.git"
 TALLOC_VER = "2.4.3"
 TALLOC_URL = f"https://www.samba.org/ftp/talloc/talloc-{TALLOC_VER}.tar.gz"
