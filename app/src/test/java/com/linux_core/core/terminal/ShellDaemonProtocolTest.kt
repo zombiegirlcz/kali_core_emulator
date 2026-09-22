@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -21,7 +21,7 @@ class ShellDaemonProtocolTest {
     private fun cSource(): String = File("src/main/cpp/shell_daemon.c").readText()
 
     private fun ktSource(): String =
-        File("src/main/java/com/linux_core/core/ShellDaemonClient.kt").readText()
+        File("src/main/java/com/linux_core/core/terminal/ShellDaemonClient.kt").readText()
 
     /** Vytáhne `#define NAZEV 0x...u` / `#define NAZEV 0u` z C zdroje. */
     private fun cDefine(src: String, name: String): Long {

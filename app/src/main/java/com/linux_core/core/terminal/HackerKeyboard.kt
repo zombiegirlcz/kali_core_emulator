@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
 /**
  * "Hackerská klávesnice" extrahovaná z Termius (com.server.auditor.ssh.client)

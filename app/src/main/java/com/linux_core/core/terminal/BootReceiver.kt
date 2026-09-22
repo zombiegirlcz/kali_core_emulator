@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
 import android.content.BroadcastReceiver
 import android.content.Context

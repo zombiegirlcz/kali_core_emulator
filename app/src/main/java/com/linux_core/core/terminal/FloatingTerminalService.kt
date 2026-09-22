@@ -1,5 +1,6 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
+import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
 import com.linux_core.core.rootfs.ProotManager
 import com.linux_core.core.rootfs.loadBootMode
 import android.app.Notification

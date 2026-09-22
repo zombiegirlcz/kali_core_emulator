@@ -6,6 +6,9 @@ import com.linux_core.core.mitm.MitmTrafficStore
 import com.linux_core.core.mitm.TlsMitmEngine
 import com.linux_core.core.rootfs.ProotManager
 import com.linux_core.core.rootfs.RootfsManager
+import com.linux_core.core.terminal.FloatingTerminalService
+import com.linux_core.core.terminal.ShellDaemonClient
+import com.linux_core.core.terminal.TerminalService
 import com.linux_core.core.usb.UsbHostManager
 import android.content.Context
 import android.content.Intent

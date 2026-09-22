@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,7 +22,7 @@ class ShellDaemonDeployTest {
     private fun cSource(): String = File("src/main/cpp/shell_daemon.c").readText()
 
     private fun clientSource(): String =
-        File("src/main/java/com/linux_core/core/ShellDaemonClient.kt").readText()
+        File("src/main/java/com/linux_core/core/terminal/ShellDaemonClient.kt").readText()
 
     private fun modalBuild(): String = File("../tools/modal_build.py").readText()
 

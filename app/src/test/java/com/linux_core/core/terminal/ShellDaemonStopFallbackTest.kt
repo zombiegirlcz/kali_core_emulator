@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.terminal
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -29,7 +29,7 @@ class ShellDaemonStopFallbackTest {
     private fun ashell(): String = File("src/main/assets/ashell").readText()
 
     private fun client(): String =
-        File("src/main/java/com/linux_core/core/ShellDaemonClient.kt").readText()
+        File("src/main/java/com/linux_core/core/terminal/ShellDaemonClient.kt").readText()
 
     /** Vytáhne blok `stop)` .. `;;` z case v ashellu. */
     private fun ashellStopBranch(): String {
