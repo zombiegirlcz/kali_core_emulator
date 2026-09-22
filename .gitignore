@@ -169,3 +169,8 @@ _launcher_stage/
 
 # AI session dumps (accidentally committed transcripts)
 pi-session-*.html
+
+# Editor swap files
+*.swp
+*.swo
+*~
