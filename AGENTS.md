@@ -283,6 +283,17 @@ app nefunguje → `-1`/„Unknown App".
 **Proxy:** SOCKS5 rotace (pool + režimy) odstraněna → jediný custom `IP:Port`
 (`VpnProxyManager.setCustomProxy`), volitelný, fallback na direct.
 
+**`su_wrapper` shadow musí být idempotentní při KAŽDÉM startu:** `ProotManager` (`deploySuWrapper`)
+přejmenovává `/usr/bin/{su,sudo}` → `.orig`, aby `sudo`/`su` v guestu šly přes `su_wrapper`
+(`/usr/local/bin/sudo`). Guard **nesmí** být `!origBackup.exists()` (jen "poprvé") — `apt` umí
+`sudo`/`su` kdykoliv přeinstalovat jako závislost něčeho jiného a tiše obnovit `/usr/bin/sudo`,
+čímž náš wrapper odstíní (PATH ho najde dřív). Výsledek: `sudo <cmd>` tiše běží jen pod fake-root
+PRootem (žádná skutečná eskalace, žádná chybová hláška), a spadne až na hostitelsky vlastněných
+cestách (`/data/app`, …) s `Permission denied`. Fix: `if (origBin.exists())` bez druhé podmínky,
+přepsat `.orig` pokaždé znovu. Zdrojová diagnóza vyžadovala `strncpy`/`which sudo`/`PATH` pořadí
+kontrolu — `/bin` (merged-usr symlink na `/usr/bin`) před `/usr/local/bin` v `PATH` má stejný efekt,
+i kdyby byl shadow OK.
+
 **PRoot/perf:** seccomp je aktivní (`proot -V` → `seccomp_filter = yes`) — ne „vypnutý"; `--link2symlink`
 nutné (apt/dpkg zálohy přes `link()`); `-0` kvůli fake root UX; tracer cost ~100 µs/syscall je intrinsický
 (ne degradace live vs. fresh); **`LD_LIBRARY_PATH` v `hostShellEnv()` způsoboval SIGBUS** — nikdy
