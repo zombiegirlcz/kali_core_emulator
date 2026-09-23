@@ -174,3 +174,7 @@ pi-session-*.html
 *.swp
 *.swo
 *~
+
+# USERLAND proot ownership meta files (created by proot USERLAND mode on dev machine)
+**/.proot-meta-file.*
+tools/.proot-meta-file.*
