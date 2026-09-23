@@ -60,6 +60,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <time.h>
@@ -80,6 +81,7 @@
 #define SH_MODE_ATTACH 1u      /* interaktivni PTY shell pod uid 2000 */
 #define SH_MODE_INSTALL 2u     /* streamovany install: cmd package install -S */
 #define SH_MODE_STOP   3u      /* zastav daemona (bez adb; pouziva ashell adb stop) */
+#define SH_MODE_KILL_SESSION 4u /* zabij pojmenovanou perzistentni session */
 
 static char g_token[MAX_TOKEN] = {0};
 static int g_port = DEFAULT_PORT;
@@ -501,6 +503,363 @@ static void handle_attach(int client_fd, const char *cmd) {
     close(master_fd);
 }
 
+/* ── Perzistentní pojmenované session (přežijí detach/odpojení) ───────────
+ * Model: každé pojmenované session má vlastní supervisor proces, který drží
+ * PTY + shell child NEZÁVISLE na jednotlivých klientských spojeních. Klienti
+ * se k němu připojují/odpojují přes control UNIX socket
+ * (/data/local/tmp/.shd_sess_<name>.sock) a předávají si svůj síťový
+ * client_fd přes SCM_RIGHTS — to je tady bezpečné, protože OBA konce jsou
+ * hostitelské procesy (uid 2000, mimo PRoot ptrace), na rozdíl od tmux
+ * client/server UVNITŘ PRootu, kde přesně tohle (SCM_RIGHTS mezi dvěma
+ * ptrace-sledovanými procesy) spolehlivě nefunguje — viz AGENTS.md sekce 11
+ * "PRoot verze — tmux/multiplexery". Tenhle daemon už běží mimo PRoot,
+ * takže stejný mechanismus tady funguje správně (ověřeno: su_daemon už
+ * SCM_RIGHTS host-only dělá roky pro guest_fd handoff bez problémů).
+ *
+ * Omezení v1: jeden aktivní klient na session (žádné tmux-style zrcadlení
+ * více připojených klientů najednou) — druhé připojení čeká ve frontě
+ * backlogu, dokud se první neodpojí. */
+
+#define SESSION_SOCK_DIR "/data/local/tmp"
+#define SESSION_NAME_MAX 64
+#define SESSION_CTL_ATTACH 1u
+#define SESSION_CTL_KILL   2u
+
+/* Sanitizuje jméno session do bezpečné cesty (jen [a-zA-Z0-9_-]). */
+static int session_sock_path(char *out, size_t outlen, const char *name) {
+    if (name == NULL || name[0] == '\0') return -1;
+    char safe[SESSION_NAME_MAX];
+    size_t j = 0;
+    for (size_t i = 0; name[i] != '\0' && j < sizeof(safe) - 1; i++) {
+        char c = name[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-') {
+            safe[j++] = c;
+        }
+    }
+    safe[j] = '\0';
+    if (j == 0) return -1;
+    int n = snprintf(out, outlen, "%s/.shd_sess_%s.sock", SESSION_SOCK_DIR, safe);
+    return (n > 0 && (size_t)n < outlen) ? 0 : -1;
+}
+
+/* Pošle 1 řídicí byte + volitelný fd (SCM_RIGHTS) přes UNIX socket. */
+static int send_ctl_fd(int sock, uint8_t ctl_type, int fd_to_send) {
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    struct iovec io = { .iov_base = &ctl_type, .iov_len = 1 };
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    char control_buf[CMSG_SPACE(sizeof(int))];
+    if (fd_to_send >= 0) {
+        memset(control_buf, 0, sizeof(control_buf));
+        msg.msg_control = control_buf;
+        msg.msg_controllen = sizeof(control_buf);
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(int));
+        msg.msg_controllen = cmsg->cmsg_len;
+    }
+    return sendmsg(sock, &msg, 0) >= 0 ? 0 : -1;
+}
+
+/* Přijme 1 řídicí byte + volitelný fd (SCM_RIGHTS). *fd_out = -1, pokud
+ * žádný fd nepřišel. Vrací -1 na chybu/EOF. */
+static int recv_ctl_fd(int sock, uint8_t *ctl_type, int *fd_out) {
+    *fd_out = -1;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    struct iovec io = { .iov_base = ctl_type, .iov_len = 1 };
+    msg.msg_iov = &io;
+    msg.msg_iovlen = 1;
+    char control_buf[CMSG_SPACE(sizeof(int))];
+    memset(control_buf, 0, sizeof(control_buf));
+    msg.msg_control = control_buf;
+    msg.msg_controllen = sizeof(control_buf);
+
+    ssize_t n = recvmsg(sock, &msg, 0);
+    if (n <= 0) return -1;
+
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (cmsg != NULL && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+        memcpy(fd_out, CMSG_DATA(cmsg), sizeof(int));
+    }
+    return 0;
+}
+
+/* Jeden cyklus relay smyčky mezi PTY master_fd a client_fd — stejná logika
+ * jako v handle_attach, ale na rozdíl od ní VRACÍ místo zabití childa, když
+ * klient odpojí/detachne. Volající (supervisor) rozhodne, jestli childa
+ * zabít. Vrací: 0 = klient odešel/detachnul (child ŽIJE dál), 1 = child se
+ * sám ukončil (waitpid trefil). */
+static int relay_loop(int master_fd, int client_fd, pid_t pid) {
+    char buf[16384];
+    while (1) {
+        if (waitpid(pid, NULL, WNOHANG) == pid) return 1;
+
+        struct pollfd pfds[2];
+        pfds[0].fd = master_fd; pfds[0].events = POLLIN; pfds[0].revents = 0;
+        pfds[1].fd = client_fd; pfds[1].events = POLLIN; pfds[1].revents = 0;
+        int pr = poll(pfds, 2, 500);
+        if (pr < 0) { if (errno == EINTR) continue; return 0; }
+        if (pr == 0) continue;
+
+        if (pfds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            ssize_t n = read(master_fd, buf, sizeof(buf));
+            if (n > 0) {
+                if (write_all(client_fd, buf, (size_t)n) < 0) return 0;
+            } else if (n == 0) {
+                return 0;
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                return 0;
+            }
+        }
+
+        if (pfds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            uint8_t type = 0;
+            ssize_t n = read(client_fd, &type, 1);
+            if (n <= 0) return 0; /* odpojení = detach, ne kill */
+            uint32_t len = 0;
+            if (read_all(client_fd, &len, sizeof(len)) < 0) return 0;
+            if (len > sizeof(buf)) return 0;
+            if (len > 0 && read_all(client_fd, buf, len) < 0) return 0;
+            if (type == 1) {
+                size_t off = 0;
+                while (off < len) {
+                    ssize_t w = write(master_fd, buf + off, len - off);
+                    if (w < 0) {
+                        if (errno == EINTR) continue;
+                        break;
+                    }
+                    off += (size_t)w;
+                }
+            } else if (type == 2 && len >= 8) {
+                uint32_t rows = 0, cols = 0;
+                memcpy(&rows, buf, 4);
+                memcpy(&cols, buf + 4, 4);
+                struct winsize nws;
+                memset(&nws, 0, sizeof(nws));
+                nws.ws_row = (unsigned short)rows;
+                nws.ws_col = (unsigned short)cols;
+                ioctl(master_fd, TIOCSWINSZ, &nws);
+                kill(pid, SIGWINCH);
+            } else if (type == 3) {
+                return 0; /* explicitní detach (drž session naživu) */
+            }
+        }
+    }
+}
+
+/* Supervisor: drží PTY+shell child naživu napříč detach/reattach cykly.
+ * Běží jako samostatný proces (fork z handle_attach_persistent), dokud
+ * child sám neskončí nebo nepřijde SESSION_CTL_KILL. Volá se hned po
+ * forku — nikdy se nevrací (_exit na konci). */
+static void session_supervisor(const char *sock_path, const char *cmd, int ready_fd) {
+    int master_fd = -1, slave_fd = -1;
+    if (open_pty(&master_fd, &slave_fd) < 0) {
+        close(ready_fd);
+        _exit(1);
+    }
+    struct winsize ws;
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_row = 24; ws.ws_col = 80;
+    ioctl(slave_fd, TIOCSWINSZ, &ws);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(master_fd); close(slave_fd);
+        close(ready_fd);
+        _exit(1);
+    }
+    if (pid == 0) {
+        setsid();
+        ioctl(slave_fd, TIOCSCTTY, 0);
+        dup2(slave_fd, STDIN_FILENO);
+        dup2(slave_fd, STDOUT_FILENO);
+        dup2(slave_fd, STDERR_FILENO);
+        if (slave_fd > STDERR_FILENO) close(slave_fd);
+        close(master_fd);
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+        if (cmd != NULL && cmd[0] != '\0') {
+            execl("/system/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        } else {
+            execl("/system/bin/sh", "sh", "-i", (char *)NULL);
+            execl("/bin/sh", "sh", "-i", (char *)NULL);
+        }
+        fprintf(stderr, "shell_daemon session: nelze spustit sh: %s\n", strerror(errno));
+        _exit(127);
+    }
+    close(slave_fd);
+    set_nonblock(master_fd);
+
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd < 0) { kill(pid, SIGKILL); waitpid(pid, NULL, 0); close(master_fd); close(ready_fd); _exit(1); }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+    unlink(sock_path); /* stará/mrtvá session se stejným jménem */
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        listen(listen_fd, 4) < 0) {
+        kill(pid, SIGKILL); waitpid(pid, NULL, 0);
+        close(master_fd); close(listen_fd); close(ready_fd);
+        _exit(1);
+    }
+    chmod(sock_path, 0600);
+
+    /* Signalizuj parentovi (handle_attach_persistent), že socket je hotový. */
+    {
+        uint8_t one = 1;
+        write(ready_fd, &one, 1);
+    }
+    close(ready_fd);
+
+    for (;;) {
+        struct pollfd lp = { listen_fd, POLLIN, 0 };
+        int pr = poll(&lp, 1, 1000);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+
+        if (waitpid(pid, NULL, WNOHANG) == pid) break; /* shell sám skončil */
+
+        if (pr == 0) continue;
+
+        int client_fd = accept(listen_fd, NULL, NULL);
+        if (client_fd < 0) continue;
+
+        uint8_t ctl = 0;
+        int passed_fd = -1;
+        if (recv_ctl_fd(client_fd, &ctl, &passed_fd) < 0) { close(client_fd); continue; }
+        close(client_fd); /* control socket dál nepoužíváme */
+
+        if (ctl == SESSION_CTL_KILL) {
+            if (passed_fd >= 0) close(passed_fd);
+            break;
+        }
+        if (ctl != SESSION_CTL_ATTACH || passed_fd < 0) {
+            if (passed_fd >= 0) close(passed_fd);
+            continue;
+        }
+
+        int child_exited = relay_loop(master_fd, passed_fd, pid);
+        close(passed_fd);
+        if (child_exited) break;
+        /* jinak: klient detachnul, child žije dál — čekej na další accept() */
+    }
+
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    close(master_fd);
+    close(listen_fd);
+    unlink(sock_path);
+    _exit(0);
+}
+
+/* Handoff: připoj se na (existující nebo čerstvou) supervisor session
+ * <name> a předej jí client_fd. Volá se z handle_client pro pojmenovaný
+ * SH_MODE_ATTACH. Worker proces (volající) se po handoffu vrátí a je
+ * normálně reapnut jako po jakémkoliv jiném spojení — supervisor běží
+ * dál nezávisle (setsid, adoptovaný initem po skončení tohoto workera). */
+static void handle_attach_persistent(int client_fd, const char *cmd, const char *name) {
+    char sock_path[512];
+    if (session_sock_path(sock_path, sizeof(sock_path), name) < 0) {
+        int32_t rc = -1;
+        write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "neplatne jmeno session", 23);
+        return;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) {
+        int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "socket() selhal", 16);
+        return;
+    }
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        /* Session neexistuje (nebo mrtvý socket) — založ novou. */
+        close(sock);
+        int readyp[2];
+        if (pipe(readyp) < 0) {
+            int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+            write_blob(client_fd, "pipe() selhal", 13);
+            return;
+        }
+        pid_t sup = fork();
+        if (sup < 0) {
+            close(readyp[0]); close(readyp[1]);
+            int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+            write_blob(client_fd, "fork() selhal", 13);
+            return;
+        }
+        if (sup == 0) {
+            close(readyp[0]);
+            close(client_fd);
+            if (setsid() < 0) setpgid(0, 0);
+            session_supervisor(sock_path, cmd, readyp[1]);
+            _exit(0); /* nedosažitelné, session_supervisor sám _exit()uje */
+        }
+        close(readyp[1]);
+        uint8_t ready = 0;
+        struct pollfd rp = { readyp[0], POLLIN, 0 };
+        int pr = poll(&rp, 1, 5000);
+        int got_ready = (pr > 0) && (read(readyp[0], &ready, 1) == 1) && ready;
+        close(readyp[0]);
+        if (!got_ready) {
+            int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+            write_blob(client_fd, "session supervisor se nespustil", 32);
+            return;
+        }
+
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0 || connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            if (sock >= 0) close(sock);
+            int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+            write_blob(client_fd, "pripojeni k nove session selhalo", 33);
+            return;
+        }
+    }
+
+    int32_t ack = 0;
+    if (write_all(client_fd, &ack, sizeof(ack)) < 0) { close(sock); return; }
+
+    send_ctl_fd(sock, SESSION_CTL_ATTACH, client_fd);
+    close(sock);
+}
+
+/* Zabije pojmenovanou session (SH_MODE_KILL_SESSION). Fire-and-forget vůči
+ * supervisoru — pokud session neexistuje, jen tiše ohlásíme OK (idempotentní). */
+static void handle_kill_session(int client_fd, const char *name) {
+    char sock_path[512];
+    if (session_sock_path(sock_path, sizeof(sock_path), name) < 0) {
+        int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+        write_blob(client_fd, "neplatne jmeno session", 23);
+        return;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock >= 0 && connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        send_ctl_fd(sock, SESSION_CTL_KILL, -1);
+    }
+    if (sock >= 0) close(sock);
+
+    int32_t rc = 0;
+    write_all(client_fd, &rc, sizeof(rc));
+    write_blob(client_fd, "ok", 2);
+}
+
 
 /* Reaper pro worker child processes. Bez tohoto by každý fork-per-connection
  * worker po skončení zůstal jako zombie (parent ho nikdy nečeká) — přesně
@@ -678,9 +1037,31 @@ static void handle_client(int client_fd) {
         char *cmd = malloc(CMD_BUF);
         if (!cmd) { int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc)); write_blob(client_fd, "alokace selhala", 14); return; }
         if (read_blob(client_fd, cmd, CMD_BUF) < 0) { free(cmd); return; }
-        fprintf(stderr, "[shell_daemon] attach (cmd=%s)\n", cmd[0] ? cmd : "<interaktivni>");
-        handle_attach(client_fd, cmd);
+        char session_name[SESSION_NAME_MAX] = {0};
+        /* Prazdny blob (delka 0) = efemerni session (puvodni chovani: kill
+         * na detach). Klient (run_attach_client) posila vzdy — viz nize. */
+        if (read_blob(client_fd, session_name, sizeof(session_name)) < 0) { free(cmd); return; }
+        if (session_name[0] != '\0') {
+            fprintf(stderr, "[shell_daemon] attach session=%s (cmd=%s)\n",
+                    session_name, cmd[0] ? cmd : "<interaktivni>");
+            handle_attach_persistent(client_fd, cmd, session_name);
+        } else {
+            fprintf(stderr, "[shell_daemon] attach (cmd=%s)\n", cmd[0] ? cmd : "<interaktivni>");
+            handle_attach(client_fd, cmd);
+        }
         free(cmd);
+        return;
+    }
+
+    if (mode == SH_MODE_KILL_SESSION) {
+        char session_name[SESSION_NAME_MAX] = {0};
+        if (read_blob(client_fd, session_name, sizeof(session_name)) < 0 || session_name[0] == '\0') {
+            int32_t rc = -1; write_all(client_fd, &rc, sizeof(rc));
+            write_blob(client_fd, "chybi jmeno session", 20);
+            return;
+        }
+        fprintf(stderr, "[shell_daemon] kill-session=%s\n", session_name);
+        handle_kill_session(client_fd, session_name);
         return;
     }
 
@@ -710,7 +1091,46 @@ static void handle_client(int client_fd) {
 
 /* ── Attach klient (--attach) ───────────────────────────────────────────── */
 
-static int run_attach_client(const char *host, int port, const char *cmd) {
+static int run_kill_session_client(const char *host, int port, const char *session_name) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { perror("socket"); return 1; }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        fprintf(stderr, "shell_daemon: spatna adresa %s\n", host);
+        close(fd); return 1;
+    }
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "shell_daemon: nelze se pripojit na %s:%d: %s\n", host, port, strerror(errno));
+        close(fd); return 1;
+    }
+
+    uint32_t magic = SH_MAGIC;
+    uint8_t mode = SH_MODE_KILL_SESSION;
+    if (write_all(fd, &magic, sizeof(magic)) < 0 ||
+        write_all(fd, &mode, 1) < 0 ||
+        write_blob(fd, g_token, strlen(g_token)) < 0 ||
+        write_blob(fd, session_name, strlen(session_name)) < 0) {
+        fprintf(stderr, "shell_daemon: zapis hlavicky selhal\n");
+        close(fd); return 1;
+    }
+
+    int32_t rc = -1;
+    read_all(fd, &rc, sizeof(rc));
+    char msg[256] = {0};
+    uint32_t mlen = 0;
+    if (read_all(fd, &mlen, sizeof(mlen)) == 0 && mlen < sizeof(msg)) {
+        read_all(fd, msg, mlen);
+    }
+    close(fd);
+    printf("[shell_daemon] kill-session %s: %s\n", session_name, msg[0] ? msg : (rc == 0 ? "ok" : "chyba"));
+    return rc == 0 ? 0 : 1;
+}
+
+static int run_attach_client(const char *host, int port, const char *cmd, const char *session_name) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
 
@@ -732,7 +1152,8 @@ static int run_attach_client(const char *host, int port, const char *cmd) {
     if (write_all(fd, &magic, sizeof(magic)) < 0 ||
         write_all(fd, &mode, 1) < 0 ||
         write_blob(fd, g_token, strlen(g_token)) < 0 ||
-        write_blob(fd, cmd ? cmd : "", strlen(cmd ? cmd : "")) < 0) {
+        write_blob(fd, cmd ? cmd : "", strlen(cmd ? cmd : "")) < 0 ||
+        write_blob(fd, session_name ? session_name : "", strlen(session_name ? session_name : "")) < 0) {
         fprintf(stderr, "shell_daemon: zapis hlavicky selhal\n");
         close(fd); return 1;
     }
@@ -850,6 +1271,8 @@ int main(int argc, char **argv) {
     int attach_mode = 0;
     const char *attach_host = NULL;
     const char *attach_cmd = NULL;
+    const char *attach_session = NULL;
+    const char *kill_session = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--port=", 7) == 0) {
@@ -867,9 +1290,16 @@ int main(int argc, char **argv) {
             attach_host = argv[i] + 14;
         } else if (strncmp(argv[i], "--attach-cmd=", 13) == 0) {
             attach_cmd = argv[i] + 13;
+        } else if (strncmp(argv[i], "--attach-session=", 17) == 0) {
+            attach_session = argv[i] + 17;
+        } else if (strncmp(argv[i], "--kill-session=", 15) == 0) {
+            kill_session = argv[i] + 15;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf("shell_daemon [--port=N] [--token=HEX] [--token-file=PATH] [--no-fork]\n"
-                   "shell_daemon --attach [--attach-host=127.0.0.1] [--port=N] [--token=HEX] [--attach-cmd=CMD]\n");
+                   "shell_daemon --attach [--attach-host=127.0.0.1] [--port=N] [--token=HEX] [--attach-cmd=CMD] [--attach-session=NAME]\n"
+                   "shell_daemon --kill-session=NAME [--attach-host=127.0.0.1] [--port=N] [--token=HEX]\n"
+                   "  --attach-session=NAME  pojmenovana session prezije detach/odpojeni (reattach = stejne jmeno)\n"
+                   "  --kill-session=NAME    tvrde ukonci pojmenovanou session (kill shellu + uklid)\n");
             return 0;
         }
     }
@@ -882,10 +1312,15 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (kill_session != NULL) {
+        const char *h = attach_host ? attach_host : "127.0.0.1";
+        return run_kill_session_client(h, g_port, kill_session);
+    }
+
     /* Klientsky rezim: pripoj se k bezicimu daemonu a predej mu PTY most. */
     if (attach_mode) {
         const char *h = attach_host ? attach_host : "127.0.0.1";
-        return run_attach_client(h, g_port, attach_cmd);
+        return run_attach_client(h, g_port, attach_cmd, attach_session);
     }
 
     uid_t uid = getuid();
