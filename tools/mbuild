@@ -140,13 +140,13 @@ case "$CMD" in
        # echo "  -> pull CELÝ assets"
        # pull_full_assets
      #   ;;
-  #  proot)
-   #     echo "=== PROOT STATIC BUILD (termux fork, talloc linked in) ==="
-    #    echo "  -> proot + loader cross-compile (4 ABI)"
-     #   modal run modal_build.py::build_proot_static > build.log | cat
-      #  echo "  -> pull CELÝ assets"
-       # pull_full_assets
-        #;;
+  proot)
+        echo "=== PROOT STATIC BUILD (termux fork, talloc linked in) ==="
+        echo "  -> proot + loader cross-compile (4 ABI)"
+        modal run tools/modal_build.py::build_proot_static 2>&1 | cat
+        echo "  -> pull CELÝ assets"
+        pull_full_assets
+        ;;
     *)
         echo "Usage: zsh mbuild [sync|clean|all|native|build|usrtools|proot]"
         exit 1
