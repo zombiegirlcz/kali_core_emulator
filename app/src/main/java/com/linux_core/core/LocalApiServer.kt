@@ -17,6 +17,7 @@ import com.linux_core.core.terminal.ShellDaemonClient
 import com.linux_core.core.terminal.TerminalService
 import com.linux_core.core.usb.UsbHostManager
 import com.linux_core.core.vpn.TrafficAggregator
+import com.linux_core.core.vpn.VpnCaptureService
 import com.linux_core.core.vpn.VpnLogManager
 import android.content.Context
 import android.content.Intent
