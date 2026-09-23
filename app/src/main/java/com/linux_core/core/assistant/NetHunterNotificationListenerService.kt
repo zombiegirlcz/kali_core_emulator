@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.assistant
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification

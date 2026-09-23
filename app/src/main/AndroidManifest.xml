@@ -167,7 +167,7 @@
         </service>
 
         <service
-            android:name=".core.NetHunterAssistantService"
+            android:name=".core.assistant.NetHunterAssistantService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true">
             <intent-filter>
@@ -179,12 +179,12 @@
         </service>
 
         <service
-            android:name=".core.NetHunterAssistantSessionService"
+            android:name=".core.assistant.NetHunterAssistantSessionService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true" />
 
         <service
-            android:name=".core.NetHunterSpeechRecognitionService"
+            android:name=".core.assistant.NetHunterSpeechRecognitionService"
             android:permission="android.permission.BIND_RECOGNITION_SERVICE"
             android:exported="true">
             <intent-filter>
@@ -227,7 +227,7 @@
         </provider>
 
         <service
-            android:name="com.linux_core.core.NetHunterNotificationListenerService"
+            android:name="com.linux_core.core.assistant.NetHunterNotificationListenerService"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:exported="false">
             <intent-filter>
@@ -236,7 +236,7 @@
         </service>
 
         <service
-            android:name="com.linux_core.core.NetHunterAccessibilityService"
+            android:name="com.linux_core.core.assistant.NetHunterAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
@@ -247,7 +247,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
         <receiver
-            android:name="com.linux_core.core.NetHunterDeviceAdminReceiver"
+            android:name="com.linux_core.core.assistant.NetHunterDeviceAdminReceiver"
             android:label="NetHunter Device Manager"
             android:description="@string/device_admin_desc"
             android:permission="android.permission.BIND_DEVICE_ADMIN"

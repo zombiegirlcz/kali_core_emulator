@@ -2,6 +2,9 @@ package com.linux_core.core
 
 import android.content.ClipboardManager
 import com.linux_core.core.ai.VerdictNotifier
+import com.linux_core.core.assistant.NetHunterAccessibilityService
+import com.linux_core.core.assistant.NetHunterDeviceAdminReceiver
+import com.linux_core.core.assistant.NetHunterNotificationListenerService
 import com.linux_core.core.mitm.MitmTrafficStore
 import com.linux_core.core.mitm.TlsMitmEngine
 import com.linux_core.core.rootfs.ProotManager

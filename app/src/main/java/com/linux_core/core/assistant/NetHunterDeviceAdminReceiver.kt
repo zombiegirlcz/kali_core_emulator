@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.assistant
 
 import android.app.admin.DeviceAdminReceiver
 import android.content.Context
