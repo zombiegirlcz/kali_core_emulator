@@ -39,6 +39,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 
 APP_NAME = "kali-core_emulator"
 VOLUME_NAME = "kali-build-data"
@@ -462,8 +463,6 @@ def _build_usrtools(assets_usr, builds_dir):
     binárky fungují jen uvnitř PRootu, nikdy na hostu (ashell -c, /shell).
     Diagnóza + fix: AGENTS.md session 2026-08-11.
     """
-    import tarfile
-
     PREFIX = USRTOOLS_PREFIX  # layout usrtools.tar.gz ($PREFIX/bin, $PREFIX/lib)
     WORK = "/tmp/usrtools"
     STAGE = "/tmp/usrtools-stage"
@@ -539,7 +538,8 @@ def _build_usrtools(assets_usr, builds_dir):
             run(["wget", "-q", url, "-O", dest])
 
     def extract(archive, dest):
-        run(["tar", "xf", archive, "-C", dest])
+        with tarfile.open(archive) as tf:
+            tf.extractall(dest)
 
     def needed_libs(path):
         dyn = subprocess.run([READELF, "-d", path], capture_output=True, text=True).stdout
@@ -813,6 +813,25 @@ def _proot_run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+def _tar_extract(archive, dest, strip_components=0):
+    """Python tarfile extraction (ne systémový tar) — GNU tar na Modal Volume
+    padá na xattr/ACL syscally s "Cannot open: Function not implemented"
+    (ENOSYS na FUSE-backed volume), tarfile.extractall() to obchází."""
+    print(f"  $ extract {archive} -> {dest} (strip_components={strip_components})")
+    with tarfile.open(archive) as tf:
+        members = tf.getmembers()
+        if strip_components:
+            stripped = []
+            for m in members:
+                parts = m.name.split("/")[strip_components:]
+                if not parts:
+                    continue
+                m.name = "/".join(parts)
+                stripped.append(m)
+            members = stripped
+        tf.extractall(dest, members=members)
+
+
 
 def _build_proot_static(assets_dir, builds_dir):
     """Cross-compile static proot + loader for all target architectures."""
@@ -886,7 +905,7 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     # ── 1. Build talloc (static .a) ─────────────────────────────────────────
     print(f"\n  [{suffix}] Building talloc {TALLOC_VER} ...")
     os.makedirs(talloc_src, exist_ok=True)
-    _proot_run(["tar", "xzf", talloc_tar, "-C", talloc_src, "--strip-components=1"])
+    _tar_extract(talloc_tar, talloc_src, strip_components=1)
 
     # Write cross-answers
     cross_file = os.path.join(build_dir, "cross-answers.txt")
