@@ -8,8 +8,8 @@ import android.os.IBinder
 import android.os.Process
 import android.util.Log
 import com.linux_core.BuildConfig
-import com.linux_core.core.DeviceInfo
-import com.linux_core.core.ExecCore
+import com.linux_core.core.device.DeviceInfo
+import com.linux_core.core.device.ExecCore
 import kotlinx.coroutines.runBlocking
 
 /**

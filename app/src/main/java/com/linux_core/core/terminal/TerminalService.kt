@@ -14,7 +14,7 @@ import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.linux_core.core.LocalApiServer
-import com.linux_core.core.WatchdogReceiver
+import com.linux_core.core.device.WatchdogReceiver
 import com.linux_core.core.rootfs.ProotConfig
 import com.linux_core.core.widget.WidgetProvider
 import com.termux.terminal.TerminalSession

@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         com.linux_core.security.CertificateManager.init(applicationContext)
-        com.linux_core.core.ImmersiveMode.enterImmersive(this)
+        com.linux_core.core.device.ImmersiveMode.enterImmersive(this)
 
         // Layout migration: ensure old paths are moved to nh/distro + usr/bin before any rootfs access
         com.linux_core.core.rootfs.RootfsManager.ensureMigrated(applicationContext)
@@ -195,7 +195,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        com.linux_core.core.ShortcutHelper.registerShortcuts(this)
+        com.linux_core.core.device.ShortcutHelper.registerShortcuts(this)
         com.linux_core.core.VpnLogManager.initialize(applicationContext)
 
         // Resume the background cron session whenever the app is opened.
@@ -2228,7 +2228,7 @@ fun MainScreen() {
                                         Button(
                                             onClick = {
                                                 val cmd = customCommandText.trim().ifEmpty { null }
-                                                com.linux_core.core.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
+                                                com.linux_core.core.device.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
                                                 Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(6.dp),
@@ -2251,7 +2251,7 @@ fun MainScreen() {
                                         Button(
                                             onClick = {
                                                 val cmd = customCommandText.trim().ifEmpty { null }
-                                                com.linux_core.core.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
+                                                com.linux_core.core.device.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
                                                 Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(6.dp),

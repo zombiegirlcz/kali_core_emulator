@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.device
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

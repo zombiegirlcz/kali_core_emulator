@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.device
 
 import android.app.AlarmManager
 import android.app.PendingIntent

@@ -152,7 +152,7 @@
             android:foregroundServiceType="specialUse" />
 
         <service
-            android:name=".core.BackupService"
+            android:name=".core.device.BackupService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
@@ -280,7 +280,7 @@
             android:exported="false" />
         <!-- Watchdog: exact alarm každých 10 min, oživí service+cron po LMK/OEM killu -->
         <receiver
-            android:name=".core.WatchdogReceiver"
+            android:name=".core.device.WatchdogReceiver"
             android:exported="false" />
 
         <receiver

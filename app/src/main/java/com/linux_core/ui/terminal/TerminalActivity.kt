@@ -207,7 +207,7 @@ class TerminalActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         instance = this
         super.onCreate(savedInstanceState)
-        com.linux_core.core.ImmersiveMode
+        com.linux_core.core.device.ImmersiveMode
             .enterImmersive(this)
         val prefs = getSharedPreferences("terminal_prefs", MODE_PRIVATE)
         terminalFontSizeFloat = prefs.getFloat("font_size", 32f)

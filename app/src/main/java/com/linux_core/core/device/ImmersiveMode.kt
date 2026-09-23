@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.device
 
 import android.os.Build
 import android.util.Log
