@@ -18,7 +18,7 @@ import javax.net.ssl.SSLContext
  * Behaviour:
  *  - **Debug build** ([BuildConfig.DEBUG] = true): the user can install the CA in the
  *    system trust store via [requestSystemInstall]. This is required for the OS to trust
- *    re-signed leaf certs produced by [com.linux_core.core.VpnCaptureService].
+ *    re-signed leaf certs produced by [com.linux_core.core.vpn.VpnCaptureService].
  *  - **Release build**: the CA is kept in an in-process [KeyStore] only, so outbound
  *    OkHttp clients from this app can be configured to trust the MITM CA, but the OS
  *    trust store is NEVER modified.
@@ -77,7 +77,7 @@ class RootCaInstaller(private val context: Context) {
 
     /**
      * Produce a forged leaf certificate signed by the MITM CA. Used by
-     * [com.linux_core.core.VpnCaptureService] to re-sign per-server certs captured from
+     * [com.linux_core.core.vpn.VpnCaptureService] to re-sign per-server certs captured from
      * the tunnel.
      */
     fun signLeafForServer(serverCert: X509Certificate, serial: Long, sanDns: List<String> = emptyList(), sanIp: List<String> = emptyList()): X509Certificate {

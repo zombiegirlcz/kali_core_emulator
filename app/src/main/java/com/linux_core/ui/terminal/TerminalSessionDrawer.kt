@@ -126,7 +126,7 @@ internal fun TerminalActivity.updateSessionDrawerImpl() {
             val isParrot = distro.contains("parrot")
             val distroBadge = if (isParrot) "🦜" else "🐉"
             val memBytes =
-                com.linux_core.core.ProcessResolver
+                com.linux_core.core.vpn.ProcessResolver
                     .getSessionMemoryUsage(session)
             val memMb = memBytes.toDouble() / (1024.0 * 1024.0)
             val memStr = String.format(java.util.Locale.US, "%.1f MB", memMb)

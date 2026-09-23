@@ -1,4 +1,4 @@
-package com.linux_core.core
+package com.linux_core.core.vpn
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

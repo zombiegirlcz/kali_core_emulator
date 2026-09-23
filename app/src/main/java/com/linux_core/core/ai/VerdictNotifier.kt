@@ -10,7 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.linux_core.core.TrafficAggregator
+import com.linux_core.core.vpn.TrafficAggregator
 import java.util.concurrent.ConcurrentHashMap
 
 /**

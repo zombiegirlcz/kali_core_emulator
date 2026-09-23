@@ -16,6 +16,8 @@ import com.linux_core.core.terminal.FloatingTerminalService
 import com.linux_core.core.terminal.ShellDaemonClient
 import com.linux_core.core.terminal.TerminalService
 import com.linux_core.core.usb.UsbHostManager
+import com.linux_core.core.vpn.TrafficAggregator
+import com.linux_core.core.vpn.VpnLogManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -110,8 +112,8 @@ object LocalApiServer {
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
-        val bindAddress = if (shareLocalApi && com.linux_core.core.VpnCaptureService.isRunning()) {
-            com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val bindAddress = if (shareLocalApi && com.linux_core.core.vpn.VpnCaptureService.isRunning()) {
+            com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         } else {
             "127.0.0.1"
         }
@@ -1523,10 +1525,10 @@ object LocalApiServer {
     }
 
     private fun handleVpnStatus(context: Context, out: OutputStream) {
-        val running = com.linux_core.core.VpnCaptureService.isRunning()
-        val packets = com.linux_core.core.VpnCaptureService.getCapturedPacketCount()
-        val bytes = com.linux_core.core.VpnCaptureService.getCapturedByteCount()
-        val vpnIp = com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val running = com.linux_core.core.vpn.VpnCaptureService.isRunning()
+        val packets = com.linux_core.core.vpn.VpnCaptureService.getCapturedPacketCount()
+        val bytes = com.linux_core.core.vpn.VpnCaptureService.getCapturedByteCount()
+        val vpnIp = com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         val json = JSONObject().apply {
             put("running", running)
             put("packets", packets)

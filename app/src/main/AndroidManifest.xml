@@ -114,7 +114,7 @@
 
         <!-- „Open with“ / share příjemce — uloží soubor do ~/share a otevře terminál -->
         <activity
-            android:name=".core.ShareReceiverActivity"
+            android:name=".core.terminal.ShareReceiverActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:taskAffinity=""
@@ -139,14 +139,14 @@
         </activity>
 
         <service
-            android:name=".core.TerminalService"
+            android:name=".core.terminal.TerminalService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <!-- Plovoucí terminál (overlay, `nh float`) -->
         <service
-            android:name=".core.FloatingTerminalService"
+            android:name=".core.terminal.FloatingTerminalService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
@@ -158,7 +158,7 @@
             android:foregroundServiceType="specialUse" />
 
         <service
-            android:name=".core.VpnCaptureService"
+            android:name=".core.vpn.VpnCaptureService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="true">
             <intent-filter>
@@ -284,7 +284,7 @@
             android:exported="false" />
 
         <receiver
-            android:name=".core.BootReceiver"
+            android:name=".core.terminal.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

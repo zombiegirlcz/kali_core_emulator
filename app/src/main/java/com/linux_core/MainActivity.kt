@@ -166,8 +166,8 @@ class MainActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 24 && resultCode == RESULT_OK) {
             val intent =
-                Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-                    action = com.linux_core.core.VpnCaptureService.ACTION_START
+                Intent(this, com.linux_core.core.vpn.VpnCaptureService::class.java).apply {
+                    action = com.linux_core.core.vpn.VpnCaptureService.ACTION_START
                 }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
@@ -196,7 +196,7 @@ class MainActivity : ComponentActivity() {
         }
 
         com.linux_core.core.device.ShortcutHelper.registerShortcuts(this)
-        com.linux_core.core.VpnLogManager.initialize(applicationContext)
+        com.linux_core.core.vpn.VpnLogManager.initialize(applicationContext)
 
         // Resume the background cron session whenever the app is opened.
         // After a force-stop / system kill, Android won't redeliver

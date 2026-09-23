@@ -2,9 +2,9 @@ package com.linux_core.core.ai
 
 import android.content.Context
 import android.util.Log
-import com.linux_core.core.TrafficHistoryStore
-import com.linux_core.core.VpnLogManager
 import com.linux_core.core.device.UserProfileStore
+import com.linux_core.core.vpn.TrafficHistoryStore
+import com.linux_core.core.vpn.VpnLogManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.ConcurrentHashMap

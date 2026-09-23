@@ -979,8 +979,8 @@ class TerminalActivity : ComponentActivity() {
 
     private fun startVpnServiceDirectly() {
         val intent =
-            Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-                action = com.linux_core.core.VpnCaptureService.ACTION_START
+            Intent(this, com.linux_core.core.vpn.VpnCaptureService::class.java).apply {
+                action = com.linux_core.core.vpn.VpnCaptureService.ACTION_START
             }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -991,8 +991,8 @@ class TerminalActivity : ComponentActivity() {
 
     private fun stopVpnService() {
         val intent =
-            Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-                action = com.linux_core.core.VpnCaptureService.ACTION_STOP
+            Intent(this, com.linux_core.core.vpn.VpnCaptureService::class.java).apply {
+                action = com.linux_core.core.vpn.VpnCaptureService.ACTION_STOP
             }
         startService(intent)
     }
@@ -1110,7 +1110,7 @@ class TerminalActivity : ComponentActivity() {
         if (instance == this) {
             instance = null
         }
-        com.linux_core.core.VpnCaptureService.onStateChangeListener = null
+        com.linux_core.core.vpn.VpnCaptureService.onStateChangeListener = null
         TerminalService.onSessionFloated = null
         TerminalService.onSessionReturned = null
         servicesUpdateHandler.removeCallbacks(servicesPoller)

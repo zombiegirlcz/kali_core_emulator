@@ -39,6 +39,12 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.linux_core.core.*
 import com.linux_core.core.mitm.TlsMitmEngine
+import com.linux_core.core.vpn.ActiveSocket
+import com.linux_core.core.vpn.IpInfo
+import com.linux_core.core.vpn.IpInfoResolver
+import com.linux_core.core.vpn.VpnCaptureService
+import com.linux_core.core.vpn.VpnFirewallManager
+import com.linux_core.core.vpn.VpnLogManager
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -123,7 +129,7 @@ fun VpnSecurityTab() {
     ) }
 
     // SOCKETS + MITM tab state (must be at composable level, not inside LazyColumn)
-    val activeSockets = remember { mutableStateListOf<com.linux_core.core.ActiveSocket>() }
+    val activeSockets = remember { mutableStateListOf<com.linux_core.core.vpn.ActiveSocket>() }
     var mitmSnippets by remember { mutableStateOf(emptyList<Pair<Int, String>>()) }
     val mitmSessionInfos = remember { mutableStateListOf<TlsMitmEngine.MitmSessionInfo>() }
 
@@ -560,7 +566,7 @@ fun VpnSecurityTab() {
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = if (com.linux_core.core.VpnCaptureService.isRunning()) "Žádná aktivní připojení." else "Spusťte VPN k monitorování aktivních soketů.",
+                                text = if (com.linux_core.core.vpn.VpnCaptureService.isRunning()) "Žádná aktivní připojení." else "Spusťte VPN k monitorování aktivních soketů.",
                                 color = Color.DarkGray,
                                 fontSize = 13.sp
                             )
@@ -1025,7 +1031,7 @@ fun LogEntryRow(
 
 @Composable
 fun ActiveSocketRow(
-    socket: com.linux_core.core.ActiveSocket,
+    socket: com.linux_core.core.vpn.ActiveSocket,
     blockedIps: SnapshotStateList<String>,
     onBlockToggle: () -> Unit
 ) {
