@@ -960,9 +960,14 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
         print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
 
     # ── 3. Build proot ──────────────────────────────────────────────────────
-    print(f"  [{suffix}] Building proot (static talloc, PIE) ...")
+    print(f"  [{suffix}] Building proot (static talloc, PIE, USERLAND mode) ...")
     env2 = dict(os.environ)
-    env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072"
+    # -DUSERLAND: fake_id0 handles chown/chmod/utimensat entirely in userspace
+    # (stores ownership in .proot-meta-file.* files, cancels the real syscall via
+    # set_sysnum → PR_getuid). Without this, proot calls lchown("/proc", ...) directly
+    # from comm="proot" → SELinux denies { setattr } on proc:dir → audit storm →
+    # logd/binder stall → ANR → UI freeze. USERLAND mode eliminates the storm.
+    env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072 -DUSERLAND"
     env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
     env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
 
