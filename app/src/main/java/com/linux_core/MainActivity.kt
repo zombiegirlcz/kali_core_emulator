@@ -97,13 +97,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
-import com.linux_core.core.DockerImageRef
-import com.linux_core.core.RemoteDistroScript
-import com.linux_core.core.RemoteRootfsCatalog
-import com.linux_core.core.RootfsManager
-import com.linux_core.core.saveBootMode
-import com.linux_core.core.loadBootMode
-import com.linux_core.core.DEFAULT_BOOT_MODE
+import com.linux_core.core.docker.DockerImageRef
+import com.linux_core.core.rootfs.DEFAULT_BOOT_MODE
+import com.linux_core.core.rootfs.RemoteDistroScript
+import com.linux_core.core.rootfs.RemoteRootfsCatalog
+import com.linux_core.core.rootfs.RootfsManager
+import com.linux_core.core.rootfs.loadBootMode
+import com.linux_core.core.rootfs.saveBootMode
 import com.linux_core.ui.components.BootModeChip
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
@@ -166,8 +166,8 @@ class MainActivity : ComponentActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 24 && resultCode == RESULT_OK) {
             val intent =
-                Intent(this, com.linux_core.core.VpnCaptureService::class.java).apply {
-                    action = com.linux_core.core.VpnCaptureService.ACTION_START
+                Intent(this, com.linux_core.core.vpn.VpnCaptureService::class.java).apply {
+                    action = com.linux_core.core.vpn.VpnCaptureService.ACTION_START
                 }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
@@ -180,23 +180,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         com.linux_core.security.CertificateManager.init(applicationContext)
-        com.linux_core.core.ImmersiveMode.enterImmersive(this)
+        com.linux_core.core.device.ImmersiveMode.enterImmersive(this)
 
         // Layout migration: ensure old paths are moved to nh/distro + usr/bin before any rootfs access
-        com.linux_core.core.RootfsManager.ensureMigrated(applicationContext)
+        com.linux_core.core.rootfs.RootfsManager.ensureMigrated(applicationContext)
 
         // Deploy host-side tools (proot/loader/boot/nano/rsync/sed/rg) into files/usr/bin
         // so boot and PRoot launcher are available immediately after app start.
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                com.linux_core.core.ProotManager.setupProotEnvironment(applicationContext)
+                com.linux_core.core.rootfs.ProotManager.setupProotEnvironment(applicationContext)
             } catch (e: Exception) {
                 Log.w("MainActivity", "Early ProotManager setup failed", e)
             }
         }
 
-        com.linux_core.core.ShortcutHelper.registerShortcuts(this)
-        com.linux_core.core.VpnLogManager.initialize(applicationContext)
+        com.linux_core.core.device.ShortcutHelper.registerShortcuts(this)
+        com.linux_core.core.vpn.VpnLogManager.initialize(applicationContext)
 
         // Resume the background cron session whenever the app is opened.
         // After a force-stop / system kill, Android won't redeliver
@@ -207,9 +207,9 @@ class MainActivity : ComponentActivity() {
         // BOOT_COMPLETED / START_STICKY race can't spawn a duplicate.
         val prefs = getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         if (prefs.getBoolean("boot_autostart", true) &&
-            com.linux_core.core.TerminalService.backgroundBootSessionId == null
+            com.linux_core.core.terminal.TerminalService.backgroundBootSessionId == null
         ) {
-            com.linux_core.core.BackgroundBoot.start(applicationContext)
+            com.linux_core.core.terminal.BackgroundBoot.start(applicationContext)
         }
 
         setContent {
@@ -434,7 +434,7 @@ fun MainScreen() {
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     hasStoragePermission = hasAllFilesAccess(context)
-                    activeSessionCount = com.linux_core.core.TerminalService.sessions.size
+                    activeSessionCount = com.linux_core.core.terminal.TerminalService.sessions.size
                     // Skenovat existující Docker image adresáře (nový layout nh/distro/docker + legacy)
                     val filesDir = context.filesDir
                     val newDockerDir = File(filesDir, "nh/distro/docker")
@@ -2228,7 +2228,7 @@ fun MainScreen() {
                                         Button(
                                             onClick = {
                                                 val cmd = customCommandText.trim().ifEmpty { null }
-                                                com.linux_core.core.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
+                                                com.linux_core.core.device.ShortcutHelper.pinShortcut(context, "kali", cmd, mountStorage)
                                                 Toast.makeText(context, "Requested Kali shortcut!", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(6.dp),
@@ -2251,7 +2251,7 @@ fun MainScreen() {
                                         Button(
                                             onClick = {
                                                 val cmd = customCommandText.trim().ifEmpty { null }
-                                                com.linux_core.core.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
+                                                com.linux_core.core.device.ShortcutHelper.pinShortcut(context, "parrot", cmd, mountStorage)
                                                 Toast.makeText(context, "Requested Parrot shortcut!", Toast.LENGTH_SHORT).show()
                                             },
                                             shape = RoundedCornerShape(6.dp),

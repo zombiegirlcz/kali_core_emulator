@@ -1,0 +1,10 @@
+root = true
+
+[*.{kt,kts}]
+# Balicek `com.linux_core` je zavedeny nazev aplikace (viz AGENTS.md) — jeho
+# prejmenovani by bylo masivni, nesouvisejici zmena napric celym repem.
+ktlint_standard_package-name = disabled
+# EXTERNAL_LAUNCHER_PKG (TerminalActivity.kt) je zamerne konstantni-styl nazev
+# pro balicek externi aplikace; neni `const val` protoze je v Activity, ne
+# top-level/companion object.
+ktlint_standard_property-naming = disabled

@@ -114,7 +114,7 @@
 
         <!-- „Open with“ / share příjemce — uloží soubor do ~/share a otevře terminál -->
         <activity
-            android:name=".core.ShareReceiverActivity"
+            android:name=".core.terminal.ShareReceiverActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:taskAffinity=""
@@ -139,26 +139,26 @@
         </activity>
 
         <service
-            android:name=".core.TerminalService"
+            android:name=".core.terminal.TerminalService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <!-- Plovoucí terminál (overlay, `nh float`) -->
         <service
-            android:name=".core.FloatingTerminalService"
+            android:name=".core.terminal.FloatingTerminalService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <service
-            android:name=".core.BackupService"
+            android:name=".core.device.BackupService"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse" />
 
         <service
-            android:name=".core.VpnCaptureService"
+            android:name=".core.vpn.VpnCaptureService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="true">
             <intent-filter>
@@ -167,7 +167,7 @@
         </service>
 
         <service
-            android:name=".core.NetHunterAssistantService"
+            android:name=".core.assistant.NetHunterAssistantService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true">
             <intent-filter>
@@ -179,12 +179,12 @@
         </service>
 
         <service
-            android:name=".core.NetHunterAssistantSessionService"
+            android:name=".core.assistant.NetHunterAssistantSessionService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true" />
 
         <service
-            android:name=".core.NetHunterSpeechRecognitionService"
+            android:name=".core.assistant.NetHunterSpeechRecognitionService"
             android:permission="android.permission.BIND_RECOGNITION_SERVICE"
             android:exported="true">
             <intent-filter>
@@ -195,7 +195,7 @@
 
         <!-- Widget temporarily disabled for later
         <receiver
-            android:name=".core.WidgetProvider"
+            android:name=".core.widget.WidgetProvider"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -210,13 +210,13 @@
         </receiver>
 
         <service
-            android:name=".core.WidgetRenderService"
+            android:name=".core.widget.WidgetRenderService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
         -->
 
         <provider
-            android:name=".core.DistroDocumentsProvider"
+            android:name=".core.rootfs.DistroDocumentsProvider"
             android:authorities="com.linux_core.documents"
             android:exported="true"
             android:grantUriPermissions="true"
@@ -227,7 +227,7 @@
         </provider>
 
         <service
-            android:name="com.linux_core.core.NetHunterNotificationListenerService"
+            android:name="com.linux_core.core.assistant.NetHunterNotificationListenerService"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:exported="false">
             <intent-filter>
@@ -236,7 +236,7 @@
         </service>
 
         <service
-            android:name="com.linux_core.core.NetHunterAccessibilityService"
+            android:name="com.linux_core.core.assistant.NetHunterAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
@@ -247,7 +247,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
         <receiver
-            android:name="com.linux_core.core.NetHunterDeviceAdminReceiver"
+            android:name="com.linux_core.core.assistant.NetHunterDeviceAdminReceiver"
             android:label="NetHunter Device Manager"
             android:description="@string/device_admin_desc"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
@@ -261,7 +261,7 @@
         </receiver>
 
         <receiver
-            android:name=".core.UsbAttachReceiver"
+            android:name=".core.usb.UsbAttachReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
@@ -273,18 +273,18 @@
         </receiver>
 
         <receiver
-            android:name=".core.OffensiveActionReceiver"
+            android:name=".core.ai.OffensiveActionReceiver"
             android:exported="false" />
         <receiver
-            android:name=".core.VerdictReceiver"
+            android:name=".core.ai.VerdictReceiver"
             android:exported="false" />
         <!-- Watchdog: exact alarm každých 10 min, oživí service+cron po LMK/OEM killu -->
         <receiver
-            android:name=".core.WatchdogReceiver"
+            android:name=".core.device.WatchdogReceiver"
             android:exported="false" />
 
         <receiver
-            android:name=".core.BootReceiver"
+            android:name=".core.terminal.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -294,7 +294,7 @@
 
         <!-- Midnight auto-pull of daily rootfs + retry on failure -->
         <receiver
-            android:name=".core.RemoteRootfsSyncReceiver"
+            android:name=".core.rootfs.RemoteRootfsSyncReceiver"
             android:exported="false" />
 
         <!-- App-to-app Binder most pro kali_ai_assistant (signature permission).

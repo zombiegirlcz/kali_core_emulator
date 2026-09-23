@@ -49,7 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.linux_core.core.RootfsManager
+import com.linux_core.core.rootfs.RootfsManager
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.io.File
@@ -256,7 +256,7 @@ fun DockerPullScreen(
                                         lastFile
                                     }
                                     else -> {
-                                        val ref = com.linux_core.core.DockerImageRef.parse(rawInput)
+                                        val ref = com.linux_core.core.docker.DockerImageRef.parse(rawInput)
                                         pullStatus = "Pulling ${ref.fullName}:${ref.tag}…"
                                         var lastFile: File? = null
                                         RootfsManager.pullDockerImage(context, ref).collect { (p, status) ->

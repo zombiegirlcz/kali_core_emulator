@@ -1,6 +1,24 @@
 package com.linux_core.core
 
 import android.content.ClipboardManager
+import com.linux_core.core.ai.VerdictNotifier
+import com.linux_core.core.assistant.NetHunterAccessibilityService
+import com.linux_core.core.assistant.NetHunterDeviceAdminReceiver
+import com.linux_core.core.assistant.NetHunterNotificationListenerService
+import com.linux_core.core.device.DeviceInfo
+import com.linux_core.core.device.ExecCore
+import com.linux_core.core.device.GitAgentNotifier
+import com.linux_core.core.mitm.MitmTrafficStore
+import com.linux_core.core.mitm.TlsMitmEngine
+import com.linux_core.core.rootfs.ProotManager
+import com.linux_core.core.rootfs.RootfsManager
+import com.linux_core.core.terminal.FloatingTerminalService
+import com.linux_core.core.terminal.ShellDaemonClient
+import com.linux_core.core.terminal.TerminalService
+import com.linux_core.core.usb.UsbHostManager
+import com.linux_core.core.vpn.TrafficAggregator
+import com.linux_core.core.vpn.VpnCaptureService
+import com.linux_core.core.vpn.VpnLogManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -95,8 +113,8 @@ object LocalApiServer {
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
-        val bindAddress = if (shareLocalApi && com.linux_core.core.VpnCaptureService.isRunning()) {
-            com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val bindAddress = if (shareLocalApi && com.linux_core.core.vpn.VpnCaptureService.isRunning()) {
+            com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         } else {
             "127.0.0.1"
         }
@@ -1508,10 +1526,10 @@ object LocalApiServer {
     }
 
     private fun handleVpnStatus(context: Context, out: OutputStream) {
-        val running = com.linux_core.core.VpnCaptureService.isRunning()
-        val packets = com.linux_core.core.VpnCaptureService.getCapturedPacketCount()
-        val bytes = com.linux_core.core.VpnCaptureService.getCapturedByteCount()
-        val vpnIp = com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val running = com.linux_core.core.vpn.VpnCaptureService.isRunning()
+        val packets = com.linux_core.core.vpn.VpnCaptureService.getCapturedPacketCount()
+        val bytes = com.linux_core.core.vpn.VpnCaptureService.getCapturedByteCount()
+        val vpnIp = com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         val json = JSONObject().apply {
             put("running", running)
             put("packets", packets)
@@ -2506,7 +2524,7 @@ object LocalApiServer {
         try {
             val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val enabled = prefs.getBoolean("enable_mitm", com.linux_core.BuildConfig.ENABLE_MITM)
-            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
             val json = JSONObject().apply {
                 put("mitm", if (enabled) "on" else "off")
                 put("active_sessions", sessions.size)
@@ -2548,7 +2566,7 @@ object LocalApiServer {
             }
 
             if (fmt == "legacy") {
-                val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+                val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
                 val sb = StringBuilder()
                 for ((port, snippet) in sessions) {
                     sb.append("=== Port $port ===\n")

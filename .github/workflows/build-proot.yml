@@ -1,0 +1,154 @@
+name: Build static PRoot (aarch64)
+
+# Ad-hoc náhrada za Modal, kdyz je Modal nedostupný: zkompiluje jen
+# proot-static-aarch64 + loader-static-aarch64 (Termux fork, talloc staticky
+# slinkovaný) a nahraje je jako workflow artifact ke stažení. Nekomituje nic
+# do repa — commit vendorovaných binárek dělá až `zsh mbuild native`, tohle
+# je jen rychlý test build pro live testování na zařízení.
+
+on:
+  workflow_dispatch:
+    inputs:
+      proot_tag:
+        description: 'termux/proot git tag'
+        required: false
+        default: 'v5.1.107.93'
+
+permissions:
+  contents: read
+
+jobs:
+  build-proot-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install NDK r28
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r28-linux.zip -O /tmp/ndk.zip
+          unzip -q /tmp/ndk.zip -d /opt/
+          echo "NDK_DIR=/opt/android-ndk-r28" >> "$GITHUB_ENV"
+
+      - name: Clone termux/proot @ ${{ inputs.proot_tag }}
+        run: |
+          git clone --depth 1 --branch "${{ inputs.proot_tag }}" https://github.com/termux/proot.git /tmp/proot-src
+
+      - name: Fetch talloc 2.4.3
+        run: |
+          wget -q https://www.samba.org/ftp/talloc/talloc-2.4.3.tar.gz -O /tmp/talloc.tar.gz
+          mkdir -p /tmp/talloc-src
+          tar xzf /tmp/talloc.tar.gz -C /tmp/talloc-src --strip-components=1
+
+      - name: Build talloc (static)
+        run: |
+          TC=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin
+          CC=$TC/aarch64-linux-android24-clang
+          mkdir -p /tmp/talloc-lib
+          cat > /tmp/cross-answers.txt <<'EOF'
+          Checking uname sysname type: "Linux"
+          Checking uname machine type: "aarch64"
+          Checking uname release type: "dontcare"
+          Checking uname version type: "dontcare"
+          Checking simple C program: OK
+          building library support: OK
+          Checking for large file support: OK
+          Checking for -D_FILE_OFFSET_BITS=64: OK
+          Checking for WORDS_BIGENDIAN: OK
+          Checking for C99 vsnprintf: OK
+          Checking for HAVE_SECURE_MKSTEMP: OK
+          rpath library support: OK
+          -Wl,--version-script support: FAIL
+          Checking correct behavior of strtoll: OK
+          Checking correct behavior of strptime: OK
+          Checking for HAVE_IFACE_GETIFADDRS: OK
+          Checking for HAVE_IFACE_IFCONF: OK
+          Checking for HAVE_IFACE_IFREQ: OK
+          Checking getconf LFS_CFLAGS: OK
+          Checking for large file support without additional flags: OK
+          Checking for working strptime: OK
+          Checking for HAVE_SHARED_MMAP: OK
+          Checking for HAVE_MREMAP: OK
+          Checking for HAVE_INCOHERENT_MMAP: NO
+          Checking getconf large file support flags work: OK
+          EOF
+          cd /tmp/talloc-src
+          CC=$CC CFLAGS="-O2 -fPIC" LDFLAGS="" ./configure \
+            --prefix=/tmp/talloc-install \
+            --cross-compile \
+            --cross-answers=/tmp/cross-answers.txt \
+            --disable-python \
+            --without-gettext
+          CC=$CC CFLAGS="-O2 -fPIC" make -j4
+          objs=$(find bin/default -maxdepth 1 -name 'talloc.c.*.o')
+          [ -n "$objs" ] || objs=$(find bin/default -maxdepth 1 -name '*.o')
+          $NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar rcs /tmp/talloc-lib/libtalloc.a $objs
+          ls -la /tmp/talloc-lib/libtalloc.a
+
+      - name: Patch proot source
+        run: |
+          F=/tmp/proot-src/src/extension/ashmem_memfd/ashmem_memfd.c
+          if [ -f "$F" ] && ! grep -q '#include <string.h>' "$F"; then
+            sed -i '1a #include <string.h>' "$F"
+          fi
+          cat > /tmp/proot-src/src/loader/loader-info.awk <<'EOF'
+          # Note: This file is included only for targets which have pokedata workaround
+
+          function hextodec(h,    i, c, d, v) {
+              v = 0
+              for (i = 1; i <= length(h); i++) {
+                  c = tolower(substr(h, i, 1))
+                  d = index("0123456789abcdef", c) - 1
+                  if (d < 0) return 0
+                  v = v * 16 + d
+              }
+              return v
+          }
+
+          /\ypokedata_workaround\y/ { pokedata_workaround = hextodec($2) }
+          /\y_start\y/              { start = hextodec($2) }
+
+          END {
+              print "#include <unistd.h>"
+              print "const ssize_t offset_to_pokedata_workaround=" (pokedata_workaround - start) ";"
+          }
+          EOF
+
+      - name: Build proot (static talloc, PIE)
+        run: |
+          TC=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin
+          CC=$TC/aarch64-linux-android24-clang
+          STRIP=$TC/llvm-strip
+          READELF=$TC/llvm-readelf
+          cd /tmp/proot-src
+          make -C src -j4 \
+            CC="$CC" \
+            LD="$CC" \
+            STRIP="$STRIP" \
+            HAS_LOADER_32BIT= \
+            PROOT_UNBUNDLE_LOADER=/data/data/com.linux_core/files \
+            CPPFLAGS="-I/tmp/talloc-src -DARG_MAX=131072" \
+            CFLAGS="-O2 -fPIE -ffunction-sections -fdata-sections" \
+            LDFLAGS="-pie -Wl,--gc-sections -L/tmp/talloc-lib" \
+            proot
+          test -f src/proot
+          test -f src/loader/loader
+          $STRIP src/proot
+          $STRIP src/loader/loader
+          mkdir -p /tmp/out
+          cp src/proot /tmp/out/proot-static-aarch64
+          cp src/loader/loader /tmp/out/loader-static-aarch64
+          echo "--- verify ---"
+          file /tmp/out/proot-static-aarch64
+          $READELF -d /tmp/out/proot-static-aarch64 | grep -i talloc && { echo "FAIL: dynamic talloc"; exit 1; } || echo "OK: no dynamic talloc"
+          strings /tmp/out/proot-static-aarch64 | grep -q -- --link2symlink && echo "OK: --link2symlink present"
+          $READELF -d /tmp/out/proot-static-aarch64 | grep -i "proot v" || true
+          /tmp/out/proot-static-aarch64 --version || true
+          ls -la /tmp/out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proot-static-aarch64-${{ inputs.proot_tag }}
+          path: /tmp/out/
+          retention-days: 7
