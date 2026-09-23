@@ -959,16 +959,38 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
             f.write(_LOADER_INFO_AWK)
         print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
 
+    # Patch 3: inject #define USERLAND into fake_id0/config.h (source-level guarantee)
+    # USERLAND mode: fake_id0 replaces chown/chmod/utimensat with getuid() + meta files,
+    # eliminating comm="proot" lchown("/proc",...) → SELinux audit storm → freeze.
+    # Env-var CPPFLAGS is unreliable (proot Makefile may override); source patch wins.
+    fake_id0_config = os.path.join(proot_src, "src", "extension", "fake_id0", "config.h")
+    if os.path.exists(fake_id0_config):
+        with open(fake_id0_config, "r") as f:
+            cfg = f.read()
+        if "#define USERLAND" not in cfg:
+            with open(fake_id0_config, "w") as f:
+                f.write("#define USERLAND\n" + cfg)
+            print(f"    patch3: injected #define USERLAND into fake_id0/config.h")
+    else:
+        print(f"    patch3: fake_id0/config.h not found, skipping USERLAND inject")
+
+    # Patch 4: inject #define USERLAND into link2symlink.c (changes .l2s. → .proot.l2s.)
+    l2s_c = os.path.join(proot_src, "src", "extension", "link2symlink", "link2symlink.c")
+    if os.path.exists(l2s_c):
+        with open(l2s_c, "r") as f:
+            l2s_src = f.read()
+        if "#define USERLAND" not in l2s_src and "#ifndef USERLAND" in l2s_src:
+            with open(l2s_c, "w") as f:
+                f.write("#define USERLAND\n" + l2s_src)
+            print(f"    patch4: injected #define USERLAND into link2symlink.c")
+    else:
+        print(f"    patch4: link2symlink.c not found, skipping")
+
     # ── 3. Build proot ──────────────────────────────────────────────────────
     print(f"  [{suffix}] Building proot (static talloc, PIE, USERLAND mode) ...")
     env2 = dict(os.environ)
-    # -DUSERLAND: fake_id0 handles chown/chmod/utimensat entirely in userspace
-    # (stores ownership in .proot-meta-file.* files, cancels the real syscall via
-    # set_sysnum → PR_getuid). Without this, proot calls lchown("/proc", ...) directly
-    # from comm="proot" → SELinux denies { setattr } on proc:dir → audit storm →
-    # logd/binder stall → ANR → UI freeze. USERLAND mode eliminates the storm.
     env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072 -DUSERLAND"
-    env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
+    env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections -DUSERLAND"
     env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
 
     _proot_run(["make", "-C", "src", "-j4",
