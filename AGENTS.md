@@ -302,12 +302,21 @@ nepřidávat; `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
 **PRoot verze — `tmux`/multiplexery vyžadují ≥ v5.1.107.91:** staré `v5.1.107.90` desynchronizuje
 syscall tracer state machine na aarch64 zařízeních se starým 4.x kernelem (`arm64 before v5.3`, tj.
 většina Android telefonů) při emulaci syscallů, které PRoot cancelluje/fejkuje (upstream fix
-`61681c64`, „syscall: don't wait for a sysenter stop the kernel skips"). Projev: `tmux attach`
-padá na `open terminal failed: not a terminal` (fd doručený přes `SCM_RIGHTS` skončí špatně
-klasifikovaný, `ioctl` na něj padá i s validním `/dev/pts/*`), zatímco stejný rootfs pod Termux
-proot-distro (má `v5.1.107.91`+) funguje bez problému — **není to SELinux ani konfigurace**, obě
-appky běží ve stejné doméně `untrusted_app_27`, je to čistě verze PRoot binárky. `PROOT_TAG` je
-teď `v5.1.107.93` (obsahuje navíc opravy přímo v `link2symlink`, viz níže) — nevracet zpět na `.90`.
+`61681c64`, „syscall: don't wait for a sysenter stop the kernel skips"). `PROOT_TAG` je teď
+`v5.1.107.93` — nevracet zpět na `.90`.
+
+**PRoot USERLAND mode (`fake_id0`) nelze použít — ničí PTY/tmux:** USERLAND mode (`#define USERLAND`
+v `fake_id0/config.h`) zabraňuje SELinux audit bouři (`comm="proot" setattr proc:dir`), ale způsobuje
+jinou regresi: `ioctl(fd, TCGETS)` selže pro **jakýkoli fd otevřený přes `open()` uvnitř proot** —
+tj. `isatty()` = 0 pro `/dev/tty`, `/dev/pts/N`, vše otevřené nově. Zděděný fd 0 funguje,
+nově otevřené PTY fdy ne → `tmux new` → "open terminal failed: not a terminal"; `tmux < /dev/tty`
+→ "can't use /dev/tty". `setsid` ani `< /dev/tty` redirect nepomůže.
+
+**SELinux fix (aktuální) — lchown/chown/chmod wrapper v `fake_id0.c`:** místo USERLAND mode je
+do `fake_id0.c` prependován wrapper, který přeskočí `lchown`/`chown`/`chmod` na `/proc` a `/sys`
+(bind-mountované systémové cesty) — žádný host-side chown na `/proc` → žádný AVC denial, a zároveň
+NON-USERLAND mode → tmux a PTY fungují. Viz `_FAKE_ID0_SELINUX_FIX` v `tools/modal_build.py::_build_proot_one_arch()`.
+**Detekce binárky:** NON-USERLAND proot má `.l2s.` string (USERLAND měl `.proot.l2s.`).
 
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`

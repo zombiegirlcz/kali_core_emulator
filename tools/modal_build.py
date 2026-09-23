@@ -959,38 +959,60 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
             f.write(_LOADER_INFO_AWK)
         print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
 
-    # Patch 3: inject #define USERLAND into fake_id0/config.h (source-level guarantee)
-    # USERLAND mode: fake_id0 replaces chown/chmod/utimensat with getuid() + meta files,
-    # eliminating comm="proot" lchown("/proc",...) → SELinux audit storm → freeze.
-    # Env-var CPPFLAGS is unreliable (proot Makefile may override); source patch wins.
-    fake_id0_config = os.path.join(proot_src, "src", "extension", "fake_id0", "config.h")
-    if os.path.exists(fake_id0_config):
-        with open(fake_id0_config, "r") as f:
-            cfg = f.read()
-        if "#define USERLAND" not in cfg:
-            with open(fake_id0_config, "w") as f:
-                f.write("#define USERLAND\n" + cfg)
-            print(f"    patch3: injected #define USERLAND into fake_id0/config.h")
+    # Patch 3: SELinux lchown/chown/chmod wrapper prepended to fake_id0.c
+    # Problem: NON-USERLAND fake_id0 calls lchown("/proc",...) from proot's own process
+    # → comm="proot" setattr proc:dir → SELinux AVC denial → audit storm.
+    # Fix: thin wrapper skips lchown/chown/chmod on /proc and /sys (bind-mounted system
+    # paths). NON-USERLAND avoids the USERLAND ioctl(TCGETS) regression that breaks tmux
+    # and any PTY opened via open() inside proot (isatty() returns 0 for all such fds).
+    _FAKE_ID0_SELINUX_FIX = """\
+/* SELinux fix: skip lchown/chown/chmod on /proc and /sys bind-mount paths.
+ * Prevents comm="proot" setattr proc:dir AVC denials on Android without
+ * USERLAND mode (which breaks ioctl(TCGETS) on newly-opened PTY fds). */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+static inline int _proot_skip_bind(const char *p) {
+    return p && (
+        (strncmp(p,"/proc",5)==0 && (!p[5]||p[5]=='/')) ||
+        (strncmp(p,"/sys", 4)==0 && (!p[4]||p[4]=='/')));
+}
+static int __selinux_lchown(const char *path, uid_t u, gid_t g) {
+    if (_proot_skip_bind(path)) return 0;
+    return lchown(path, u, g);
+}
+static int __selinux_chown(const char *path, uid_t u, gid_t g) {
+    if (_proot_skip_bind(path)) return 0;
+    return chown(path, u, g);
+}
+static int __selinux_chmod(const char *path, mode_t m) {
+    if (_proot_skip_bind(path)) return 0;
+    return chmod(path, m);
+}
+#define lchown __selinux_lchown
+#define chown  __selinux_chown
+#define chmod  __selinux_chmod
+"""
+    fake_id0_c = os.path.join(proot_src, "src", "extension", "fake_id0", "fake_id0.c")
+    if os.path.exists(fake_id0_c):
+        with open(fake_id0_c, "r") as f:
+            fid0_src = f.read()
+        if "__selinux_lchown" not in fid0_src:
+            with open(fake_id0_c, "w") as f:
+                f.write(_FAKE_ID0_SELINUX_FIX + fid0_src)
+            print(f"    patch3: injected SELinux lchown/chown/chmod wrapper into fake_id0.c")
     else:
-        print(f"    patch3: fake_id0/config.h not found, skipping USERLAND inject")
-
-    # Patch 4: inject #define USERLAND into link2symlink.c (changes .l2s. → .proot.l2s.)
-    l2s_c = os.path.join(proot_src, "src", "extension", "link2symlink", "link2symlink.c")
-    if os.path.exists(l2s_c):
-        with open(l2s_c, "r") as f:
-            l2s_src = f.read()
-        if "#define USERLAND" not in l2s_src and "#ifndef USERLAND" in l2s_src:
-            with open(l2s_c, "w") as f:
-                f.write("#define USERLAND\n" + l2s_src)
-            print(f"    patch4: injected #define USERLAND into link2symlink.c")
-    else:
-        print(f"    patch4: link2symlink.c not found, skipping")
+        print(f"    patch3: fake_id0.c not found, skipping SELinux lchown fix")
 
     # ── 3. Build proot ──────────────────────────────────────────────────────
-    print(f"  [{suffix}] Building proot (static talloc, PIE, USERLAND mode) ...")
+    print(f"  [{suffix}] Building proot (static talloc, PIE, SELinux lchown fix) ...")
     env2 = dict(os.environ)
-    env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072 -DUSERLAND"
-    env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections -DUSERLAND"
+    env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072"
+    env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
     env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
 
     _proot_run(["make", "-C", "src", "-j4",
