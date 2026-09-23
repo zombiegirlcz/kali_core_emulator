@@ -1387,11 +1387,22 @@ object ProotManager {
         if (wrapperTarget != null && wrapperTarget!!.exists()) {
             val usrBin = File(rootfsDir, "usr/bin")
             for (name in listOf("su", "sudo")) {
-                // 2a. Rename original if present (and not already renamed)
+                // 2a. Rename original if present. Musí to být idempotentní PŘI
+                // KAŽDÉM startu, ne jen "poprvé" (!origBackup.exists()) — apt
+                // umí `sudo`/`su` kdykoliv přeinstalovat jako závislost něčeho
+                // jiného, čímž tiše obnoví /usr/bin/sudo a "odstíní" náš
+                // wrapper (PATH ho najde dřív než /usr/local/bin/sudo). Bez
+                // opětovného přejmenování při každém boot pak `sudo <cmd>`
+                // běží pod fake-root PRootem bez skutečné eskalace — vypadá
+                // to jako úspěch, ale na hostitelsky vlastněných cestách
+                // (`/data/app`, …) selže s Permission denied. Přepiš `.orig`
+                // vždy znovu, když `origBin` existuje (no-op, pokud už byl
+                // přejmenovaný — pak origBin.exists() == false).
                 val origBin = File(usrBin, name)
                 val origBackup = File(usrBin, "$name.orig")
-                if (origBin.exists() && !origBackup.exists()) {
+                if (origBin.exists()) {
                     try {
+                        if (origBackup.exists()) origBackup.delete()
                         val ok = origBin.renameTo(origBackup)
                         Log.i(TAG, "Renamed /usr/bin/$name -> /usr/bin/$name.orig (ok=$ok)")
                     } catch (e: Exception) {
@@ -1401,8 +1412,9 @@ object ProotManager {
                 // Also handle /bin/su (Kali keeps su in /bin too)
                 val binSu = File(rootfsDir, "bin/$name")
                 val binSuBackup = File(rootfsDir, "bin/$name.orig")
-                if (binSu.exists() && !binSuBackup.exists()) {
+                if (binSu.exists()) {
                     try {
+                        if (binSuBackup.exists()) binSuBackup.delete()
                         val ok = binSu.renameTo(binSuBackup)
                         Log.i(TAG, "Renamed /bin/$name -> /bin/$name.orig (ok=$ok)")
                     } catch (e: Exception) {
