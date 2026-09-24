@@ -312,10 +312,12 @@ tj. `isatty()` = 0 pro `/dev/tty`, `/dev/pts/N`, vše otevřené nově. Zděděn
 nově otevřené PTY fdy ne → `tmux new` → "open terminal failed: not a terminal"; `tmux < /dev/tty`
 → "can't use /dev/tty". `setsid` ani `< /dev/tty` redirect nepomůže.
 
-**SELinux fix (aktuální) — lchown/chown/chmod wrapper v `fake_id0.c`:** místo USERLAND mode je
-do `fake_id0.c` prependován wrapper, který přeskočí `lchown`/`chown`/`chmod` na `/proc` a `/sys`
-(bind-mountované systémové cesty) — žádný host-side chown na `/proc` → žádný AVC denial, a zároveň
-NON-USERLAND mode → tmux a PTY fungují. Viz `_FAKE_ID0_SELINUX_FIX` v `tools/modal_build.py::_build_proot_one_arch()`.
+**SELinux fix (aktuální) — `--wrap=chmod` linker-level wrapper:** proot binary má 4 volání
+`chmod@plt` z různých .c souborů. Per-file `#define` nestačí. Správné řešení: `selinux_android_fix.c`
+s `__wrap_chmod` + `-Wl,--wrap=chmod` v LDFLAGS → linker přesměruje VŠECHNA `chmod` volání
+v proot binary přes wrapper, který přeskočí `/proc` a `/sys`. NON-USERLAND mode zachován →
+tmux a PTY fungují.
+Viz `_SELINUX_FIX_C` + `selinux_fix_o` v `tools/modal_build.py::_build_proot_one_arch()`.
 **Detekce binárky:** NON-USERLAND proot má `.l2s.` string (USERLAND měl `.proot.l2s.`).
 
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy

@@ -959,61 +959,40 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
             f.write(_LOADER_INFO_AWK)
         print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
 
-    # Patch 3: SELinux lchown/chown/chmod wrapper prepended to fake_id0.c
-    # Problem: NON-USERLAND fake_id0 calls lchown("/proc",...) from proot's own process
-    # → comm="proot" setattr proc:dir → SELinux AVC denial → audit storm.
-    # Fix: thin wrapper skips lchown/chown/chmod on /proc and /sys (bind-mounted system
-    # paths). NON-USERLAND avoids the USERLAND ioctl(TCGETS) regression that breaks tmux
-    # and any PTY opened via open() inside proot (isatty() returns 0 for all such fds).
-    _FAKE_ID0_SELINUX_FIX = """\
-/* SELinux fix: skip lchown/chown/chmod on /proc and /sys bind-mount paths.
- * Prevents comm="proot" setattr proc:dir AVC denials on Android without
- * USERLAND mode (which breaks ioctl(TCGETS) on newly-opened PTY fds). */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <string.h>
-#include <sys/types.h>
+    # Patch 3: SELinux fix via --wrap=chmod (linker-level, cross-TU)
+    # proot binary has 4 chmod@plt calls across multiple .c files. A per-file
+    # #define only intercepts calls in one TU. --wrap=chmod + selinux_android_fix.c
+    # intercepts ALL chmod calls in the proot binary at link time.
+    # NON-USERLAND avoids the USERLAND ioctl(TCGETS) regression that breaks tmux.
+    _SELINUX_FIX_C = """\
+/* selinux_android_fix.c: --wrap=chmod SELinux fix for proot on Android.
+ * All 4 chmod@plt calls in proot binary are redirected to __wrap_chmod.
+ * Skips chmod on /proc and /sys to prevent comm="proot" setattr proc:dir AVC. */
 #include <sys/stat.h>
-#include <unistd.h>
-static inline int _proot_skip_bind(const char *p) {
-    return p && (
-        (strncmp(p,"/proc",5)==0 && (!p[5]||p[5]=='/')) ||
-        (strncmp(p,"/sys", 4)==0 && (!p[4]||p[4]=='/')));
+#include <string.h>
+extern int __real_chmod(const char *path, mode_t mode);
+int __wrap_chmod(const char *path, mode_t mode) {
+    if (path &&
+        ((strncmp(path,"/proc",5)==0 && (!path[5]||path[5]=='/')) ||
+         (strncmp(path,"/sys", 4)==0 && (!path[4]||path[4]=='/')))) {
+        return 0;
+    }
+    return __real_chmod(path, mode);
 }
-static int __selinux_lchown(const char *path, uid_t u, gid_t g) {
-    if (_proot_skip_bind(path)) return 0;
-    return lchown(path, u, g);
-}
-static int __selinux_chown(const char *path, uid_t u, gid_t g) {
-    if (_proot_skip_bind(path)) return 0;
-    return chown(path, u, g);
-}
-static int __selinux_chmod(const char *path, mode_t m) {
-    if (_proot_skip_bind(path)) return 0;
-    return chmod(path, m);
-}
-#define lchown __selinux_lchown
-#define chown  __selinux_chown
-#define chmod  __selinux_chmod
 """
-    fake_id0_c = os.path.join(proot_src, "src", "extension", "fake_id0", "fake_id0.c")
-    if os.path.exists(fake_id0_c):
-        with open(fake_id0_c, "r") as f:
-            fid0_src = f.read()
-        if "__selinux_lchown" not in fid0_src:
-            with open(fake_id0_c, "w") as f:
-                f.write(_FAKE_ID0_SELINUX_FIX + fid0_src)
-            print(f"    patch3: injected SELinux lchown/chown/chmod wrapper into fake_id0.c")
-    else:
-        print(f"    patch3: fake_id0.c not found, skipping SELinux lchown fix")
+    selinux_fix_c = os.path.join(proot_src, "src", "selinux_android_fix.c")
+    selinux_fix_o = os.path.join(proot_src, "src", "selinux_android_fix.o")
+    with open(selinux_fix_c, "w") as f:
+        f.write(_SELINUX_FIX_C)
+    _proot_run([cc, "-c", "-O2", "-fPIE", "-o", selinux_fix_o, selinux_fix_c])
+    print(f"    patch3: compiled selinux_android_fix.o (--wrap=chmod, cross-TU)")
 
     # ── 3. Build proot ──────────────────────────────────────────────────────
-    print(f"  [{suffix}] Building proot (static talloc, PIE, SELinux lchown fix) ...")
+    print(f"  [{suffix}] Building proot (static talloc, PIE, --wrap=chmod) ...")
     env2 = dict(os.environ)
     env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072"
     env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
-    env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
+    env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib} -Wl,--wrap=chmod {selinux_fix_o}"
 
     _proot_run(["make", "-C", "src", "-j4",
                 f"CC={cc}",
