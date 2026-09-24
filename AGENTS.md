@@ -312,17 +312,18 @@ tj. `isatty()` = 0 pro `/dev/tty`, `/dev/pts/N`, vše otevřené nově. Zděděn
 nově otevřené PTY fdy ne → `tmux new` → "open terminal failed: not a terminal"; `tmux < /dev/tty`
 → "can't use /dev/tty". `setsid` ani `< /dev/tty` redirect nepomůže.
 
-**tmux „not a terminal" z terminálu appky — overlapping storage bindy (NE proot binárka):**
-tmux (a jiné programy předávající tty přes `SCM_RIGHTS` mezi klientem a serverem) padal na
-`open terminal failed: not a terminal` **jen z terminálu appky**, z Termuxu do stejného rootfs/proot
-fungoval. Není to proot binárka ani env ani CTTY. Příčina: `build_binds()` bindoval `/storage`,
-`/storage/emulated/0`, `/sdcard` **i** `/mnt/sdcard` — překrývající se pohledy na tentýž FUSE
-emulated-storage mount. Víc bindů stejného filesystému rozbije proot path-resolution fd předaného
-přes `SCM_RIGHTS` → tmux server dostane pts fd, na kterém `isatty()` selže → „not a terminal".
-Diagnóza (2026-09-24): mód M (žádné host bindy) tmux OK; `su 10323 env -i; boot parrot` (bindy bez
-storage, protože v Termux namespace nejsou `-d` dostupné) OK; app session s plnými storage bindy padá.
-**Fix:** v `boot` bindovat storage jen přes `/storage` (obsahuje `emulated/0`) + jediný `-b /sdcard`
-(gate `NH_MOUNT_STORAGE`); NEbindovat `/storage/emulated/0` a `/mnt/sdcard` zvlášť. Nevracet zpět.
+**`boot` kopíruje referenční příkazy proot-distro (`docs/proot-cmd-mod.md`, 2026-09-24):**
+proot se spouští přes `env -i $(guest_env) "$PROOT" …`: guest nedědí prostředí appky, jen
+explicitní seznam proměnných (navíc proti referenci `LANG`/`LC_CTYPE`, `NETHUNTER_SESSION_ID`,
+`NH_DISTRO` pro guest `nh`). Flagy `--kill-on-exit --link2symlink -L --change-id=0:0` (+ `--sysvipc`,
+`--kernel-release` mimo M). `-b /dev/urandom:/dev/random` vždy (mimo M). Storage = jeden zdroj
+`/storage/self/primary` bindnutý do `/mnt/sdcard`, `/sdcard`, `/storage/emulated/0`,
+`/storage/self/primary`, bez bindu celého `/storage`. Navíc proti referenci jen `ipc`/`share`
+a uživatelské `NH_EXTRA_MOUNTS`/`--bind`.
+**tmux „not a terminal" z terminálu appky:** mód M funguje, plný D ne. Tmux server dostane
+pts fd přes `SCM_RIGHTS` a `isatty()` na něm selže. Příčina v D zatím **není potvrzená**. Samotné
+odebrání samostatných storage bindů problém nevyřešilo. Proot binárka ani env (`env -i` ve stejné
+session) to nejsou. Diagnostické helpery v guestu: `scmtest`, `ptsdiag`, `prootcmd`, `tmuxdiag`.
 
 **SELinux fix (aktuální) — `--wrap=chmod` linker-level wrapper:** proot binary má 4 volání
 `chmod@plt` z různých .c souborů. Per-file `#define` nestačí. Správné řešení: `selinux_android_fix.c`

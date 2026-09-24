@@ -35,9 +35,9 @@ export TMPDIR="$FILES_DIR/tmp"
 # link2symlink support (hardlink emulation, required by dpkg)
 # Note: actual path is set per-container in setup_sysdata_shm()
 
-# proot extensions, split so minimal mode can drop the optional extras
-# (--sysvipc and --kernel-release are omitted in minimal mode).
-PROOT_FLAGS_BASE="-v 0 --kill-on-exit -0 --link2symlink -L"
+# Flagy a bindy kopírují referenční příkazy proot-distro (docs/proot-cmd-mod.md).
+# Minimal vynechává --sysvipc a --kernel-release.
+PROOT_FLAGS_BASE="--kill-on-exit --link2symlink -L --change-id=0:0"
 PROOT_SYSVIPC="--sysvipc"
 PROOT_KERNEL_RELEASE="--kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\6.17.0-nethunter\\aarch64\\localdomain\\-1\\"
 PROOT_FLAGS_EXTRA="$PROOT_SYSVIPC $PROOT_KERNEL_RELEASE"
@@ -120,10 +120,9 @@ NH_MINIMAL="${NH_MINIMAL:-0}"
 # inspects the real kernel/process view (e.g. Frida) needs this. --sysvipc and
 # the /dev fixes stay enabled, only the fake view is dropped.
 NH_FAKE_SYS="${NH_FAKE_SYS:-1}"
-# Effective fake-overlay flag. Isolated (I) and minimal (M) are "real host
-# view" modes: they never overlay /proc + /sys. The UI switch (NH_FAKE_SYS)
-# can additionally disable the overlay for DEFAULT (D).
-if [ "$NH_MINIMAL" = "1" ] || [ "$NH_ISOLATED" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
+# Fake /proc + /sys overlay: DEFAULT i ISOLATED ho mají (jako proot-distro),
+# MINIMAL nikdy. Přepínač NH_FAKE_SYS=0 ho vypne pro D i I.
+if [ "$NH_MINIMAL" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
     NH_FAKE_EFFECTIVE=0
 else
     NH_FAKE_EFFECTIVE=1
@@ -143,33 +142,38 @@ unset PROOT_KERNEL_RELEASE
 export PROOT_FLAGS NH_FAKE_SYS
 
 # ─── Guest environment ──────────────────────────────────
-export_guest_env() {
-    # Browser/audio hints belong to the default environment, not the
-    # stripped-down minimal one.
-    if [ "$NH_MINIMAL" = "0" ]; then
-        export MOZ_FAKE_NO_SANDBOX=1
-        export PULSE_SERVER=127.0.0.1
+# proot se spouští přes `env -i` s explicitním seznamem proměnných (jako
+# proot-distro), guest tedy nedědí prostředí appky. Vypisuje slova VAR=VAL
+# pro word-splitting; hodnoty nesmí obsahovat mezery.
+guest_env() {
+    # proot si PROOT_LOADER/PROOT_TMP_DIR čte sám; guest wrapper PROOT_LOADER hned unsetne.
+    local _e="PROOT_LOADER=$LOADER PROOT_TMP_DIR=$FILES_DIR/tmp"
+    [ -n "${PROOT_L2S_DIR:-}" ] && _e="$_e PROOT_L2S_DIR=$PROOT_L2S_DIR"
+    _e="$_e HOME=/root USER=root LOGNAME=root"
+    _e="$_e TERM=${TERM:-xterm-256color} COLORTERM=${COLORTERM:-truecolor}"
+    # Mimo referenci: UTF-8 locale pro glibc a proměnné, které čte guest `nh`.
+    [ -n "${LANG:-}" ] && _e="$_e LANG=$LANG"
+    [ -n "${LC_CTYPE:-}" ] && _e="$_e LC_CTYPE=$LC_CTYPE"
+    [ -n "${NETHUNTER_SESSION_ID:-}" ] && _e="$_e NETHUNTER_SESSION_ID=$NETHUNTER_SESSION_ID"
+    [ -n "${NH_DISTRO:-}" ] && _e="$_e NH_DISTRO=$NH_DISTRO"
+
+    local _path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games"
+    if [ "$NH_MINIMAL" = "1" ]; then
+        echo "$_e PATH=$_path"
+        return 0
     fi
-    # HOME/USER/LOGNAME jsou potřeba VŽDY (i v minimal/isolated módu) — jinak
-    # shell zdědí HOME=/ a prázdný LOGNAME z hostitelského prostředí.
-    export HOME=/root
-    export USER=root
-    export LOGNAME=root
-    # Android prostředí — jen neizolovaný (DEFAULT) mód. Potřeba pro bionic
-    # binárky (linker64, ART). Hodnoty dědíme z host procesu,
-    # fallback na standardní cesty (stejně jako androidHostEnv v ProotManager).
+    _e="$_e PATH=$_path:/system/bin:/system/xbin MOZ_FAKE_NO_SANDBOX=1 PULSE_SERVER=127.0.0.1"
     if [ "$NH_ISOLATED" = "0" ]; then
-        export ANDROID_ROOT="${ANDROID_ROOT:-/system}"
-        export ANDROID_DATA="${ANDROID_DATA:-/data}"
-        export ANDROID_ART_ROOT="${ANDROID_ART_ROOT:-/apex/com.android.art}"
-        export ANDROID_I18N_ROOT="${ANDROID_I18N_ROOT:-/apex/com.android.i18n}"
-        export ANDROID_TZDATA_ROOT="${ANDROID_TZDATA_ROOT:-/apex/com.android.tzdata}"
-        export EXTERNAL_STORAGE="${EXTERNAL_STORAGE:-/sdcard}"
+        _e="$_e ANDROID_ART_ROOT=${ANDROID_ART_ROOT:-/apex/com.android.art}"
+        _e="$_e ANDROID_DATA=${ANDROID_DATA:-/data}"
+        _e="$_e ANDROID_I18N_ROOT=${ANDROID_I18N_ROOT:-/apex/com.android.i18n}"
+        _e="$_e ANDROID_ROOT=${ANDROID_ROOT:-/system}"
+        _e="$_e ANDROID_TZDATA_ROOT=${ANDROID_TZDATA_ROOT:-/apex/com.android.tzdata}"
+        [ -n "${BOOTCLASSPATH:-}" ] && _e="$_e BOOTCLASSPATH=$BOOTCLASSPATH"
+        [ -n "${DEX2OATBOOTCLASSPATH:-}" ] && _e="$_e DEX2OATBOOTCLASSPATH=$DEX2OATBOOTCLASSPATH"
+        _e="$_e EXTERNAL_STORAGE=/sdcard"
     fi
-    export TERM="${TERM:-xterm-256color}"
-    if [ -n "${COLORTERM:-}" ]; then
-        export COLORTERM
-    fi
+    echo "$_e"
 }
 
 # ─── sysdata + shm setup ────────────────────────────────
@@ -448,67 +452,54 @@ build_binds() {
     local _binds="-b /dev -b /proc -b /sys"
     local SYSROOT="$FILES_DIR/nh"
 
-    # sysdata + shm (skip in minimal mode and when the fake overlay is off)
-    if [ "$NH_FAKE_EFFECTIVE" = "1" ]; then
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/loadavg:/proc/loadavg"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/stat:/proc/stat"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/version:/proc/version"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/vmstat:/proc/vmstat"
-        # Individual sysctl substitutes (bind files, not the whole /proc/sys).
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/cap_last_cap:/proc/sys/kernel/cap_last_cap"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/fs/inotify/max_user_watches:/proc/sys/fs/inotify/max_user_watches"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/overflowuid:/proc/sys/kernel/overflowuid"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/overflowgid:/proc/sys/kernel/overflowgid"
-        _binds="$_binds -b $SYSROOT/sysdata/$distro/sys_empty:/sys/fs/selinux"
-        _binds="$_binds -b $SYSROOT/shm/$distro:/dev/shm"
-    fi
-
-    # Device fixes are part of the non-minimal stack (minimal = bare
-    # /dev, /proc, /sys only).
+    # MINIMAL (M): jen /dev /proc /sys (+ explicitní extra bindy níže).
     if [ "$NH_MINIMAL" = "0" ]; then
-        # Standard /dev fixes (Android lacks /dev/random, /dev/fd, etc.)
-        [ -e /dev/random ] || _binds="$_binds -b /dev/urandom:/dev/random"
+        _binds="$_binds -b /dev/urandom:/dev/random"
+        # Fake /proc + /sys overlay (D i I, lze vypnout NH_FAKE_SYS=0).
+        if [ "$NH_FAKE_EFFECTIVE" = "1" ]; then
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/sys_empty:/sys/fs/selinux"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/loadavg:/proc/loadavg"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/stat:/proc/stat"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/uptime:/proc/uptime"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/version:/proc/version"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/vmstat:/proc/vmstat"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/cap_last_cap:/proc/sys/kernel/cap_last_cap"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/fs/inotify/max_user_watches:/proc/sys/fs/inotify/max_user_watches"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/overflowuid:/proc/sys/kernel/overflowuid"
+            _binds="$_binds -b $SYSROOT/sysdata/$distro/sysctl/kernel/overflowgid:/proc/sys/kernel/overflowgid"
+        fi
+        _binds="$_binds -b $SYSROOT/shm/$distro:/dev/shm"
+        # Jen na zařízeních, kde tyhle uzly chybí.
         [ -e /dev/fd ] || _binds="$_binds -b /proc/self/fd:/dev/fd"
         [ -e /dev/stdin ] || _binds="$_binds -b /proc/self/fd/0:/dev/stdin"
         [ -e /dev/stdout ] || _binds="$_binds -b /proc/self/fd/1:/dev/stdout"
         [ -e /dev/stderr ] || _binds="$_binds -b /proc/self/fd/2:/dev/stderr"
     fi
 
-    # Host paths are visible only outside isolated mode. Isolated sessions
-    # deliberately see just /dev, /proc and /sys.
-    if [ "$NH_ISOLATED" = "0" ]; then
+    # DEFAULT (D): host cesty. ISOLATED (I) je nemá.
+    if [ "$NH_MINIMAL" = "0" ] && [ "$NH_ISOLATED" = "0" ]; then
+        [ -d /data/app ] && _binds="$_binds -b /data/app"
+        [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
+        [ -d /data/misc/apexdata/com.android.art/dalvik-cache ] && \
+            _binds="$_binds -b /data/misc/apexdata/com.android.art/dalvik-cache"
+        # Storage: jeden zdroj /storage/self/primary do všech cílů, žádný bind
+        # celého /storage (tak to dělá proot-distro).
+        if [ "$NH_MOUNT_STORAGE" = "1" ] && [ -d /storage/self/primary ]; then
+            for _t in /mnt/sdcard /sdcard /storage/emulated/0 /storage/self/primary; do
+                _binds="$_binds -b /storage/self/primary:$_t"
+            done
+        fi
         for _p in /apex /odm /product /system /system_ext /vendor; do
             [ -d "$_p" ] && [ -x "$_p" ] && _binds="$_binds -b $_p"
         done
         [ -f /linkerconfig/ld.config.txt ] && _binds="$_binds -b /linkerconfig/ld.config.txt"
         [ -f /linkerconfig/com.android.art/ld.config.txt ] && _binds="$_binds -b /linkerconfig/com.android.art/ld.config.txt"
-        [ -f /plat_property_contexts ] && _binds="$_binds -b /plat_property_contexts"
-        [ -f /property_contexts ] && _binds="$_binds -b /property_contexts"
 
-        # POZOR: NEbindovat /storage/emulated/0, /sdcard ani /mnt/sdcard zvlášť.
-        # Jsou to překrývající se pohledy na tentýž FUSE emulated-storage mount;
-        # více bindů stejného filesystému rozbije proot path-resolution fd
-        # předaného přes SCM_RIGHTS → tmux server dostane pts fd, na kterém
-        # isatty() selže → "open terminal failed: not a terminal". Ověřeno
-        # 2026-09-24: app session (s těmito bindy) padá, mód M / proot bez nich
-        # tmux má funkční. Storage zůstává dostupné přes /storage (obsahuje
-        # emulated/0) a přes jediný -b /sdcard níže (gate NH_MOUNT_STORAGE).
-        [ -d /storage ] && _binds="$_binds -b /storage"
-        [ -d /data/app ] && _binds="$_binds -b /data/app"
-        [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
-    fi
-    # Host-side tools live in $FILES_DIR/usr/{bin,lib} (deployed by ProotManager);
-    # no host app prefix is bound into the guest.
-
-    # App-managed dirs (skip in isolated/minimal mode)
-    if [ "$NH_ISOLATED" = "0" ]; then
-        _binds="$_binds -b $FILES_DIR/tmp:$FILES_DIR/tmp"
+        # App-managed dirs (nejsou v referenci, potřebují je nh nástroje).
         _binds="$_binds -b $FILES_DIR/ipc:/run/host_ipc"
         mkdir -p "$FILES_DIR/share" 2>/dev/null || true
         _binds="$_binds -b $FILES_DIR/share:/root/share"
     fi
-    [ "$NH_MOUNT_STORAGE" = "1" ] && [ "$NH_ISOLATED" = "0" ] && _binds="$_binds -b /sdcard"
 
     # Extra binds from preferences / CLI
     [ -n "${NH_EXTRA_MOUNTS:-}" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
@@ -603,7 +594,7 @@ boot_classic() {
     if [ -x "$ROOTFS/root/bootstrap.sh" ] && \
        { [ -f "$ROOTFS/root/.bootstrap_required" ] || [ ! -f "$ROOTFS/root/.setup_done" ]; }; then
         echo "[boot] First run detected — running bootstrap..." >&2
-        if "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+        if env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
             "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/bash /root/bootstrap.sh'; then
             rm -f "$ROOTFS/root/.bootstrap_required"
         else
@@ -621,7 +612,7 @@ boot_classic() {
         log "re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
@@ -631,17 +622,17 @@ boot_classic() {
             fi
             # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
             # then exec the exact args verbatim (no shell re-quoting loss)
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
 
     # Normal boot: entrypoint or login shell
     if [ -f "$ROOTFS/root/entrypoint.sh" ]; then
-        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+        exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
             "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/sh /root/entrypoint.sh "$@"' -- "$@"
     else
-        exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
+        exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
             "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; cd /root && exec /bin/bash --login "$@"' -- "$@"
     fi
 }
@@ -737,7 +728,7 @@ boot_docker() {
         log "docker re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
@@ -745,7 +736,7 @@ boot_docker() {
                 shift
                 set -- "$GUEST_SH" "$@"
             fi
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
@@ -755,19 +746,19 @@ boot_docker() {
         # Host-shell image: inject profile + use login binary
         inject_profile "$ROOTFS"
         if [ -n "$ENTRYPOINT" ]; then
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
         else
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
         fi
     else
         # Normal image: entrypoint or login shell
         if [ -n "$ENTRYPOINT" ]; then
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
         else
-            exec "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
         fi
     fi
@@ -836,9 +827,6 @@ main() {
     done
     [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
     eval "set -- $_newargs"
-
-    # Guest environment (HOME/USER/TERM/...).
-    export_guest_env
 
     case "${1:-}" in
         kali|parrot)
