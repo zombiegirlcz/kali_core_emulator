@@ -348,6 +348,7 @@ object ProotManager {
         val (nhIsolated, nhMinimal) = bootModeFlags(bootMode)
         val mountStorageFlag = if (mountStorage) "1" else "0"
         val fakeSysFlag = if (rootPrefs.getBoolean("bind_fake_sys", true)) "1" else "0"
+        val sharedTmp = rootPrefs.getBoolean("shared_tmp", false)
 
         // `sudo` inside the guest is handled by su_daemon, which exec()s this
         // same boot script under real root. That child inherits only the
@@ -362,6 +363,7 @@ object ProotManager {
                     append("NH_MINIMAL='").append(nhMinimal).append("'\n")
                     append("NH_FAKE_SYS='").append(fakeSysFlag).append("'\n")
                     append("NH_MOUNT_STORAGE='").append(mountStorageFlag).append("'\n")
+                    append("NH_SHARED_TMP='").append(if (sharedTmp) "1" else "0").append("'\n")
                     append("NH_EXTRA_MOUNTS='").append(extraMounts.replace("'", "'\\''")).append("'\n")
                 }
             )
@@ -394,6 +396,7 @@ object ProotManager {
         // Docker: boot docker <imageName>
         val bootScript = File(rootDir, "usr/bin/boot")
         val fullCommand = mutableListOf("/system/bin/sh", bootScript.absolutePath)
+        if (sharedTmp) fullCommand.add("--shared-tmp")
         if (isDockerImage) {
             fullCommand.add("docker")
             // rootfsDirName = "nh/distro/docker/<imageName>"

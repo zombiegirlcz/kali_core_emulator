@@ -449,6 +449,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", true)) }
     var bindAiApp by remember { mutableStateOf(prefs.getBoolean("bind_aiapp", false)) }
     var bindData by remember { mutableStateOf(prefs.getBoolean("bind_data", false)) }
+    var sharedTmp by remember { mutableStateOf(prefs.getBoolean("shared_tmp", false)) }
 
     // Emulovaný /proc + /sys (boot: NH_FAKE_SYS). Vypnuto = guest vidí reálný
     // kernel, /proc a /sys — potřeba pro nástroje zkoumající reálný stav
@@ -749,17 +750,18 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
 
-                // Checkbox items under /mnt/
-                val items = listOf(
-                    Triple("System", "/system → /mnt/system", "bind_system" to bindSystem),
-                    Triple("Vendor", "/vendor → /mnt/vendor", "bind_vendor" to bindVendor),
-                    Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
-                    Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
-                    Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
-                    Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
-                    Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp),
-                    Triple("Data (root)", "/data → /mnt/data (obsah vidí jen sudo)", "bind_data" to bindData)
-                )
+                    // Checkbox items under /mnt/
+                    val items = listOf(
+                        Triple("System", "/system → /mnt/system", "bind_system" to bindSystem),
+                        Triple("Vendor", "/vendor → /mnt/vendor", "bind_vendor" to bindVendor),
+                        Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
+                        Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
+                        Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
+                        Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
+                        Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp),
+                        Triple("Data (root)", "/data → /mnt/data (obsah vidí jen sudo)", "bind_data" to bindData),
+                        Triple("Shared /tmp", "files/tmp → /tmp (boot --shared-tmp)", "shared_tmp" to sharedTmp)
+                    )
 
                 items.forEach { (label, mountPath, statePair) ->
                     val (prefKey, stateValue) = statePair
@@ -782,6 +784,7 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                     "bind_app" -> bindApp = checked
                                     "bind_aiapp" -> bindAiApp = checked
                                     "bind_data" -> bindData = checked
+                                    "shared_tmp" -> sharedTmp = checked
                                 }
                             },
                             colors = CheckboxDefaults.colors(

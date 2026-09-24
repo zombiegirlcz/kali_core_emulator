@@ -1437,14 +1437,14 @@ fun MainScreen() {
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(
-                                        text = "Mount Shared Storage",
+                                        text = "Shared Storage",
                                         color = Color.White,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                     )
                                     Text(
-                                        text = "Map internal storage to /sdcard inside guest",
+                                        text = "/storage/self/primary → /sdcard, /mnt/sdcard, /storage/emulated/0 (mód D)",
                                         color = Color.Gray,
                                         fontSize = 10.sp,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,

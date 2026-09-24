@@ -318,8 +318,13 @@ explicitní seznam proměnných (navíc proti referenci `LANG`/`LC_CTYPE`, `NETH
 `NH_DISTRO` pro guest `nh`). Flagy `--kill-on-exit --link2symlink -L --change-id=0:0` (+ `--sysvipc`,
 `--kernel-release` mimo M). `-b /dev/urandom:/dev/random` vždy (mimo M). Storage = jeden zdroj
 `/storage/self/primary` bindnutý do `/mnt/sdcard`, `/sdcard`, `/storage/emulated/0`,
-`/storage/self/primary`, bez bindu celého `/storage`. Navíc proti referenci jen `ipc`/`share`
-a uživatelské `NH_EXTRA_MOUNTS`/`--bind`.
+`/storage/self/primary`, bez bindu celého `/storage` (gate `NH_MOUNT_STORAGE` = přepínač
+„Shared Storage" v MainActivity). Navíc proti referenci jen `ipc`/`share` a uživatelské
+`NH_EXTRA_MOUNTS`/`--bind`.
+CLI flagy `boot` (kdekoli **před** `--`, za `--` se nesahá): `-d`/`-i`/`-m` (mód, přebije env),
+`-b src:dest` / `--bind src:dest` / `--bind=src:dest`, `--shared-tmp` (`-b $FILES_DIR/tmp:/tmp`
+ve všech módech; appka ho přidá z Root Bridge přepínače `shared_tmp`, pro sudo přes `root_env`).
+Výpočet módu je ve funkci `apply_mode()`, kterou `main()` volá až po parsování argumentů.
 **tmux „not a terminal" z terminálu appky:** mód M funguje, plný D ne. Tmux server dostane
 pts fd přes `SCM_RIGHTS` a `isatty()` na něm selže. Příčina v D zatím **není potvrzená**. Samotné
 odebrání samostatných storage bindů problém nevyřešilo. Proot binárka ani env (`env -i` ve stejné

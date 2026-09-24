@@ -108,38 +108,37 @@ if [ ! -x "$PROOT" ]; then
     exit 1
 fi
 
-# ─── Mode flags (set by UI or env) ───────────────────────
-# NH_ISOLATED=1 → no host binds, only /dev /proc /sys
-# NH_MINIMAL=1  → minimal proot config (no sysvipc, no fake sysdata)
-# Note: isolated and minimal are independent flags
-NH_ISOLATED="${NH_ISOLATED:-0}"
-NH_MINIMAL="${NH_MINIMAL:-0}"
+# ─── Mode flags (env NH_* nebo CLI -d/-i/-m) ─────────────
+# D: NH_ISOLATED=0 NH_MINIMAL=0 | I: 1/0 | M: 1/1
 # NH_FAKE_SYS=0 -> no fake /proc + /sys overlay: the guest sees Android's real
 # /proc/{version,stat,uptime,vmstat,loadavg}, the real /proc/sys and the real
 # /sys/fs/selinux, and `uname -r` reports the real kernel. Tooling that
 # inspects the real kernel/process view (e.g. Frida) needs this. --sysvipc and
 # the /dev fixes stay enabled, only the fake view is dropped.
-NH_FAKE_SYS="${NH_FAKE_SYS:-1}"
-# Fake /proc + /sys overlay: DEFAULT i ISOLATED ho mají (jako proot-distro),
-# MINIMAL nikdy. Přepínač NH_FAKE_SYS=0 ho vypne pro D i I.
-if [ "$NH_MINIMAL" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
-    NH_FAKE_EFFECTIVE=0
-else
-    NH_FAKE_EFFECTIVE=1
-fi
-export NH_FAKE_EFFECTIVE
-
-# minimal mode = bare proot config: no --sysvipc, no --kernel-release
-if [ "$NH_MINIMAL" = "1" ]; then
-    PROOT_FLAGS="$PROOT_FLAGS_BASE"
-else
-    PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_SYSVIPC"
-    # --kernel-release is part of the fake view; without it `uname -r` reports
-    # the actual Android kernel.
-    [ "$NH_FAKE_EFFECTIVE" = "1" ] && PROOT_FLAGS="$PROOT_FLAGS $PROOT_KERNEL_RELEASE"
-fi
-unset PROOT_KERNEL_RELEASE
-export PROOT_FLAGS NH_FAKE_SYS
+# Volá se až po parsování argumentů v main(), aby CLI flagy přebily env.
+apply_mode() {
+    NH_ISOLATED="${NH_ISOLATED:-0}"
+    NH_MINIMAL="${NH_MINIMAL:-0}"
+    NH_FAKE_SYS="${NH_FAKE_SYS:-1}"
+    NH_SHARED_TMP="${NH_SHARED_TMP:-0}"
+    # Fake /proc + /sys overlay: DEFAULT i ISOLATED ho mají (jako proot-distro),
+    # MINIMAL nikdy. Přepínač NH_FAKE_SYS=0 ho vypne pro D i I.
+    if [ "$NH_MINIMAL" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
+        NH_FAKE_EFFECTIVE=0
+    else
+        NH_FAKE_EFFECTIVE=1
+    fi
+    # minimal mode = bare proot config: no --sysvipc, no --kernel-release
+    if [ "$NH_MINIMAL" = "1" ]; then
+        PROOT_FLAGS="$PROOT_FLAGS_BASE"
+    else
+        PROOT_FLAGS="$PROOT_FLAGS_BASE $PROOT_SYSVIPC"
+        # --kernel-release is part of the fake view; without it `uname -r` reports
+        # the actual Android kernel.
+        [ "$NH_FAKE_EFFECTIVE" = "1" ] && PROOT_FLAGS="$PROOT_FLAGS $PROOT_KERNEL_RELEASE"
+    fi
+    export NH_ISOLATED NH_MINIMAL NH_FAKE_SYS NH_FAKE_EFFECTIVE NH_SHARED_TMP PROOT_FLAGS
+}
 
 # ─── Guest environment ──────────────────────────────────
 # proot se spouští přes `env -i` s explicitním seznamem proměnných (jako
@@ -501,6 +500,13 @@ build_binds() {
         _binds="$_binds -b $FILES_DIR/share:/root/share"
     fi
 
+    # --shared-tmp (jako proot-distro): hostitelský $FILES_DIR/tmp jako guest /tmp,
+    # sdílený mezi sessions a appkou. Platí ve všech módech.
+    if [ "$NH_SHARED_TMP" = "1" ]; then
+        mkdir -p "$FILES_DIR/tmp" 2>/dev/null || true
+        _binds="$_binds -b $FILES_DIR/tmp:/tmp"
+    fi
+
     # Extra binds from preferences / CLI
     [ -n "${NH_EXTRA_MOUNTS:-}" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
     [ -n "${NH_EXTRA_BINDS:-}" ] && _binds="$_binds $NH_EXTRA_BINDS"
@@ -805,28 +811,37 @@ boot_reentry() {
 
 # ─── Main dispatch ──────────────────────────────────────
 main() {
-    # Pre-parse --bind options from anywhere in args
-    local _newargs=""
+    # Volby kdekoli před `--`. Vše od `--` dál je guest příkaz a projde
+    # beze změny (jinak by třeba `boot -- ls -i` sebralo -i jako mód).
+    local _newargs="" _rest=0
     while [ $# -gt 0 ]; do
-        case "$1" in
-            --bind)
-                shift
-                [ $# -gt 0 ] || { err "--bind requires a src:dest argument"; return 1; }
-                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b $1"
-                shift
-                continue
-                ;;
-            --bind=*)
-                NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b ${1#--bind=}"
-                shift
-                continue
-                ;;
-        esac
+        if [ "$_rest" = "0" ]; then
+            case "$1" in
+                -b|--bind)
+                    shift
+                    [ -n "${1:-}" ] || { err "-b/--bind requires a src:dest argument"; return 1; }
+                    NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b $1"
+                    shift
+                    continue
+                    ;;
+                --bind=*)
+                    NH_EXTRA_BINDS="${NH_EXTRA_BINDS:+$NH_EXTRA_BINDS }-b ${1#--bind=}"
+                    shift
+                    continue
+                    ;;
+                -d) NH_ISOLATED=0; NH_MINIMAL=0; shift; continue ;;
+                -i) NH_ISOLATED=1; NH_MINIMAL=0; shift; continue ;;
+                -m) NH_ISOLATED=1; NH_MINIMAL=1; shift; continue ;;
+                --shared-tmp) NH_SHARED_TMP=1; shift; continue ;;
+                --) _rest=1 ;;
+            esac
+        fi
         _newargs="$_newargs '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
         shift
     done
     [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
     eval "set -- $_newargs"
+    apply_mode
 
     case "${1:-}" in
         kali|parrot)
@@ -840,17 +855,22 @@ main() {
             boot_reentry "$@"
             ;;
         --help|-h)
-            echo "Usage: boot {kali|parrot} [--bind src:dest] [-- cmd args...]"
-            echo "       boot docker <image-name> [--bind src:dest] [-- cmd args...]"
+            echo "Usage: boot [options] {kali|parrot} [-- cmd args...]"
+            echo "       boot [options] docker <image-name> [-- cmd args...]"
             echo "       boot -- cmd args...   (su_daemon re-entry, auto-detect distro)"
-            echo "       boot [--bind src:dest]  (auto-detect active distro)"
+            echo "       boot [options]        (auto-detect active distro)"
             echo ""
-            echo "Options:"
-            echo "  --bind src:dest    Extra bind mount (repeatable)"
-            echo "  --bind=src:dest    Same, equals-sign form"
+            echo "Options (kdekoli před --):"
+            echo "  -d                 DEFAULT mód: host bindy, fake /proc+/sys, Android env"
+            echo "  -i                 ISOLATED mód: bez host bindů, fake /proc+/sys"
+            echo "  -m                 MINIMAL mód: jen /dev /proc /sys, bez --sysvipc"
+            echo "  -b src:dest        Extra bind mount (opakovatelné), = --bind src:dest"
+            echo "  --bind=src:dest    Totéž, forma s rovnítkem"
+            echo "  --shared-tmp       Hostitelský \$FILES_DIR/tmp jako guest /tmp"
             echo ""
-            echo "Env vars: PREFIX, FILES_DIR, NH_MOUNT_STORAGE, NH_EXTRA_MOUNTS,"
-            echo "          NH_EXTRA_BINDS, NH_CWD, NH_DISTRO, BOOT_DEBUG"
+            echo "Env vars: PREFIX, FILES_DIR, NH_ISOLATED, NH_MINIMAL, NH_FAKE_SYS,"
+            echo "          NH_MOUNT_STORAGE, NH_SHARED_TMP, NH_EXTRA_MOUNTS, NH_EXTRA_BINDS,"
+            echo "          NH_CWD, NH_DISTRO, BOOT_DEBUG"
             ;;
         "")
             # No distro specified — auto-detect and boot interactively
