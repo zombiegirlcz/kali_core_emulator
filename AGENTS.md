@@ -312,6 +312,18 @@ tj. `isatty()` = 0 pro `/dev/tty`, `/dev/pts/N`, vše otevřené nově. Zděděn
 nově otevřené PTY fdy ne → `tmux new` → "open terminal failed: not a terminal"; `tmux < /dev/tty`
 → "can't use /dev/tty". `setsid` ani `< /dev/tty` redirect nepomůže.
 
+**tmux „not a terminal" z terminálu appky — overlapping storage bindy (NE proot binárka):**
+tmux (a jiné programy předávající tty přes `SCM_RIGHTS` mezi klientem a serverem) padal na
+`open terminal failed: not a terminal` **jen z terminálu appky**, z Termuxu do stejného rootfs/proot
+fungoval. Není to proot binárka ani env ani CTTY. Příčina: `build_binds()` bindoval `/storage`,
+`/storage/emulated/0`, `/sdcard` **i** `/mnt/sdcard` — překrývající se pohledy na tentýž FUSE
+emulated-storage mount. Víc bindů stejného filesystému rozbije proot path-resolution fd předaného
+přes `SCM_RIGHTS` → tmux server dostane pts fd, na kterém `isatty()` selže → „not a terminal".
+Diagnóza (2026-09-24): mód M (žádné host bindy) tmux OK; `su 10323 env -i; boot parrot` (bindy bez
+storage, protože v Termux namespace nejsou `-d` dostupné) OK; app session s plnými storage bindy padá.
+**Fix:** v `boot` bindovat storage jen přes `/storage` (obsahuje `emulated/0`) + jediný `-b /sdcard`
+(gate `NH_MOUNT_STORAGE`); NEbindovat `/storage/emulated/0` a `/mnt/sdcard` zvlášť. Nevracet zpět.
+
 **SELinux fix (aktuální) — `--wrap=chmod` linker-level wrapper:** proot binary má 4 volání
 `chmod@plt` z různých .c souborů. Per-file `#define` nestačí. Správné řešení: `selinux_android_fix.c`
 s `__wrap_chmod` + `-Wl,--wrap=chmod` v LDFLAGS → linker přesměruje VŠECHNA `chmod` volání

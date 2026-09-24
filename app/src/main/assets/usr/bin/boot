@@ -486,10 +486,15 @@ build_binds() {
         [ -f /plat_property_contexts ] && _binds="$_binds -b /plat_property_contexts"
         [ -f /property_contexts ] && _binds="$_binds -b /property_contexts"
 
+        # POZOR: NEbindovat /storage/emulated/0, /sdcard ani /mnt/sdcard zvlášť.
+        # Jsou to překrývající se pohledy na tentýž FUSE emulated-storage mount;
+        # více bindů stejného filesystému rozbije proot path-resolution fd
+        # předaného přes SCM_RIGHTS → tmux server dostane pts fd, na kterém
+        # isatty() selže → "open terminal failed: not a terminal". Ověřeno
+        # 2026-09-24: app session (s těmito bindy) padá, mód M / proot bez nich
+        # tmux má funkční. Storage zůstává dostupné přes /storage (obsahuje
+        # emulated/0) a přes jediný -b /sdcard níže (gate NH_MOUNT_STORAGE).
         [ -d /storage ] && _binds="$_binds -b /storage"
-        [ -d /storage/emulated/0 ] && _binds="$_binds -b /storage/emulated/0"
-        [ -d /sdcard ] && _binds="$_binds -b /sdcard"
-        [ -d /mnt/sdcard ] && _binds="$_binds -b /mnt/sdcard"
         [ -d /data/app ] && _binds="$_binds -b /data/app"
         [ -d /data/dalvik-cache ] && _binds="$_binds -b /data/dalvik-cache"
     fi
