@@ -1,0 +1,7 @@
+id=anti_phantom_process_killer
+name=Anti Phantom Process Killer
+version=v1.0
+versionCode=1
+author=NetHunter Operator
+description=Permanently disables Android Phantom Process Killer on boot to prevent PRoot/Linux processes from getting killed (SIGKILL / Signal 9).
+minMagisk=20400

@@ -1,0 +1,230 @@
+#!/system/bin/sh
+# usbtool — jednotné CLI pro USB gadget modul custom_usb_g2_setup
+#
+# Obaluje skripty modulu a přidává status, přepínání gadgetů g1/g2,
+# USB host režim a detekci připojených zařízení.
+#
+# Volatelný kýmkoliv — bez rootu se sám eskaluje přes su.
+#
+# Použití: usbtool <příkaz> [argumenty]
+
+MODDIR="/data/adb/modules/custom_usb_g2_setup"
+SCRIPTS="$MODDIR/scripts"
+GADGET_ROOT="/config/usb_gadget"
+SSUSB_MODE="/sys/devices/platform/soc/a600000.ssusb/mode"
+LOG_DIR="/data/local/tmp"
+
+usage() {
+    cat <<'EOF'
+usbtool — ovládání USB gadgetů (modul custom_usb_g2_setup)
+
+PŘEPÍNÁNÍ GADGETŮ
+  usbtool status          Aktuální stav gadgetů, UDC, USB režimu a nabíjení
+  usbtool g1              Přepne na systémový gadget g1 (MTP + ADB)
+                          ⚠ při aktivním g2 se odpojí, ADB se obnoví
+  usbtool g2              Přepne na NetHunter gadget g2 (HID + MassStorage + RNDIS)
+                          ⚠ ADB přes USB přestane fungovat
+
+KONFIGURACE G2
+  usbtool setup           Znovu vytvoří konfiguraci g2 v configfs (idempotentní)
+  usbtool normal          Nastaví režim g2 na "normal"  a spustí setup
+  usbtool brom            Nastaví režim g2 na "brom"    a spustí setup
+  usbtool preloader       Nastaví režim g2 na "preloader" a spustí setup
+                          (režim se jen poznamená do /data/local/tmp/usb_g2_mode)
+
+USB HOST REŽIM
+  usbtool host            Přepne port do USB host režimu (OTG)
+                          ⚠ gadgety přestanou fungovat, nabíjení může přestat
+  usbtool device          Vrátí port z host režimu zpět do gadget/auto režimu
+                          (opraví i zaseknuté nenabíjení)
+  usbtool detect          Jednorázový výpis připojených USB zařízení
+                          (rozpozná MediaTek BROM/preloader)
+  usbtool watch           Průběžné sledování připojování/odpojování (Ctrl+C konec)
+
+OSTATNÍ
+  usbtool brom-crash [cesta]  Experimentální placeholder pro BROM crash cíle
+                              (výchozí cesta /sys/bus/usb/devices/1-1)
+  usbtool logs            Vypíše logy z /data/local/tmp/usb_g2_*.log
+  usbtool help            Tato nápověda
+
+Příklady:
+  usbtool g2 && usbtool status
+  usbtool host && usbtool detect
+  usbtool device          # po práci v host režimu, obnoví nabíjení
+EOF
+}
+
+# --- eskalace na root (až po validaci argumentů) ---
+# Cesty, kde může být su (Magisk, system, product, vendor)
+for su_path in /sbin/su /system/bin/su /system/xbin/su /product/bin/su /vendor/bin/su /data/adb/magisk/su; do
+    [ -x "$su_path" ] && SU="$su_path" && break
+done
+[ -z "$SU" ] && { echo "CHYBA: su nenalezen v žádné známé cestě"; exit 1; }
+
+if [ "$(id -u)" != "0" ]; then
+    case "$1" in
+        brom-crash)
+            # cesta smí obsahovat jen bezpečné znaky
+            case "$2" in
+                *[!A-Za-z0-9/._-]*) echo "Neplatná cesta zařízení: $2"; exit 1 ;;
+            esac
+            exec "$SU" -c "\"$0\" \"$1\" ${2:-/sys/bus/usb/devices/1-1}"
+            ;;
+        *) exec "$SU" -c "\"$0\" \"$1\"" ;;
+    esac
+fi
+
+get_udc() {
+    ls /sys/class/udc/ 2>/dev/null | head -1
+}
+
+bound_gadget() {
+    for g in g1 g2; do
+        u="$(cat "$GADGET_ROOT/$g/UDC" 2>/dev/null)"
+        [ -n "$u" ] && { echo "$g"; return; }
+    done
+    echo "none"
+}
+
+ensure_device_mode() {
+    if [ -f "$SSUSB_MODE" ] && [ "$(cat "$SSUSB_MODE")" = "host" ]; then
+        echo "Port byl v host režimu — vracím do auto (none)…"
+        echo none > "$SSUSB_MODE" 2>/dev/null
+        sleep 2
+    fi
+}
+
+ensure_g2_ready() {
+    if [ ! -L "$GADGET_ROOT/g2/configs/c.1/hid.usb0" ] || \
+       [ ! -L "$GADGET_ROOT/g2/configs/c.1/mass_storage.0" ]; then
+        echo "g2 není nakonfigurovaný — spouštím usb_g2_setup.sh…"
+        sh "$MODDIR/usb_g2_setup.sh"
+        sleep 1
+    fi
+}
+
+classify_device() {
+    # $1=vid $2=pid -> popis typu
+    case "$1" in
+        0e8d|0E8D)
+            case "$2" in
+                0003) echo "MTK BROM" ;;
+                2000|2001) echo "MTK PRELOADER (VCOM)" ;;
+                *) echo "MediaTek (pid $2)" ;;
+            esac
+            ;;
+        18d1|18D1) echo "Google/ADB" ;;
+        04e8|04E8) echo "Samsung" ;;
+        12d1|12D1) echo "Huawei" ;;
+        05ac|05AC) echo "Apple" ;;
+        *) echo "neznámé" ;;
+    esac
+}
+
+scan_usb_devices() {
+    found=0
+    for dev in /sys/bus/usb/devices/[0-9]*; do
+        [ -d "$dev" ] || continue
+        case "$(basename "$dev")" in *-*) continue ;; esac  # přeskočit rozhraní
+        vid="$(cat "$dev/idVendor" 2>/dev/null)"
+        pid="$(cat "$dev/idProduct" 2>/dev/null)"
+        [ -z "$vid" ] && continue
+        # přeskočit root huby (Linux Foundation)
+        [ "$vid" = "1d6b" ] && continue
+        prod="$(cat "$dev/product" 2>/dev/null)"
+        manu="$(cat "$dev/manufacturer" 2>/dev/null)"
+        speed="$(cat "$dev/speed" 2>/dev/null)"
+        typ="$(classify_device "$vid" "$pid")"
+        echo "  $vid:$pid  $typ  [$manu $prod]  ${speed}Mbps  ($(basename "$dev"))"
+        found=1
+    done
+    [ "$found" = "0" ] && echo "  (žádné zařízení připojeno)"
+}
+
+case "$1" in
+    help|-h|--help|"")
+        usage
+        ;;
+    status)
+        UDC="$(get_udc)"
+        echo "UDC:             ${UDC:-žádný}"
+        echo "Aktivní gadget:  $(bound_gadget)"
+        echo "g1 UDC:          $(cat "$GADGET_ROOT/g1/UDC" 2>/dev/null || echo '-')"
+        echo "g2 UDC:          $(cat "$GADGET_ROOT/g2/UDC" 2>/dev/null || echo '-')"
+        echo "ssusb mode:      $(cat "$SSUSB_MODE" 2>/dev/null || echo '-')"
+        echo "USB napájení:    present=$(cat /sys/class/power_supply/usb/present 2>/dev/null) online=$(cat /sys/class/power_supply/usb/online 2>/dev/null)"
+        echo "Baterie:         $(cat /sys/class/power_supply/battery/status 2>/dev/null) @ $(cat /sys/class/power_supply/battery/capacity 2>/dev/null)%"
+        echo "Režim g2:        $(cat "$LOG_DIR/usb_g2_mode" 2>/dev/null || echo '-')"
+        ;;
+    g1)
+        ensure_device_mode
+        UDC="$(get_udc)"
+        [ -z "$UDC" ] && { echo "CHYBA: žádné UDC"; exit 1; }
+        echo "" > "$GADGET_ROOT/g2/UDC" 2>/dev/null
+        echo "$UDC" > "$GADGET_ROOT/g1/UDC" || { echo "CHYBA: bind g1 selhal"; exit 1; }
+        echo "Přepnuto na g1 (MTP+ADB)."
+        ;;
+    g2)
+        ensure_device_mode
+        ensure_g2_ready
+        UDC="$(get_udc)"
+        [ -z "$UDC" ] && { echo "CHYBA: žádné UDC"; exit 1; }
+        echo "" > "$GADGET_ROOT/g1/UDC" 2>/dev/null
+        echo "$UDC" > "$GADGET_ROOT/g2/UDC" || { echo "CHYBA: bind g2 selhal"; exit 1; }
+        echo "Přepnuto na g2 (HID+MassStorage+RNDIS). ADB přes USB je odpojené."
+        ;;
+    setup)
+        sh "$MODDIR/usb_g2_setup.sh"
+        echo "Setup g2 dokončen. Log: $LOG_DIR/usb_g2_setup.log"
+        ;;
+    normal|brom|preloader)
+        "$SCRIPTS/activate_$1.sh"
+        echo "Režim g2 nastaven na: $1 ($(cat "$LOG_DIR/usb_g2_mode" 2>/dev/null))"
+        ;;
+    host)
+        "$SCRIPTS/enable_usb_host.sh"
+        echo "USB host režim aktivní. Zařízení: usbtool detect"
+        ;;
+    device)
+        echo none > "$SSUSB_MODE" 2>/dev/null
+        sleep 2
+        UDC="$(get_udc)"
+        if [ -n "$UDC" ]; then
+            echo "$UDC" > "$GADGET_ROOT/g1/UDC" 2>/dev/null
+        fi
+        echo "Vráceno do gadget/auto režimu. Nabíjení/ADB by mělo fungovat."
+        ;;
+    detect)
+        echo "Připojená USB zařízení:"
+        scan_usb_devices
+        ;;
+    watch)
+        echo "Sleduji USB zařízení (Ctrl+C pro konec)…"
+        while true; do
+            clear 2>/dev/null
+            echo "=== $(date '+%F %T') ==="
+            echo "Připojená USB zařízení:"
+            scan_usb_devices
+            sleep 2
+        done
+        ;;
+    brom-crash)
+        shift
+        "$SCRIPTS/trigger_brom_crash.sh" "${1:-/sys/bus/usb/devices/1-1}"
+        echo "Log: $LOG_DIR/usb_g2_brom_crash.log"
+        ;;
+    logs)
+        for f in "$LOG_DIR"/usb_g2_*.log; do
+            [ -f "$f" ] || continue
+            echo "===== $f ====="
+            tail -20 "$f"
+        done
+        ;;
+    *)
+        echo "Neznámý příkaz: $1"
+        usage
+        exit 1
+        ;;
+esac
+
+exit 0
