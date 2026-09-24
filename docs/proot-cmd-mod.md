@@ -1,169 +1,118 @@
-# NetHost proot command mods for com.linux_core
-
-Reference PRoot bindů a přepínačů, které reálně sestavuje `boot` skript
-(`assets/usr/bin/boot`). Vše je pro app `com.linux_core`, tedy
-`/data/user/0/com.linux_core/files/...` — **žádné** Termux cesty.
-
-Zdroj pravdy je kód, ne tenhle soubor:
-
-| kde | co dělá |
-|---|---|
-| `boot:setup_sysdata_shm()` | generuje fake `/proc` soubory, `sys_empty`, `shm/<distro>` |
-| `boot:build_binds()` | skládá `-b` flagy podle módu a přepínačů |
-| `boot:build_path()` | sestaví guest `PATH` z existujících dirů |
-| `ProotManager.extraMounts` | `root_settings` přepínače → `NH_EXTRA_MOUNTS` |
-| `ProotManager` env | `NH_ISOLATED`, `NH_MINIMAL`, `NH_FAKE_SYS`, `NH_BOOT_MODE` |
-
-## Env proměnné (vstup do `boot`)
-
-| proměnná | default | význam |
-|---|---|---|
-| `NH_ISOLATED` | `0` | `1` = žádné host bindy, jen `/dev /proc /sys` |
-| `NH_MINIMAL` | `0` | `1` = holý proot (bez `--sysvipc`, `--kernel-release`, fake sysdata, `/dev` fixes) |
-| `NH_FAKE_SYS` | `1` | `0` = **žádný fake overlay** `/proc` + `/sys` (viz níže) |
-| `NH_MOUNT_STORAGE` | `0` | `1` + `NH_ISOLATED=0` → `-b /sdcard` |
-| `NH_EXTRA_MOUNTS` | — | dodatečné `-b` flagy z `root_settings` |
-| `NH_EXTRA_BINDS` | — | dodatečné `-b` flagy z `nh distro login --bind` |
-| `NH_BOOT_MODE` | — | `D`/`I`/`M`, jen informativní (do container JSONu) |
-
-Mapování z UI (`BootModePersistence.bootModeFlags()`):
-```
-D  ->  NH_ISOLATED=0  NH_MINIMAL=0
-I  ->  NH_ISOLATED=1  NH_MINIMAL=0     ← pozor: izolovaný NENÍ minimal
-M  ->  NH_ISOLATED=1  NH_MINIMAL=1
-```
-
-> Starší verze tohohle dokumentu tvrdila, že `NH_ISOLATED=1` automaticky
-> znamená `NH_MINIMAL=1`. **To není pravda** — flagy jsou nezávislé (viz kód
-> výše). Stejně tak izolovaný mód **má** fake `/sys/fs/selinux`, protože ten
-> blok je gate-ovaný jen na `NH_MINIMAL`.
-
-## PROOT flagy
-
-```sh
-PROOT_FLAGS_BASE="-v 0 --kill-on-exit -0 --link2symlink -L"
-PROOT_SYSVIPC="--sysvipc"
-PROOT_KERNEL_RELEASE="--kernel-release=\\Linux\\localhost\\6.17.0-nethunter\\..."
-
-# minimal = jen BASE
-# non-minimal = BASE + SYSVIPC (+ KERNEL_RELEASE jen když NH_FAKE_SYS=1)
-```
-
-`--kernel-release` mění `uname -r`. Je součástí fake view, takže s
-`NH_FAKE_SYS=0` se vynechá a `uname -r` vrátí skutečný kernel Androidu.
-
-## Režimy — co se binduje
-
-| | **D** default | **I** isolated | **M** minimal |
-|---|---|---|---|
-| `-b /dev -b /proc -b /sys` | ✅ | ✅ | ✅ |
-| fake `/proc/{loadavg,stat,uptime,version,vmstat}` | ✅ | ❌ | ❌ |
-| fake `/proc/sys/kernel/{cap_last_cap,overflowuid,overflowgid}` | ✅ | ❌ | ❌ |
-| fake `/proc/sys/fs/inotify/max_user_watches` | ✅ | ❌ | ❌ |
-| fake `sys_empty:/sys/fs/selinux` | ✅ | ❌ | ❌ |
-| `shm/<distro>:/dev/shm` | ✅ | ❌ | ❌ |
-| `/dev` fixes (`random`, `fd`, `stdin`, `stdout`, `stderr`) | ✅ | ✅ | ❌ |
-| `--sysvipc` | ✅ | ✅ | ❌ |
-| `--kernel-release` (fake `uname -r`) | ✅ | ❌ | ❌ |
-| host cesty `/apex /odm /product /system /system_ext /vendor` | ✅ | ❌ | ❌ |
-| `/linkerconfig/*.txt`, `/plat_property_contexts`, `/property_contexts` | ✅ | ❌ | ❌ |
-| `/storage`, `/storage/emulated/0`, `/sdcard`, `/mnt/sdcard`, `/data/app`, `/data/dalvik-cache` | ✅ | ❌ | ❌ |
-| app diry `files/tmp`, `ipc → /run/host_ipc`, `share → /root/share` | ✅ | ❌ | ❌ |
-
-Reálný Android `/sys` je bindovaný **ve všech** módech (`-b /sys` je
-v základním řádku `build_binds()`). Fake je nad ním jen `/sys/fs/selinux`
-(prázdný adresář) — a to **výhradně v DEFAULT módu**.
-
-> **I a M jsou „real host view" módy.** Nejenže nepřidávají fake overlay, ale
-> ani si nehrají na fake kernel: `uname -r` i `/proc/version` hlásí skutečný
-> Android kernel. Rozdíl mezi nimi je jen v tom, co dalšího se binduje:
-> `I` má `/dev` fixes + `--sysvipc` + host cesty, `M` je holý proot.
-> Historicky oba přebíraly fake `/sys/fs/selinux` z `NH_MINIMAL=0` gate —
-> opraveno 2026-09-11 (`NH_FAKE_EFFECTIVE`).
-
-## `NH_FAKE_SYS` — originál místo fake dat
-
-Přepínač v RootBridge UI (**Fake /proc & /sys**, pref `bind_fake_sys`,
-default **zapnuto**). Vypnutý (`NH_FAKE_SYS=0`) vypne overlay **pro DEFAULT
-mód**; `I` a `M` ho nemají nikdy (viz výše).
-
-`boot` z toho počítá `NH_FAKE_EFFECTIVE`:
-
-```sh
-if [ "$NH_MINIMAL" = "1" ] || [ "$NH_ISOLATED" = "1" ] || [ "$NH_FAKE_SYS" != "1" ]; then
-    NH_FAKE_EFFECTIVE=0     # reálný host view
-else
-    NH_FAKE_EFFECTIVE=1     # D mód s overlay
-fi
-```
-
-Když je overlay vypnutý:
-
-- `setup_sysdata_shm()` přeskočí generování fake souborů
-- `build_binds()` nepřidá žádný sysdata bind ani `sys_empty:/sys/fs/selinux`
-- `--kernel-release` se vynechá → `uname -r` hlásí skutečný kernel
-- **zachová se** `--sysvipc` i `/dev` fixes (kde jsou v daném módu zapnuté)
-
-Guest tak vidí reálný `/proc/version`, `/proc/stat`, `/proc/sys` a
-`/sys/fs/selinux` (a tudíž i reálná oprávnění — typicky `Permission denied`
-pro untrusted_app). Používá se pro nástroje zkoumající skutečný
-kernel/process view (Frida, ptrace, kernel moduly).
-
-## `sudo` v guestu — odkud bere nastavení
-
-`sudo`/`su` v guestu nejde přes appku: guest zavolá `su_wrapper` → `su_daemon`
-(běží jako root) → ten `execv`-ne `boot -- <cmd>`. Dítě ale dědí **jen
-prostředí daemonu**, které žádné `NH_*` nemá — takže by sudo session měla
-prázdné `/mnt/data` a fake `uname -r`, i když si uživatel přepínače zapnul.
-
-Proto `ProotManager` při každém startu session zapisuje `$FILES_DIR/nh/root_env`:
-
-```sh
-NH_ISOLATED='0'
-NH_MINIMAL='0'
-NH_FAKE_SYS='0'
-NH_MOUNT_STORAGE='0'
-NH_EXTRA_MOUNTS=' -b /data:/mnt/data -b /system:/mnt/system ...'
-```
-
-`boot` ho hned po definici `log()`/`err()` **nasourceuje** — ale jen když
-volající není appka, tj. `NH_ENV_FROM_APP != 1`. Appka totiž hodnoty předává
-přes env a ty mají přednost (a `ExecCore` si staví vlastní `NH_EXTRA_MOUNTS`).
-
-Soubor je čistý shell fragment (`KEY='value'`, `'` escapovaný), takže se dá
-bezpečně sourcovat.
-
-## Přepínače z RootBridge (`root_settings` → `NH_EXTRA_MOUNTS`)
-
-Platí při **příštím** startu session.
-
-| pref | default | bind |
-|---|---|---|
-| `bind_system` | `true` | `/system:/mnt/system` |
-| `bind_vendor` | `false` | `/vendor:/mnt/vendor` |
-| `bind_tmp` | `false` | `/data/local/tmp:/mnt/tmp` |
-| `bind_usb` | `true` | `/dev/bus/usb:/mnt/usb` (jen když zařízení existuje) |
-| `bind_bluetooth` | `false` | `/sys/class/bluetooth` + `/data/misc/bluetooth` |
-| `bind_app` | `false` | `/data/user/0/com.linux_core:/mnt/app` |
-| `bind_aiapp` | `false` | `/data/user/0/com.kali.aiassistant:/mnt/aiapp` |
-| `bind_data` | `false` | `/data:/mnt/data` |
-| `bind_fake_sys` | `true` | není bind → `NH_FAKE_SYS` (jen DEFAULT mód) |
-
-### `bind_data` — `/data` pod rootem
-
-PRoot běžně jede jako app UID (`u0_a315`), takže `/data/data/<jiná app>`
-nepřečte (DAC `0700` + SELinux). Bind `-b /data:/mnt/data` cestu zpřístupní,
-ale **obsah uvidíš jen v sudo seanci** — `su_daemon` re-entruje `boot` pod
-reálným rootem (viz `ExecCore`, kde `bind_data` zároveň vynutí `findSu()`).
-V ne-root seanci je `/mnt/data` prázdný / nepřístupný.
-
-Záměrně se **nedělá** hostitelský `mount --bind` — PRoot bindy jsou jen
-userspace překlad cest, takže nemůže dojít k leaknutí mountů do globálního
-namespace (incident s 342 leaked mounts, 2026-08-21).
-
-## Poznámky
-
-- `/usr/sbin/find` musí být symlink na `find` (ne `rg`).
-- `LD_LIBRARY_PATH` se v `hostShellEnv()` nikdy nepřidává (SIGBUS).
-- `--link2symlink` je povinný (apt/dpkg zálohy přes `link()`); pozor, mění
-  git hardlinky na `.l2s` symlinky → `nh fix git`.
+#----ISOLATED---- 
+env \
+  -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games:/data/data/com.termux/files/usr/bin:/system/bin:/system/xbin \
+  MOZ_FAKE_NO_SANDBOX=1 \
+  PULSE_SERVER=127.0.0.1 \
+  HOME=/root \
+  USER=root \
+  TERM=xterm-256color \
+  COLORTERM=truecolor \
+  PROOT_L2S_DIR=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs/.l2s \
+  /data/data/com.termux/files/usr/bin/proot \
+  --kill-on-exit \
+  --link2symlink \
+  --sysvipc \
+  "--kernel-release=\\Linux\\localhost\\6.17.0-PRoot-Distro\\#1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000\\aarch64\\localdomain\\-1\\" \
+  -L \
+  --change-id=0:0 \
+  --rootfs=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs \
+  --cwd=/root \
+  --bind=/dev \
+  --bind=/proc \
+  --bind=/sys \
+  --bind=/dev/urandom:/dev/random \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sys_empty:/sys/fs/selinux \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/loadavg:/proc/loadavg \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/stat:/proc/stat \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/uptime:/proc/uptime \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/version:/proc/version \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/vmstat:/proc/vmstat \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_kernel_overflowuid:/proc/sys/kernel/overflowuid \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_kernel_overflowgid:/proc/sys/kernel/overflowgid \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/shm:/dev/shm \
+  /bin/bash \
+  -l
+#----MINIMAL----
+env \
+  -i \
+  TERM=xterm-256color \
+  COLORTERM=truecolor \
+  PROOT_L2S_DIR=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs/.l2s \
+  /data/data/com.termux/files/usr/bin/proot \
+  --kill-on-exit \
+  --link2symlink \
+  -L \
+  --change-id=0:0 \
+  --rootfs=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs \
+  --cwd=/root \
+  --bind=/dev \
+  --bind=/proc \
+  --bind=/sys \
+  /bin/bash \
+  -l
+#----DEFAULT----
+env \
+  -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games:/system/bin:/system/xbin:/data/data/com.termux/files/usr/bin \
+  MOZ_FAKE_NO_SANDBOX=1 \
+  PULSE_SERVER=127.0.0.1 \
+  ANDROID_ART_ROOT=/apex/com.android.art \
+  ANDROID_DATA=/data \
+  ANDROID_I18N_ROOT=/apex/com.android.i18n \
+  ANDROID_ROOT=/system \
+  ANDROID_TZDATA_ROOT=/apex/com.android.tzdata \
+  BOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:/apex/com.android.art/javalib/apache-xml.jar:/system/framework/framework.jar:/system/framework/framework-graphics.jar:/system/framework/ext.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/tcmiface.jar:/system/framework/telephony-ext.jar:/system/framework/qcom.fmradio.jar:/system/framework/QPerformance.jar:/system/framework/UxPerformance.jar:/system/framework/WfdCommon.jar:/system_ext/framework/miui-framework.jar:/system_ext/framework/miui-telephony-common.jar:/apex/com.android.i18n/javalib/core-icu4j.jar:/apex/com.android.adservices/javalib/framework-adservices.jar:/apex/com.android.adservices/javalib/framework-sdksandbox.jar:/apex/com.android.appsearch/javalib/framework-appsearch.jar:/apex/com.android.conscrypt/javalib/conscrypt.jar:/apex/com.android.ipsec/javalib/android.net.ipsec.ike.jar:/apex/com.android.media/javalib/updatable-media.jar:/apex/com.android.mediaprovider/javalib/framework-mediaprovider.jar:/apex/com.android.mediaprovider/javalib/framework-pdf.jar:/apex/com.android.mediaprovider/javalib/framework-photopicker.jar:/apex/com.android.ondevicepersonalization/javalib/framework-ondevicepersonalization.jar:/apex/com.android.os.statsd/javalib/framework-statsd.jar:/apex/com.android.permission/javalib/framework-permission.jar:/apex/com.android.permission/javalib/framework-permission-s.jar:/apex/com.android.scheduling/javalib/framework-scheduling.jar:/apex/com.android.sdkext/javalib/framework-sdkextensions.jar:/apex/com.android.tethering/javalib/framework-connectivity.jar:/apex/com.android.tethering/javalib/framework-connectivity-t.jar:/apex/com.android.tethering/javalib/framework-tethering.jar:/apex/com.android.wifi/javalib/framework-wifi.jar \
+  DEX2OATBOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar:/apex/com.android.art/javalib/core-libart.jar:/apex/com.android.art/javalib/okhttp.jar:/apex/com.android.art/javalib/bouncycastle.jar:/apex/com.android.art/javalib/apache-xml.jar:/system/framework/framework.jar:/system/framework/framework-graphics.jar:/system/framework/ext.jar:/system/framework/telephony-common.jar:/system/framework/voip-common.jar:/system/framework/ims-common.jar:/system/framework/tcmiface.jar:/system/framework/telephony-ext.jar:/system/framework/qcom.fmradio.jar:/system/framework/QPerformance.jar:/system/framework/UxPerformance.jar:/system/framework/WfdCommon.jar:/system_ext/framework/miui-framework.jar:/system_ext/framework/miui-telephony-common.jar:/apex/com.android.i18n/javalib/core-icu4j.jar \
+  EXTERNAL_STORAGE=/sdcard \
+  HOME=/root \
+  USER=root \
+  TERM=xterm-256color \
+  COLORTERM=truecolor \
+  PROOT_L2S_DIR=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs/.l2s \
+  /data/data/com.termux/files/usr/bin/proot \
+  --kill-on-exit \
+  --link2symlink \
+  --sysvipc \
+  "--kernel-release=\\Linux\\localhost\\6.17.0-PRoot-Distro\\#1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000\\aarch64\\localdomain\\-1\\" \
+  -L \
+  --change-id=0:0 \
+  --rootfs=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/rootfs \
+  --cwd=/root \
+  --bind=/dev \
+  --bind=/proc \
+  --bind=/sys \
+  --bind=/dev/urandom:/dev/random \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sys_empty:/sys/fs/selinux \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/loadavg:/proc/loadavg \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/stat:/proc/stat \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/uptime:/proc/uptime \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/version:/proc/version \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/vmstat:/proc/vmstat \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_kernel_overflowuid:/proc/sys/kernel/overflowuid \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/sysdata/sysctl_kernel_overflowgid:/proc/sys/kernel/overflowgid \
+  --bind=/data/data/com.termux/files/usr/var/lib/proot-distro/containers/rootfs/shm:/dev/shm \
+  --bind=/data/app \
+  --bind=/data/dalvik-cache \
+  --bind=/data/misc/apexdata/com.android.art/dalvik-cache \
+  --bind=/storage/self/primary:/mnt/sdcard \
+  --bind=/storage/self/primary:/sdcard \
+  --bind=/storage/self/primary:/storage/emulated/0 \
+  --bind=/storage/self/primary:/storage/self/primary \
+  --bind=/data/data/com.termux/cache \
+  --bind=/data/data/com.termux/files/home \
+  --bind=/apex \
+  --bind=/odm \
+  --bind=/product \
+  --bind=/system \
+  --bind=/system_ext \
+  --bind=/vendor \
+  --bind=/linkerconfig/ld.config.txt \
+  --bind=/linkerconfig/com.android.art/ld.config.txt \
+  --bind=/data/data/com.termux/files/usr \
+  /bin/bash \
+  -l
