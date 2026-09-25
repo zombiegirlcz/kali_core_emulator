@@ -236,6 +236,37 @@ To track the state of the guest container, the following sentinel files are mana
 - **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
 - **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
 
+#### Boot CLI flagy
+
+`boot` přijímá volby kdekoli před `--` (vše za `--` je guest příkaz):
+
+| Flag | Význam |
+|---|---|
+| `-d` | DEFAULT mód (host bindy, fake /proc+/sys, Android env) |
+| `-i` | ISOLATED mód (bez host bindů, fake /proc+/sys) |
+| `-m` | MINIMAL mód (jen /dev /proc /sys, bez --sysvipc) |
+| `-b src:dest` | Extra bind mount (opakovatelné) |
+| `--bind=src:dest` | Totéž, forma s rovnítkem |
+| `--shared-tmp` | Hostitelský `$FILES_DIR/tmp` jako guest `/tmp` (sdílený mezi sessions) |
+
+CLI flagy mají vyšší prioritu než env proměnné (`NH_ISOLATED`, `NH_MINIMAL`, `NH_SHARED_TMP`).
+
+#### Docker preset rootfs — `/.nh/manifest`
+
+Docker image může mít v rootfs soubor `/.nh/manifest` (KEY=VALUE po řádcích), který říká boot skriptu, jak image spustit:
+
+| Klíč | Význam |
+|---|---|
+| `NH_SHELL` | Login shell (cesta v guestu, např. `/bin/sh`) |
+| `NH_ENTRYPOINT` | Spustitelný skript místo login shellu |
+| `NH_BOOTSTRAP` | Jednorázový první start (značka `/.nh/bootstrap.done`) |
+| `NH_PATH` | PATH v guestu |
+| `NH_WORKDIR` | Pracovní adresář |
+| `NH_ENV` | Proměnná navíc (opakovatelné, bez mezer) |
+| `NH_BIND` | Bind navíc (opakovatelné, absolutní host cesta) |
+
+Manifest je volitelný — bez něj boot hledá shell v `bin/sh`, `usr/bin/sh`, `bin/bash`. Symlinky v rootfs se resolvují v rámci rootfs (jako `realpath` uvnitř chrootu).
+
 #### 4. Shared Library & Dynamic Linker Fixes
 To prevent core dump or execution crashes in the sandboxed chroot:
 - The system loader is copied into the guest `lib/ld-linux-aarch64.so.1` and `lib64/ld-linux-aarch64.so.1`.
@@ -258,6 +289,8 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh fix` | `pkg <name>`, `auto`, `permission <path>` |
 | `nh apps` | `usage` |
 | `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control`, `bridge`, `gadget` |
+| `nh cpu` | `status`, `on\|off [distro]`, `pin [N]\|unpin`, `all <cmd>`, `run <N> <cmd>`, `bench`, `boost` |
+| `nh distro` | `list`, `ps`, `kill`, `remove`, `backup`, `restore`, `login <distro> [--bind ...]` |
 | `nh shi` | `start --root\|--shell\|--none`, `stop`, `status`, `exec <cmd>` |
 | `nh docs` | otevře `nethunter_docs.md` v pageru (`less -R -F`) |
 
