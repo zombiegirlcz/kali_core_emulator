@@ -1,0 +1,12 @@
+A state-of-the-art Android application designed to run full guest Linux distributions (Kali NetHunter and ParrotOS Security) on unrooted devices using PRoot and low-latency Termux terminal emulation.
+
+Features:
+- Up to 50x faster package and file operations via automated dpkg/apt optimizations
+- Premium AdGuard VPN and DNS proxy firewall service with native C++ engine
+- Interactive telemetry dashboard with traffic visualization
+- Embedded LightGBM ONNX inference engine for network analysis and C2 beacon detection
+- PRoot container management with full Kali/Parrot toolset
+- Local API server for inter-app communication
+- Root and unroot device support
+
+Built with Kotlin, optimized for Android performance.
