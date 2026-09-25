@@ -66,14 +66,24 @@ _DEFAULT_BRANCH = "master"
 
 
 def _detect_branch():
-    """Přečte aktuální větev z lokálního .git/HEAD (fallback na _DEFAULT_BRANCH)."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    head_file = os.path.join(script_dir, ".git", "HEAD")
-    if os.path.isfile(head_file):
-        with open(head_file) as f:
-            content = f.read().strip()
-        if content.startswith("ref: refs/heads/"):
-            return content[len("ref: refs/heads/"):]
+    """Přečte aktuální větev z lokálního .git/HEAD (fallback na _DEFAULT_BRANCH).
+
+    Prochází od adresáře skriptu nahoru, protože skript je v tools/ ale
+    .git je v kořeni repa.
+    """
+    d = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        head_file = os.path.join(d, ".git", "HEAD")
+        if os.path.isfile(head_file):
+            with open(head_file) as f:
+                content = f.read().strip()
+            if content.startswith("ref: refs/heads/"):
+                return content[len("ref: refs/heads/"):]
+            return _DEFAULT_BRANCH
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
     return _DEFAULT_BRANCH
 
 
