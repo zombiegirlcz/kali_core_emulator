@@ -357,6 +357,19 @@ zdrojem i cílem, který už přidal mód (např. `/system` v D). Guest env: `PR
 wrapperu unsetuje (zbyl by vedle `TMPDIR`), `EXTERNAL_STORAGE=/storage/emulated/0` jen při
 `NH_MOUNT_STORAGE=1`.
 
+**Preset rootfs z `zombiegirlcz/ROOTFS-for-proot` (2026-09-25):** appka skripty **nespouští**,
+jen z nich regexem čte `TARBALL_URL['<arch>']` (jen přesná arch, žádný fallback), SHA256 a heredocy
+`bootstrap.sh`, `root/entrypoint.sh`, `.nh/manifest` (`RemoteRootfsCatalog.kt`, zápis v
+`RootfsManager.pullRemoteDistroScript`). `boot_docker` čte `/.nh/manifest` (`NH_SHELL`,
+`NH_ENTRYPOINT`, `NH_BOOTSTRAP` jednou se značkou `/.nh/bootstrap.done`, `NH_PATH`, `NH_WORKDIR`,
+`NH_ENV`, `NH_BIND`); cesty ověřuje `rootfs_resolve` (symlinky uvnitř rootfs, ne na hostu). Login
+shell vždy `-l` (busybox/dash `--login` neznají). `ProotManager` do docker image nenasazuje debianí
+bootstrap/entrypoint/zshrc/profil (jen s `NH_INTEGRATION=full`). Extrakce docker image: hardlink =
+kopie zdroje (linkName je od kořene archivu), procházení stromu jen přes nio bez symlinků;
+`resolv.conf` symlink se nahradí souborem. Mazání rootfs jen `RootfsManager.deleteRootfsTree()`
+(nenásleduje symlinky — `File.deleteRecursively()` přes absolutní symlink leze na host).
+Spec + validátor + prompt denního agenta: `ROOTFS-for-proot/AGENTS.md`, `tools/validate.py`.
+
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
 `/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`
