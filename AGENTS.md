@@ -375,7 +375,8 @@ Spec + validátor + prompt denního agenta: `ROOTFS-for-proot/AGENTS.md`, `tools
 (`-L`, `--sysvipc`, `--change-id`, počet bindů) jsou v šumu, `PROOT_NO_SECCOMP=1` 3× horší.
 Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN` (`boot`
 `cpu_pin_apply`, stav `$FILES_DIR/nh/cpu/pin.<pid>`, hlídač obnovuje pin po změně cpusetu;
-`free.<pid>` = PIDy z `nh cpu all`), pref `boot_modes/cpu_pin_<kali|parrot|docker>`, ikona
+`free.<pid>` = PIDy z `nh cpu all` a z `CPU_ALL` whitelistu — hlídač ho čte z
+`/proc/<pid>/environ` guest procesů, cesty v něm relativně k rootfs z `-r` v cmdline proot), pref `boot_modes/cpu_pin_<kali|parrot|docker>`, ikona
 `CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
 

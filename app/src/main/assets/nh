@@ -2722,6 +2722,18 @@ cpu_tree() {  # <pid> -> pid a všichni potomci
     echo $out
 }
 
+cpu_all_list() {  # rozbalí $CPU_ALL stejně jako hlídač v boot
+    local v w
+    v=$(printf '%s' "$CPU_ALL" | sed 's/\$(cat[[:space:]]*\([^)]*\))/\1/g' | tr ',;' '  ')
+    for w in $v; do
+        case "$w" in "~/"*) w="$HOME/${w#??}" ;; esac
+        case "$w" in
+            /*) [ -f "$w" ] && tr ',;' '  ' < "$w" | tr -s ' \n' '\n\n' ;;
+            *)  echo "$w" ;;
+        esac
+    done
+}
+
 cpu_distro() { echo "${1:-${NH_DISTRO:-parrot}}" | sed 's/^docker:.*/docker/'; }
 
 cpu_status() {
@@ -2748,6 +2760,13 @@ cpu_status() {
         fi
     else
         echo "  mimo proot (TracerPid 0)"
+    fi
+    echo ""
+    printf "${WHITE}${BOLD}CPU_ALL (všechna jádra i při pinu):${RST}\n"
+    if [ -n "${CPU_ALL:-}" ]; then
+        printf "  CPU_ALL=%s\n  → %s\n" "$CPU_ALL" "$(cpu_all_list | tr '\n' ' ')"
+    else
+        echo "  nenastaveno (např. export CPU_ALL=\"make cargo john ~/cpu_all.txt\")"
     fi
     echo ""
     printf "${WHITE}${BOLD}Uloženo pro další boot:${RST}\n"
@@ -2824,6 +2843,12 @@ help_cpu() {
     echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
     echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
     echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
+    echo ""
+    echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
+    echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"
+    echo "    export CPU_ALL=\"make cargo john xz ffmpeg\"          # v ~/.zshrc"
+    echo "    export CPU_ALL=\"\$(cat ~/cpu_all.txt)\"               # nebo ze souboru"
+    echo "    export CPU_ALL='\$(cat ~/cpu_all.txt)'  |  CPU_ALL=~/cpu_all.txt   # soubor čte hlídač živě"
     echo ""
     echo "  ${YELLOW}Kdy pin ano/ne:${RST} ano pro shell, apt, git, skripty, configure; ne pro dlouhé"
     echo "  paralelní výpočty (kompilace, cracking, komprese, ML) → na ně ${GREEN}nh cpu all${RST}."

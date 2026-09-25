@@ -410,6 +410,16 @@ nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne z
 nh cpu run 7 cmd …        # příkaz na jádru N
 ```
 
+**`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
+najde do ~2 s podle `comm`/`argv[0]`, potomci zdědí všechna jádra). Čte se z prostředí
+každého procesu v guestu, takže funguje v `~/.zshrc` i jednorázově:
+
+```bash
+export CPU_ALL="make cargo john xz ffmpeg"
+export CPU_ALL='$(cat ~/cpu_all.txt)'     # nebo CPU_ALL=~/cpu_all.txt — soubor se čte živě
+CPU_ALL=make make -j8                     # jen pro tento příkaz
+```
+
 Mechanika: `boot` s `NH_CPU_PIN=1` zavolá `/system/bin/taskset -p <maska> $$` před `exec`
 proot (zdědí proot i guest) a spustí hlídače, který pin obnoví, když ho Android při změně
 cpusetu přepíše. Endpoint `GET|POST /distro/cpupin` (`{distro, enabled}`).

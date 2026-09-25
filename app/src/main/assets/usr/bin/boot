@@ -16,7 +16,8 @@
 #   NH_DISTRO        — distro override for "--" re-entry mode (kali|parrot|docker:<image>)
 #   BOOT_DEBUG       — "1" for verbose logging
 #   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
-#   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides)
+#   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides);
+#                      guest env CPU_ALL="make cargo ~/list.txt" = programs left on all cores
 
 set -e
 
@@ -980,12 +981,13 @@ cpu_pick_core() {
 cpu_tree() {
     local root=$1 all="" p pp line todo out free
     for p in /proc/[0-9]*; do
-        line=$(cat "$p/stat" 2>/dev/null) || continue
+        { read -r line < "$p/stat"; } 2>/dev/null || continue
         line=${line##*) }
         set -- $line
         all="$all ${p#/proc/}:$2"
     done
-    free=" $(cat "$CPU_DIR/free.$root" 2>/dev/null | tr '\n' ' ') "
+    free=" "
+    [ -f "$CPU_DIR/free.$root" ] && while read -r p; do free="$free$p "; done < "$CPU_DIR/free.$root"
     todo=$root out=""
     while [ -n "$todo" ]; do
         set -- $todo; p=$1; shift; todo="$*"
@@ -998,15 +1000,59 @@ cpu_tree() {
     echo $out
 }
 
+# CPU_ALL v prostředí procesu v guestu = programy, které mají jet na všech
+# jádrech (make, cargo, john, xz, …). Slova oddělená mezerou/čárkou/řádkem;
+# slovo s cestou (/…, ~/…) je soubor se seznamem, doslovné '$(cat SOUBOR)'
+# (hodnota v jednoduchých uvozovkách) se čte stejně. Cesty jsou v guestu.
+cpu_all_words() {  # <pid> <rootfs>
+    local v w
+    v=$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^CPU_ALL=//p' | head -n 1)
+    [ -n "$v" ] || return 0
+    v=$(echo "$v" | sed 's/\$(cat[[:space:]]*\([^)]*\))/\1/g' | tr ',;' '  ')
+    for w in $v; do
+        case "$w" in "~/"*) w="/root/${w#??}" ;; esac
+        case "$w" in
+            /*) [ -f "$2$w" ] && tr ',;' '  ' < "$2$w" ;;
+            *)  echo "$w" ;;
+        esac
+    done
+}
+
 cpu_pin_watch() {
-    local pid=$1 file="$CPU_DIR/pin.$1" mask cur t
+    local pid=$1 file="$CPU_DIR/pin.$1" mask cur t n=0 seen=" " rootfs all_mask comm argv w
+    all_mask=0
+    for t in /sys/devices/system/cpu/cpu[0-9]*; do all_mask=$(( all_mask | (1 << ${t##*cpu}) )); done
+    all_mask=$(printf '%x' "$all_mask")
     while kill -0 "$pid" 2>/dev/null && [ -f "$file" ]; do
-        mask=$(cat "$file" 2>/dev/null)
-        cur=$($TASKSET_BIN -p "$pid" 2>/dev/null); cur=${cur##*: }
-        if [ -n "$mask" ] && [ "$cur" != "$mask" ]; then
-            for t in $(cpu_tree "$pid"); do $TASKSET_BIN -p "$mask" "$t" >/dev/null 2>&1; done
+        # rootfs z příkazové řádky proot (-r <cesta>) kvůli souborům v CPU_ALL;
+        # hned po startu je $pid ještě boot (exec proot proběhne až potom)
+        [ -n "$rootfs" ] || rootfs=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '/^-r$/{n;p;q}')
+        # nové procesy s CPU_ALL, jejichž jméno je na seznamu → všechna jádra
+        for t in $(cpu_tree "$pid"); do
+            case "$seen" in *" $t "*) continue ;; esac
+            seen="$seen$t "
+            [ "$t" = "$pid" ] && continue
+            w=$(cpu_all_words "$t" "$rootfs")
+            [ -n "$w" ] || continue
+            { read -r comm < "/proc/$t/comm"; } 2>/dev/null || continue
+            argv=$(tr '\0' '\n' < "/proc/$t/cmdline" 2>/dev/null | head -n 1); argv=${argv##*/}
+            case " $(echo $w) " in
+                *" $comm "*|*" $argv "*)
+                    $TASKSET_BIN -p "$all_mask" "$t" >/dev/null 2>&1 && echo "$t" >> "$CPU_DIR/free.$pid"
+                    ;;
+            esac
+        done
+        # každých ~10 s: Android při změně cpusetu přepsal affinity → obnovit
+        n=$(( n + 1 ))
+        if [ $(( n % 5 )) -eq 0 ]; then
+            { read -r mask < "$file"; } 2>/dev/null || mask=""
+            cur=$($TASKSET_BIN -p "$pid" 2>/dev/null); cur=${cur##*: }
+            if [ -n "$mask" ] && [ "$cur" != "$mask" ]; then
+                for t in $(cpu_tree "$pid"); do $TASKSET_BIN -p "$mask" "$t" >/dev/null 2>&1; done
+            fi
+            seen=" "        # PIDy se recyklují
         fi
-        sleep 10
+        sleep 2
     done
     rm -f "$file" "$CPU_DIR/free.$pid"
 }
