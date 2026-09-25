@@ -1019,6 +1019,9 @@ cpu_all_words() {  # <pid> <rootfs>
 }
 
 cpu_pin_watch() {
+    # Hlídač dědí `set -e` z boot; v mksh by ho zabil první neúspěšný test
+    # na konci smyčky (a hlídač by tiše zmizel). Tady se chyby řeší ručně.
+    set +e
     local pid=$1 file="$CPU_DIR/pin.$1" mask cur t n=0 seen=" " rootfs all_mask comm argv w
     all_mask=0
     for t in /sys/devices/system/cpu/cpu[0-9]*; do all_mask=$(( all_mask | (1 << ${t##*cpu}) )); done
@@ -1061,8 +1064,12 @@ cpu_pin_apply() {
     [ "${NH_CPU_PIN:-0}" = "1" ] && [ -x "$TASKSET_BIN" ] || return 0
     local core mask
     mkdir -p "$CPU_DIR" 2>/dev/null || true
-    for f in "$CPU_DIR"/pin.*; do                 # úklid po mrtvých sessions
-        [ -f "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f" "$CPU_DIR/free.${f##*.}"
+    # úklid po mrtvých sessions (if, ne `&&`: boot běží se `set -e` a mksh
+    # skončí i na smyčce, jejíž poslední `[ … ] && …` neprojde)
+    for f in "$CPU_DIR"/pin.*; do
+        if [ -f "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null; then
+            rm -f "$f" "$CPU_DIR/free.${f##*.}"
+        fi
     done
     core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}
     mask=$(printf '%x' $((1 << core)))
