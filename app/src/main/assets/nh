@@ -2622,7 +2622,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
-        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu boost on|off [N]" \
         "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
@@ -2778,6 +2778,25 @@ if not all(k in d for k in ("kali", "parrot", "docker")):
 for k in ("kali", "parrot", "docker"):
     print("  %-7s %s" % (k, "ON (1 jádro)" if d.get(k) else "off"))
  ' || echo "  (API nedostupné nebo starší APK bez /distro/cpupin)"
+    echo ""
+    printf "${WHITE}${BOLD}Root CPU daemon (Magisk nh_cpuctl):${RST}\n"
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        local hb_pid hb_ts now_s hb_age
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_pid" ] && [ -n "$hb_ts" ]; then
+            hb_age=$(( now_s - hb_ts ))
+            if [ "$hb_age" -lt 15 ]; then
+                printf "  ${GREEN}běží${RST} (pid %s, heartbeat %ss)\n" "$hb_pid" "$hb_age"
+            else
+                printf "  ${RED}neběží${RST} (starý heartbeat %ss)\n" "$hb_age"
+            fi
+        else
+            printf "  ${RED}neběží${RST} (poškozený heartbeat)\n"
+        fi
+    else
+        printf "  ${YELLOW}neinstallován${RST} (Magisk modul nh_cpuctl)\n"
+    fi
 }
 
 cpu_live() {  # on|off — aplikuje na běžící session
@@ -2985,6 +3004,15 @@ print(f"{D}Session vrácena na původní masku {sorted(orig_tracer)}. Zapnout tr
 PYBENCH
 }
 
+cpu_boost() {
+    case "${1:-status}" in
+        on)     sudo /system/bin/cpuctl boost on ${2:-} ;;
+        off)    sudo /system/bin/cpuctl boost off ;;
+        status|st) sudo /system/bin/cpuctl boost status ;;
+        *)      echo "Použití: nh cpu boost on|off|status [jádro]"; exit 1 ;;
+    esac
+}
+
 cpu_dispatch() {
     case "${1:-status}" in
         status|st)      cpu_status ;;
@@ -2995,6 +3023,7 @@ cpu_dispatch() {
         all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
         run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
         bench|benchmark) shift; cpu_bench "$@" ;;
+        boost)          shift; cpu_boost "$@" ;;
         help|--help|-h) help_cpu ;;
         *)              help_cpu; exit 1 ;;
     esac
@@ -3013,6 +3042,8 @@ help_cpu() {
     echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
     echo "  ${GREEN}bench [--quick]${RST}        Benchmark kombinací (bez pinu / proot na big / vše na big / little…)"
     echo "                         s barevnou tabulkou a grafy; session pak vrátí do původního stavu"
+    echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
+    echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
     echo ""
     echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
     echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"

@@ -404,6 +404,20 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(sdaemon_so_path):,} B)")
+    # cpuctl (static, Magisk module binary — root CPU daemon + boost + pin)
+    print("─" * 60)
+    print("[native-bin] Building cpuctl (static, Magisk module)...")
+    cpuctl_src = os.path.join(cpp_dir, "cpuctl.c")
+    cpuctl_dir = os.path.join(src_dir, "magisk-modules/nh_cpuctl/system/bin")
+    os.makedirs(cpuctl_dir, exist_ok=True)
+    cpuctl_path = os.path.join(cpuctl_dir, "cpuctl")
+    if not os.path.exists(cpuctl_src):
+        print(f"[native-bin] {cpuctl_src} chybí — cpuctl PŘESKOČEN")
+    else:
+        cmd = [cc, "-static", "-o", cpuctl_path, cpuctl_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(cpuctl_path):,} B)")
 
 
 @app.function(
@@ -1209,12 +1223,14 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/cpp/su_daemon.c",
                      "app/src/main/cpp/su_wrapper.c",
                      "app/src/main/cpp/ashell_pty.c",
-                     "app/src/main/cpp/shell_daemon.c"],
+                     "app/src/main/cpp/shell_daemon.c",
+                     "app/src/main/cpp/cpuctl.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
                      "app/src/main/jniLibs/arm64-v8a/libshelldaemon.so",
                      "app/src/main/assets/su_daemon",
                      "app/src/main/assets/su_wrapper",
-                     "app/src/main/assets/ashell_pty"],
+                     "app/src/main/assets/ashell_pty",
+                     "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,
     },
     "usrtools": {

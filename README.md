@@ -410,6 +410,8 @@ nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne z
 nh cpu run 7 cmd …        # příkaz na jádru N
 nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše na big / little …),
                           # barevná tabulka + grafy, session se pak vrátí do původního stavu
+nh cpu boost on|off [N]   # root boost: scaling_min_freq=max pro policy jádra N (Magisk nh_cpuctl)
+nh cpu boost status       # aktuální boost stav všech policies
 ```
 
 **`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
@@ -425,6 +427,18 @@ CPU_ALL=make make -j8                     # jen pro tento příkaz
 Mechanika: `boot` s `NH_CPU_PIN=1` zavolá `/system/bin/taskset -p <maska> $$` před `exec`
 proot (zdědí proot i guest) a spustí hlídače, který pin obnoví, když ho Android při změně
 cpusetu přepíše. Endpoint `GET|POST /distro/cpupin` (`{distro, enabled}`).
+
+### Magisk modul `nh_cpuctl` (volitelný, root)
+
+Statická bionic binárka `/system/bin/cpuctl`, kterou instaluje Magisk modul
+`magisk-modules/nh_cpuctl/`. Po bootu spustí démona s netlink proc connector —
+nahradí mksh hlídač z `boot` okamžitým zachycením nových procesů (EXEC/FORK),
+s fallbackem na `/proc` scan. Navíc poskytuje `cpuctl boost on|off` (cpufreq
+min=max, přežije jen do rebootu) a `cpuctl pin <maska> <pid>`.
+
+Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
+Zip: `cd magisk-modules && bash build.sh` → `nh_cpuctl-v1.0.zip`.
+Instalace: `su -c '/product/bin/magisk --install-module nh_cpuctl-v1.0.zip'`, reboot.
 
 ---
 

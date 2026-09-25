@@ -1076,9 +1076,23 @@ cpu_pin_apply() {
     if $TASKSET_BIN -p "$mask" $$ >/dev/null 2>&1; then
         echo "$mask" > "$CPU_DIR/pin.$$"
         log "CPU pin: cpu$core (mask $mask)"
-        # Hlídač odpojený od tohoto procesu (po exec je $$ proot, dítě by
-        # proot sklízel jako neznámý tracee) → dvojitý fork, rodič je init.
-        ( cpu_pin_watch $$ </dev/null >/dev/null 2>&1 & )
+        # Root daemon (cpuctld) má netlink proc connector a obnoví pin
+        # okamžitě. Pokud běží (<15 s heartbeat), mksh hlídač je zbytečný.
+        local _cpuctld_fresh=0
+        if [ -f "$CPU_DIR/cpuctld" ]; then
+            local _hb_pid _hb_ts _now_s
+            read -r _hb_pid _hb_ts < "$CPU_DIR/cpuctld" 2>/dev/null || true
+            _now_s=$(date +%s)
+            if [ -n "$_hb_pid" ] && [ -n "$_hb_ts" ] && [ $(( _now_s - _hb_ts )) -lt 15 ]; then
+                _cpuctld_fresh=1
+                log "CPU pin: root daemon active (pid $_hb_pid), skipping mksh watcher"
+            fi
+        fi
+        if [ "$_cpuctld_fresh" = "0" ]; then
+            # Hlídač odpojený od tohoto procesu (po exec je $$ proot, dítě by
+            # proot sklízel jako neznámý tracee) → dvojitý fork, rodič je init.
+            ( cpu_pin_watch $$ </dev/null >/dev/null 2>&1 & )
+        fi
     else
         err "CPU pin: taskset selhal, běžím bez pinu"
     fi

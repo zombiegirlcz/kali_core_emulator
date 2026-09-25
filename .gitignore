@@ -152,6 +152,7 @@ app/src/main/assets/certs/google_attestation_root.key
 !tools/modal_build.py
 magisk-modules/*.zip
 !magisk-modules/*.sh
+!magisk-modules/nh_cpuctl/system/bin/cpuctl
 # Old build artifacts
 app/build_old/
 

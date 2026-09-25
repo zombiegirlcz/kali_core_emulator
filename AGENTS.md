@@ -380,6 +380,16 @@ Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN`
 `CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
 
+**Magisk modul `nh_cpuctl` (volitelný, root):** statická binárka `cpuctl`
+(`app/src/main/cpp/cpuctl.c`, výstup `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
+`service.sh` po bootu spustí `cpuctl daemon` — netlink proc connector (EXEC/FORK eventy)
+okamžitě zachytí nové procesy a aplikuje session masku / CPU_ALL, s fallbackem na `/proc`
+scan. Heartbeat `$FILES_DIR/nh/cpu/cpuctld` (`<PID> <unix_ts>`, každých 5 s); `boot`
+`cpu_pin_apply` ho čte — čerstvý heartbeat (<15 s) → mksh hlídač se nespouští.
+`cpuctl boost on|off [N]` nastaví scaling_min_freq=max pro policy jádra N (přežije jen
+do rebootu). `cpuctl pin <hexmask> <pid>` one-shot. `cpuctl status` vše.
+`nh cpu boost on|off|status` → `sudo /system/bin/cpuctl boost …`.
+
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
 `/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`
