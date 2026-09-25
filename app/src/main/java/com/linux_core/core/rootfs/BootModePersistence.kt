@@ -99,3 +99,20 @@ fun loadBootMode(context: Context, distroId: String, default: String = DEFAULT_B
     migrateScheme(p)
     return p.getString("$KEY_PREFIX$distroId", default) ?: default
 }
+
+/**
+ * CPU pin per distro (ikona CPU na kartě distra, `nh cpu on|off`).
+ * Klíč = "kali" | "parrot" | "docker"; boot dostane NH_CPU_PIN=1 a přišpendlí
+ * proot + guest na jedno rychlé jádro (viz `cpu_pin_apply` v assets/usr/bin/boot).
+ */
+private const val CPU_PIN_PREFIX = "cpu_pin_"
+
+/** Pref klíč distra pro CPU pin: docker image sdílí jeden přepínač. */
+fun cpuPinKey(distroId: String): String = if (distroId.startsWith("docker")) "docker" else distroId
+
+fun loadCpuPin(context: Context, distroId: String): Boolean =
+    prefs(context).getBoolean(CPU_PIN_PREFIX + cpuPinKey(distroId), false)
+
+fun saveCpuPin(context: Context, distroId: String, enabled: Boolean) {
+    prefs(context).edit().putBoolean(CPU_PIN_PREFIX + cpuPinKey(distroId), enabled).apply()
+}

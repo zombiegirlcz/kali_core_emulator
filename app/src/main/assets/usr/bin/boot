@@ -16,6 +16,7 @@
 #   NH_DISTRO        — distro override for "--" re-entry mode (kali|parrot|docker:<image>)
 #   BOOT_DEBUG       — "1" for verbose logging
 #   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
+#   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides)
 
 set -e
 
@@ -947,6 +948,90 @@ boot_reentry() {
     esac
 }
 
+# ─── CPU pin (NH_CPU_PIN=1: ikona CPU na kartě distra, `nh cpu`) ──
+# Každý syscall, který proot zachytí, je ptrace výměna guest ↔ proot. Když
+# běží na různých jádrech, čeká se na probuzení druhého jádra (~320 µs na
+# syscall); na jednom velkém jádru ~70–100 µs (shell/apt/git 2–5× rychleji).
+# Daň: celý guest jede na jednom jádru (make -j, john, xz -T0 → `nh cpu all`).
+# Pin se nastaví na vlastní PID před exec, proot i guest ho zdědí. Stav je v
+# $FILES_DIR/nh/cpu/pin.<pid> (maska); hlídač ho obnoví, když Android při
+# změně cpusetu (appka do pozadí/popředí) affinity přepíše.
+CPU_DIR="$FILES_DIR/nh/cpu"
+TASKSET_BIN=/system/bin/taskset
+
+# Nejrychlejší jádra (max cpuinfo_max_freq), s více sessions se střídají.
+cpu_pick_core() {
+    local best=0 list="" c f n i
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
+        [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] || continue
+        c=${c##*cpu}
+        if [ "$f" -gt "$best" ]; then best=$f; list=$c
+        elif [ "$f" -eq "$best" ]; then list="$list $c"; fi
+    done
+    [ -n "$list" ] || { echo 0; return; }
+    set -- $list
+    n=$(ls "$CPU_DIR"/pin.* 2>/dev/null | wc -l)
+    i=$(( n % $# + 1 ))
+    eval echo "\${$i}"
+}
+
+# Potomci PID (včetně něj), bez podstromů uvedených v $CPU_DIR/free.<root>.
+cpu_tree() {
+    local root=$1 all="" p pp line todo out free
+    for p in /proc/[0-9]*; do
+        line=$(cat "$p/stat" 2>/dev/null) || continue
+        line=${line##*) }
+        set -- $line
+        all="$all ${p#/proc/}:$2"
+    done
+    free=" $(cat "$CPU_DIR/free.$root" 2>/dev/null | tr '\n' ' ') "
+    todo=$root out=""
+    while [ -n "$todo" ]; do
+        set -- $todo; p=$1; shift; todo="$*"
+        case "$free" in *" $p "*) continue ;; esac
+        out="$out $p"
+        for pp in $all; do
+            [ "${pp#*:}" = "$p" ] && todo="$todo ${pp%%:*}"
+        done
+    done
+    echo $out
+}
+
+cpu_pin_watch() {
+    local pid=$1 file="$CPU_DIR/pin.$1" mask cur t
+    while kill -0 "$pid" 2>/dev/null && [ -f "$file" ]; do
+        mask=$(cat "$file" 2>/dev/null)
+        cur=$($TASKSET_BIN -p "$pid" 2>/dev/null); cur=${cur##*: }
+        if [ -n "$mask" ] && [ "$cur" != "$mask" ]; then
+            for t in $(cpu_tree "$pid"); do $TASKSET_BIN -p "$mask" "$t" >/dev/null 2>&1; done
+        fi
+        sleep 10
+    done
+    rm -f "$file" "$CPU_DIR/free.$pid"
+}
+
+cpu_pin_apply() {
+    [ "${NH_CPU_PIN:-0}" = "1" ] && [ -x "$TASKSET_BIN" ] || return 0
+    local core mask
+    mkdir -p "$CPU_DIR" 2>/dev/null || true
+    for f in "$CPU_DIR"/pin.*; do                 # úklid po mrtvých sessions
+        [ -f "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f" "$CPU_DIR/free.${f##*.}"
+    done
+    core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}
+    mask=$(printf '%x' $((1 << core)))
+    if $TASKSET_BIN -p "$mask" $$ >/dev/null 2>&1; then
+        echo "$mask" > "$CPU_DIR/pin.$$"
+        log "CPU pin: cpu$core (mask $mask)"
+        # Hlídač odpojený od tohoto procesu (po exec je $$ proot, dítě by
+        # proot sklízel jako neznámý tracee) → dvojitý fork, rodič je init.
+        ( cpu_pin_watch $$ </dev/null >/dev/null 2>&1 & )
+    else
+        err "CPU pin: taskset selhal, běžím bez pinu"
+    fi
+    return 0
+}
+
 # ─── Main dispatch ──────────────────────────────────────
 main() {
     # Volby kdekoli před `--`. Vše od `--` dál je guest příkaz a projde
@@ -980,6 +1065,7 @@ main() {
     [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
     eval "set -- $_newargs"
     apply_mode
+    cpu_pin_apply
 
     case "${1:-}" in
         kali|parrot)
