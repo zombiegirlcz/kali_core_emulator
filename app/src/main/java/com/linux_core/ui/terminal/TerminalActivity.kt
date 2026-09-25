@@ -115,24 +115,26 @@ class TerminalActivity : ComponentActivity() {
 
     // ── Services Panel State ──
     internal var isServicesExpanded = false
-    internal var expandedService: String? = null // "adb" or null
+    internal var expandedService: String? = null // "adb", "cpu" or null
     internal lateinit var servicesPanel: LinearLayout
     internal lateinit var servicesDetailPanel: LinearLayout
     internal lateinit var btnServicesToggle: Button
     internal lateinit var btnAdb: Button
+    internal lateinit var btnCpu: Button
     internal val servicesUpdateHandler = Handler(Looper.getMainLooper())
     internal val servicesPoller =
         object : Runnable {
             override fun run() {
-                // ADB indikátor se musí aktualizovat VŽDY (i při sbaleném panelu) —
-                // jinak tečka zůstane svítit, i když daemon spadl. TCP probe je levná.
-                // Detail se obnoví jen když je panel otevřený.
                 thread {
                     try {
                         val adbSt =
                             com.linux_core.core.terminal.ShellDaemonClient
                                 .status()
-                        runOnUiThread { updateServiceIndicator("adb", btnAdb, adbSt.running) }
+                        val cpuRunning = isCpuDaemonAlive()
+                        runOnUiThread {
+                            updateServiceIndicator("adb", btnAdb, adbSt.running)
+                            updateServiceIndicator("cpu", btnCpu, cpuRunning)
+                        }
 
                         if (isServicesExpanded) {
                             runOnUiThread { expandedService?.let { updateServiceDetail(it) } }
@@ -1501,5 +1503,18 @@ class TerminalActivity : ComponentActivity() {
         errorText.text = message
         errorLayout.visibility = View.VISIBLE
         terminalView.visibility = View.GONE
+    }
+
+    internal fun isCpuDaemonAlive(): Boolean {
+        try {
+            val hb = File(filesDir, "nh/cpu/cpuctld")
+            if (!hb.exists()) return false
+            val parts = hb.readText().trim().split(" ")
+            if (parts.size < 2) return false
+            val ts = parts[1].toLongOrNull() ?: return false
+            return (System.currentTimeMillis() / 1000 - ts) < 15
+        } catch (_: Exception) {
+            return false
+        }
     }
 }

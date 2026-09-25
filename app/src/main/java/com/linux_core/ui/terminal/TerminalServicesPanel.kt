@@ -10,10 +10,11 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.concurrent.TimeUnit
 
 /**
- * Panel služeb (ADB shell daemon) v topbaru — sbalený indikátor, rozbalený
- * detail se start/stop tlačítkem a "START ALL"/refresh akce.
+ * Panel služeb (ADB shell daemon, CPU daemon) v topbaru — sbalený indikátor,
+ * rozbalený detail se start/stop tlačítkem a "START ALL"/refresh akce.
  */
 internal fun TerminalActivity.buildServicesPanel(): LinearLayout =
     LinearLayout(this).apply {
@@ -47,6 +48,35 @@ internal fun TerminalActivity.buildServicesPanel(): LinearLayout =
                 }
             }
         addView(btnAdb)
+
+        View(this@buildServicesPanel)
+            .apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                        1,
+                    )
+            }.also { addView(it) }
+
+        btnCpu =
+            Button(this@buildServicesPanel).apply {
+                text = "⚡ CPU ○"
+                textSize = 9f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(Color.GRAY)
+                background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
+                setPadding(10, 4, 10, 4)
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                    )
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    toggleServiceDetail("cpu")
+                }
+            }
+        addView(btnCpu)
 
         View(this@buildServicesPanel)
             .apply {
@@ -150,6 +180,7 @@ internal fun TerminalActivity.toggleServiceDetail(service: String) {
 
 internal fun TerminalActivity.updateAllServiceIndicators() {
     updateServiceIndicator("adb", btnAdb)
+    updateServiceIndicator("cpu", btnCpu)
 
     val svc = expandedService
     if (svc != null) {
@@ -169,6 +200,8 @@ internal fun TerminalActivity.updateServiceIndicator(
                     .running
             }
 
+            "cpu" -> isCpuDaemonAlive()
+
             else -> {
                 false
             }
@@ -179,6 +212,7 @@ internal fun TerminalActivity.updateServiceIndicator(
     button.text =
         when (service) {
             "adb" -> "📡 ADB $icon"
+            "cpu" -> "⚡ CPU $icon"
             else -> button.text
         }
     button.setTextColor(color)
@@ -197,6 +231,7 @@ internal fun TerminalActivity.updateServiceIndicator(
     button.text =
         when (service) {
             "adb" -> "📡 ADB $icon"
+            "cpu" -> "⚡ CPU $icon"
             else -> button.text
         }
     button.setTextColor(color)
@@ -288,6 +323,91 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
                         setOnClickListener {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             startDaemonInGuest()
+                        }
+                    },
+                )
+            }
+        }
+
+        "cpu" -> {
+            val alive = isCpuDaemonAlive()
+            val icon = if (alive) "●" else "○"
+            val color = if (alive) Color.parseColor("#FFB300") else Color.GRAY
+
+            row.addView(
+                TextView(this).apply {
+                    text = "⚡ CPU DAEMON  $icon"
+                    setTextColor(color)
+                    textSize = 11f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                },
+            )
+
+            val hbFile = java.io.File(filesDir, "nh/cpu/cpuctld")
+            val statusText = if (alive && hbFile.exists()) {
+                try {
+                    val parts = hbFile.readText().trim().split(" ")
+                    val pid = parts.getOrNull(0) ?: "?"
+                    val ts = parts.getOrNull(1)?.toLongOrNull()
+                    val age = if (ts != null) "${System.currentTimeMillis() / 1000 - ts}s ago" else "?"
+                    "  pid:$pid  hb:$age"
+                } catch (_: Exception) { "  ?" }
+            } else {
+                "  not running"
+            }
+            row.addView(
+                TextView(this).apply {
+                    text = statusText
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                },
+            )
+
+            row.addView(
+                View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+                },
+            )
+
+            val boostFile = java.io.File("/data/adb/cpuctl/boost_orig.0")
+            val boosted = boostFile.exists()
+
+            if (boosted) {
+                row.addView(
+                    Button(this).apply {
+                        text = "⏹ BOOST OFF"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FF5555"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams =
+                            LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                            )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            runCpuBoost(false)
+                        }
+                    },
+                )
+            } else {
+                row.addView(
+                    Button(this).apply {
+                        text = "▶ BOOST ON"
+                        textSize = 9f
+                        setTextColor(Color.parseColor("#FFB300"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a0a"), 6f, Color.parseColor("#FFB300"), 1f)
+                        setPadding(10, 4, 10, 4)
+                        layoutParams =
+                            LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                            )
+                        setOnClickListener {
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            runCpuBoost(true)
                         }
                     },
                 )
@@ -388,5 +508,27 @@ internal fun TerminalActivity.startAllServices() {
         com.linux_core.core.terminal.ShellDaemonClient
             .startDaemon(applicationContext)
         runOnUiThread { updateAllServiceIndicators() }
+    }.start()
+}
+
+internal fun TerminalActivity.runCpuBoost(on: Boolean) {
+    val arg = if (on) "on" else "off"
+    Log.i(TerminalActivity.TAG, "runCpuBoost: $arg")
+    Thread {
+        try {
+            val pb = ProcessBuilder("su", "-c", "/system/bin/cpuctl boost $arg")
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val out = proc.inputStream.bufferedReader().readText()
+            val completed = proc.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) proc.destroyForcibly()
+            Log.i(TerminalActivity.TAG, "runCpuBoost: $out")
+        } catch (e: Exception) {
+            Log.e(TerminalActivity.TAG, "runCpuBoost failed: ${e.message}")
+        }
+        runOnUiThread {
+            servicesUpdateHandler.removeCallbacks(servicesPoller)
+            servicesUpdateHandler.post(servicesPoller)
+        }
     }.start()
 }

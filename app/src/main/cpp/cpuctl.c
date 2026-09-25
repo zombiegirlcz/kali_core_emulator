@@ -277,25 +277,36 @@ static session_t *find_session(pid_t pid) {
     return NULL;
 }
 
-/* Collect tree of pid excluding freed subtrees */
+/* Snapshot all pid→ppid mappings from /proc once, then BFS from root.
+ * O(M + N) instead of O(N * M) where M = total processes, N = tree size. */
+typedef struct { pid_t pid, ppid; } pidpair_t;
+
 static int collect_tree(pid_t root, pid_t sess_pid, pid_t *out, int max) {
+    pidpair_t all[4096];
+    int nall = 0;
+    DIR *d = opendir("/proc");
+    if (!d) { out[0] = root; return 1; }
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && nall < 4096) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t p = (pid_t)atoi(de->d_name);
+        if (p <= 0) continue;
+        all[nall].pid = p;
+        all[nall].ppid = get_ppid_of(p);
+        nall++;
+    }
+    closedir(d);
+
     pid_t q[MAX_TREE];
     int h = 0, t = 0, cnt = 0;
     q[t++] = root;
     while (h < t && cnt < max) {
-        pid_t p = q[h++];
-        out[cnt++] = p;
-        DIR *d = opendir("/proc");
-        if (!d) break;
-        struct dirent *de;
-        while ((de = readdir(d)) != NULL) {
-            if (!isdigit((unsigned char)de->d_name[0])) continue;
-            pid_t ch = (pid_t)atoi(de->d_name);
-            if (ch <= 0) continue;
-            if (get_ppid_of(ch) == p && !is_freed(ch, sess_pid) && t < MAX_TREE)
-                q[t++] = ch;
+        pid_t parent = q[h++];
+        out[cnt++] = parent;
+        for (int i = 0; i < nall; i++) {
+            if (all[i].ppid == parent && !is_freed(all[i].pid, sess_pid) && t < MAX_TREE)
+                q[t++] = all[i].pid;
         }
-        closedir(d);
     }
     return cnt;
 }
