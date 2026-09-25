@@ -62,7 +62,19 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-GITHUB_BRANCH = "dev"
+_DEFAULT_BRANCH = "dev"
+
+
+def _detect_branch():
+    """Přečte aktuální větev z lokálního .git/HEAD (fallback na _DEFAULT_BRANCH)."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    head_file = os.path.join(script_dir, ".git", "HEAD")
+    if os.path.isfile(head_file):
+        with open(head_file) as f:
+            content = f.read().strip()
+        if content.startswith("ref: refs/heads/"):
+            return content[len("ref: refs/heads/"):]
+    return _DEFAULT_BRANCH
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
@@ -149,47 +161,43 @@ usrtools_image = (
     timeout=600,
     memory=1024,
 )
-def sync():
+def sync(branch: str = ""):
     """Git clone (poprvé) nebo fetch + reset --hard (dál) přímo z GitHubu.
 
     Nahrazuje upload_basic/upload_force/upload_clean. Žádný rsync z telefonu —
     Modal si repo stahuje sám přes vlastní síť. Výsledný strom na Volume vždy
-    1:1 odpovídá GITHUB_BRANCH na GitHubu (deterministické, žádná otázka
-    "mazat, nebo ne" jako u rsyncu).
+    1:1 odpovídá větvi na GitHubu (deterministické). Větev se čte z lokálního
+    .git/HEAD (fallback na _DEFAULT_BRANCH).
     """
+    if not branch:
+        branch = _DEFAULT_BRANCH
     token = os.environ.get("GITHUB_TOKEN", "")
     auth = f"{token}@" if token else ""
     repo_url = f"https://{auth}github.com/{GITHUB_REPO}.git"
     dest = "/vol/src"
 
     if os.path.isdir(os.path.join(dest, ".git")):
-        print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{GITHUB_BRANCH}")
+        print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{branch}")
         subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
-        subprocess.run(["git", "fetch", "origin", GITHUB_BRANCH], cwd=dest, check=True)
-        subprocess.run(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], cwd=dest, check=True)
+        subprocess.run(["git", "fetch", "origin", branch], cwd=dest, check=True)
+        subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=dest, check=True)
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
-        # ZÁMĚRNĚ BEZ `git clean`: ponechává postavené build artefakty
-        # (proot-static-*, loader-static-*, *.so, binárky v assets/), které NEjsou
-        # v gitu (untracked). Díky tomu `smart_build` najde proot/lib/bin na
-        # Volume a podle `git diff` rozhodne o skipu. `reset --hard` aktualizuje
-        # tracked soubory 1:1 na GitHub; untracked artefakty přežijí sync.
     else:
-        print(f"[sync] Klonuji {GITHUB_REPO}@{GITHUB_BRANCH} -> {dest}")
+        print(f"[sync] Klonuji {GITHUB_REPO}@{branch} -> {dest}")
         if os.path.isdir(dest):
             shutil.rmtree(dest)
         subprocess.run(
-            ["git", "clone", "--branch", GITHUB_BRANCH, repo_url, dest],
+            ["git", "clone", "--branch", branch, repo_url, dest],
             check=True,
         )
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
 
-    # Zamaskovat token v remote URL, kdyby si někdo dal `git remote -v`.
     subprocess.run(
         ["git", "remote", "set-url", "origin", f"https://github.com/{GITHUB_REPO}.git"],
         cwd=dest, check=True,
     )
     build_vol.commit()
-    print("[sync] Hotovo. Tracked strom = 1:1 GitHub; build artefakty (proot/lib/bin) zachovány.")
+    print(f"[sync] Hotovo. Tracked strom = 1:1 GitHub ({branch}); build artefakty zachovány.")
 
 
 @app.function(
@@ -1396,7 +1404,7 @@ def main():
     if cmd == "init":
         init_keys.remote()
     elif cmd == "sync":
-        sync.remote()
+        sync.remote(branch=_detect_branch())
     elif cmd == "clean":
         clean.remote()
     elif cmd == "native":
