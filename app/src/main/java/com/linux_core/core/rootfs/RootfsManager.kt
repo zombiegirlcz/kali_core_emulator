@@ -65,14 +65,30 @@ private fun processTarEntry(
             }
         }
         tarEntry?.isLink == true -> {
+            // Hardlink: linkName je cesta od kořene archivu, ne relativní k odkazu
+            // (dřívější symlink na linkName ukazoval do prázdna → rozbité binárky).
+            // Appka hardlinky vytvářet nesmí, takže obsah zkopírujeme; když zdroj
+            // není obyčejný soubor, uděláme relativní symlink uvnitř rootfs.
             val parent = entryFile.parentFile
             if (parent != null && !parent.exists() && !parent.mkdirs()) {
                 throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
             }
+            val base = targetDir.toPath().toAbsolutePath().normalize()
+            val src = base.resolve(tarEntry.linkName.removePrefix("./").trimStart('/')).normalize()
             try {
-                entryFile.delete()
-                android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
-            } catch (_: Exception) {
+                if (!src.startsWith(base)) throw IOException("hardlink mimo rootfs: ${tarEntry.linkName}")
+                Files.deleteIfExists(entryFile.toPath())
+                if (Files.isRegularFile(src, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    Files.copy(src, entryFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    if (src.toFile().canExecute()) entryFile.setExecutable(true, false)
+                    entryFile.setReadable(true, false)
+                    entryFile.setWritable(true, false)
+                } else {
+                    val rel = entryFile.toPath().toAbsolutePath().parent.relativize(src).toString()
+                    android.system.Os.symlink(rel, entryFile.absolutePath)
+                }
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "Hardlink ${entryFile.path} -> ${tarEntry.linkName}: ${e.message}")
             }
         }
         tarEntry?.isSymbolicLink == true -> {
@@ -163,10 +179,50 @@ private fun extractTarBzip2(
     // TarArchiveInputStream preserves original tar permissions, which may not match
     // the app UID/GID on Android. Ensure extracted files are readable/writable
     // by the app so subsequent operations (bootstrap, entrypoint, etc.) can write.
-    targetDir.walk().forEach { f ->
-        f.setReadable(true, false)
-        f.setWritable(true, false)
-        if (f.isDirectory) f.setExecutable(true, false)
+    relaxTreePermissions(targetDir)
+}
+
+/**
+ * Zpřístupní rozbalený strom appce (rw pro všechny, x pro adresáře). Nenásleduje
+ * symlinky — `File.walk()` je následoval, takže absolutní symlink v rootfs vedl
+ * na host a smyčka symlinků extrakci zacyklila.
+ */
+private fun relaxTreePermissions(targetDir: File) {
+    try {
+        Files.walkFileTree(
+            targetDir.toPath(),
+            object : java.nio.file.SimpleFileVisitor<Path>() {
+                override fun preVisitDirectory(
+                    d: Path,
+                    attrs: java.nio.file.attribute.BasicFileAttributes,
+                ): java.nio.file.FileVisitResult {
+                    d.toFile().apply {
+                        setReadable(true, false)
+                        setWritable(true, false)
+                        setExecutable(true, false)
+                    }
+                    return java.nio.file.FileVisitResult.CONTINUE
+                }
+
+                override fun visitFile(
+                    f: Path,
+                    attrs: java.nio.file.attribute.BasicFileAttributes,
+                ): java.nio.file.FileVisitResult {
+                    if (attrs.isRegularFile) {
+                        f.toFile().setReadable(true, false)
+                        f.toFile().setWritable(true, false)
+                    }
+                    return java.nio.file.FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(
+                    f: Path,
+                    exc: IOException,
+                ): java.nio.file.FileVisitResult = java.nio.file.FileVisitResult.CONTINUE
+            },
+        )
+    } catch (e: IOException) {
+        Log.w("RootfsManager", "relaxTreePermissions: ${e.message}")
     }
 }
 

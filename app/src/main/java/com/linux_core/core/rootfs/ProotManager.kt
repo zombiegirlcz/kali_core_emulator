@@ -732,6 +732,9 @@ object ProotManager {
             }
 
             val content = dnsList.joinToString("\n") { "nameserver $it" } + "\n"
+            // Symlink (Ubuntu: -> ../run/systemd/resolve/stub-resolv.conf) by
+            // writeText následoval do neexistující cesty → guest bez DNS.
+            if (java.nio.file.Files.isSymbolicLink(resolvConf.toPath())) resolvConf.delete()
             resolvConf.writeText(content)
             resolvConf.setReadable(true, false)
             resolvConf.setWritable(true, false)
