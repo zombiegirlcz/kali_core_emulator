@@ -34,6 +34,28 @@ object ProotManager {
     // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
     private const val USR_TOOLS_VERSION = "layout-20260815-1"
 
+    /**
+     * Načte `/.nh/manifest` docker image (KEY=VALUE po řádcích, `#` komentáře).
+     * Opakované klíče (NH_ENV, NH_BIND) čte až boot; tady stačí první hodnota.
+     */
+    private fun readRootfsManifest(rootfsDir: File): Map<String, String> {
+        val f = File(rootfsDir, ".nh/manifest")
+        if (!f.isFile) return emptyMap()
+        val out = mutableMapOf<String, String>()
+        try {
+            f.readLines().forEach { raw ->
+                val line = raw.trim()
+                if (line.isEmpty() || line.startsWith("#") || !line.contains('=')) return@forEach
+                val key = line.substringBefore('=').trim()
+                val value = line.substringAfter('=').trim().removeSurrounding("\"")
+                out.putIfAbsent(key, value)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "readRootfsManifest: ${e.message}")
+        }
+        return out
+    }
+
     fun setupProotEnvironment(
         context: Context,
         rootfsDirName: String = "nh/distro/kali",
@@ -77,25 +99,39 @@ object ProotManager {
         // Migrace layoutu: staré cesty (kali-arm64, filesDir/bin) → nh/distro + usr/bin
         RootfsManager.ensureMigrated(context)
 
+        // Manifest docker image z ROOTFS-for-proot (/.nh/manifest). Docker image
+        // nejsou Debian: bez NH_INTEGRATION=full do nich nenasazujeme debianí
+        // bootstrap/entrypoint/zshrc/profil (přepisovaly entrypoint skriptu
+        // a na apk/pacman/xbps distrech nemohly fungovat).
+        val manifest = if (isDockerImage) readRootfsManifest(rootfsDir) else emptyMap()
+        val appIntegration = !isDockerImage || manifest["NH_INTEGRATION"] == "full"
+        val isMusl = manifest["NH_LIBC"] == "musl"
+
+        // Docker image: jen mount pointy. Vytváření bin/lib/... by na image
+        // s absolutními symlinky (bin -> /usr/bin) sahalo přes symlink na host.
         val criticalDirs =
-            listOf(
-                "system",
-                "dev",
-                "proc",
-                "sys",
-                "tmp",
-                "root",
-                "sdcard",
-                "bin",
-                "usr/bin",
-                "usr/sbin",
-                "sbin",
-                "lib",
-                "lib64",
-                "usr/lib",
-                "etc",
-                "dev/bus/usb",
-            )
+            if (isDockerImage) {
+                listOf("dev", "proc", "sys", "tmp", "root")
+            } else {
+                listOf(
+                    "system",
+                    "dev",
+                    "proc",
+                    "sys",
+                    "tmp",
+                    "root",
+                    "sdcard",
+                    "bin",
+                    "usr/bin",
+                    "usr/sbin",
+                    "sbin",
+                    "lib",
+                    "lib64",
+                    "usr/lib",
+                    "etc",
+                    "dev/bus/usb",
+                )
+            }
         for (dirName in criticalDirs) {
             val dir = File(rootfsDir, dirName)
             if (!dir.exists()) dir.mkdirs()
@@ -275,11 +311,11 @@ object ProotManager {
 
         File(homeDir, ".hushlogin").apply { if (!exists()) createNewFile() }
 
-        deployZshrc(context, rootfsDir, distroId)
+        if (appIntegration) deployZshrc(context, rootfsDir, distroId)
 
         // VZDY vytvorime .bootstrap_required pokud .setup_done neexistuje
         // (stary .setup_done z nekompletniho bootstrapu nesmi blokovat dalsi pokus)
-        if (!setupDoneFile.exists()) {
+        if (appIntegration && !setupDoneFile.exists()) {
             val bootstrapRequired = File(homeDir, ".bootstrap_required")
             try {
                 if (!bootstrapRequired.exists()) {
@@ -292,17 +328,19 @@ object ProotManager {
             setupDoneFile.delete()
         }
 
-        createMasterScript(homeDir, distroId, hasRoot)
-        createEntrypointScript(homeDir)
+        if (appIntegration) {
+            createMasterScript(homeDir, distroId, hasRoot)
+            createEntrypointScript(homeDir)
+        }
         deployVpnHelpDocument(context, homeDir)
-        deployWelcomeProfile(context, rootfsDir, distroId)
+        if (appIntegration) deployWelcomeProfile(context, rootfsDir, distroId)
         val userHomeDir = File(rootfsDir, "home/$distroId")
         if (userHomeDir.exists()) {
             deployVpnHelpDocument(context, userHomeDir)
         }
         deployApiScripts(context, rootfsDir)
 
-        fixLdLinuxSymlinks(context, rootfsDir)
+        if (!isMusl) fixLdLinuxSymlinks(context, rootfsDir)
         // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
         // když NH_DISTRO env není nastavený.
         val nhDir = File(rootDir, "nh")

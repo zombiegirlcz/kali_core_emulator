@@ -1918,6 +1918,14 @@ object RootfsManager {
                     Log.i("RootfsManager", "Wrote entrypoint.sh from remote script")
                 }
 
+                // Manifest pro boot (shell, entrypoint, bootstrap, env, bindy)
+                if (script.manifest.isNotEmpty()) {
+                    val nhDir = File(rootfsDir, ".nh")
+                    nhDir.mkdirs()
+                    File(nhDir, "manifest").writeText(script.manifest + "\n")
+                    Log.i("RootfsManager", "Wrote .nh/manifest from remote script")
+                }
+
                 // Backup original archive
                 try {
                     val backupDir = File(context.filesDir, "$NH_DISTRO_DIR/backup")

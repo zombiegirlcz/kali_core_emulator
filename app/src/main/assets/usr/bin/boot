@@ -666,6 +666,86 @@ boot_classic() {
 }
 
 # ─── boot_docker: container-style images ────────────────
+# ─── Rootfs manifest (/.nh/manifest) ────────────────────
+# Distro plug-in (repo ROOTFS-for-proot) popisuje, jak image spustit. Formát
+# KEY=VALUE po řádcích, nic se nespouští (čte se jen `read`). Viz AGENTS.md
+# v ROOTFS-for-proot. Klíče:
+#   NH_SHELL=/bin/sh           login shell (cesta v guestu)
+#   NH_ENTRYPOINT=/root/x.sh   spustitelný skript místo login shellu (volitelné)
+#   NH_BOOTSTRAP=/bootstrap.sh jednorázový první start, značka /.nh/bootstrap.done
+#   NH_PATH=...                PATH v guestu
+#   NH_WORKDIR=/root           pracovní adresář
+#   NH_ENV=KEY=VAL             proměnná navíc (opakovatelné, bez mezer)
+#   NH_BIND=/src[:/dest]       bind navíc (opakovatelné, absolutní host cesta)
+#   NH_PKG / NH_LIBC / NH_INTEGRATION čte appka (ProotManager), boot je ignoruje.
+MF_PRESENT=0 MF_SHELL="" MF_ENTRY="" MF_BOOTSTRAP="" MF_PATH="" MF_WORKDIR="" MF_ENV="" MF_BINDS=""
+read_manifest() {
+    # $1 = ROOTFS
+    local _f="$1/.nh/manifest" _line _k _v
+    [ -f "$_f" ] || return 0
+    MF_PRESENT=1
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+        _k="${_line%%=*}"
+        _v="${_line#*=}"
+        _v="${_v#\"}"; _v="${_v%\"}"
+        case "$_k" in
+            NH_SHELL) MF_SHELL="$_v" ;;
+            NH_ENTRYPOINT) MF_ENTRY="$_v" ;;
+            NH_BOOTSTRAP) MF_BOOTSTRAP="$_v" ;;
+            NH_PATH) MF_PATH="$_v" ;;
+            NH_WORKDIR) MF_WORKDIR="$_v" ;;
+            NH_ENV)
+                case "$_v" in
+                    *" "*|*"	"*) err "manifest: NH_ENV s mezerou ignorováno: $_v" ;;
+                    [A-Za-z_]*=*) MF_ENV="$MF_ENV $_v" ;;
+                    *) err "manifest: neplatné NH_ENV: $_v" ;;
+                esac ;;
+            NH_BIND)
+                case "$_v" in
+                    *" "*) err "manifest: NH_BIND s mezerou ignorováno: $_v" ;;
+                    /*) MF_BINDS="$MF_BINDS -b $_v" ;;
+                    *) err "manifest: NH_BIND musí být absolutní cesta: $_v" ;;
+                esac ;;
+        esac
+    done < "$_f"
+    log "manifest: shell=$MF_SHELL entry=$MF_ENTRY bootstrap=$MF_BOOTSTRAP binds=$MF_BINDS"
+}
+
+# Vyhodnotí guest cestu uvnitř rootfs včetně symlinků (i absolutních, které by
+# se na hostu vyhodnotily proti Androidu, např. Alpine /bin/sh -> /bin/busybox).
+# Vypíše výslednou guest cestu, nebo vrátí 1, když neexistuje.
+rootfs_resolve() {
+    # $1 = ROOTFS, $2 = absolutní guest cesta
+    local _r="$1" _rest="${2#/}" _cur="" _c _t _n=0
+    while [ -n "$_rest" ]; do
+        _c="${_rest%%/*}"
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
+        case "$_c" in
+            ''|.) continue ;;
+            ..) _cur="${_cur%/*}"; continue ;;
+        esac
+        if [ -L "$_r$_cur/$_c" ]; then
+            _n=$((_n + 1))
+            [ "$_n" -gt 40 ] && return 1
+            _t=$(readlink "$_r$_cur/$_c") || return 1
+            case "$_t" in /*) _cur=""; _t="${_t#/}" ;; esac
+            _rest="$_t${_rest:+/$_rest}"
+        else
+            _cur="$_cur/$_c"
+        fi
+    done
+    [ -e "$_r$_cur" ] || return 1
+    echo "${_cur:-/}"
+}
+
+# Je guest cesta spustitelný soubor (po vyhodnocení symlinků v rootfs)?
+rootfs_is_exec() {
+    local _res
+    _res=$(rootfs_resolve "$1" "$2") || return 1
+    [ -f "$1$_res" ] && [ -x "$1$_res" ]
+}
+
 boot_docker() {
     local image_name="${1:-}"
     [ -z "$image_name" ] && { err "Usage: boot docker <image-name> [-- cmd args...]"; return 1; }
@@ -685,24 +765,38 @@ boot_docker() {
 
     # Inject environment variables
     inject_env "$ROOTFS"
+    read_manifest "$ROOTFS"
 
-    # Find guest shell — prefer known paths, fallback to find
+    # Find guest shell — manifest, then known paths, fallback to find
     local GUEST_SH=""
-    if [ "$IS_TERMUX_IMAGE" = "1" ]; then
+    if [ -n "$MF_SHELL" ]; then
+        if rootfs_is_exec "$ROOTFS" "$MF_SHELL"; then
+            GUEST_SH="$MF_SHELL"
+        else
+            err "manifest NH_SHELL=$MF_SHELL v rootfs neexistuje nebo není spustitelný"
+        fi
+    fi
+    if [ -n "$GUEST_SH" ]; then
+        :
+    elif [ "$IS_TERMUX_IMAGE" = "1" ]; then
         for _cand in "$ROOTFS/data/data/com.termux/files/usr/bin/bash" \
                      "$ROOTFS/data/data/com.termux/files/usr/bin/sh" \
                      "$ROOTFS/system/bin/sh"; do
             [ -x "$_cand" ] && GUEST_SH="${_cand#"$ROOTFS"}" && break
         done
     else
-        GUEST_SH=$(find_sh "$ROOTFS") || true
+        # Symlinky vyhodnocujeme uvnitř rootfs, exec jde přes původní cestu
+        # (proot ji v guestu vyhodnotí sám), aby busybox dostal argv0 "sh".
+        for _cand in /bin/sh /usr/bin/sh /bin/bash /usr/bin/bash /bin/ash; do
+            rootfs_is_exec "$ROOTFS" "$_cand" && GUEST_SH="$_cand" && break
+        done
     fi
 
-    # Fallback: search with find (Alpine busybox, custom layouts)
+    # Fallback: search with find (custom layouts)
     if [ -z "$GUEST_SH" ]; then
         log "Known shell paths failed, falling back to find"
         local found
-        found=$(find "$ROOTFS" -maxdepth 6 -type f \( -name 'sh' -o -name 'bash' \) -perm -u+x 2>/dev/null | head -1)
+        found=$(find "$ROOTFS" -maxdepth 6 \( -type f -o -type l \) \( -name 'sh' -o -name 'bash' -o -name 'ash' \) 2>/dev/null | head -1)
         [ -n "$found" ] && GUEST_SH="${found#"$ROOTFS"}"
     fi
 
@@ -727,26 +821,44 @@ boot_docker() {
 
     local BINDS
     BINDS=$(build_binds "docker/$image_name")
+    [ -n "$MF_BINDS" ] && BINDS=$(dedupe_binds "$BINDS$MF_BINDS")
 
-    # Find entrypoint
-    local ENTRYPOINT=""
-    for _cand in /entrypoint.sh /entrypoint_root.sh /docker-entrypoint.sh \
-                 /start.sh /init.sh /run.sh; do
-        [ -x "$ROOTFS$_cand" ] && ENTRYPOINT="$_cand" && break
-    done
-    log "Entrypoint: ${ENTRYPOINT:-(none, will use login shell)}"
+    # Find entrypoint (manifest má přednost; bez manifestu staré konvence)
+    local ENTRYPOINT="" BOOTSTRAP=""
+    if [ "$MF_PRESENT" = "1" ]; then
+        if [ -n "$MF_ENTRY" ]; then
+            if rootfs_is_exec "$ROOTFS" "$MF_ENTRY"; then
+                ENTRYPOINT="$MF_ENTRY"
+            else
+                err "manifest NH_ENTRYPOINT=$MF_ENTRY chybí nebo není spustitelný, použije se login shell"
+            fi
+        fi
+        if [ -n "$MF_BOOTSTRAP" ] && [ ! -f "$ROOTFS/.nh/bootstrap.done" ]; then
+            if rootfs_resolve "$ROOTFS" "$MF_BOOTSTRAP" >/dev/null; then
+                BOOTSTRAP="$MF_BOOTSTRAP"
+            else
+                err "manifest NH_BOOTSTRAP=$MF_BOOTSTRAP v rootfs chybí"
+            fi
+        fi
+    else
+        for _cand in /entrypoint.sh /entrypoint_root.sh /docker-entrypoint.sh \
+                     /start.sh /init.sh /run.sh; do
+            rootfs_is_exec "$ROOTFS" "$_cand" && ENTRYPOINT="$_cand" && break
+        done
+    fi
+    log "Entrypoint: ${ENTRYPOINT:-(none, will use login shell)} bootstrap: ${BOOTSTRAP:-(none)}"
 
     # Build guest PATH
     local GUEST_PATH
-    GUEST_PATH=$(build_path "$ROOTFS")
+    GUEST_PATH="${MF_PATH:-$(build_path "$ROOTFS")}"
     # Only add the host-shell prefix for actual host-shell images.
     [ "$IS_TERMUX_IMAGE" = "1" ] && [ -d "$ROOTFS/data/data/com.termux/files/usr/bin" ] && \
         GUEST_PATH="$GUEST_PATH:/data/data/com.termux/files/usr/bin"
     [ -z "$GUEST_PATH" ] && GUEST_PATH="/usr/bin:/bin"
 
     # Working directory
-    local PROOT_CWD="/root"
-    [ ! -d "$ROOTFS/root" ] && PROOT_CWD="/"
+    local PROOT_CWD="${MF_WORKDIR:-/root}"
+    rootfs_resolve "$ROOTFS" "$PROOT_CWD" >/dev/null || PROOT_CWD="/"
 
     # su_daemon re-entry mode
     if [ "${1:-}" = "--" ]; then
@@ -756,7 +868,7 @@ boot_docker() {
         log "docker re-entry: cwd=$NH_CWD path=$GUEST_PATH args=$*"
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
@@ -764,7 +876,7 @@ boot_docker() {
                 shift
                 set -- "$GUEST_SH" "$@"
             fi
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
                 "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
@@ -774,20 +886,24 @@ boot_docker() {
         # Host-shell image: inject profile + use login binary
         inject_profile "$ROOTFS"
         if [ -n "$ENTRYPOINT" ]; then
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
         else
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
                 "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
         fi
     else
-        # Normal image: entrypoint or login shell
+        # Normal image: (jednorázový bootstrap) + entrypoint nebo login shell.
+        # Guest wrapper dostává hodnoty jako argumenty ($0 = shell, $1 = PATH,
+        # $2 = cwd, $3 = bootstrap), takže se nic necituje do -c řetězce.
+        # Login shell přes -l: busybox/dash `--login` neznají.
+        local _launch='unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; cd "$2" 2>/dev/null || cd /; b="$3"; shift 3; if [ -n "$b" ] && [ -f "$b" ] && [ ! -f /.nh/bootstrap.done ]; then echo "[*] První start: $b"; if "$0" "$b"; then mkdir -p /.nh && : > /.nh/bootstrap.done; else echo "[!] $b selhal, zkusí se znovu při dalším startu" >&2; fi; fi; exec "$@"'
         if [ -n "$ENTRYPOINT" ]; then
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "$_launch" "$GUEST_SH" "$GUEST_PATH" "$PROOT_CWD" "$BOOTSTRAP" "$ENTRYPOINT" "$@"
         else
-            exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
+            exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
+                "$GUEST_SH" -c "$_launch" "$GUEST_SH" "$GUEST_PATH" "$PROOT_CWD" "$BOOTSTRAP" "$GUEST_SH" -l "$@"
         fi
     fi
 }

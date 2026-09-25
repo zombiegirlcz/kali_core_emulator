@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit
  * - TARBALL_URL[arch] / TARBALL_SHA256[arch]
  * - bootstrap.sh heredoc (inline)
  * - root/entrypoint.sh heredoc (inline)
+ * - .nh/manifest heredoc (inline) — jak image spustit (shell, env, bindy), viz boot
  */
 data class RemoteDistroScript(
     val scriptName: String, // e.g. "kali.sh"
@@ -32,6 +33,7 @@ data class RemoteDistroScript(
     val architectures: List<String>, // available archs in the script
     val bootstrapScript: String, // full bootstrap.sh content from heredoc
     val entrypointScript: String, // full root/entrypoint.sh content from heredoc
+    val manifest: String, // full .nh/manifest content from heredoc ("" = legacy skript bez manifestu)
     val commitSha: String, // latest commit SHA when fetched
 ) {
     /** Slug for directory naming: "kali", "debian-12-bookworm", etc. */
@@ -59,10 +61,13 @@ data class RemoteDistroScript(
                 val urls = extractTarballMap(scriptContent, "TARBALL_URL")
                 val sha256s = extractTarballMap(scriptContent, "TARBALL_SHA256")
                 val archs = urls.keys.toList()
-                val resolvedUrl = urls[currentArch] ?: urls.values.firstOrNull() ?: ""
-                val resolvedSha = sha256s[currentArch] ?: sha256s.values.firstOrNull() ?: ""
+                // Jen přesná shoda architektury: fallback na jinou arch (dřív první
+                // URL v mapě) nabízel na aarch64 x86_64 image, které nemůžou běžet.
+                val resolvedUrl = urls[currentArch] ?: ""
+                val resolvedSha = sha256s[currentArch] ?: ""
                 val bootstrap = extractHeredoc(scriptContent, "bootstrap.sh")
                 val entrypoint = extractHeredoc(scriptContent, "root/entrypoint.sh")
+                val manifest = extractHeredoc(scriptContent, ".nh/manifest")
 
                 RemoteDistroScript(
                     scriptName = scriptName,
@@ -73,6 +78,7 @@ data class RemoteDistroScript(
                     architectures = archs,
                     bootstrapScript = bootstrap,
                     entrypointScript = entrypoint,
+                    manifest = manifest,
                     commitSha = commitSha,
                 )
             } catch (e: Exception) {
