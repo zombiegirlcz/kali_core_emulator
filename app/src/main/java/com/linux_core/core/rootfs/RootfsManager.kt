@@ -439,10 +439,86 @@ object RootfsManager {
         val tempFile = File(cacheDir, distro.tarFileName + TEMP_SUFFIX)
 
         var success = true
-        if (rootfsDir.exists()) success = rootfsDir.deleteRecursively() && success
+        if (rootfsDir.exists()) success = deleteRootfsTree(context, rootfsDir) && success
         if (archiveFile.exists()) success = archiveFile.delete() && success
         if (tempFile.exists()) success = java.io.File(tempFile.absolutePath).delete() && success
         return success
+    }
+
+    /**
+     * Smaže rootfs strom v `filesDir/nh/distro`. Na rozdíl od `File.deleteRecursively()`
+     * nenásleduje symlinky: absolutní symlink v rootfs (např. `/etc/mtab`, `/var/run`)
+     * by se na hostu vyhodnotil proti Android `/` a mazání by vlezlo mimo rootfs.
+     * Adresáře bez `w`/`x` bitu (tarbally je tak často mají) si před procházením
+     * odemkne, jinak by jejich obsah nešel smazat a strom by zůstal napůl.
+     * Vrací true, pokud strom zmizel celý.
+     */
+    fun deleteRootfsTree(
+        context: Context,
+        dir: File,
+    ): Boolean {
+        val distroRoot = File(context.filesDir, NH_DISTRO_DIR).canonicalFile
+        val target = dir.absoluteFile
+        // Symlink na místě kořene nesmí vést mimo nh/distro.
+        if (!target.canonicalPath.startsWith(distroRoot.path + File.separator)) {
+            Log.e("RootfsManager", "deleteRootfsTree: odmítnuto mimo ${distroRoot.path}: ${target.path}")
+            return false
+        }
+        if (!Files.exists(target.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return true
+        try {
+            Files.walkFileTree(
+                target.toPath(),
+                object : java.nio.file.SimpleFileVisitor<Path>() {
+                    override fun preVisitDirectory(
+                        d: Path,
+                        attrs: java.nio.file.attribute.BasicFileAttributes,
+                    ): java.nio.file.FileVisitResult {
+                        d.toFile().apply {
+                            setReadable(true, true)
+                            setWritable(true, true)
+                            setExecutable(true, true)
+                        }
+                        return java.nio.file.FileVisitResult.CONTINUE
+                    }
+
+                    override fun visitFile(
+                        f: Path,
+                        attrs: java.nio.file.attribute.BasicFileAttributes,
+                    ): java.nio.file.FileVisitResult {
+                        Files.deleteIfExists(f)
+                        return java.nio.file.FileVisitResult.CONTINUE
+                    }
+
+                    override fun visitFileFailed(
+                        f: Path,
+                        exc: IOException,
+                    ): java.nio.file.FileVisitResult {
+                        // Nečitelný adresář: zkusit ho odemknout a smazat aspoň položku samotnou.
+                        f.toFile().setWritable(true, true)
+                        try {
+                            Files.deleteIfExists(f)
+                        } catch (_: IOException) {
+                        }
+                        return java.nio.file.FileVisitResult.CONTINUE
+                    }
+
+                    override fun postVisitDirectory(
+                        d: Path,
+                        exc: IOException?,
+                    ): java.nio.file.FileVisitResult {
+                        try {
+                            Files.deleteIfExists(d)
+                        } catch (e: IOException) {
+                            Log.w("RootfsManager", "deleteRootfsTree: ${d}: ${e.message}")
+                        }
+                        return java.nio.file.FileVisitResult.CONTINUE
+                    }
+                },
+            )
+        } catch (e: IOException) {
+            Log.e("RootfsManager", "deleteRootfsTree failed: ${e.message}", e)
+        }
+        return !Files.exists(target.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)
     }
 
     fun extractRootfs(
@@ -1873,6 +1949,8 @@ object RootfsManager {
                 Log.i("RootfsManager", "Remote script pull complete: ${rootfsDir.absolutePath}")
             } catch (e: Exception) {
                 Log.e("RootfsManager", "Remote script pull failed: ${e.message}", e)
+                // Napůl stažený/rozbalený rootfs by v UI vypadal jako nainstalovaný.
+                deleteRootfsTree(context, rootfsDir)
                 throw e
             } finally {
                 try {

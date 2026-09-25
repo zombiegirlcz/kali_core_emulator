@@ -421,6 +421,8 @@ fun MainScreen() {
     var dockerImageDirs by remember { mutableStateOf<List<String>>(emptyList()) }
     // Remote distro scripts from zombiegirlcz/ROOTFS-for-proot (daily quick-start)
     var remoteRootfsEntries by remember { mutableStateOf<List<RemoteDistroScript>>(emptyList()) }
+    // Bump po smazání docker rootfs — isPulled se čte z disku, Compose o změně jinak neví.
+    var dockerFsTick by remember { mutableStateOf(0) }
     var isLoadingRemoteCatalog by remember { mutableStateOf(false) }
     var remoteCatalogError by remember { mutableStateOf<String?>(null) }
 
@@ -1243,6 +1245,7 @@ fun MainScreen() {
                                             ) {
                                                 allRemote.forEach { entry ->
                                                     val isPulled =
+                                                        dockerFsTick >= 0 &&
                                                         File(
                                                             context.filesDir,
                                                             "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}",
@@ -1330,6 +1333,40 @@ fun MainScreen() {
                                                             color = if (isPulled) Color(0xFF00FF41) else Color(0xFF00FF41),
                                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                                         )
+                                                        if (isPulled) {
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Text(
+                                                                text = "\u2715",
+                                                                fontSize = 12.sp,
+                                                                color = Color(0xFFFF5555),
+                                                                modifier =
+                                                                    Modifier.clickable(enabled = !isDownloading && !isPullingDocker) {
+                                                                        scope.launch {
+                                                                            val dir =
+                                                                                File(
+                                                                                    context.filesDir,
+                                                                                    "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}",
+                                                                                )
+                                                                            val ok =
+                                                                                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                                                                    RootfsManager.deleteRootfsTree(context, dir)
+                                                                                }
+                                                                            val rel = dir.relativeTo(context.filesDir).path
+                                                                            if (ok) dockerImageDirs = dockerImageDirs.filter { it != rel }
+                                                                            if (ok && selectedDockerDir == rel) {
+                                                                                selectedDockerDir = null
+                                                                                isDockerMode = false
+                                                                            }
+                                                                            dockerFsTick++
+                                                                            Toast.makeText(
+                                                                                context,
+                                                                                if (ok) "${entry.distroName} smazán" else "Smazání ${entry.distroName} selhalo (viz nethunter-log)",
+                                                                                Toast.LENGTH_SHORT,
+                                                                            ).show()
+                                                                        }
+                                                                    },
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
@@ -2037,7 +2074,16 @@ fun MainScreen() {
                                                         scope.launch {
                                                             try {
                                                                 val dockerDir = File(context.filesDir, selectedDockerDir!!)
-                                                                if (dockerDir.exists()) dockerDir.deleteRecursively()
+                                                                val ok =
+                                                                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                                                        RootfsManager.deleteRootfsTree(context, dockerDir)
+                                                                    }
+                                                                dockerFsTick++
+                                                                if (!ok) {
+                                                                    Toast.makeText(context, "Remove failed (viz nethunter-log)", Toast.LENGTH_SHORT).show()
+                                                                    return@launch
+                                                                }
+                                                                dockerImageDirs = dockerImageDirs.filter { it != selectedDockerDir }
                                                                 selectedDockerDir = null
                                                                 dockerImageRef = null
                                                                 isDockerMode = false
@@ -2062,7 +2108,9 @@ fun MainScreen() {
                                                                     statusText = "Reinstalling: Deleting old files…"
                                                                     val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
                                                                     if (rootfsDir.exists()) {
-                                                                        rootfsDir.deleteRecursively()
+                                                                        kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                                                            RootfsManager.deleteRootfsTree(context, rootfsDir)
+                                                                        }
                                                                     }
                                                                     isExtracted = false
                                                                     downloadProgress = 0
