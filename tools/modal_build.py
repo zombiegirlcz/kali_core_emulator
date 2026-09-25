@@ -62,7 +62,7 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-_DEFAULT_BRANCH = "dev"
+_DEFAULT_BRANCH = "master"
 
 
 def _detect_branch():
