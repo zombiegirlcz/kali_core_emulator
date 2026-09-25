@@ -5,10 +5,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.IBinder
+import android.os.Process
 import android.util.Log
 import com.linux_core.BuildConfig
-import com.linux_core.core.DeviceInfo
-import com.linux_core.core.ExecCore
+import com.linux_core.core.device.DeviceInfo
+import com.linux_core.core.device.ExecCore
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -75,15 +76,26 @@ class CoreBridgeService : Service() {
     private fun checkCaller(method: String) {
         val pm = packageManager
         val callerUid = Binder.getCallingUid()
-        // getNameForUid vrací jméno balíku (případně "pkg1:pkg2" při sdíleném uid)
-        val callerPkg = pm.getNameForUid(callerUid)
-            ?.substringBefore(":")
-            ?: run {
-                Log.w(TAG, "Rejected $method from uid=$callerUid (unknown package)")
-                throw SecurityException("Caller not signed with core key")
-            }
-        if (pm.checkSignatures(callerPkg, packageName) != PackageManager.SIGNATURE_MATCH) {
-            Log.w(TAG, "Rejected $method from uid=$callerUid pkg=$callerPkg (signature mismatch)")
+
+        // Stejné UID (sharedUserId cz.nethunter.agent) → jiná appka téhož účtu.
+        // Je podepsaná stejným klíčem už tím, že sharedUserId vůbec dostala.
+        if (callerUid == Process.myUid()) return
+
+        // POZOR: getNameForUid() vrací u sdíleného UID jméno shared-user účtu
+        // (např. "cz.nethunter.agent"), ne jméno balíčku — checkSignatures() na
+        // takové jméno pak hlásí mismatch. Proto pracujeme se všemi balíčky,
+        // které pod volajícím UID běží.
+        val pkgs = pm.getPackagesForUid(callerUid)
+        if (pkgs.isNullOrEmpty()) {
+            Log.w(TAG, "Rejected $method from uid=$callerUid (unknown package)")
+            throw SecurityException("Caller not signed with core key")
+        }
+        val signed = pkgs.any { pkg ->
+            runCatching { pm.checkSignatures(pkg, packageName) == PackageManager.SIGNATURE_MATCH }
+                .getOrDefault(false)
+        }
+        if (!signed) {
+            Log.w(TAG, "Rejected $method from uid=$callerUid pkgs=${pkgs.joinToString()} (signature mismatch)")
             throw SecurityException("Caller not signed with core key")
         }
     }

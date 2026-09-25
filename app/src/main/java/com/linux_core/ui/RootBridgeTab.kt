@@ -24,7 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import com.linux_core.core.RootfsManager
+import com.linux_core.core.rootfs.RootfsManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -446,8 +446,15 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
     var bindTmp by remember { mutableStateOf(prefs.getBoolean("bind_tmp", false)) }
     var bindUsb by remember { mutableStateOf(prefs.getBoolean("bind_usb", true)) }
     var bindBluetooth by remember { mutableStateOf(prefs.getBoolean("bind_bluetooth", false)) }
-    var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", false)) }
+    var bindApp by remember { mutableStateOf(prefs.getBoolean("bind_app", true)) }
     var bindAiApp by remember { mutableStateOf(prefs.getBoolean("bind_aiapp", false)) }
+    var bindData by remember { mutableStateOf(prefs.getBoolean("bind_data", false)) }
+    var sharedTmp by remember { mutableStateOf(prefs.getBoolean("shared_tmp", false)) }
+
+    // Emulovaný /proc + /sys (boot: NH_FAKE_SYS). Vypnuto = guest vidí reálný
+    // kernel, /proc a /sys — potřeba pro nástroje zkoumající reálný stav
+    // (Frida). Není to bind, proto stojí mimo seznam mountů.
+    var fakeSys by remember { mutableStateOf(prefs.getBoolean("bind_fake_sys", true)) }
 
     // Auto-fix ownership after sudo commands (layer 1)
     var autoFixPermissions by remember { mutableStateOf(prefs.getBoolean("auto_fix_permissions", true)) }
@@ -743,16 +750,18 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
 
-                // Checkbox items under /mnt/
-                val items = listOf(
-                    Triple("System", "/system → /mnt/system", "bind_system" to bindSystem),
-                    Triple("Vendor", "/vendor → /mnt/vendor", "bind_vendor" to bindVendor),
-                    Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
-                    Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
-                    Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
-                    Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
-                    Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp)
-                )
+                    // Checkbox items — bindy na nativní cesty (host cesta = guest cesta)
+                    val items = listOf(
+                        Triple("System", "/system (v módu D už je)", "bind_system" to bindSystem),
+                        Triple("Vendor", "/vendor (v módu D už je)", "bind_vendor" to bindVendor),
+                        Triple("Local TMP", "/data/local/tmp", "bind_tmp" to bindTmp),
+                        Triple("USB Gadget", "/config/usb_gadget (/dev/bus/usb je vidět vždy)", "bind_usb" to bindUsb),
+                        Triple("Bluetooth", "/data/misc/bluetooth", "bind_bluetooth" to bindBluetooth),
+                        Triple("App Data", "/data/user/0/com.linux_core", "bind_app" to bindApp),
+                        Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant", "bind_aiapp" to bindAiApp),
+                        Triple("Data (root)", "/data (obsah vidí jen sudo)", "bind_data" to bindData),
+                        Triple("Shared /tmp", "files/tmp → /tmp (boot --shared-tmp)", "shared_tmp" to sharedTmp)
+                    )
 
                 items.forEach { (label, mountPath, statePair) ->
                     val (prefKey, stateValue) = statePair
@@ -774,6 +783,8 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                     "bind_bluetooth" -> bindBluetooth = checked
                                     "bind_app" -> bindApp = checked
                                     "bind_aiapp" -> bindAiApp = checked
+                                    "bind_data" -> bindData = checked
+                                    "shared_tmp" -> sharedTmp = checked
                                 }
                             },
                             colors = CheckboxDefaults.colors(
@@ -798,6 +809,57 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                                 fontFamily = FontFamily.Monospace
                             )
                         }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Fake /proc & /sys",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Checkbox(
+                        checked = fakeSys,
+                        onCheckedChange = { checked ->
+                            prefs.edit().putBoolean("bind_fake_sys", checked).apply()
+                            fakeSys = checked
+                        },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Color(0xFF00FF41),
+                            checkmarkColor = Color.Black,
+                            uncheckedColor = Color.Gray
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text(
+                            text = if (fakeSys) "emulovaný /proc + /sys" else "reálný /proc + /sys",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = if (fakeSys) {
+                                "zapnuto: D mód předstírá /proc a uname -r (I a M jsou vždy reálné)"
+                            } else {
+                                "vypnuto: skutečný kernel a /proc ve všech módech (Frida)"
+                            },
+                            color = Color.Gray,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
 

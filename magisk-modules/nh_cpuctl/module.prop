@@ -1,0 +1,6 @@
+id=nh_cpuctl
+name=NetHunter CPU Control
+version=v1.0
+versionCode=1
+author=zombiegirlcz
+description=Root CPU control daemon for NetHunter AI Operator. Monitors proot sessions via netlink proc connector and enforces CPU pin masks (NH_CPU_PIN). Provides cpufreq boost and one-shot affinity commands.

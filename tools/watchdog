@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WORKFLOW="${1:-build.yml}"
+BRANCH="${2:-$(git branch --show-current 2>/dev/null || true)}"
+DEST="${HOME}/Download/kali-core.apk"
+
+if [[ "$WORKFLOW" == "-h" || "$WORKFLOW" == "--help" ]]; then
+    cat <<'USAGE'
+Usage: tools/watchdog [workflow] [branch]
+
+Sleduje nejnovější GitHub Actions run a po úspěšném buildu stáhne artifact
+app-debug jako ~/Download/kali-core.apk.
+USAGE
+    exit 0
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+    echo "watchdog: gh CLI není nainstalované." >&2
+    exit 1
+fi
+
+if [[ -z "$BRANCH" ]]; then
+    echo "watchdog: nelze zjistit aktuální Git větev; použij: $0 build.yml <větev>" >&2
+    exit 1
+fi
+
+REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+RUN_ID="$(
+    gh run list \
+        --repo "$REPO" \
+        --workflow "$WORKFLOW" \
+        --branch "$BRANCH" \
+        --limit 1 \
+        --json databaseId \
+        --jq '.[0].databaseId // empty'
+)"
+
+if [[ -z "$RUN_ID" ]]; then
+    echo "watchdog: žádný run workflowu $WORKFLOW na větvi $BRANCH." >&2
+    exit 1
+fi
+
+echo "watchdog: sleduji $REPO / $WORKFLOW / $BRANCH (run $RUN_ID)"
+if ! gh run watch "$RUN_ID" --repo "$REPO" --exit-status; then
+    gh run view "$RUN_ID" --repo "$REPO" --log || true
+    echo "watchdog: workflow selhal; APK nebude staženo." >&2
+    exit 1
+fi
+gh run view "$RUN_ID" --repo "$REPO" --log
+
+DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kali-watchdog.XXXXXX")"
+trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
+
+mkdir -p "$(dirname "$DEST")"
+rm -f "$DOWNLOAD_DIR"/*.apk "$DEST"
+gh run download "$RUN_ID" \
+    --repo "$REPO" \
+    --name app-debug \
+    --dir "$DOWNLOAD_DIR"
+
+APK="$(find "$DOWNLOAD_DIR" -type f -name '*.apk' -print -quit)"
+if [[ -z "$APK" ]]; then
+    echo "watchdog: artifact app-debug neobsahuje APK." >&2
+    exit 1
+fi
+
+mv "$APK" "$DEST"
+echo "watchdog: APK staženo do $DEST ($(stat -c '%s bytes' "$DEST"))"

@@ -25,7 +25,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.linux_core.core.VpnLogManager
+import com.linux_core.core.vpn.VpnLogManager
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*

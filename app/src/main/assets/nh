@@ -53,7 +53,7 @@ api_post_json() {
 }
 
 # Shortcut: pipe JSON through python3 formatter
-# Usage: echo '{"key":"val"}' | fmt 'python code'
+# Usage: echo '{"key":"val"}' | fmt <python-code>
 fmt() {
     python3 -c "$1" 2>/dev/null
 }
@@ -75,16 +75,17 @@ separator() {
 
 system_dispatch() {
     case "$1" in
-        battery) system_battery ;;
-        volume) shift; system_volume "$@" ;;
+        battery|bat) system_battery ;;
+        volume|vol) shift; system_volume "$@" ;;
         torch) shift; system_torch "$@" ;;
-        vibrate) shift; system_vibrate "$@" ;;
+        vibrate|vib) shift; system_vibrate "$@" ;;
         toast) shift; system_toast "$@" ;;
-        clipboard) shift; system_clipboard "$@" ;;
-        notification) shift; system_notification "$@" ;;
-        speech) system_speech ;;
+        clipboard|clip) shift; system_clipboard "$@" ;;
+        notification|notif) shift; system_notification "$@" ;;
+        speech|stt|tts-speak) system_speech ;;
         ashell) system_ashell ;;
-        *) echo "Usage: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; exit 1 ;;
+        help|-h|--help) help_system ;;
+        *) echo "Použití: nh system battery|volume|torch|vibrate|toast|clipboard|notification|speech|ashell"; echo "Pro nápovědu: nh system help"; exit 1 ;;
     esac
 }
 
@@ -242,7 +243,7 @@ G,R,Y,N,Gy=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[
 try:
     d=json.load(sys.stdin)
     if 'text' in d: print(f'{G}🎙️  Voice: {d[\"text\"]}{N}')
-    else: print(f'{R}✘  {d.get(\"error\", \"No response\")}{N}')
+    else: print(R + \"✘  \" + str(d.get(\"error\", \"No response\")) + N)
 except: print(f'{R}✘  Error parsing voice input{N}')
 "
 }
@@ -264,10 +265,11 @@ network_dispatch() {
     case "$1" in
         wifi) shift; network_wifi "$@" ;;
         cell) network_cell ;;
-        location) network_location ;;
+        location|loc|gps) network_location ;;
         map) network_map ;;
-        ifconfig) shift; network_ifconfig "$@" ;;
-        *) echo "Usage: nh network wifi|cell|location|map|ifconfig"; exit 1 ;;
+        ifconfig|if) shift; network_ifconfig "$@" ;;
+        help|-h|--help) help_network ;;
+        *) echo "Použití: nh network wifi|cell|location|map|ifconfig"; echo "Pro nápovědu: nh network help"; exit 1 ;;
     esac
 }
 
@@ -479,18 +481,19 @@ except Exception as e:
 
 vpn_dispatch() {
     case "$1" in
-        status) vpn_status ;;
+        status|stat) vpn_status ;;
         start) vpn_start ;;
         stop) vpn_stop ;;
         on) shift; vpn_on "$@" ;;
         off) shift; vpn_off "$@" ;;
-        logs) shift; vpn_logs "$@" ;;
+        logs|log) shift; vpn_logs "$@" ;;
         ai) shift; vpn_ai "$@" ;;
         mitm) shift; vpn_mitm "$@" ;;
         bypass) shift; vpn_bypass "$@" ;;
         ignore) shift; vpn_ignore "$@" ;;
-        sni-fallback) shift; vpn_sni_fallback "$@" ;;
-        *) echo "Usage: nh vpn status|start|stop|on|off|logs|mitm|bypass|ignore|sni-fallback"; exit 1 ;;
+        sni-fallback|sni) shift; vpn_sni_fallback "$@" ;;
+        help|-h|--help) help_vpn ;;
+        *) echo "Použití: nh vpn status|start|stop|on|off|logs|mitm|ai|bypass|ignore|sni-fallback"; echo "Pro nápovědu: nh vpn help"; exit 1 ;;
     esac
 }
 
@@ -905,6 +908,7 @@ except: print('Error')
 agent_dispatch() {
     local config_dir="$HOME/.config/nethunter"
     case "$1" in
+        help|-h|--help) help_agent; exit 0 ;;
         config)
             shift
             local provider="" key="" model=""
@@ -991,6 +995,7 @@ print(f'[+] Configuration updated: {json.dumps(data,indent=2)}')
 log_dispatch() {
     case "$1" in
         set) shift; log_set "$@" ;;
+        help|-h|--help) help_log ;;
         *) log_view "$@" ;;
     esac
 }
@@ -1070,8 +1075,8 @@ log_usage() {
 device_dispatch() {
     case "$1" in
         admin) shift; device_admin "$@" ;;
-        battery-optimize) shift; device_battery_optimize "$@" ;;
-        accessibility) shift; device_accessibility "$@" ;;
+        battery-optimize|opt) shift; device_battery_optimize "$@" ;;
+        accessibility|acc) shift; device_accessibility "$@" ;;
         tap) shift; device_tap "$@" ;;
         click) shift; device_click "$@" ;;
         longclick) shift; device_longclick "$@" ;;
@@ -1079,7 +1084,8 @@ device_dispatch() {
         text) shift; device_text "$@" ;;
         scroll) shift; device_scroll "$@" ;;
         global) shift; device_global "$@" ;;
-        *) echo "Usage: nh device admin|battery-optimize|accessibility|tap|click|longclick|swipe|text|scroll|global"; exit 1 ;;
+        help|-h|--help) help_device ;;
+        *) echo "Použití: nh device admin|battery-optimize|accessibility|tap|click|longclick|swipe|text|scroll|global"; echo "Pro nápovědu: nh device help"; exit 1 ;;
     esac
 }
 
@@ -1190,7 +1196,7 @@ G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
 try:
     d=json.load(sys.stdin)
     if d.get('success'): print(f'{G}✔ tap $x,$y{N}')
-    else: print(f'{R}✘ tap failed: {d.get(\"error\",\"unknown\")}{N}')
+    else: print(R + \"✘ tap failed: \" + str(d.get(\"error\",\"unknown\")) + N)
 except: print(f'{R}✘ parse error{N}')
 "
 }
@@ -1204,7 +1210,7 @@ G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
 try:
     d=json.load(sys.stdin)
     if d.get('success'): print(f'{G}✔ click \"$text\"{N}')
-    else: print(f'{R}✘ click failed: {d.get(\"error\",\"not found\")}{N}')
+    else: print(R + \"✘ click failed: \" + str(d.get(\"error\",\"not found\")) + N)
 except: print(f'{R}✘ parse error{N}')
 "
 }
@@ -1260,7 +1266,8 @@ device_global() {
 api_dispatch() {
     case "$1" in
         share) shift; api_share "$@" ;;
-        *) echo "Usage: nh api share on|off|status"; exit 1 ;;
+        help|-h|--help) help_api ;;
+        *) echo "Použití: nh api share on|off|status"; echo "Pro nápovědu: nh api help"; exit 1 ;;
     esac
 }
 
@@ -1295,8 +1302,9 @@ desktop_dispatch() {
     case "$1" in
         start) desktop_start ;;
         stop) desktop_stop ;;
-        status) desktop_status ;;
-        *) echo "Usage: nh desktop start|stop|status"; exit 1 ;;
+        status|stat) desktop_status ;;
+        help|-h|--help) help_desktop ;;
+        *) echo "Použití: nh desktop start|stop|status"; echo "Pro nápovědu: nh desktop help"; exit 1 ;;
     esac
 }
 
@@ -1305,98 +1313,121 @@ desktop_start() {
     rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
     export DEBIAN_FRONTEND=noninteractive
     dpkg --configure -a 2>/dev/null || true
+
+    # Konfigurovatelne rozliseni/hloubka (NH_XRES, NH_XDEPTH).
+    # Nizsi rozliseni/hloubka = vyrazne mene dat na frame
+    # (1280x720x24 -> 1024x600x16 = 2,7x mene bajtu).
+    local XRES="${NH_XRES:-1280x720}"
+    local XDEPTH="${NH_XDEPTH:-24}"
+
+    # X server = Xvfb (headless X.Org). Bývalý asset "linux-x11" (libXlorie.so)
+    # byl JNI knihovna bez main — nešel spustit samostatně a byl odstraněn.
+    if ! command -v Xvfb >/dev/null 2>&1; then
+        echo "[*] Installing Xvfb..."
+        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xvfb </dev/null
+    fi
+    if ! command -v Xvfb >/dev/null 2>&1; then
+        echo "[-] Xvfb není dostupný (apt selhal) — X server nelze spustit." >&2
+        return 1
+    fi
+
     echo "[*] Checking desktop dependencies..."
     if ! command -v dbus-launch >/dev/null 2>&1 || ! command -v xfce4-session >/dev/null 2>&1; then
         echo "[*] Installing XFCE4 and DBUS..."
         apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" xfce4 xfce4-terminal dbus-x11 curl procps </dev/null
     fi
-    
-    if ! command -v adb >/dev/null 2>&1; then
-        echo "[*] Installing ADB..."
-        apt-get update && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" adb </dev/null
-    fi
-    
-    if ! command -v linux-x11 >/dev/null 2>&1; then
-        echo "[!] linux-x11 binary NOT found."
-        echo "    The X11 server (lorie/Termux-X11) is not installed in this PRoot container."
-        echo "    Build it via: mbuild native  (or deploy linux-x11 binary manually)"
-        echo ""
-        read -p "Setup ADB reverse tunnel for X11? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "[*] Checking ADB connection..."
-            adb start-server >/dev/null 2>&1
-            if ! adb devices | grep -q -w "device"; then
-                echo "[!] ADB is not connected. We need it to disable Phantom Process Killer."
-                read -p "Zadej ADB <IP> <PORT> [PAIRING CODE] (nech prazdne pro preskoceni): " adb_ip adb_port adb_code
-                if [ -n "$adb_ip" ] && [ -n "$adb_port" ]; then
-                    if [ -n "$adb_code" ]; then
-                        adb pair "$adb_ip:$adb_port" "$adb_code"
-                    else
-                        adb connect "$adb_ip:$adb_port"
-                    fi
-                    sleep 2
-                fi
-            fi
-            if adb devices | grep -q -w "device"; then
-                echo "[*] Setting up ADB reverse tunnel for X11 (tcp:6000 -> localabstract:/x11)..."
-                adb reverse tcp:6000 localabstract:/x11
-                echo "[+] ADB reverse tunnel established."
-                echo "[*] Disabling Phantom Process Killer via ADB..."
-                adb shell "device_config put activity_manager max_phantom_processes 2147483647 && settings put global max_phantom_processes 2147483647"
-                echo "[+] Phantom Process Killer disabled!"
-            else
-                echo "[-] ADB not connected. Skipping ADB setup."
-            fi
-        else
-            echo "[-] Skipping ADB setup. X11 will not be reachable from host without ADB tunnel."
-        fi
-        echo "[!] WARNING: linux-x11 binary is missing. X server cannot start."
-        echo "    Install it first, then run: nh desktop start"
-        return 0
-    fi
+
     echo "[*] Stopping existing sessions..."
-    pkill -9 -f linux-x11 2>/dev/null || true
-    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    echo "[*] Starting X server (Linux-X11) ..."
-    # The desktop is rendered by the separate X11 launcher app
-    # (com.linux_core.xlauncher), which connects to this X server over TCP.
-    # This launches Linux-X11 inside the PRoot container, providing DISPLAY=:1 to X11 clients.
-    linux-x11 :1 -xstartup "dbus-launch --exit-with-session xfce4-session" &
-    echo "[+] X server (Linux-X11) ready on DISPLAY=:1 — open the NetHunter X11 Launcher."
+    # -x = přesná shoda názvu procesu; NIKDY -f se vzorem, který by mohl
+    # zabít volající shell (např. když má vzor ve svém cmdline).
+    pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x socat 2>/dev/null || true
+    pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
+    pkill -9 -x xfce4-session 2>/dev/null || true
+    sleep 1
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+
+    echo "[*] Starting X server (Xvfb :0, ${XRES}x${XDEPTH}, unix socket only)..."
+    # BEZPECNOST: -nolisten tcp => zadny 0.0.0.0:6000. Xvfb poslouchá jen na
+    # unix socketu /tmp/.X11-unix/X0 (v guest namespace). Launcher je jina
+    # Android appka (jiny UID), takze se pripojuje pres 127.0.0.1:6000, kde
+    # bezi socat bridge na unix socket (jen loopback, zadny LAN pristup).
+    # -ac = zadna xauth (socket je pristupny jen z naseho UID).
+    nohup Xvfb :0 -screen 0 ${XRES}x${XDEPTH} -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
+
+    _i=0
+    while [ $_i -lt 10 ]; do
+        DISPLAY=:0 xdpyinfo >/dev/null 2>&1 && break
+        sleep 1; _i=$((_i+1))
+    done
+    if ! DISPLAY=:0 xdpyinfo >/dev/null 2>&1; then
+        echo "[-] Xvfb se nenastartoval (viz /tmp/xvfb.log):" >&2
+        tail -5 /tmp/xvfb.log 2>/dev/null >&2
+        return 1
+    fi
+
+    # Socat bridge: 127.0.0.1:6000 -> /tmp/.X11-unix/X0 (jen loopback).
+    # Cross-UID pristup (launcher je jina appka) pres TCP na loopbacku je
+    # povoleny Androidem; bind=127.0.0.1 zaruci, ze to nikdo z LAN nevidi.
+    if ! command -v socat >/dev/null 2>&1; then
+        echo "[*] Installing socat (X11 loopback bridge)..."
+        apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" socat </dev/null 2>&1 | tail -2
+    fi
+    if command -v socat >/dev/null 2>&1; then
+        nohup socat TCP-LISTEN:6000,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/tmp/.X11-unix/X0 >/tmp/socat.log 2>&1 &
+        sleep 1
+        if ! pgrep -x socat >/dev/null 2>&1; then
+            echo "[-] socat bridge se nenastartoval (viz /tmp/socat.log):" >&2
+            tail -3 /tmp/socat.log 2>/dev/null >&2
+        fi
+    else
+        echo "[-] socat nedostupny — X11 pujde jen pres unix socket (launcher se nepripoji)" >&2
+    fi
+
+    if command -v xfce4-session >/dev/null 2>&1; then
+        echo "[*] Starting XFCE4 session on DISPLAY=:0..."
+        DISPLAY=:0 nohup dbus-launch --exit-with-session xfce4-session >/tmp/xfce4.log 2>&1 &
+    fi
+
+    echo "[+] X server (Xvfb) + XFCE ready."
+    echo "    X display :0  -> unix socket /tmp/.X11-unix/X0"
+    echo "    Loopback      -> 127.0.0.1:6000 (socat bridge, jen localhost)"
+    echo "    Resolution    -> ${XRES}x${XDEPTH}  (NH_XRES/NH_XDEPTH)"
 }
 
 desktop_stop() {
-    pkill -9 -f linux-x11 2>/dev/null || true
-    pkill -9 -f Xvnc 2>/dev/null || true; pkill -f websockify 2>/dev/null || true
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+    pkill -9 -x Xvfb 2>/dev/null || true
+    pkill -9 -x socat 2>/dev/null || true
+    pkill -9 -x xfce4-session 2>/dev/null || true
+    pkill -9 -x Xvnc 2>/dev/null || true; pkill -x websockify 2>/dev/null || true
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
     echo "[-] Desktop stopped."
 }
 
 desktop_status() {
     echo "=== DESKTOP STATUS ==="
-    if command -v linux-x11 >/dev/null 2>&1; then
-        echo "[+] linux-x11 binary: FOUND"
+    if command -v Xvfb >/dev/null 2>&1; then
+        echo "[+] Xvfb binary: FOUND"
     else
-        echo "[-] linux-x11 binary: MISSING (build via: mbuild native)"
+        echo "[-] Xvfb binary: MISSING (apt-get install xvfb)"
     fi
-    if pgrep -f "linux-x11" >/dev/null 2>&1; then
-        echo "[+] X Server (Linux-X11): RUNNING"
+    if pgrep -f "Xvfb :0" >/dev/null 2>&1; then
+        echo "[+] X Server (Xvfb :0, unix socket): RUNNING"
     else
-        echo "[-] X Server (Linux-X11): STOPPED"
+        echo "[-] X Server (Xvfb :0): STOPPED (run: nh desktop start)"
     fi
-    if adb devices 2>/dev/null | grep -q -w "device"; then
-        echo "[+] ADB device: CONNECTED"
-        if adb reverse --list 2>/dev/null | grep -q "tcp:6000"; then
-            echo "[+] ADB reverse tunnel: ESTABLISHED (tcp:6000 -> localabstract:/x11)"
-        else
-            echo "[-] ADB reverse tunnel: NOT SET (run: nh desktop start)"
-        fi
+    if pgrep -x socat >/dev/null 2>&1; then
+        echo "[+] TCP bridge (127.0.0.1:6000): RUNNING (loopback only)"
     else
-        echo "[-] ADB device: NOT CONNECTED"
+        echo "[-] TCP bridge (127.0.0.1:6000): STOPPED"
     fi
-    echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)."
+    if pgrep -f "xfce4-session" >/dev/null 2>&1; then
+        echo "[+] XFCE4 session: RUNNING"
+    else
+        echo "[-] XFCE4 session: STOPPED"
+    fi
+    echo "[*] Desktop is rendered by the external X11 Launcher app (com.linux_core.xlauncher)"
+    echo "    connecting to 127.0.0.1:6000 (socat bridge -> unix socket)."
 }
 
 # ─── FIX ───────────────────────────────────────────────────
@@ -1405,9 +1436,59 @@ fix_dispatch() {
     case "$1" in
         pkg) fix_pkg "$2" ;;
         auto) fix_auto ;;
+        git) shift; fix_git "$@" ;;
         permission|perms) shift; fix_permission "$@" ;;
-        *) echo "Usage: nh fix pkg <name>|auto|permission <path>"; exit 1 ;;
+        help|-h|--help) help_fix ;;
+        *) echo "Použití: nh fix pkg <název>|auto|git [cesta]|permission <cesta>"; echo "Pro nápovědu: nh fix help"; exit 1 ;;
     esac
+}
+
+# Materializuje PRoot link2symlink (.l2s) symlinky v .git na reálné soubory.
+# PRoot `-L` převádí git hardlinky (pack/idx/rev i loose objekty) na symlinky
+# do .l2s; když .l2s zmizí/vyčistí se, repa se rozbijí ("invalid object ...").
+# Přístup přes host bind appky (/data/user/0/com.linux_core, starší /mnt/app),
+# kde jsou symlinky skutečně vidět.
+fix_git() {
+    local repo="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+    repo=$(readlink -f "$repo" 2>/dev/null || echo "$repo")
+    [ -d "$repo/.git" ] || { echo "[-] '$repo' není git repo (.git nenalezen)" >&2; exit 1; }
+
+    local host_repo="" app_dir
+    for app_dir in /data/user/0/com.linux_core /mnt/app; do
+        if [ -n "${NH_DISTRO:-}" ] && [ -d "$app_dir/files/nh/distro/$NH_DISTRO" ]; then
+            host_repo="$app_dir/files/nh/distro/$NH_DISTRO$repo"
+            break
+        fi
+    done
+    if [ -z "$host_repo" ] || [ ! -d "$host_repo/.git" ]; then
+        echo "[-] Nelze najít host pohled na repo (chybí bind App Data nebo NH_DISTRO)." >&2
+        echo "    Zapni 'App Data' (Root Bridge) a spusť znovu." >&2
+        exit 1
+    fi
+
+    echo "[*] Materializuji .git L2S symlinky: $repo"
+    local pass
+    for pass in 1 2 3; do
+        find "$host_repo/.git" -type l 2>/dev/null | while read -r l; do
+            local d b r d1 d2 dd
+            d=$(dirname "$l"); b=$(basename "$l"); r=$(readlink "$l")
+            d1="$d/$b.0001"
+            d2="$d/$(basename "$r")"
+            if [ -e "$d1" ] && [ ! -L "$d1" ]; then dd="$d1"
+            elif [ -e "$d2" ] && [ ! -L "$d2" ]; then dd="$d2"
+            else dd=""; fi
+            [ -n "$dd" ] && { rm -f "$l" && cp "$dd" "$l"; }
+        done
+    done
+
+    local left
+    left=$(find "$host_repo/.git" -type l 2>/dev/null | wc -l)
+    if [ "$left" = "0" ]; then
+        echo "[+] Hotovo: všechny .git symlinky materializovány."
+    else
+        echo "[!] Zbývá $left symlinků (cíl chybí = objekt už ztracený)."
+        echo "    Tip: repo znovu naklonuj a hned spusť 'nh fix git'."
+    fi
 }
 
 fix_permission() {
@@ -1468,7 +1549,8 @@ fix_auto() {
 apps_dispatch() {
     case "$1" in
         usage) apps_usage ;;
-        *) echo "Usage: nh apps usage"; exit 1 ;;
+        help|-h|--help) help_apps ;;
+        *) echo "Použití: nh apps usage"; echo "Pro nápovědu: nh apps help"; exit 1 ;;
     esac
 }
 
@@ -1500,42 +1582,64 @@ except Exception as e:
 "
 }
 
-# ─── HELP ──────────────────────────────────────────────────
+# ─── HELP & DISPATCH HELPERS ───────────────────────────────────────
 
 help_dispatch() {
     local topic="$1"
     case "$topic" in
-        system|network|vpn|agent|log|device|api|desktop|fix|apps|usb|distro|ashell|zkill|float)
-            "help_$topic"
-            ;;
+        system|sys)              help_system ;;
+        network|net)             help_network ;;
+        vpn)                      help_vpn ;;
+        agent|ai)                 help_agent ;;
+        log|logs)                 help_log ;;
+        device|dev)               help_device ;;
+        api)                      help_api ;;
+        desktop|vnc)              help_desktop ;;
+        fix)                      help_fix ;;
+        apps)                     help_apps ;;
+        usb)                      help_usb ;;
+        distro)                   help_distro ;;
+        cpu)                      help_cpu ;;
+        ashell)                   help_ashell ;;
+        zkill)                    help_zkill ;;
+        float)                    help_float ;;
+        docs|manual)              help_docs ;;
+        all)                      list_cmds ;;
         *)
             banner
             echo ""
-            echo "  ${WHITE}${BOLD}Použití:${RST} nh ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
+            echo "  ${WHITE}${BOLD}Použití:${RST} nh ${CYAN}<kategorie|${YELLOW}alias${CYAN}>${RST} ${GREEN}<akce>${RST} [parametry...]"
             echo "         nethunter ${CYAN}<kategorie>${RST} ${GREEN}<akce>${RST} [parametry...]"
             echo ""
             separator
-            echo "  ${WHITE}${BOLD}Kategorie:${RST}"
+            echo "  ${WHITE}${BOLD}KATEGORIE A ALIASE:${RST}"
             echo ""
-            printf "  ${CYAN}system${RST}     battery, volume, torch, vibrate, toast, clipboard, notification, speech\n"
-            printf "  ${CYAN}network${RST}    wifi, cell, location, map, ifconfig\n"
-            printf "  ${CYAN}vpn${RST}        status, start, stop, on, off, logs, mitm, ai, bypass, ignore, sni-fallback\n"
-            printf "  ${CYAN}agent${RST}      config, start, stop, status, ask, chat\n"
-            printf "  ${CYAN}log${RST}        [-n N] [-g P], set lvl 1-5\n"
-            printf "  ${CYAN}device${RST}     admin, battery-optimize, accessibility, tap, click, longclick, swipe, text, scroll, global\n"
-            printf "  ${CYAN}api${RST}        share on/off/status\n"
-            printf "  ${CYAN}desktop${RST}    start, stop, status\n"
-            printf "  ${CYAN}fix${RST}        pkg <name>, auto, permission <path>\n"
-            printf "  ${CYAN}apps${RST}       usage\n"
-            printf "  ${CYAN}usb${RST}        list, permission, claim, release, send, bulk, control\n"
-            printf "  ${CYAN}distro${RST}      list, status, ps, kill, remove, backup, restore\n"
-            printf "  ${CYAN}float${RST}      ⬡  plovoucí terminál přes ostatní aplikace (here, close)\n"
-            printf "  ${CYAN}zkill${RST}      ⬡  zombie cleanup na hostu (safe; --root pro su_daemon)\n"
-            printf "  ${CYAN}ashell${RST}     ⬡  escape proot → host app shell (uid=%s)\n" "$(id -u 2>/dev/null || echo app)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "system" "(sys)" "Baterie, hlasitost, svítilna, vibrace, toast, schránka, notifikace, řeč"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "network" "(net)" "Wi-Fi (scan/connect), mobilní síť, GPS lokace, TerminalMap, ifconfig"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "vpn" "" "Sledování provozu, TLS MITM, AI verdikty, bypass, ignore relace, SNI fallback"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "device" "(dev)" "Device Admin, baterie opt., dotyková gesta (tap/swipe/text/scroll), accessibility UI"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "distro" "" "Správa PRoot kontejnerů (kali, parrot): list, ps, kill, backup, restore, login"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "cpu" "" "CPU pin proot na jedno rychlé jádro (on/off/status), příkaz na všech jádrech (all)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "usb" "" "USB Host (list, claim, bulk, control), raw USB bridge ioctl, USB gadget g2"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Pi-Coding Agent LLM konfig (provider, key, model), dotazy a chat"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "fix" "" "Oprava dpkg locků, zaseklých balíčků, vlastnictví souborů a PRoot git .l2s linků"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "desktop" "(vnc)" "Spuštění a správa headless GUI prostředí (Xvfb / VNC / X11)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "apps" "" "Statistiky využití aplikací v popředí za 24h"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "api" "" "Správa sdílení LocalApiServer rozhraní (0.0.0.0 vs 127.0.0.1)"
             echo ""
             separator
-            echo "  ${DIM}Pro detaily: nh help <kategorie>${RST}"
-            echo "  ${DIM}Seznam všech příkazů: nh list${RST}"
+            echo "  ${WHITE}${BOLD}SPECIALNÍ NÁSTROJE:${RST}"
+            echo ""
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "float" "Plovoucí terminálové okno přes ostatní aplikace (here, close, new)"
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "ashell" "Únik z PRootu (root@kali) do prostředí Android hostitelské aplikace"
+            printf "  ${MAGENTA}%-18s${RST} ${DIM}%s${RST}\n" "zkill" "Bezpečný úklid osiřelých zombie procesů na hostitelském systému"
+            echo ""
+            separator
+            echo "  ${YELLOW}Tipy:${RST}"
+            echo "    • Detailní nápověda pro kategorii: ${GREEN}nh help <kategorie>${RST} nebo ${GREEN}nh <kategorie> -h${RST}"
+            echo "    • Kompletní abecední seznam příkazů: ${GREEN}nh list${RST}"
+            echo "    • Rychlé zkratky: ${GREEN}nh sys battery${RST}, ${GREEN}nh net wifi${RST}, ${GREEN}nh dev tap 500 1000${RST}, ${GREEN}nh ps${RST}, ${GREEN}nh stat${RST}"
             echo ""
             ;;
     esac
@@ -1544,215 +1648,257 @@ help_dispatch() {
 help_system() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}SYSTEM${RST}"
+    echo "  ${WHITE}${BOLD}SYSTEM (sys)${RST} ${DIM}– Interakce se systémovými funkcemi Androidu${RST}"
     separator
-    echo "  ${GREEN}battery${RST}                 Stav baterie (%, bar, teplota, napětí)"
-    echo "  ${GREEN}volume [N]${RST}              Zobrazit/nastavit hlasitost (0-15)"
-    echo "  ${GREEN}torch on|off${RST}            Zapnout/vypnout svítilnu"
-    echo "  ${GREEN}vibrate [ms]${RST}            Vibrovat (výchozí 500ms)"
-    echo "  ${GREEN}toast <msg>${RST}             Android Toast notifikace"
-    echo "  ${GREEN}clipboard get|set [text]${RST} Číst/zapsat schránku"
-    echo "  ${GREEN}notification -t T -c C${RST}  Systémová notifikace"
-    echo "  ${GREEN}speech${RST}                  Rozpoznávání řeči"
+    echo "  ${GREEN}battery${RST}                         Stav baterie (procento, grafický ukazatel, teplota, napětí, nabíjení)"
+    echo "  ${GREEN}volume [level]${RST}                 Zobrazit nebo nastavit hlasitost hudby (0-15)"
+    echo "  ${GREEN}torch <on|off>${RST}                 Zapnout nebo vypnout svítilnu LED"
+    echo "  ${GREEN}vibrate [ms]${RST}                   Vibrace zařízení na zadanou dobu (výchozí: 500 ms)"
+    echo "  ${GREEN}toast <zpráva>${RST}                 Zobrazit Android Toast notifikaci na obrazovce"
+    echo "  ${GREEN}clipboard <get|set [text]>${RST}      Přečíst nebo uložit text do systémové schránky"
+    echo "  ${GREEN}notification -t <titulek> -c <obsah>${RST} Zobrazit systémovou notifikaci v liště"
+    echo "  ${GREEN}speech | tts-speak${RST}              Aktivovat rozpoznávání řeči (STT) přes hostitelské API"
+    echo "  ${GREEN}ashell${RST}                          Escape do host user shellu"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh sys battery"
+    echo "    nh system volume 15"
+    echo "    nh system torch on"
+    echo '    nh system clipboard set "Tajný klíč 12345"'
+    echo '    nh system toast "Operace dokončena"'
     echo ""
 }
 
 help_network() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}NETWORK${RST}"
+    echo "  ${WHITE}${BOLD}NETWORK (net)${RST} ${DIM}– Správa síťových rozhraní, Wi-Fi, celulární sítě a GPS${RST}"
     separator
-    echo "  ${GREEN}wifi [on|off|scan|connect <ssid> <pass>]${RST}  Správa Wi-Fi"
-    echo "  ${GREEN}cell${RST}                     Informace o mobilní síti"
-    echo "  ${GREEN}location${RST}                 GPS souřadnice"
-    echo "  ${GREEN}map${RST}                      TerminalMap s aktuální lokací"
-    echo "  ${GREEN}ifconfig [rozhraní]${RST}      Síťová rozhraní"
+    echo "  ${GREEN}wifi [status]${RST}                  Stav Wi-Fi adaptéru a připojení"
+    echo "  ${GREEN}wifi <on|off>${RST}                 Zapnout nebo vypnout Wi-Fi rozhraní"
+    echo "  ${GREEN}wifi scan${RST}                     Vyhledat dostupné Wi-Fi sítě v okolí"
+    echo "  ${GREEN}wifi connect <ssid> <heslo>${RST}    Připojit k Wi-Fi síti"
+    echo "  ${GREEN}cell${RST}                          Informace o mobilní síti (operátor, typ sítě, síla signálu, cell ID)"
+    echo "  ${GREEN}location${RST}                      Získat aktuální GPS souřadnice (zeměpisná šířka, délka, přesnost)"
+    echo "  ${GREEN}map${RST}                           Zobrazit TerminalMap s vizualizací aktuální polohy v terminálu"
+    echo "  ${GREEN}ifconfig [rozhraní]${RST}           Vypisuje síťová rozhraní z Android hostitele (wlan0, rmnet, tun, atd.)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh net wifi scan"
+    echo "    nh net wifi connect MyHomeSSID WPA2Password"
+    echo "    nh net cell"
+    echo "    nh net location"
+    echo "    nh net ifconfig wlan0"
     echo ""
 }
 
 help_vpn() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}VPN${RST}"
+    echo "  ${WHITE}${BOLD}VPN & TRAFFIC INSPECTION${RST} ${DIM}– Správa vestavěného VPN firewallu a MITM proxy${RST}"
     separator
-    echo "  ${GREEN}status${RST}                   Stav VPN (běží/packety/traffic)"
-    echo "  ${GREEN}start|stop${RST}               Spustit/zastavit VPN"
-    echo "  ${GREEN}on [cmd]${RST}                 Zapnout VPN (volitelně spustit příkaz)"
-    echo "  ${GREEN}off [cmd]${RST}                Vypnout VPN (volitelně spustit příkaz a obnovit)"
-    echo "  ${GREEN}logs [-f] [-n N] [-g P] [json|legacy]${RST}  MITM provoz"
-    echo "  ${GREEN}mitm on|off${RST}              Zapnout/vypnout TLS MITM"
-    echo "  ${GREEN}mitm status${RST}              Stav MITM + aktivní session"
-    echo "  ${GREEN}mitm ca${RST}                  Export Root CA certifikátu"
-    echo "  ${GREEN}ai pending${RST}               Čekající flow na AI rozhodnutí"
-    echo "  ${GREEN}ai history <ip>${RST}           Historie adresy"
-    echo "  ${GREEN}ai verdict <ip> <v> [conf]${RST} Nastavit verdikt (allowed/blocked)"
-    echo "  ${GREEN}ai summary${RST}                Denní statistika"
-    echo "  ${GREEN}ai notify <ip> [question]${RST} Allow/Deny notifikace"
-    echo "  ${GREEN}mitm selective <ip> [sec]${RST}  Selective MITM capture (max 60s)"
-    echo "  ${GREEN}bypass <cmd>${RST}             Spustit příkaz mimo VPN"
-    echo "  ${GREEN}ignore on|off|status${RST}     VPN bypass pro aktuální session"
-    echo "  ${GREEN}sni-fallback get|set|clear${RST} Správa SNI fallback hostnamu"
+    echo "  ${GREEN}status${RST}                        Stav VPN engine (stav běhu, přenesené bajty, přenesené pakety)"
+    echo "  ${GREEN}start | stop${RST}                  Spustit nebo zastavit VPN službu"
+    echo "  ${GREEN}on [příkaz] | off [příkaz]${RST}    Aktivovat/deaktivovat VPN (volitelně spustit příkaz v chráněném režimu)"
+    echo "  ${GREEN}logs [-f] [-n N] [-g P] [json]${RST} Prohlížení zachyceného MITM/DNS/IP provozu"
+    echo "  ${GREEN}mitm <on|off|status|ca>${RST}        Správa TLS MITM dekódování a export Root CA certifikátu"
+    echo "  ${GREEN}mitm selective <ip> [sekundy]${RST} Selective TLS capture pro konkrétní IP adresu (max 60s)"
+    echo "  ${GREEN}ai pending | history | summary${RST} Přehled AI analýzy provozu a bezpečnostních verdiktů"
+    echo "  ${GREEN}ai verdict <ip> <allowed|blocked>${RST} Ruční nastavení verdiktu pro IP adresu"
+    echo "  ${GREEN}bypass <příkaz>${RST}               Spustit zadaný příkaz zcela mimo VPN tunel"
+    echo "  ${GREEN}ignore <on|off|status>${RST}          Přidat/odebrat aktuální terminálovou session do VPN bypassu"
+    echo "  ${GREEN}sni-fallback <get|set|clear>${RST}   Správa náhradního SNI hostnamu pro nešifrované relace"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh vpn status"
+    echo "    nh vpn logs -n 50 -g github.com"
+    echo "    nh vpn mitm ca > /tmp/nethunter-root-ca.crt"
+    echo "    nh vpn ignore on"
+    echo "    nh vpn bypass curl https://ifconfig.me"
     echo ""
 }
 
 help_device() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}DEVICE${RST}"
+    echo "  ${WHITE}${BOLD}DEVICE (dev)${RST} ${DIM}– Správa oprávnění, gesta a automatizace UI${RST}"
     separator
-    echo "  ${GREEN}admin status|request|lock${RST}         Správa Device Admin"
-    echo "  ${GREEN}battery-optimize status|request${RST}  Ignorování optimalizace baterie"
-    echo "  ${GREEN}accessibility [--json]${RST}      Získat hierarchii obrazovky"
-    echo "  ${GREEN}tap <x> <y>${RST}                Kliknutí na souřadnice"
-    echo "  ${GREEN}click <text>${RST}              Kliknutí podle textu"
-    echo "  ${GREEN}longclick <text>${RST}          Dlouhé kliknutí podle textu"
-    echo "  ${GREEN}swipe <x1> <y1> <x2> <y2> [ms]${RST}  Přetažení (gestum)"
-    echo "  ${GREEN}text <text> [target]${RST}       Vložení textu"
-    echo "  ${GREEN}scroll forward|backward [text]${RST}  Rolování"
-    echo "  ${GREEN}global back|home|recents|...${RST}  Globální akce zařízení"
+    echo "  ${GREEN}admin <status|request|lock>${RST}        Stav Device Admin, vyžádání práv nebo zamknutí obrazovky"
+    echo "  ${GREEN}battery-optimize <status|request>${RST} Kontrola a vyžádání výjimky z optimalizace baterie (Doze)"
+    echo "  ${GREEN}accessibility [--json]${RST}           Získat ucelenou stromovou hierarchii prvků na obrazovce"
+    echo "  ${GREEN}tap <x> <y>${RST}                       Simulovat dotyk na zadané souřadnice X Y"
+    echo "  ${GREEN}click <text>${RST}                     Kliknout na tlačítko nebo prvek podle zobrazovaného textu"
+    echo "  ${GREEN}longclick <text>${RST}                 Dlouhé stisknutí prvku podle textu"
+    echo "  ${GREEN}swipe <x1> <y1> <x2> <y2> [ms]${RST}  Gesto přetažení (swipe) z X1,Y1 do X2,Y2"
+    echo "  ${GREEN}text <text> [target]${RST}             Napsat text do aktivního vstupního pole"
+    echo "  ${GREEN}scroll <forward|backward> [text]${RST}  Rolování seznamu vpřed nebo vzad"
+    echo "  ${GREEN}global <back|home|recents|...>${RST}   Provést globální tlačítkovou akci (Zpět, Domů, Přehled)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh dev tap 500 1200"
+    echo '    nh dev click "Přihlásit se"'
+    echo "    nh dev swipe 500 1500 500 300 250"
+    echo "    nh dev global back"
     echo ""
 }
 
 help_usb() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}USB HOST${RST}"
+    echo "  ${WHITE}${BOLD}USB HOST & GADGET${RST} ${DIM}– Nízkoúrovňová komunikace s USB zařízeními${RST}"
     separator
-    echo "  ${GREEN}list${RST}                    Vypsat připojená USB zařízení"
-    echo "  ${GREEN}permission <device>${RST}     Vyžádat oprávnění pro zařízení"
-    echo "  ${GREEN}claim <device> [iface]${RST}  Claimovat rozhraní (výchozí 0)"
-    echo "  ${GREEN}release <device>${RST}        Uvolnit rozhraní"
-    echo "  ${GREEN}send <device> <file>${RST}    Poslat soubor (raw bulk OUT)"
-    echo "  ${GREEN}bulk <device> <ep> [file]${RST} Bulk transfer (IN/OUT podle endpointu)"
-    echo "  ${GREEN}control <device> [req] [val] [idx] [file]${RST}  Control transfer"
+    echo "  ${GREEN}list${RST}                              Vypsat připojená USB zařízení a jejich USB ID"
+    echo "  ${GREEN}permission <zařízení>${RST}               Vyžádat si Android USB Host oprávnění pro zařízení"
+    echo "  ${GREEN}claim <zařízení> [rozhraní]${RST}          Převzít (claim) USB rozhraní (výchozí: 0)"
+    echo "  ${GREEN}release <zařízení>${RST}                  Uvolnit převzaté USB rozhraní"
+    echo "  ${GREEN}send <zařízení> <soubor>${RST}            Odeslat binární soubor (raw bulk OUT)"
+    echo "  ${GREEN}bulk <zařízení> <endpoint> [soubor]${RST} Send/Receive Bulk transfer podle endpointu"
+    echo "  ${GREEN}control <zařízení> [req] [val] [idx]${RST} Spustit USB Control transfer"
+    echo "  ${GREEN}bridge <dev> [iface] <cmd> [args...]${RST} USB passthrough přes UNIX socket (fd export)"
+    echo "  ${GREEN}gadget <status|g1|g2|setup|host...>${RST} Ovládání Magisk custom_usb_g2_setup modulu"
     echo ""
-    echo "  ${YELLOW}Příklad:${RST}"
+    echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh usb list"
     echo "    nh usb permission /dev/bus/usb/001/002"
     echo "    nh usb claim /dev/bus/usb/001/002 0"
-    echo "    nh usb send /dev/bus/usb/001/002 exploit.bin"
+    echo "    nh usb bulk /dev/bus/usb/001/002 0x81 payload.bin"
+    echo "    nh usb gadget status"
     echo ""
 }
 
 help_fix() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}FIX${RST}  ${DIM}– oprava balíčků a vlastnictví souborů${RST}"
+    echo "  ${WHITE}${BOLD}FIX${RST} ${DIM}– Diagnostika a automatická oprava balíčků, práv a symlinků${RST}"
     separator
-    echo "  ${GREEN}pkg <name>${RST}        Mockne zaseklý postinst skript balíčku"
-    echo "                         (/bin/true), odblokuje dpkg --configure -a"
-    echo "  ${GREEN}auto${RST}              Opraví všechny rozbité balíčky"
-    echo "  ${GREEN}permission <path>${RST} Vrátí vlastnictví cesty na UID aplikace"
-    echo "                         (přes magisk daemon, běží mimo proot) — pro"
-    echo "                         soubory vytvořené pod real rootem."
+    echo "  ${GREEN}pkg <balíček>${RST}           Nahradí zaseklý postinst skript balíčku (/bin/true) a odblokuje dpkg"
+    echo "  ${GREEN}auto${RST}                   Opraví všechny rozbité dpkg/apt balíčky a dokončí konfiguraci"
+    echo "  ${GREEN}permission <cesta>${RST}     Obnoví vlastnictví cesty/souborů na UID aplikace (přes Root daemon)"
+    echo "  ${GREEN}git [cesta]${RST}            Materializuje PRoot link2symlink (.l2s) symlinky v .git repozitáři na reálné soubory"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh fix pkg libc6"
     echo "    nh fix auto"
+    echo "    nh fix pkg libc6"
     echo "    nh fix permission /root/muj-adresar"
+    echo "    nh fix git /root/my-repo"
     echo ""
 }
 
 help_ashell() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}ASHELL${RST}  ${DIM}– escape proot → host app shell${RST}"
+    echo "  ${WHITE}${BOLD}ASHELL${RST} ${DIM}– Únik z PRootu do hostitelského prostředí Android aplikace${RST}"
     separator
-    echo "  ${GREEN}ashell${RST}                  Spustí interaktivní shell mimo PRoot,"
-    echo "                              v kontextu Android aplikace"
-    echo "                              (uid aplikace, HOME = filesDir)."
-    echo "                              Otevře nové okno TerminalActivity."
+    echo "  ${GREEN}ashell${RST}                 Spustí interaktivní Android host shell (v mimo-PRoot kontextu)"
+    echo "                             s UID aplikace a HOME=/data/data/com.linux_core/files."
+    echo "                             Otevře novou relaci v samostatném terminálovém okně."
     echo ""
     echo "  ${YELLOW}Příklad:${RST}"
-    echo "    nh ashell                  # otevře host shell v novém okně"
-    echo ""
-    echo "  ${DIM}  Slouží k úniku z izolovaného PRootu (root@kali)"
-    echo "  do hostitelského prostředí, kde můžete pracovat"
-    echo "  s interními cestami aplikace (/data/data/com.linux_core/...).${RST}"
+    echo "    nh ashell"
     echo ""
 }
 
 help_zkill() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}ZKILL${RST}  ${DIM}– diagnostika a úklid zombie procesů na Android hostu${RST}"
+    echo "  ${WHITE}${BOLD}ZKILL${RST} ${DIM}– Čištění osiřelých zombie procesů na Android hostiteli${RST}"
     separator
-    echo "  ${GREEN}zkill${RST}             Bezpečný režim: SIGCHLD všem rodičům, pak"
-    echo "                        TERM/KILL jen na app procesy (uid >= 10000)."
-    echo "                        Systémové procesy a vlastní app se NIKDY nezabíjí."
-    echo "  ${GREEN}zkill --root${RST}      Navíc povolí restart bezpečných root démonů"
-    echo "                        (su_daemon) — jejich osiřelé zombie zreapuje init."
-    echo "                        su_daemon je restartovatelný (Root Bridge / relace)."
+    echo "  ${GREEN}zkill${RST}                  Bezpečný režim: pošle SIGCHLD všem rodičovským procesům,"
+    echo "                             a poté ukončí pouze neaktivní procesy aplikace (uid >= 10000)."
+    echo "                             Systémové procesy ani aktivní relace se nikdy nezabíjejí."
+    echo "  ${GREEN}zkill --root${RST}           Navíc restartuje bezpečné root démony (su_daemon), čímž reape osiřelé procesy."
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh zkill                  # safe cleanup"
-    echo "    nh zkill --root           # + restart su_daemon (pokud je rodič zombie)"
+    echo "    nh zkill"
+    echo "    nh zkill --root"
     echo ""
 }
 
 help_distro() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}DISTRO${RST}  ${DIM}– proot-distro-like správa kontejnerů${RST}"
+    echo "  ${WHITE}${BOLD}DISTRO${RST} ${DIM}– Správa PRoot kontejnerů a Linux distribučních prostředí${RST}"
     separator
-    echo "  ${GREEN}list${RST}                    Seznam distro (kali, parrot) + stav"
-    echo "  ${GREEN}status${RST}                 Alias pro list"
-    echo "  ${GREEN}ps${RST}                     Aktivní session (ID, distro, vpn-ignored)"
-    echo "  ${GREEN}kill <session_id>${RST}      Ukončí session (potvrzení --force)"
-    echo "  ${GREEN}remove <id>${RST}            Smaže rootfs (kali|parrot, --force)"
-    echo "  ${GREEN}backup [id] [-o file]${RST}  Záloha rootfs do tar.gz (výchozí kali, Downloads)"
-    echo "  ${GREEN}restore <file>${RST}         Obnova rootfs ze souboru v Downloads (--force)"
-    echo "  ${GREEN}login <distro> [--bind src:dst ...]${RST}"
-    echo "                           Vstoupí do distro z host ashellu (proot-distro-like)."
-    echo "                           --bind připojí host cestu do guestu (absolutní src i dst)."
+    echo "  ${GREEN}list | status${RST}          Přehled nainstalovaných distribučních kontejnerů (kali, parrot) a jejich stav"
+    echo "  ${GREEN}ps${RST}                     Zobrazit aktivní běžící terminálové relace (ID relace, distro, VPN status)"
+    echo "  ${GREEN}kill <session_id>${RST}       Ukončit konkrétní relaci kontejneru (volitelně --force)"
+    echo "  ${GREEN}remove <distro>${RST}         Odstranit rootfs zvolené distribuce (kali | parrot, vyžaduje --force)"
+    echo "  ${GREEN}backup [distro]${RST}  Vytvořit kompletní zálohu rootfs do Downloads (.tar.gz)"
+    echo "  ${GREEN}restore <soubor>${RST}        Obnovit distribuční kontejner ze zálohy .tar.gz"
+    echo "  ${GREEN}login <distro> [--bind src:dst]${RST} Vstoupit do distribuce s možnosti připojení hostitelských složek"
     echo ""
-    echo "  ${YELLOW}Příklad:${RST}"
+    echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh distro list"
     echo "    nh distro ps"
-    echo "    nh distro kill sess_123 --force"
-    echo "    nh distro remove parrot --force"
-    echo "    nh distro backup kali"
-    echo "    nh distro login parrot --bind /sdcard/cil:/cil"
-    echo "    nh distro login kali --bind /data/user/0/com.linux_core/files/cil:/cil"
-    echo ""
-    echo "  ${DIM}  Volá LocalApiServer (127.0.0.1:1337). Z hostitele bez rootu:"
-    echo "  curl http://127.0.0.1:1337/distro/ps (localhost bez auth).${RST}"
+    echo "    nh distro kill sess_102 --force"
+    echo "    nh distro backup kali -o /sdcard/Download/kali-backup.tar.gz"
+    echo "    nh distro login parrot --bind /sdcard/tools:/tools"
     echo ""
 }
 
-list_cmds() {
+help_agent() {
     banner
     echo ""
-    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy:${RST}"
+    echo "  ${WHITE}${BOLD}AGENT (ai)${RST} ${DIM}– Pi-Coding Agent a LLM rozhraní${RST}"
+    separator
+    echo "  ${GREEN}config [--provider P] [--key K] [--model M]${RST} Konfigurace poskytovatele LLM (gemini, openai, anthropic)"
+    echo "  ${GREEN}start | stop | status${RST}                          Správa na pozadí běžícího agent bridge démona"
+    echo "  ${GREEN}ask <dotaz>${RST}                                    Jednorázová otázka/příkaz pro AI agenta"
+    echo "  ${GREEN}chat${RST}                                          Spustit interaktivní chatovací relaci s AI agentem"
     echo ""
-    for cmd in \
-        "system battery" "system volume" "system torch" "system vibrate" \
-        "system toast" "system clipboard" "system notification" "system speech" \
-        "network wifi" "network cell" "network location" "network map" "network ifconfig" \
-        "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
-        "vpn logs" "vpn mitm" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
-        "agent config" "agent start" "agent stop" "agent status" "agent ask" "agent chat" \
-        "log" "log set" \
-        "device admin" "device battery-optimize" "device accessibility" \
-        "device tap" "device click" "device longclick" "device swipe" \
-        "device text" "device scroll" "device global" \
-        "api share" \
-        "desktop start" "desktop stop" "desktop status" \
-        "fix pkg" "fix auto" "fix permission" \
-        "apps usage" \
-        "usb list" "usb permission" "usb claim" "usb release" "usb send" "usb bulk" "usb control" \
-        "distro list" "distro status" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" \
-        "zkill" "zkill --root" \
-        "float" "float here" "float close" \
-        "ashell"; do
-        printf "  ${GREEN}%-30s${RST}\n" "nh ${cmd}"
-    done
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh agent config --provider gemini --key MY_API_KEY --model gemini-2.0-flash"
+    echo '    nh agent ask "Jaký příkaz v Linuxu najde největší soubory v /var/log?"'
+    echo "    nh agent chat"
     echo ""
 }
 
-usage() {
-    help_dispatch
-    exit 1
+help_log() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}LOG (logs)${RST} ${DIM}– Prohlížení a filtrování systémových logů aplikace${RST}"
+    separator
+    echo "  ${GREEN}log [-n N] [-g vzor] [-K]${RST}   Prohlížet zvýrazněný logcat (N řádků, filtrování regexem, -K skryje touch/klávesnici)"
+    echo "  ${GREEN}log set lvl <1-5>${RST}           Nastavit úroveň logování aplikace (1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh log -n 100"
+    echo "    nh log -g VpnNatEngine -K"
+    echo "    nh log set lvl 4"
+    echo ""
+}
+
+help_desktop() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DESKTOP (vnc)${RST} ${DIM}– VNC / Headless X11 grafické prostředí${RST}"
+    separator
+    echo "  ${GREEN}start${RST}                  Spustit headless X11 server (Xvfb) a desktopové prostředí"
+    echo "  ${GREEN}stop${RST}                   Ukončit grafické prostředí a uvolnit paměť"
+    echo "  ${GREEN}status${RST}                 Zobrazit stav běhu X serveru a připojených klientů"
+    echo ""
+    echo "  ${YELLOW}Poznámka:${RST} Rozlišení a barevnou hloubku lze upravit proměnnými ${CYAN}NH_XRES${RST} (např. 1280x720) a ${CYAN}NH_XDEPTH${RST} (např. 24)."
+    echo ""
+}
+
+help_apps() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}APPS${RST} ${DIM}– Statistika využití aplikací na zařízení${RST}"
+    separator
+    echo "  ${GREEN}usage${RST}                  Přehled nejčastěji používaných aplikací v popředí za posledních 24 hodin"
+    echo ""
+}
+
+help_api() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}API${RST} ${DIM}– Správa přístupnosti rozhraní LocalApiServer${RST}"
+    separator
+    echo "  ${GREEN}share on${RST}               Povolit přístup k API z okolní sítě (bind na 0.0.0.0)"
+    echo "  ${GREEN}share off${RST}              Omezit přístup k API pouze na localhost (bind na 127.0.0.1)"
+    echo "  ${GREEN}share status${RST}           Zobrazit aktuální stav sdílení LocalApiServeru"
+    echo ""
 }
 
 # ─── ASHELL (escape proot → host app user shell) ─────────
@@ -1838,8 +1984,8 @@ compat_dispatch() {
 
 usb_dispatch() {
     case "$1" in
-        list)           usb_list ;;
-        permission)     shift; usb_permission "$@" ;;
+        list|ls)        usb_list ;;
+        permission|perm) shift; usb_permission "$@" ;;
         claim)          shift; usb_claim "$@" ;;
         release)        shift; usb_release "$@" ;;
         send)           shift; usb_send "$@" ;;
@@ -1847,8 +1993,10 @@ usb_dispatch() {
         control)        shift; usb_control "$@" ;;
         bridge)         shift; usb_bridge "$@" ;;
         gadget)         shift; usb_gadget "$@" ;;
+        help|-h|--help) help_usb ;;
         *)
-            echo "Usage: nh usb list|permission|claim|release|send|bulk|control|bridge|gadget"
+            echo "Použití: nh usb list|permission|claim|release|send|bulk|control|bridge|gadget"
+            echo "Pro nápovědu: nh usb help"
             exit 1 ;;
     esac
 }
@@ -2157,10 +2305,10 @@ try:
                 sub = iface.get("subclass",0)
                 proto = iface.get("protocol",0)
                 eps = iface.get("endpoints",[])
-                ep_str = " ".join([f"ep{e.get(\"address\",\"?\")}:{e.get(\"direction\",\"?\")}:{e.get(\"type\",\"?\")}" for e in eps])
-                print(f"    Iface {iface.get(\"id\",0)}: class={cls} sub={sub} proto={proto}  {ep_str}")
+                ep_str = " ".join(["ep" + str(e.get("address","?")) + ":" + str(e.get("direction","?")) + ":" + str(e.get("type","?")) for e in eps])
+                print("    Iface " + str(iface.get("id",0)) + ": class=" + str(cls) + " sub=" + str(sub) + " proto=" + str(proto) + "  " + ep_str)
     else:
-        print(f"Error: {data.get(\"error\",\"Unknown\")}")
+        print("Error: " + str(data.get("error","Unknown")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2176,7 +2324,7 @@ try:
     if d.get("success"):
         print("\u2713 Permission requested")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2193,7 +2341,7 @@ try:
     if d.get("success"):
         print("\u2713 Interface claimed")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2209,7 +2357,7 @@ try:
     if d.get("success"):
         print("\u2713 Interface released")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2233,7 +2381,7 @@ try:
         req=d.get("total_requested",0)
         print(f"\u2713 Sent {sent}/{req} bytes")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2259,7 +2407,7 @@ try:
         hx=d.get("data_hex","")
         if hx: print(f"  Hex: {hx[:64]}..." if len(hx)>64 else f"  Hex: {hx}")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2282,9 +2430,9 @@ import sys, json
 try:
     d=json.load(sys.stdin)
     if d.get("success"):
-        print(f"\u2713 Control transfer: {d.get(\"transferred\",0)} bytes")
+        print("\u2713 Control transfer: " + str(d.get("transferred",0)) + " bytes")
     else:
-        print(f"\u2717 {d.get(\"error\",\"Unknown error\")}")
+        print("\u2717 " + str(d.get("error","Unknown error")))
 except Exception as e:
     print(f"Parse error: {e}")
 '
@@ -2338,8 +2486,8 @@ usb_gadget() {
     if [ $# -eq 0 ]; then
         echo "Usage: nh usb gadget <command> [args...]"
         echo ""
-        echo "  Spustí skript z Magisk modulu custom_usb_g2_setup na hostiteli"
-        echo "  (real root, přes API /usbg2/exec)."
+        echo "  Ovládá USB gadget g2 (Magisk modul custom_usb_g2_setup) přímo,"
+        echo "  přes 'usbtool' (sudo, real root — žádné API)."
         echo ""
         echo "  Commands:"
         echo "    status            Stav gadgetů a UDC"
@@ -2352,35 +2500,11 @@ usb_gadget() {
         exit 1
     fi
 
-    # JSON args pole (argy jsou jednoduchá slova)
-    local ARGS="" a e
-    for a in "$@"; do
-        e=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        if [ -z "$ARGS" ]; then ARGS="\"$e\""; else ARGS="$ARGS,\"$e\""; fi
-    done
-
-    local resp
-    resp=$(api_post_json "/usbg2/exec" "{\"args\":[$ARGS]}")
-    if [ -z "$resp" ]; then
-        echo "[-] LocalApiServer neodpovídá (${API_URL}/usbg2/exec)" >&2
-        exit 1
+    if ! command -v usbtool >/dev/null 2>&1; then
+        echo "[-] usbtool nenalezen (chybí Magisk modul custom_usb_g2_setup nebo wrapper)" >&2
+        exit 127
     fi
-    printf '%s' "$resp" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception as e:
-    sys.stderr.write("[-] Neplatná odpověď API: %s\n" % e)
-    sys.exit(1)
-if "error" in d:
-    sys.stderr.write("[-] %s\n" % d["error"])
-    sys.exit(1)
-out = d.get("output", "")
-if out:
-    print(out)
-rc = d.get("rc", 1)
-sys.exit(0 if d.get("ok") else (rc or 1))
-'
+    exec usbtool "$@"
 }
 
 # ─── ZKILL (host zombie cleanup) ──────────────────────────
@@ -2476,6 +2600,467 @@ except Exception as e:
 '
 }
 
+list_cmds() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}Všechny dostupné příkazy (krátké aliasy):${RST}"
+    echo ""
+    for cmd in \
+        "sys battery" "sys volume [N]" "sys torch <on|off>" "sys vibrate [ms]" \
+        "sys toast <msg>" "sys clipboard get|set [text]" "sys notification -t T -c C" "sys speech" \
+        "net wifi [on|off|scan|connect]" "net cell" "net location" "net map" "net ifconfig [iface]" \
+        "vpn status" "vpn start" "vpn stop" "vpn on" "vpn off" \
+        "vpn logs" "vpn mitm on|off|status|ca" "vpn ai" "vpn bypass" "vpn ignore" "vpn sni-fallback" \
+        "ai config" "ai start" "ai stop" "ai status" "ai ask" "ai chat" \
+        "log [-n N] [-g P]" "log set lvl 1-5" \
+        "dev admin" "dev battery-optimize" "dev accessibility" \
+        "dev tap <x> <y>" "dev click <text>" "dev longclick <text>" "dev swipe <x1> <y1> <x2> <y2>" \
+        "dev text <text>" "dev scroll <fwd|back>" "dev global <back|home|recents>" \
+        "api share on|off|status" \
+        "vnc start" "vnc stop" "vnc status" \
+        "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
+        "apps usage" \
+        "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
+        "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu boost on|off [N]" \
+        "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
+        "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
+        printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
+    done
+    echo ""
+}
+
+# ─── DOCS ──────────────────────────────────────────────────
+
+docs_open() {
+    local doc=""
+    for cand in "${HOME:-/root}/nethunter_docs.md" "/root/nethunter_docs.md" "/usr/local/share/nethunter_docs.md"; do
+        if [ -f "$cand" ]; then doc="$cand"; break; fi
+    done
+    if [ -z "$doc" ]; then
+        echo "[-] nethunter_docs.md nenalezen (očekáván v ~/)" >&2
+        exit 1
+    fi
+    if command -v less >/dev/null 2>&1; then
+        LESS="-R -F" less "$doc"
+    elif command -v more >/dev/null 2>&1; then
+        more "$doc"
+    else
+        cat "$doc"
+    fi
+}
+help_docs() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}DOCS${RST} ${DIM}– Kompletní dokumentace NetHunter AI Operator${RST}"
+    separator
+    echo "  ${GREEN}docs${RST}                         Otevře nethunter_docs.md v pageru (man-like formát)"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh docs"
+    echo ""
+}
+
+# ─── CPU (pin proot + guest na jedno jádro) ────────────────
+# Každý syscall zachycený proot = ptrace výměna guest <-> proot. Na různých
+# jádrech ~320 µs, na jednom velkém ~70-100 µs. Stav session sdílí s boot
+# (cpu_pin_apply): $FILES_DIR/nh/cpu/pin.<proot pid> = maska, free.<pid> =
+# PIDy, které hlídač nechá na všech jádrech (nh cpu all).
+
+CPU_FILES_DIR="${FILES_DIR:-/data/user/0/com.linux_core/files}"
+CPU_STATE_DIR="$CPU_FILES_DIR/nh/cpu"
+
+cpu_tracer() { sed -n 's/^TracerPid:[[:space:]]*//p' /proc/$$/status 2>/dev/null; }
+
+cpu_all_mask() {
+    local m=0 c
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] && m=$(( m | (1 << ${c##*cpu}) ))
+    done
+    printf '%x' "$m"
+}
+
+cpu_fastest() {
+    local best=0 core=0 c f
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
+        [ "$f" -ge "$best" ] && { best=$f; core=${c##*cpu}; }
+    done
+    echo "$core"
+}
+
+cpu_setaff() {  # <hexmask> <pid>
+    if command -v taskset >/dev/null 2>&1; then
+        taskset -p "$1" "$2" >/dev/null 2>&1
+    else
+        python3 -c "import os,sys; m=int(sys.argv[1],16); os.sched_setaffinity(int(sys.argv[2]), [i for i in range(64) if m>>i&1])" "$1" "$2" 2>/dev/null
+    fi
+}
+
+cpu_getaff() {  # <pid> -> hex
+    if command -v taskset >/dev/null 2>&1; then
+        taskset -p "$1" 2>/dev/null | sed 's/.*: //'
+    else
+        python3 -c "import os,sys; print('%x' % sum(1<<c for c in os.sched_getaffinity(int(sys.argv[1]))))" "$1" 2>/dev/null
+    fi
+}
+
+cpu_tree() {  # <pid> -> pid a všichni potomci
+    local root=$1 all="" p pp line todo out
+    for p in /proc/[0-9]*; do
+        line=$(cat "$p/stat" 2>/dev/null) || continue
+        line=${line##*) }
+        set -- $line
+        all="$all ${p#/proc/}:$2"
+    done
+    todo=$root out=""
+    while [ -n "$todo" ]; do
+        set -- $todo; p=$1; shift; todo="$*"
+        out="$out $p"
+        for pp in $all; do [ "${pp#*:}" = "$p" ] && todo="$todo ${pp%%:*}"; done
+    done
+    echo $out
+}
+
+cpu_all_list() {  # rozbalí $CPU_ALL stejně jako hlídač v boot
+    local v w
+    v=$(printf '%s' "$CPU_ALL" | sed 's/\$(cat[[:space:]]*\([^)]*\))/\1/g' | tr ',;' '  ')
+    for w in $v; do
+        case "$w" in "~/"*) w="$HOME/${w#??}" ;; esac
+        case "$w" in
+            /*) [ -f "$w" ] && tr ',;' '  ' < "$w" | tr -s ' \n' '\n\n' ;;
+            *)  echo "$w" ;;
+        esac
+    done
+}
+
+cpu_distro() { echo "${1:-${NH_DISTRO:-parrot}}" | sed 's/^docker:.*/docker/'; }
+
+cpu_status() {
+    local tp mask c f cur max gov on
+    printf "${WHITE}${BOLD}Jádra:${RST}\n"
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        on=$(cat "$c/online" 2>/dev/null || echo 1)
+        cur=$(cat "$c/cpufreq/scaling_cur_freq" 2>/dev/null || echo 0)
+        max=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        gov=$(cat "$c/cpufreq/scaling_governor" 2>/dev/null || echo "?")
+        printf "  %-6s %5s/%-5s MHz  %-10s %s\n" "${c##*/}" $((cur / 1000)) $((max / 1000)) "$gov" \
+            "$([ "$on" = 1 ] && echo online || echo offline)"
+    done
+    tp=$(cpu_tracer)
+    echo ""
+    printf "${WHITE}${BOLD}Tato session:${RST}\n"
+    if [ -n "$tp" ] && [ "$tp" != "0" ]; then
+        mask=$(cpu_getaff "$tp")
+        printf "  proot pid %s  maska %s  (všechna jádra = %s)\n" "$tp" "$mask" "$(cpu_all_mask)"
+        if [ "$mask" = "$(cpu_all_mask)" ]; then
+            printf "  pin: ${YELLOW}vypnutý${RST}\n"
+        else
+            printf "  pin: ${GREEN}zapnutý${RST}%s\n" "$([ -f "$CPU_STATE_DIR/pin.$tp" ] && echo " (hlídač běží)")"
+        fi
+    else
+        echo "  mimo proot (TracerPid 0)"
+    fi
+    echo ""
+    printf "${WHITE}${BOLD}CPU_ALL (všechna jádra i při pinu):${RST}\n"
+    if [ -n "${CPU_ALL:-}" ]; then
+        printf "  CPU_ALL=%s\n  → %s\n" "$CPU_ALL" "$(cpu_all_list | tr '\n' ' ')"
+    else
+        echo "  nenastaveno (např. export CPU_ALL=\"make cargo john ~/cpu_all.txt\")"
+    fi
+    echo ""
+    printf "${WHITE}${BOLD}Uloženo pro další boot:${RST}\n"
+    api_get "/distro/cpupin" | fmt '
+import sys, json
+d = json.load(sys.stdin)
+if not all(k in d for k in ("kali", "parrot", "docker")):
+    sys.exit(1)
+for k in ("kali", "parrot", "docker"):
+    print("  %-7s %s" % (k, "ON (1 jádro)" if d.get(k) else "off"))
+ ' || echo "  (API nedostupné nebo starší APK bez /distro/cpupin)"
+    echo ""
+    printf "${WHITE}${BOLD}Root CPU daemon (Magisk nh_cpuctl):${RST}\n"
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        local hb_pid hb_ts now_s hb_age
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_pid" ] && [ -n "$hb_ts" ]; then
+            hb_age=$(( now_s - hb_ts ))
+            if [ "$hb_age" -lt 15 ]; then
+                printf "  ${GREEN}běží${RST} (pid %s, heartbeat %ss)\n" "$hb_pid" "$hb_age"
+            else
+                printf "  ${RED}neběží${RST} (starý heartbeat %ss)\n" "$hb_age"
+            fi
+        else
+            printf "  ${RED}neběží${RST} (poškozený heartbeat)\n"
+        fi
+    else
+        printf "  ${YELLOW}neinstallován${RST} (Magisk modul nh_cpuctl)\n"
+    fi
+}
+
+cpu_live() {  # on|off — aplikuje na běžící session
+    local tp mask t
+    tp=$(cpu_tracer)
+    [ -n "$tp" ] && [ "$tp" != "0" ] || { echo "  mimo proot, živě nelze"; return 0; }
+    if [ "$1" = "on" ]; then
+        mask=$(printf '%x' $((1 << ${2:-$(cpu_fastest)})))
+        [ -d "$CPU_STATE_DIR" ] && echo "$mask" > "$CPU_STATE_DIR/pin.$tp" 2>/dev/null
+    else
+        mask=$(cpu_all_mask)
+        rm -f "$CPU_STATE_DIR/pin.$tp" "$CPU_STATE_DIR/free.$tp" 2>/dev/null
+    fi
+    for t in $(cpu_tree "$tp"); do cpu_setaff "$mask" "$t"; done
+    printf "  ${GREEN}✓${RST} běžící session (proot %s) → maska %s\n" "$tp" "$mask"
+}
+
+cpu_set() {  # on|off [distro] [--no-live]
+    local state=$1 d live=1 a
+    shift
+    for a in "$@"; do case "$a" in --no-live) live=0 ;; *) d=$a ;; esac; done
+    d=$(cpu_distro "$d")
+    api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"enabled\":$([ "$state" = on ] && echo true || echo false)}" \
+        | grep -q '"enabled"' \
+        && printf "  ${GREEN}✓${RST} %s: CPU pin %s od dalšího bootu (ikona CPU na kartě)\n" "$d" "$state" \
+        || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+    if [ "$live" = 1 ]; then cpu_live "$state"; fi
+}
+
+cpu_exec_mask() {  # <hexmask> <cmd...> — exec se zachováním PID
+    local mask=$1 tp
+    shift
+    [ $# -gt 0 ] || { echo "Použití: nh cpu all|run <cmd...>"; exit 1; }
+    tp=$(cpu_tracer)
+    # hlídač (boot) tenhle PID a jeho potomky nepřepne zpět na 1 jádro
+    [ -n "$tp" ] && [ -d "$CPU_STATE_DIR" ] && echo $$ >> "$CPU_STATE_DIR/free.$tp" 2>/dev/null
+    cpu_setaff "$mask" $$
+    exec "$@"
+}
+
+cpu_bench() {
+    command -v python3 >/dev/null 2>&1 || { echo "[-] nh cpu bench potřebuje python3"; exit 1; }
+    local tp
+    tp=$(cpu_tracer)
+    [ -n "$tp" ] && [ "$tp" != "0" ] || { echo "[-] mimo proot (TracerPid 0) — není co měřit"; exit 1; }
+    python3 - "$tp" "$@" <<'PYBENCH'
+import os, sys, time, subprocess, statistics
+
+tracer = int(sys.argv[1])
+args = sys.argv[2:]
+quick = "--quick" in args or "-q" in args
+R, B, D = "\033[0m", "\033[1m", "\033[2m"
+C = {"red": "\033[1;31m", "grn": "\033[1;32m", "yel": "\033[1;33m", "blu": "\033[1;34m",
+     "mag": "\033[1;35m", "cya": "\033[1;36m", "wht": "\033[1;37m", "gry": "\033[0;90m"}
+
+def online():
+    cpus = []
+    for n in sorted(os.listdir("/sys/devices/system/cpu")):
+        if n.startswith("cpu") and n[3:].isdigit():
+            try:
+                on = open(f"/sys/devices/system/cpu/{n}/online").read().strip() == "1"
+            except OSError:
+                on = True
+            if on:
+                cpus.append(int(n[3:]))
+    return cpus
+
+def maxfreq(c):
+    try:
+        return int(open(f"/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq").read())
+    except OSError:
+        return 0
+
+def tree(root):
+    kids = {}
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            st = open(f"/proc/{p}/stat").read()
+            ppid = int(st.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        kids.setdefault(ppid, []).append(int(p))
+    out, todo = [], [root]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo += kids.get(p, [])
+    return out
+
+def setaff(pid, cpus):
+    try:
+        os.sched_setaffinity(pid, cpus)
+        return True
+    except OSError:
+        return False
+
+cpus = online()
+freqs = {c: maxfreq(c) for c in cpus}
+top = max(freqs.values())
+big = [c for c in cpus if freqs[c] == top]
+little = [c for c in cpus if freqs[c] == min(freqs.values())]
+fast, slow = big[-1], little[0]
+me = os.getpid()
+orig_tracer = os.sched_getaffinity(tracer)
+orig_me = os.sched_getaffinity(me)
+
+combos = [
+    ("bez pinu (všechna jádra)",       set(cpus),   set(cpus)),
+    (f"proot cpu{fast}, guest volný",  {fast},      set(cpus)),
+    (f"vše na cpu{fast} (big)",        {fast},      {fast}),
+    (f"vše na big {'-'.join(map(str, big))}", set(big), set(big)),
+    (f"proot cpu{big[0]}, guest cpu{fast}", {big[0]}, {fast}),
+    (f"vše na cpu{slow} (little)",     {slow},      {slow}),
+]
+if len(big) < 2:
+    combos = [c for c in combos if not c[0].startswith("vše na big") and "guest cpu" not in c[0]]
+
+fd = os.open("/etc/hostname" if os.path.exists("/etc/hostname") else "/", os.O_RDONLY)
+link = next((p for p in ("/usr/bin/python3", "/bin/sh", "/usr/bin/env") if os.path.exists(p)), "/")
+true_bin = next((p for p in ("/bin/true", "/usr/bin/true") if os.path.exists(p)), None)
+n_sys = 300 if quick else 1500
+n_exec = 8 if quick else 25
+reps = 2 if quick else 3
+
+def t_loop(f, n):
+    t = time.perf_counter()
+    for _ in range(n):
+        f()
+    return (time.perf_counter() - t) / n * 1e6
+
+tests = [
+    ("fstat", "µs", lambda: t_loop(lambda: os.fstat(fd), n_sys)),
+    ("stat symlink", "µs", lambda: t_loop(lambda: os.stat(link), n_sys)),
+    ("open+close", "µs", lambda: t_loop(lambda: os.close(os.open(link, os.O_RDONLY)), n_sys)),
+]
+if true_bin:
+    tests.append(("exec /bin/true", "ms",
+                  lambda: t_loop(lambda: subprocess.run([true_bin]), n_exec) / 1000))
+
+def bar(v, vmax, width, col):
+    full = v / vmax * width if vmax else 0
+    blocks = "▏▎▍▌▋▊▉█"
+    n = int(full)
+    frac = int((full - n) * 8)
+    return col + "█" * n + (blocks[frac - 1] if frac else "") + R
+
+print(f"\n{B}{C['mag']}⚡ nh cpu bench{R}  {D}proot pid {tracer} · jádra {cpus} · big {big} ({top//1000} MHz) · little {little} ({min(freqs.values())//1000} MHz){R}")
+print(f"{D}Měří trasované syscally (ptrace výměna guest↔proot) pro různé přiřazení jader. "
+      f"{'rychlý režim' if quick else 'plný režim (--quick = rychlejší)'}{R}\n")
+
+results = []
+try:
+    for name, p_cpus, g_cpus in combos:
+        setaff(tracer, p_cpus)
+        setaff(me, g_cpus)
+        time.sleep(0.2)
+        row = []
+        for tname, unit, fn in tests:
+            fn()                                   # zahřátí (frekvence, cache)
+            row.append(statistics.median(fn() for _ in range(reps)))
+        results.append((name, row))
+        sys.stdout.write(f"  {C['gry']}✓{R} {name}\n")
+        sys.stdout.flush()
+finally:
+    for pid in tree(tracer):
+        setaff(pid, orig_tracer)
+    setaff(me, orig_me)
+
+base = results[0][1]
+print(f"\n{B}{C['wht']}{'kombinace':32s}" + "".join(f"{t[0]:>16s}" for t in tests) + f"{'zrychlení':>12s}{R}")
+print(D + "─" * (32 + 16 * len(tests) + 12) + R)
+scores = []
+for name, row in results:
+    sp = statistics.geometric_mean([b / v for b, v in zip(base, row) if v > 0])
+    scores.append(sp)
+for (name, row), sp in zip(results, scores):
+    cells = ""
+    for i, (v, (tname, unit, _)) in enumerate(zip(row, tests)):
+        best = min(r[1][i] for r in results)
+        worst = max(r[1][i] for r in results)
+        col = C["grn"] if v == best else C["red"] if v == worst else C["yel"]
+        cells += f"{col}{v:>11.1f} {unit:<3s}{R} "
+    spc = C["grn"] if sp >= 1.5 else C["yel"] if sp >= 1.05 else C["red"] if sp < 0.95 else C["wht"]
+    print(f"{name:32s}{cells}{spc}{sp:>9.2f}×{R}")
+
+print(f"\n{B}{C['wht']}Zrychlení proti „bez pinu“ (geometrický průměr testů){R}")
+smax = max(scores)
+for (name, _), sp in zip(results, scores):
+    col = C["grn"] if sp >= 1.5 else C["yel"] if sp >= 1.05 else C["red"] if sp < 0.95 else C["cya"]
+    print(f"  {name:32s} {bar(sp, smax, 30, col)} {col}{sp:.2f}×{R}")
+
+for i, (tname, unit, _) in enumerate(tests):
+    vals = [r[1][i] for r in results]
+    vmax = max(vals)
+    print(f"\n{B}{C['wht']}{tname}{R} {D}({unit}, kratší = lepší){R}")
+    for (name, row), v in zip(results, vals):
+        col = C["grn"] if v == min(vals) else C["red"] if v == vmax else C["blu"]
+        print(f"  {name:32s} {bar(v, vmax, 30, col)} {v:.1f}")
+
+best_i = max(range(len(scores)), key=scores.__getitem__)
+print(f"\n{B}Nejlepší:{R} {C['grn']}{results[best_i][0]}{R} ({scores[best_i]:.2f}× rychlejší než bez pinu)")
+print(f"{D}Session vrácena na původní masku {sorted(orig_tracer)}. Zapnout trvale: nh cpu on · výpočty: nh cpu all <cmd>{R}\n")
+PYBENCH
+}
+
+cpu_boost() {
+    case "${1:-status}" in
+        on)     sudo /system/bin/cpuctl boost on ${2:-} ;;
+        off)    sudo /system/bin/cpuctl boost off ;;
+        status|st) sudo /system/bin/cpuctl boost status ;;
+        *)      echo "Použití: nh cpu boost on|off|status [jádro]"; exit 1 ;;
+    esac
+}
+
+cpu_dispatch() {
+    case "${1:-status}" in
+        status|st)      cpu_status ;;
+        on)             shift; cpu_set on "$@" ;;
+        off)            shift; cpu_set off "$@" ;;
+        pin)            shift; cpu_live on "${1:-}" ;;
+        unpin)          cpu_live off ;;
+        all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
+        run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
+        bench|benchmark) shift; cpu_bench "$@" ;;
+        boost)          shift; cpu_boost "$@" ;;
+        help|--help|-h) help_cpu ;;
+        *)              help_cpu; exit 1 ;;
+    esac
+}
+
+help_cpu() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}CPU${RST} ${DIM}– pin proot + guestu na jedno rychlé jádro (2–5× rychlejší shell/apt/git)${RST}"
+    separator
+    echo "  ${GREEN}status${RST}                 Jádra (frekvence, governor), pin této session, uložené volby"
+    echo "  ${GREEN}on | off [distro]${RST}      Uložit pro další boot (= ikona CPU na kartě) a hned aplikovat"
+    echo "                         na běžící session (--no-live jen uloží). distro: kali|parrot|docker"
+    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
+    echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
+    echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
+    echo "  ${GREEN}bench [--quick]${RST}        Benchmark kombinací (bez pinu / proot na big / vše na big / little…)"
+    echo "                         s barevnou tabulkou a grafy; session pak vrátí do původního stavu"
+    echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
+    echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
+    echo ""
+    echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
+    echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"
+    echo "    export CPU_ALL=\"make cargo john xz ffmpeg\"          # v ~/.zshrc"
+    echo "    export CPU_ALL=\"\$(cat ~/cpu_all.txt)\"               # nebo ze souboru"
+    echo "    export CPU_ALL='\$(cat ~/cpu_all.txt)'  |  CPU_ALL=~/cpu_all.txt   # soubor čte hlídač živě"
+    echo ""
+    echo "  ${YELLOW}Kdy pin ano/ne:${RST} ano pro shell, apt, git, skripty, configure; ne pro dlouhé"
+    echo "  paralelní výpočty (kompilace, cracking, komprese, ML) → na ně ${GREEN}nh cpu all${RST}."
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh cpu on"
+    echo "    nh cpu all make -j8"
+    echo "    nh cpu run 7 python3 bench.py"
+    echo ""
+}
+
 # ─── MAIN ──────────────────────────────────────────────────
 
 # Check if invoked via compat symlink
@@ -2499,30 +3084,35 @@ esac
 
 # Normal dispatch
 CMD="$1"
-[ -z "$CMD" ] && { usage; exit 1; }
+[ -z "$CMD" ] && { help_dispatch; exit 1; }
 shift
 
 case "$CMD" in
-    system)     system_dispatch "$@" ;;
-    network)    network_dispatch "$@" ;;
-    vpn)        vpn_dispatch "$@" ;;
-    agent)      agent_dispatch "$@" ;;
-    log)        log_dispatch "$@" ;;
-    device)     device_dispatch "$@" ;;
-    api)        api_dispatch "$@" ;;
-    desktop)    desktop_dispatch "$@" ;;
-    fix)        fix_dispatch "$@" ;;
-    apps)       apps_dispatch "$@" ;;
-    usb)        usb_dispatch "$@" ;;
-    distro)     distro_dispatch "$@" ;;
-    zkill)      zkill_dispatch "$@" ;;
-    float)      float_dispatch "$@" ;;
-    ashell)     exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
-    help|--help|-h) help_dispatch "$@" ;;
-    list)       list_cmds ;;
+    system|sys)             system_dispatch "$@" ;;
+    network|net)            network_dispatch "$@" ;;
+    vpn)                    vpn_dispatch "$@" ;;
+    agent|ai)               agent_dispatch "$@" ;;
+    log|logs)               log_dispatch "$@" ;;
+    device|dev)             device_dispatch "$@" ;;
+    api)                    api_dispatch "$@" ;;
+    desktop|vnc)            desktop_dispatch "$@" ;;
+    fix)                    fix_dispatch "$@" ;;
+    apps)                   apps_dispatch "$@" ;;
+    usb)                    usb_dispatch "$@" ;;
+    distro)                 distro_dispatch "$@" ;;
+    cpu)                    cpu_dispatch "$@" ;;
+    zkill)                  zkill_dispatch "$@" ;;
+    float)                  float_dispatch "$@" ;;
+    ashell)                 exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
+    docs|manual)            docs_open "$@" ;;
+    stat)                   vpn_dispatch status "$@" ;;
+    ps)                     distro_dispatch ps "$@" ;;
+    ls)                     distro_dispatch list "$@" ;;
+    help|--help|-h)         help_dispatch "$@" ;;
+    list)                   list_cmds ;;
     *)
         # Try compat as last resort
         compat_dispatch "nethunter-$CMD" "$@" 2>/dev/null && exit $?
-        usage
+        help_dispatch
         ;;
 esac

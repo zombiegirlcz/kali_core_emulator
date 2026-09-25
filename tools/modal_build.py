@@ -39,8 +39,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 
-APP_NAME = "kali-gui-build"
+APP_NAME = "kali-core_emulator"
 VOLUME_NAME = "kali-build-data"
 APK_OUTPUT = "app-debug.apk"
 
@@ -61,7 +62,7 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-GITHUB_BRANCH = "master"
+GITHUB_BRANCH = "dev"
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
@@ -71,7 +72,8 @@ NDK_DIR = f"/opt/android-ndk-{NDK_VERSION}"
 base_image = (
     modal.Image.from_registry("eclipse-temurin:21-jdk")
     .apt_install("unzip", "wget", "git", "git-lfs", "file", "rsync", "python3", "python3-pip", "python-is-python3",
-                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "build-essential")
+                  "bison", "flex", "cmake", "make", "ninja-build", "pkg-config", "libssl-dev", "zlib1g-dev", "build-essential",
+                  "gcc-aarch64-linux-gnu", "g++-aarch64-linux-gnu", "libc6-dev-arm64-cross")
     .run_commands(
         "mkdir -p /opt/android-sdk/cmdline-tools",
         "wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
@@ -288,8 +290,6 @@ def build_native():
     else:
         _build_native_lib(src_dir)
         _build_native_bin(src_dir)
-    # linux-x11 je v samostatném adresáři (linux-x11/src/main/cpp), ne v cpp/
-    _build_linux_x11(src_dir)
     _build_usrtools(
         os.path.join(src_dir, "app/src/main/assets", "usr"),
         "/vol/builds",
@@ -371,150 +371,53 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(wrapper_bin_path):,} B)")
-
-
-def _build_linux_x11(src_dir):
-    """Build linux-x11 X server using CMake (X11 headers, dix-config.h, pixman-version.h).
-
-    X server vyžaduje generované config headers (dix-config.h, pixman-version.h,
-    globals.h, xkb-config.h, ...) které vznikají při CMake configure fázi.
-    Ruční kompilace tyto headery nevygeneruje, takže je nutné použít CMake.
-    """
-    lorie_cpp = os.path.join(src_dir, "app/src/main/linux-x11/src/main/cpp")
-    if not os.path.isdir(lorie_cpp):
-        print(f"[linux-x11] {lorie_cpp} neexistuje — linux-x11 PŘESKOČEN")
-        return
-    assets_dir = os.path.join(src_dir, "app/src/main/assets")
-    bin_dir = os.path.join(assets_dir, "usr/bin")
-    lib_dir = os.path.join(assets_dir, "usr/lib")
-    os.makedirs(bin_dir, exist_ok=True)
-    os.makedirs(lib_dir, exist_ok=True)
-    linux_x11_bin = os.path.join(lib_dir, "linux-x11")
-
-    # libepoxy upstream files missing from repo (gen_dispatch.py + gl.xml)
-    # Fetch them before CMake configure so GL/gl.h can be generated.
-    epoxy_dir = os.path.join(lorie_cpp, "libepoxy")
-    gen_dispatch = os.path.join(epoxy_dir, "src", "gen_dispatch.py")
-    gl_xml = os.path.join(epoxy_dir, "registry", "gl.xml")
-    if not os.path.exists(gen_dispatch) or not os.path.exists(gl_xml):
-        print("  [linux-x11] Fetching missing libepoxy upstream files...")
-        os.makedirs(os.path.dirname(gen_dispatch), exist_ok=True)
-        os.makedirs(os.path.dirname(gl_xml), exist_ok=True)
-        subprocess.run(["wget", "-q",
-                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/src/gen_dispatch.py",
-                        "-O", gen_dispatch], check=True)
-        subprocess.run(["wget", "-q",
-                        "https://raw.githubusercontent.com/anholt/libepoxy/1.5.10/registry/gl.xml",
-                        "-O", gl_xml], check=True)
-        print(f"    ✓ {gen_dispatch}")
-        print(f"    ✓ {gl_xml}")
-    # Apply libepoxy.patch to gen_dispatch.py if not already applied
-    patch_file = os.path.join(lorie_cpp, "patches", "libepoxy.patch")
-    if os.path.exists(patch_file):
-        result = subprocess.run(
-            ["patch", "-p1", "-d", epoxy_dir, "-i", patch_file, "--dry-run"],
-            capture_output=True, text=True)
-        if result.returncode == 0:
-            print("  [linux-x11] Applying libepoxy.patch...")
-            subprocess.run(["patch", "-p1", "-d", epoxy_dir, "-i", patch_file], check=True)
-            print("    ✓ libepoxy.patch applied")
-        elif result.returncode != 0:
-            # Patch was already applied (dry-run failed), skip re-application
-            print("  [linux-x11] libepoxy.patch already applied, skipping")
-        else:
-            print("  [linux-x11] Error applying libepoxy.patch:", result.stderr)
-
+    # ashell_pty (streaming PTY bridge for `ashell -c`)
     print("─" * 60)
-    print("[linux-x11] Building X server via CMake (NDK cross-compile)...")
-    print(f"  Source: {lorie_cpp}")
-    print(f"  Output: {linux_x11_bin}")
-
-    # CMake build dir (mimo /vol/src, aby se necetoval do APK)
-    build_dir = "/tmp/linux-x11-build"
-    if os.path.exists(build_dir):
-        import shutil as _sh
-        _sh.rmtree(build_dir)
-    os.makedirs(build_dir, exist_ok=True)
-
-    # NDK toolchain file
-    ndk_toolchain = os.path.join(NDK_DIR, "build/cmake/android.toolchain.cmake")
-    if not os.path.exists(ndk_toolchain):
-        print(f"[linux-x11] NDK toolchain nenalezen: {ndk_toolchain}")
-        return
-
-    # CMake configure
-    # Cílíme na Android API 24+ (minSdk 24), arch arm64-v8a
-    cmake_cmd = [
-        "cmake",
-        "-G", "Ninja",
-        "-S", lorie_cpp,
-        "-B", build_dir,
-        f"-DCMAKE_TOOLCHAIN_FILE={ndk_toolchain}",
-        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-        "-DANDROID_ABI=arm64-v8a",
-        "-DANDROID_PLATFORM=android-24",
-        "-DANDROID_STL=c++_static",
-        "-DCMAKE_INSTALL_PREFIX=/tmp/linux-x11-install",
-    ]
-    print(f"  $ {' '.join(cmake_cmd)}")
-    proc = subprocess.run(cmake_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(f"  CMAKE CONFIGURE FAILED (rc={proc.returncode})")
-        if proc.stdout:
-            print(f"  stdout: {proc.stdout[-2000:]}")
-        if proc.stderr:
-            print(f"  stderr: {proc.stderr[-2000:]}")
-        return
-    print(f"  ✓ CMake configure OK")
-
-    # CMake build
-    build_cmd = ["cmake", "--build", build_dir, "--parallel", "8"]
-    print(f"  $ {' '.join(build_cmd)}")
-    proc = subprocess.run(build_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(f"  CMAKE BUILD FAILED (rc={proc.returncode})")
-        if proc.stdout:
-            print(f"  stdout: {proc.stdout[-2000:]}")
-        if proc.stderr:
-            print(f"  stderr: {proc.stderr[-2000:]}")
-        return
-    print(f"  ✓ CMake build OK")
-
-    # Najít výstupní binárku — lorie obvykle produkuje 'lorie'/'Xlorie', Xorg 'Xserver'
-    # Najít výstupní binárku — lorie obvykle produkuje 'libXlorie.so', případně 'lorie'/'Xlorie'
-    candidates = ["libXlorie.so", "lorie", "Xlorie", "linux-x11", "xserver", "Xserver"]
-    search_dirs = [build_dir] + [os.path.join(build_dir, d) for d in ("xserver", "X11", "src", "bin")]
-    built_bin = None
-    for cand in candidates:
-        for d in search_dirs:
-            cand_path = os.path.join(d, cand)
-            if os.path.isfile(cand_path) and os.access(cand_path, os.X_OK):
-                built_bin = cand_path
-                break
-        if built_bin:
-            break
-    if not built_bin:
-        for root, _dirs, files in os.walk(build_dir):
-            for f in files:
-                if f in ("makekeys",):
-                    continue
-                fp = os.path.join(root, f)
-                if os.path.isfile(fp) and fp.endswith(".so") and os.path.getsize(fp) > 50000:
-                    built_bin = fp
-                    break
-            if built_bin:
-                break
-
-    if not built_bin or not os.path.exists(built_bin):
-        print(f"  BUILD OK ale výstupní binárka nenalezena v {build_dir}")
-        print(f"  Obsah: {os.listdir(build_dir)[:20]}")
-        return
-
-    shutil.copy2(built_bin, linux_x11_bin)
-    print(f"  OK  {built_bin} → {linux_x11_bin} ({os.path.getsize(linux_x11_bin):,} B)")
-
-
-
+    print("[native-bin] Building ashell_pty...")
+    pty_src = os.path.join(cpp_dir, "ashell_pty.c")
+    pty_bin_path = os.path.join(assets_dir, "ashell_pty")
+    if not os.path.exists(pty_src):
+        print(f"[native-bin] {pty_src} chybí — ashell_pty PŘESKOČEN")
+    else:
+        cmd = [cc, "-o", pty_bin_path, pty_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
+    # shell_daemon (persistentni shell-UID daemon, obdoba su_daemon pro uid 2000)
+    #
+    # Deploy cestou jniLibs (stejne jako Shizuku libshizuku.so): zdroj je
+    # spustitelny ELF (ma main), ale pojmenujeme ho `lib*.so`, aby ho Android
+    # zabalil do APK a pri instalaci extrahoval do nativeLibraryDir. Odtud ho
+    # guest spusti pres `adb shell <nativeLibraryDir>/libshelldaemon.so` pod
+    # uid 2000 — zadny su, zadny push. `useLegacyPackaging=true` v build.gradle
+    # zarucuje extrakci na disk (jinak by zustal jen v APK).
+    print("─" * 60)
+    print("[native-bin] Building libshelldaemon.so (jniLibs, spustitelny ELF)...")
+    sdaemon_src = os.path.join(cpp_dir, "shell_daemon.c")
+    jnilibs_dir = os.path.join(src_dir, "app/src/main/jniLibs/arm64-v8a")
+    os.makedirs(jnilibs_dir, exist_ok=True)
+    sdaemon_so_path = os.path.join(jnilibs_dir, "libshelldaemon.so")
+    if not os.path.exists(sdaemon_src):
+        print(f"[native-bin] {sdaemon_src} chybí — libshelldaemon.so PŘESKOČEN")
+    else:
+        cmd = [cc, "-o", sdaemon_so_path, sdaemon_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(sdaemon_so_path):,} B)")
+    # cpuctl (static, Magisk module binary — root CPU daemon + boost + pin)
+    print("─" * 60)
+    print("[native-bin] Building cpuctl (static, Magisk module)...")
+    cpuctl_src = os.path.join(cpp_dir, "cpuctl.c")
+    cpuctl_dir = os.path.join(src_dir, "magisk-modules/nh_cpuctl/system/bin")
+    os.makedirs(cpuctl_dir, exist_ok=True)
+    cpuctl_path = os.path.join(cpuctl_dir, "cpuctl")
+    if not os.path.exists(cpuctl_src):
+        print(f"[native-bin] {cpuctl_src} chybí — cpuctl PŘESKOČEN")
+    else:
+        cmd = [cc, "-static", "-o", cpuctl_path, cpuctl_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(cpuctl_path):,} B)")
 
 
 @app.function(
@@ -557,9 +460,6 @@ def build_usrtools():
     )
     build_vol.commit()
     print("[usrtools] committed")
-    _build_linux_x11("/vol/src")
-    build_vol.commit()
-    print("[native-linux-x11] committed")
 
 
 # ── Usr tools build: nano/rsync/sed (glibc bridge) + ripgrep (Bionic) ───────
@@ -577,8 +477,6 @@ def _build_usrtools(assets_usr, builds_dir):
     binárky fungují jen uvnitř PRootu, nikdy na hostu (ashell -c, /shell).
     Diagnóza + fix: AGENTS.md session 2026-08-11.
     """
-    import tarfile
-
     PREFIX = USRTOOLS_PREFIX  # layout usrtools.tar.gz ($PREFIX/bin, $PREFIX/lib)
     WORK = "/tmp/usrtools"
     STAGE = "/tmp/usrtools-stage"
@@ -654,7 +552,8 @@ def _build_usrtools(assets_usr, builds_dir):
             run(["wget", "-q", url, "-O", dest])
 
     def extract(archive, dest):
-        run(["tar", "xf", archive, "-C", dest])
+        with tarfile.open(archive) as tf:
+            tf.extractall(dest)
 
     def needed_libs(path):
         dyn = subprocess.run([READELF, "-d", path], capture_output=True, text=True).stdout
@@ -855,7 +754,7 @@ def _build_usrtools(assets_usr, builds_dir):
 # library and linked directly → no libtalloc.so.2 needed at runtime.
 # Loader is built separately (PROOT_UNBUNDLE_LOADER) to match existing
 # ProotManager/launcher.sh deployment model (PROOT_LOADER env var).
-PROOT_TAG = "v5.1.107.90"
+PROOT_TAG = "v5.1.107.93"
 PROOT_GIT = "https://github.com/termux/proot.git"
 TALLOC_VER = "2.4.3"
 TALLOC_URL = f"https://www.samba.org/ftp/talloc/talloc-{TALLOC_VER}.tar.gz"
@@ -926,6 +825,25 @@ END {
 def _proot_run(cmd, **kw):
     print(f"  $ {' '.join(cmd) if isinstance(cmd, list) else cmd}")
     subprocess.run(cmd, check=True, **kw)
+
+
+def _tar_extract(archive, dest, strip_components=0):
+    """Python tarfile extraction (ne systémový tar) — GNU tar na Modal Volume
+    padá na xattr/ACL syscally s "Cannot open: Function not implemented"
+    (ENOSYS na FUSE-backed volume), tarfile.extractall() to obchází."""
+    print(f"  $ extract {archive} -> {dest} (strip_components={strip_components})")
+    with tarfile.open(archive) as tf:
+        members = tf.getmembers()
+        if strip_components:
+            stripped = []
+            for m in members:
+                parts = m.name.split("/")[strip_components:]
+                if not parts:
+                    continue
+                m.name = "/".join(parts)
+                stripped.append(m)
+            members = stripped
+        tf.extractall(dest, members=members)
 
 
 
@@ -1001,7 +919,7 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     # ── 1. Build talloc (static .a) ─────────────────────────────────────────
     print(f"\n  [{suffix}] Building talloc {TALLOC_VER} ...")
     os.makedirs(talloc_src, exist_ok=True)
-    _proot_run(["tar", "xzf", talloc_tar, "-C", talloc_src, "--strip-components=1"])
+    _tar_extract(talloc_tar, talloc_src, strip_components=1)
 
     # Write cross-answers
     cross_file = os.path.join(build_dir, "cross-answers.txt")
@@ -1055,12 +973,40 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
             f.write(_LOADER_INFO_AWK)
         print(f"    patch: replaced loader-info.awk (portable, no gawk needed)")
 
+    # Patch 3: SELinux fix via --wrap=chmod (linker-level, cross-TU)
+    # proot binary has 4 chmod@plt calls across multiple .c files. A per-file
+    # #define only intercepts calls in one TU. --wrap=chmod + selinux_android_fix.c
+    # intercepts ALL chmod calls in the proot binary at link time.
+    # NON-USERLAND avoids the USERLAND ioctl(TCGETS) regression that breaks tmux.
+    _SELINUX_FIX_C = """\
+/* selinux_android_fix.c: --wrap=chmod SELinux fix for proot on Android.
+ * All 4 chmod@plt calls in proot binary are redirected to __wrap_chmod.
+ * Skips chmod on /proc and /sys to prevent comm="proot" setattr proc:dir AVC. */
+#include <sys/stat.h>
+#include <string.h>
+extern int __real_chmod(const char *path, mode_t mode);
+int __wrap_chmod(const char *path, mode_t mode) {
+    if (path &&
+        ((strncmp(path,"/proc",5)==0 && (!path[5]||path[5]=='/')) ||
+         (strncmp(path,"/sys", 4)==0 && (!path[4]||path[4]=='/')))) {
+        return 0;
+    }
+    return __real_chmod(path, mode);
+}
+"""
+    selinux_fix_c = os.path.join(proot_src, "src", "selinux_android_fix.c")
+    selinux_fix_o = os.path.join(proot_src, "src", "selinux_android_fix.o")
+    with open(selinux_fix_c, "w") as f:
+        f.write(_SELINUX_FIX_C)
+    _proot_run([cc, "-c", "-O2", "-fPIE", "-o", selinux_fix_o, selinux_fix_c])
+    print(f"    patch3: compiled selinux_android_fix.o (--wrap=chmod, cross-TU)")
+
     # ── 3. Build proot ──────────────────────────────────────────────────────
-    print(f"  [{suffix}] Building proot (static talloc, PIE) ...")
+    print(f"  [{suffix}] Building proot (static talloc, PIE, --wrap=chmod) ...")
     env2 = dict(os.environ)
     env2["CPPFLAGS"] = f"-I{talloc_src} -DARG_MAX=131072"
     env2["CFLAGS"] = "-O2 -fPIE -ffunction-sections -fdata-sections"
-    env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib}"
+    env2["LDFLAGS"] = f"-pie -Wl,--gc-sections -L{talloc_lib} -Wl,--wrap=chmod {selinux_fix_o}"
 
     _proot_run(["make", "-C", "src", "-j4",
                 f"CC={cc}",
@@ -1082,8 +1028,12 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     _proot_run([strip, proot_bin])
     _proot_run([strip, loader_bin])
 
-    dest_proot = os.path.join(assets_dir, f"proot-static-{suffix}")
-    dest_loader = os.path.join(assets_dir, f"loader-static-{suffix}")
+    # Layout od 2026-09-18: staticke binarky ziji v assets/usr/bin (ne v koreni
+    # assets). ProotManager je odtud nasazuje do $PREFIX/bin/{proot,loader}.
+    usr_bin = os.path.join(assets_dir, "usr", "bin")
+    os.makedirs(usr_bin, exist_ok=True)
+    dest_proot = os.path.join(usr_bin, f"proot-static-{suffix}")
+    dest_loader = os.path.join(usr_bin, f"loader-static-{suffix}")
     shutil.copy2(proot_bin, dest_proot)
     shutil.copy2(loader_bin, dest_loader)
 
@@ -1252,28 +1202,15 @@ def list_volume():
 _STATE_FILE = f"/vol/.build_state.{GITHUB_REPO.replace('/', '_')}.json"
 
 _PROOT_OUTPUTS = [
-    "app/src/main/assets/proot-static-aarch64",
-    "app/src/main/assets/proot-static-arm",
-    "app/src/main/assets/proot-static-i686",
-    "app/src/main/assets/proot-static-x86_64",
-    "app/src/main/assets/loader-static-aarch64",
-    "app/src/main/assets/loader-static-arm",
-    "app/src/main/assets/loader-static-i686",
-    "app/src/main/assets/loader-static-x86_64",
+    "app/src/main/assets/usr/bin/proot-static-aarch64",
+    "app/src/main/assets/usr/bin/proot-static-arm",
+    "app/src/main/assets/usr/bin/proot-static-i686",
+    "app/src/main/assets/usr/bin/proot-static-x86_64",
+    "app/src/main/assets/usr/bin/loader-static-aarch64",
+    "app/src/main/assets/usr/bin/loader-static-arm",
+    "app/src/main/assets/usr/bin/loader-static-i686",
+    "app/src/main/assets/usr/bin/loader-static-x86_64",
 ]
-
-@app.function(
-    image=base_image,
-    volumes={"/vol": build_vol},
-    timeout=3600,
-    memory=8192,
-    cpu=4,
-)
-def build_linux_x11():
-    _build_linux_x11("/vol/src")
-    build_vol.commit()
-    print("[native-linux-x11] committed")
-
 
 _NATIVE_COMPONENTS = {
     "lib": {
@@ -1284,16 +1221,17 @@ _NATIVE_COMPONENTS = {
     "bin": {
         "sources": ["app/src/main/cpp/usb_bridge.c",
                      "app/src/main/cpp/su_daemon.c",
-                     "app/src/main/cpp/su_wrapper.c"],
+                     "app/src/main/cpp/su_wrapper.c",
+                     "app/src/main/cpp/ashell_pty.c",
+                     "app/src/main/cpp/shell_daemon.c",
+                     "app/src/main/cpp/cpuctl.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
+                     "app/src/main/jniLibs/arm64-v8a/libshelldaemon.so",
                      "app/src/main/assets/su_daemon",
-                     "app/src/main/assets/su_wrapper"],
+                     "app/src/main/assets/su_wrapper",
+                     "app/src/main/assets/ashell_pty",
+                     "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,
-    },
-    "linux-x11": {
-        "sources": ["app/src/main/linux-x11/src/main/cpp/lorie"],
-        "outputs": ["app/src/main/assets/usr/lib/linux-x11"],
-        "fn": build_linux_x11,
     },
     "usrtools": {
         "sources": [],  # externí downloads; self-skip na outputs

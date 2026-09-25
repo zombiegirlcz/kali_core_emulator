@@ -1,9 +1,6 @@
 
 # Android standard
 
-shizuku/
-!app/src/main/assets/shizuku/
-!app/src/main/assets/shizuku/*.sh
 shi/
 arm64/
 .gradle
@@ -48,18 +45,18 @@ docs/plan-1.md
 /kali-armhf/
 !.pi/**/**
 # Python environment
-__pycache__/
 *.pyc
-tools/__*
 # Copilot/Gemini session artifacts
 .copilot/
 .tasks/
 GEMINI.md
 docs/prompt.md
 # Local backup archive
-ignore-archi
-v.tar
+ignore-archiv.tar
 !tools/**/**
+# Python cache (az za negaci tools, aby ho neprebila)
+__pycache__/
+*.pyc
 # IDE, AI tools, and plugin directories
 /.ai/
 /.explyt/
@@ -107,8 +104,6 @@ window_dump.xml
 *.txt
 !app/src/main/linux-x11/**
 *.png
-*.log
-*.zip
 # Exemptions
 !app/src/main/res/xml/*.xml
 !windows_app/
@@ -157,6 +152,7 @@ app/src/main/assets/certs/google_attestation_root.key
 !tools/modal_build.py
 magisk-modules/*.zip
 !magisk-modules/*.sh
+!magisk-modules/nh_cpuctl/system/bin/cpuctl
 # Old build artifacts
 app/build_old/
 
@@ -165,7 +161,21 @@ models/
 format_raw_commands.py
 refactor_motd_table.py
 .worktrees/
-.reď/
 
 # Stray launcher stage (canonical copy lives in /tmp/launcher_stage)
 _launcher_stage/
+
+# pi subagent artifacts (not tracked)
+.pi-subagents/
+
+# AI session dumps (accidentally committed transcripts)
+pi-session-*.html
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# USERLAND proot ownership meta files (created by proot USERLAND mode on dev machine)
+**/.proot-meta-file.*
+tools/.proot-meta-file.*

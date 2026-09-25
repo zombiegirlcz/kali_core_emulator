@@ -1,6 +1,24 @@
 package com.linux_core.core
 
 import android.content.ClipboardManager
+import com.linux_core.core.ai.VerdictNotifier
+import com.linux_core.core.assistant.NetHunterAccessibilityService
+import com.linux_core.core.assistant.NetHunterDeviceAdminReceiver
+import com.linux_core.core.assistant.NetHunterNotificationListenerService
+import com.linux_core.core.device.DeviceInfo
+import com.linux_core.core.device.ExecCore
+import com.linux_core.core.device.GitAgentNotifier
+import com.linux_core.core.mitm.MitmTrafficStore
+import com.linux_core.core.mitm.TlsMitmEngine
+import com.linux_core.core.rootfs.ProotManager
+import com.linux_core.core.rootfs.RootfsManager
+import com.linux_core.core.terminal.FloatingTerminalService
+import com.linux_core.core.terminal.ShellDaemonClient
+import com.linux_core.core.terminal.TerminalService
+import com.linux_core.core.usb.UsbHostManager
+import com.linux_core.core.vpn.TrafficAggregator
+import com.linux_core.core.vpn.VpnCaptureService
+import com.linux_core.core.vpn.VpnLogManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -65,7 +83,12 @@ import java.util.regex.Pattern
 object LocalApiServer {
     private const val TAG = "LocalApiServer"
     private const val PORT = 1337
+    private const val ASHELL_PTY_PORT = 13340
+
+    // shell_daemon / ashell ADB (uid 2000, non-root)
+    private const val MAX_SHELL_CMD_LEN = 8192
     private var serverSocket: ServerSocket? = null
+    private var ptyProcess: java.lang.Process? = null
     private var isRunning = false
     private val executor = Executors.newCachedThreadPool()
     private var tts: TextToSpeech? = null
@@ -90,8 +113,8 @@ object LocalApiServer {
         initTts(context)
         val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
         val shareLocalApi = sharedPrefs.getBoolean("share_local_api", false)
-        val bindAddress = if (shareLocalApi && com.linux_core.core.VpnCaptureService.isRunning()) {
-            com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val bindAddress = if (shareLocalApi && com.linux_core.core.vpn.VpnCaptureService.isRunning()) {
+            com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         } else {
             "127.0.0.1"
         }
@@ -107,6 +130,54 @@ object LocalApiServer {
                 Log.e(TAG, "Server socket exception: ${e.message}")
             }
         }
+        startAshellPty(appContext!!)
+    }
+
+    /**
+     * Spustí nativní `ashell_pty` daemon (streaming PTY most pro `ashell -c`).
+     * Binárka se deployne z assets, je-li stará/chybí, a spawnuje se s
+     * portem + filesDir. Běží jako app UID, binduje jen 127.0.0.1.
+     */
+    private fun startAshellPty(context: Context) {
+        try {
+            val target = File(context.filesDir, "ashell_pty")
+            var deploy = !target.exists() || target.length() == 0L
+            if (!deploy) {
+                try {
+                    val assetSize = context.assets.open("ashell_pty").use { it.available().toLong() }
+                    if (target.length() != assetSize) deploy = true
+                } catch (e: Exception) {
+                    deploy = true
+                }
+            }
+            if (deploy) {
+                context.assets.open("ashell_pty").use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.setExecutable(true, false)
+                target.setReadable(true, false)
+                Log.i(TAG, "Deployed ashell_pty (${target.length()} bytes)")
+            }
+            if (!target.canExecute()) {
+                Log.w(TAG, "ashell_pty not executable — PTY shell unavailable")
+                return
+            }
+            // Stop stale instance first (port reuse)
+            stopAshellPty()
+            ptyProcess = ProcessBuilder(target.absolutePath, ASHELL_PTY_PORT.toString(), context.filesDir.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            Log.i(TAG, "ashell_pty started on 127.0.0.1:$ASHELL_PTY_PORT")
+        } catch (e: Exception) {
+            Log.w(TAG, "ashell_pty unavailable: ${e.message}")
+        }
+    }
+
+    private fun stopAshellPty() {
+        try {
+            ptyProcess?.destroy()
+        } catch (_: Exception) {}
+        ptyProcess = null
     }
 
     fun restart(context: Context) {
@@ -136,6 +207,7 @@ object LocalApiServer {
         } catch (e: Exception) {
             Log.w(TAG, "Error closing UsbFdExporter: ${e.message}")
         }
+        stopAshellPty()
     }
 
     private fun initTts(context: Context) {
@@ -366,8 +438,8 @@ object LocalApiServer {
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
-                "/battery/optimize", "/app/logs", "/editor/", "/usb/", "/usbg2/",
-                "/vpn/ai/", "/vpn/mitm/selective")
+                "/battery/optimize", "/app/logs", "/usb/",
+                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -480,7 +552,12 @@ object LocalApiServer {
                 path == "/distro/ps" && method == "GET" -> handleDistroPs(context, out)
                 path == "/distro/kill" && method == "POST" -> handleDistroKill(context, body, out)
                 path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
+                path == "/distro/cpupin" && method == "GET" -> handleCpuPinGet(context, out)
+                path == "/distro/cpupin" && method == "POST" -> handleCpuPinSet(context, body, out)
                 path == "/terminal/float" && method == "POST" -> handleTerminalFloat(context, body, out)
+                // Otevře plnohodnotný terminál (TerminalActivity) — používá X11 launcher
+                // (kali_GUI) pro přepnutí zpět do terminálu. Loopback = bez tokenu.
+                path == "/terminal/open" && method == "POST" -> handleTerminalOpen(context, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
@@ -499,12 +576,14 @@ object LocalApiServer {
                 path == "/app/logs/level" && method == "GET" -> handleAppLogsLevel(context, out)
                 path == "/app/logs/level" && method == "POST" -> handleAppLogsLevelSet(context, body, out)
                 path.startsWith("/app/logs") && method == "GET" -> handleAppLogs(context, path, out)
-                path == "/editor/start" && method == "POST" -> handleEditorStart(context, out)
-                path == "/editor/stop" && method == "POST" -> handleEditorStop(context, out)
-                path == "/editor/status" && method == "GET" -> handleEditorStatus(context, out)
-                path == "/editor/password" && method == "GET" -> handleEditorPassword(context, out, isLocalConnection)
-                path == "/editor/info" && method == "GET" -> handleEditorInfo(context, out)
-                path == "/editor/install" && method == "POST" -> handleEditorInstall(context, out)
+
+                // ─── shell_daemon (uid 2000, non-root) ──────────────────────
+                path == "/shelldaemon/status" && method == "GET" -> handleShellDaemonStatus(out)
+                path == "/shelldaemon/info" && method == "GET" -> handleShellDaemonInfo(context, out)
+                path == "/shelldaemon/start" && method == "POST" -> handleShellDaemonStart(context, out)
+                path == "/shelldaemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
+                path == "/shelldaemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
+                path == "/shelldaemon/install" && method == "POST" -> handleShellDaemonInstall(context, body, out)
 
                 // ─── USB Host endpoints ─────────────────────────────────────
                 path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
@@ -519,72 +598,12 @@ object LocalApiServer {
                 path == "/usb/raw_transfer" && method == "GET" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
                 path == "/usb/stream" && method == "POST" -> sendResponse(out, 501, "Not Implemented", "{\"error\":\"Use handleConnection binary path\"}")
 
-                // ─── USB Gadget g2 (aktivace/deaktivace; přípravu dělá Magisk modul)
-                path == "/usbg2/status" && method == "GET" -> handleUsbG2Status(context, out)
-                path == "/usbg2/start" && method == "POST" -> handleUsbG2Start(context, out)
-                path == "/usbg2/stop" && method == "POST" -> handleUsbG2Stop(context, out)
-                path == "/usbg2/exec" && method == "POST" -> handleUsbG2Exec(context, body, out)
                 else -> sendResponse(out, 404, "Not Found", "{\"error\":\"Endpoint not found\"}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error routing request: ${e.message}", e)
             sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
         }
-    }
-
-    // ── USB Gadget g2 (aktivace = navázání na UDC; přípravu dělá Magisk modul) ──
-    private fun handleUsbG2Status(context: Context, out: OutputStream) {
-        try {
-            val mgr = UsbGadgetManager(context)
-            sendResponse(out, 200, "OK", mgr.statusJson())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Server Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleUsbG2Start(context: Context, out: OutputStream) {
-        val mgr = UsbGadgetManager(context)
-        mgr.activate().fold(
-            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
-            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
-        )
-    }
-
-    private fun handleUsbG2Stop(context: Context, out: OutputStream) {
-        val mgr = UsbGadgetManager(context)
-        mgr.deactivate().fold(
-            onSuccess = { msg -> sendResponse(out, 200, "OK", "{\"ok\":true,\"message\":${jsonEsc(msg)}}") },
-            onFailure = { e -> sendResponse(out, 409, "Conflict", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}") }
-        )
-    }
-
-    /**
-     * POST /usbg2/exec  {"args":["g2"]}
-     * Spustí skript z Magisk modulu (custom_usb_g2_setup) pod real rootem:
-     *   su -c "/system/bin/usbtool <args...>"
-     */
-    private fun handleUsbG2Exec(context: Context, body: String, out: OutputStream) {
-        val args: List<String> = try {
-            val j = if (body.trim().startsWith("{")) JSONObject(body) else JSONObject()
-            val raw = j.optJSONArray("args") ?: org.json.JSONArray()
-            (0 until raw.length()).map { raw.getString(it) }
-        } catch (e: Exception) {
-            sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid JSON body\"}")
-            return
-        }
-        val mgr = UsbGadgetManager(context)
-        mgr.execUsbTool(args).fold(
-            onSuccess = { (rc, output) ->
-                // Vlastní escape — zachová \n (jsonEsc je mění na mezery, což rozbije výpis)
-                val esc = output.replace("\\", "\\\\").replace("\"", "\\\"")
-                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-                sendResponse(out, 200, "OK",
-                    "{\"ok\":${rc == 0},\"rc\":$rc,\"output\":\"$esc\"}")
-            },
-            onFailure = { e ->
-                sendResponse(out, 400, "Bad Request", "{\"ok\":false,\"error\":${jsonEsc(e.message ?: "unknown")}}")
-            }
-        )
     }
 
     private fun jsonEsc(s: String): String =
@@ -1173,6 +1192,125 @@ object LocalApiServer {
         sendResponse(out, statusFor(json), "OK", json)
     }
 
+    // ─── shell_daemon (persistentní uid 2000) ────────────────────────────
+
+    /**
+     * GET /shelldaemon/status
+     *   → { running: bool, port: int, pid: int|null }
+     *
+     * `shell_daemon` je persistentni shell UID 2000 daemon. Startuje ho guest
+     * pres `ashell adb start` (zadny su). App ho jen detekuje TCP probem.
+     */
+    /**
+     * GET /shelldaemon/info
+     *   → { path, token, port, running }
+     *
+     * Vydá `adb shell` (uid 2000) absolutní cestu k `libshelldaemon.so`
+     * a aktuální token. `nativeLibraryDir` je pro shell čitelný, ale token
+     * v `filesDir` ne — proto ho posíláme tudy. Endpoint je na loopbacku
+     * a chráněný stejným Bearer tokenem jako zbytek API.
+     */
+    private fun handleShellDaemonInfo(context: Context, out: OutputStream) {
+        val bin = ShellDaemonClient.binaryPath(context)
+        val token = ShellDaemonClient.ensureToken(context)
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("path", bin.absolutePath)
+            put("token", token)
+            put("port", ShellDaemonClient.PORT)
+            put("running", ShellDaemonClient.status().running)
+        }.toString())
+    }
+
+    private fun handleShellDaemonStatus(out: OutputStream) {
+        val st = ShellDaemonClient.status()
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("running", st.running)
+            put("port", st.port)
+            st.pid?.let { put("pid", it) }
+        }.toString())
+    }
+
+    /** POST /shelldaemon/start → zkusí nastartovat daemon (jen pokud je su). */
+    private fun handleShellDaemonStart(context: Context, out: OutputStream) {
+        val ok = ShellDaemonClient.startDaemon(context)
+        sendResponse(out, if (ok) 200 else 500, if (ok) "OK" else "Error",
+            JSONObject().apply {
+                put("started", ok)
+                put("running", ShellDaemonClient.status().running)
+                put("port", ShellDaemonClient.PORT)
+            }.toString())
+    }
+
+    /** POST /shelldaemon/stop → pkill pod uid 2000. */
+    private fun handleShellDaemonStop(context: Context, out: OutputStream) {
+        val ok = ShellDaemonClient.stopDaemon(context)
+        sendResponse(out, 200, "OK", "{\"stopped\":$ok}")
+    }
+
+    /**
+     * POST /shelldaemon/exec
+     *   body = command (holý string) nebo JSON {command, cwd}
+     *   → { stdout, stderr, exit_code, mode="shell_daemon" }
+     */
+    private fun handleShellDaemonExec(context: Context, body: String, out: OutputStream) {
+        val raw = body.trim()
+        if (raw.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+            return
+        }
+        var command = raw
+        var cwd = ""
+        if (raw.startsWith("{")) {
+            try {
+                val obj = JSONObject(raw)
+                command = obj.optString("command", "")
+                cwd = obj.optString("cwd", "")
+            } catch (_: Exception) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+                return
+            }
+        }
+        if (command.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command cannot be empty\"}")
+            return
+        }
+        if (command.length > MAX_SHELL_CMD_LEN) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long\"}")
+            return
+        }
+        val json = ShellDaemonClient.exec(context, command, cwd)
+        sendResponse(out, statusFor(json), "OK", json)
+    }
+
+    /**
+     * POST /shelldaemon/install
+     *   body = JSON {apk: "/cesta/k.apk", args: "-r -g"}
+     *   → streamovany install pres daemon (cmd package install -S).
+     */
+    private fun handleShellDaemonInstall(context: Context, body: String, out: OutputStream) {
+        val raw = body.trim()
+        if (raw.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"APK path required\"}")
+            return
+        }
+        val apk: String
+        val args: String
+        try {
+            val obj = JSONObject(raw)
+            apk = obj.optString("apk", "")
+            args = obj.optString("args", "")
+        } catch (_: Exception) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+            return
+        }
+        if (apk.isEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"APK path required\"}")
+            return
+        }
+        val json = ShellDaemonClient.install(context, java.io.File(apk), args)
+        sendResponse(out, statusFor(json), "OK", json)
+    }
+
     /**
      * Odvodí HTTP status z JSON odpovědi ExecCore:
      * {error:"...blocked..."} → 403, jiné {error:} → 400, úspěch → 200.
@@ -1221,7 +1359,10 @@ object LocalApiServer {
      * což donutí TerminalService vytvořit nový ProcessBuilder, který NEpoužívá
      * PRoot, ale přímo /system/bin/sh s cestou k host filesDir.
      *
-     * Vstup: POST /ashell  (body ignorováno, ashell je vždy interaktivní).
+     * Vstup: POST /ashell  s volitelným JSON body {"mode":"ashell-host|adb-shell"}.
+     *   - "adb-shell" (default z `ashell adb shell`) → rootfsDirName="ashell-adb",
+     *     terminal poběží pod uid 2000 přes shell_daemon (--attach).
+     *   - cokoli jiného / prázdné → rootfsDirName="ashell-host" (app uid).
      * Výstup: 200 + JSON s {status, pwd, uid}.
      */
     private fun handleAshell(context: Context, body: String, out: OutputStream) {
@@ -1230,23 +1371,32 @@ object LocalApiServer {
             return
         }
         try {
-            // Spustíme novou TerminalActivity v "ashell módu" (rootfsDirName="ashell-host")
+            val adbShell = try {
+                JSONObject(body.ifBlank { "{}" }).optString("mode", "") == "adb-shell"
+            } catch (_: Exception) { false }
+
+            val rootfsDirName = if (adbShell) "ashell-adb" else "ashell-host"
+            // Spustíme novou TerminalActivity v "ashell módu".
             // FLAG_ACTIVITY_NEW_TASK + FLAG_ACTIVITY_NEW_DOCUMENT + FLAG_ACTIVITY_MULTIPLE_TASK
             // překoná singleTask launchMode a otevře novou instanci pro ashell escape.
             val intent = Intent(ctx, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
                 addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-                putExtra("rootfsDirName", "ashell-host")
+                putExtra("rootfsDirName", rootfsDirName)
                 putExtra("mountStorage", false)
-                putExtra("ashellMode", true)
+                // ashellMode spouští app-uid host shell (startAshellSession).
+                // Pro adb-shell (uid 2000) ho NESMÍME nastavit, jinak se
+                // rootfsDirName=="ashell-adb" vůbec nevyhodnotí.
+                putExtra("ashellMode", !adbShell)
             }
             ctx.startActivity(intent)
             sendResponse(out, 200, "OK", JSONObject().apply {
-                put("status", "ashell_started")
-                put("uid", Process.myUid())
+                put("status", if (adbShell) "adb_shell_started" else "ashell_started")
+                put("mode", if (adbShell) "adb-shell" else "ashell-host")
+                put("uid", if (adbShell) 2000 else Process.myUid())
                 put("pwd", ctx.filesDir.absolutePath)
-                put("user", "app")
+                put("user", if (adbShell) "shell" else "app")
             }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
@@ -1264,6 +1414,32 @@ object LocalApiServer {
      * Vyžaduje SYSTEM_ALERT_WINDOW (Settings.canDrawOverlays). Bez oprávnění
      * otevře systémové nastavení a vrátí status overlay_permission_required.
      */
+    /**
+     * POST /terminal/open — otevře TerminálActivity (plnohodnotný terminál core appky).
+     *
+     * Používá to externí X11 launcher (com.linux_core.xlauncher) pro tlačítko
+     * "přepnout do terminálu". TerminalActivity není exported (záměrně), takže
+     * cizí appka ji nemůže spustit přímo — tudy to jde přes běžící app proces.
+     * Endpoint není citlivý (nic nečte/nevnucuje), ale je jen pro loopback.
+     */
+    private fun handleTerminalOpen(context: Context, out: OutputStream) {
+        val ctx = appContext ?: run {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
+            return
+        }
+        try {
+            val intent = Intent(ctx, com.linux_core.ui.terminal.TerminalActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            ctx.startActivity(intent)
+            sendResponse(out, 200, "OK", "{\"ok\":true}")
+        } catch (e: Exception) {
+            Log.e(TAG, "handleTerminalOpen failed: ${e.message}", e)
+            sendResponse(out, 500, "Internal Error", "{\"ok\":false,\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleTerminalFloat(context: Context, body: String, out: OutputStream) {
         val ctx = appContext ?: run {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
@@ -1352,10 +1528,10 @@ object LocalApiServer {
     }
 
     private fun handleVpnStatus(context: Context, out: OutputStream) {
-        val running = com.linux_core.core.VpnCaptureService.isRunning()
-        val packets = com.linux_core.core.VpnCaptureService.getCapturedPacketCount()
-        val bytes = com.linux_core.core.VpnCaptureService.getCapturedByteCount()
-        val vpnIp = com.linux_core.core.VpnCaptureService.getVpnAddress()
+        val running = com.linux_core.core.vpn.VpnCaptureService.isRunning()
+        val packets = com.linux_core.core.vpn.VpnCaptureService.getCapturedPacketCount()
+        val bytes = com.linux_core.core.vpn.VpnCaptureService.getCapturedByteCount()
+        val vpnIp = com.linux_core.core.vpn.VpnCaptureService.getVpnAddress()
         val json = JSONObject().apply {
             put("running", running)
             put("packets", packets)
@@ -2230,6 +2406,32 @@ object LocalApiServer {
         }
     }
 
+    // CPU pin per distro (UI ikona CPU, `nh cpu on|off`); platí od dalšího bootu.
+    private fun handleCpuPinGet(context: Context, out: OutputStream) {
+        val obj = JSONObject()
+        for (id in listOf("kali", "parrot", "docker")) {
+            obj.put(id, com.linux_core.core.rootfs.loadCpuPin(context, id))
+        }
+        sendResponse(out, 200, "OK", obj.toString())
+    }
+
+    private fun handleCpuPinSet(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val id = com.linux_core.core.rootfs.cpuPinKey(json.optString("distro", ""))
+            if (id !in listOf("kali", "parrot", "docker") || !json.has("enabled")) {
+                sendResponse(out, 400, "Bad Request",
+                    "{\"error\":\"expected {distro: kali|parrot|docker, enabled: bool}\"}")
+                return
+            }
+            val enabled = json.getBoolean("enabled")
+            com.linux_core.core.rootfs.saveCpuPin(context, id, enabled)
+            sendResponse(out, 200, "OK", "{\"distro\":\"$id\",\"enabled\":$enabled}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleRootfsBackup(context: Context, out: OutputStream) {
         try {
             val distro = RootfsManager.DISTROS.find { it.id == "kali" } ?: RootfsManager.DISTROS.first()
@@ -2350,7 +2552,7 @@ object LocalApiServer {
         try {
             val prefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
             val enabled = prefs.getBoolean("enable_mitm", com.linux_core.BuildConfig.ENABLE_MITM)
-            val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+            val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
             val json = JSONObject().apply {
                 put("mitm", if (enabled) "on" else "off")
                 put("active_sessions", sessions.size)
@@ -2392,7 +2594,7 @@ object LocalApiServer {
             }
 
             if (fmt == "legacy") {
-                val sessions = com.linux_core.core.TlsMitmEngine.getSessionSnapshots()
+                val sessions = com.linux_core.core.mitm.TlsMitmEngine.getSessionSnapshots()
                 val sb = StringBuilder()
                 for ((port, snippet) in sessions) {
                     sb.append("=== Port $port ===\n")
@@ -2721,197 +2923,6 @@ object LocalApiServer {
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }
-    }
-
-    // ============================================================
-    //  code-server (VS Code in browser) — editor control endpoints
-    // ============================================================
-    //
-    // These endpoints run the code-server-ctl shell script inside the PRoot
-    // guest (the same pattern used for nethunter-desktop start/stop).
-    //
-    // Security:
-    //   - All endpoints require a Bearer token when accessed remotely
-    //     (added to the sensitive-endpoint list at the connection handler).
-    //   - The /editor/password endpoint is additionally localhost-restricted
-    //     so a shared-API listener never leaks the password over the LAN.
-    //   - No free-form shell input is accepted. Only fixed subcommands.
-    //
-    // Storage:
-    //   - code-server state lives in /root/.config/code-server/config.yaml
-    //     (auto-deployed by code-server-ctl with chmod 600).
-    //   - Editor status cache is held in SharedPreferences ("editor_settings").
-
-    private fun editorPrefs(context: Context) =
-        context.getSharedPreferences("editor_settings", Context.MODE_PRIVATE)
-
-    private fun runCodeServerCtl(context: Context, vararg args: String): String {
-        val bootScript = java.io.File(context.filesDir, "usr/bin/boot")
-        if (!bootScript.exists() || !bootScript.canExecute()) {
-            return "{\"error\":\"boot script not found or not executable. Open a terminal session first to bootstrap the rootfs.\"}"
-        }
-        return try {
-            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--", "code-server-ctl", *args)
-            pb.directory(context.filesDir)
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().use { it.readText() }
-            val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) {
-                proc.destroyForcibly()
-                return "{\"error\":\"code-server-ctl timed out after 15s\"}"
-            }
-            val exitCode = proc.exitValue()
-            if (exitCode != 0) {
-                return JSONObject().apply {
-                    put("error", "code-server-ctl exited with code $exitCode")
-                    put("exit_code", exitCode)
-                    put("output", output.take(500))
-                }.toString()
-            }
-            output
-        } catch (e: Exception) {
-            Log.e(TAG, "runCodeServerCtl failed: ${e.message}", e)
-            "{\"error\":\"${e.message}\"}"
-        }
-    }
-
-    private fun handleEditorStart(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "start")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null && !scriptJson.has("error")) {
-                scriptJson
-            } else {
-                val errorMsg = scriptJson?.optString("error")
-                    ?: raw.take(200)
-                JSONObject().apply { put("error", errorMsg) }
-            }
-            val code = if (payload.has("error")) 500 else 200
-            editorPrefs(context).edit()
-                .putLong("last_start_ts", System.currentTimeMillis())
-                .apply()
-            sendResponse(out, code, if (code == 200) "OK" else "Start Failed", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorStop(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "stop")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = scriptJson ?: JSONObject().apply {
-                put("status", "stopped"); put("raw", raw)
-            }
-            val code = if (payload.has("error")) 500 else 200
-            sendResponse(out, code, if (code == 200) "OK" else "Stop Failed", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorStatus(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "status")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null) {
-                // Add last_start_ts from prefs for UI diagnostics
-                try {
-                    val lastStart = editorPrefs(context).getLong("last_start_ts", 0L)
-                    if (lastStart > 0L) scriptJson.put("last_start_ts", lastStart) else scriptJson
-                } catch (e: Exception) { scriptJson }
-                scriptJson
-            } else {
-                JSONObject().apply { put("status", "unknown"); put("raw", raw) }
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorPassword(context: Context, out: OutputStream, isLocalConnection: Boolean = true) {
-        try {
-            // localhost-only enforcement: password must never leak over network
-            // even if the caller presents a valid Bearer token.
-            if (!isLocalConnection) {
-                sendResponse(out, 403, "Forbidden",
-                    "{\"error\":\"Password endpoint is restricted to localhost\"}")
-                return
-            }
-
-            val raw = runCodeServerCtl(context, "password")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = if (scriptJson != null && scriptJson.has("password")) {
-                scriptJson
-            } else {
-                JSONObject().apply {
-                    put("error", "password not available")
-                    put("raw", raw)
-                }
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorInfo(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "info")
-            val scriptJson = parseScriptJsonOrNull(raw)
-            val payload = scriptJson ?: JSONObject().apply {
-                put("error", "info not available"); put("raw", raw)
-            }
-            sendResponse(out, 200, "OK", payload.toString())
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun handleEditorInstall(context: Context, out: OutputStream) {
-        try {
-            val raw = runCodeServerCtl(context, "install")
-            val obj = parseScriptJsonOrNull(raw)
-            // If install succeeds, the script may print success messages but not JSON.
-            // Parse the raw output for error keywords.
-            if (obj != null && obj.has("error")) {
-                sendResponse(out, 500, "Internal Error", obj.toString())
-            } else if (raw.lowercase().contains("error") || raw.lowercase().contains("fail")) {
-                sendResponse(out, 500, "Internal Error", JSONObject().apply {
-                    put("error", "Installation failed")
-                    put("output", raw.take(500))
-                }.toString())
-            } else {
-                sendResponse(out, 200, "OK", JSONObject().apply {
-                    put("status", "installed")
-                    put("output", raw.take(500))
-                }.toString())
-            }
-        } catch (e: Exception) {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
-        }
-    }
-
-    private fun parseScriptJsonOrNull(raw: String): JSONObject? {
-        if (raw.isBlank()) return null
-        return try {
-            val trimmed = raw.trim().lines().lastOrNull { it.trim().startsWith("{") } ?: raw.trim()
-            JSONObject(trimmed)
-        } catch (e: Exception) {
-            Log.w(TAG, "parseScriptJsonOrNull: not JSON: ${raw.take(200)}")
-            null
-        }
-    }
-
-    private fun parseScriptJsonOrWrap(raw: String, fallbackStatus: String): String {
-        val obj = parseScriptJsonOrNull(raw)
-        if (obj != null) return obj.toString()
-        return JSONObject().apply {
-            put("status", fallbackStatus)
-            put("raw", raw)
-        }.toString()
     }
 
     // ═══════════════════════════════════════════════════════════════════

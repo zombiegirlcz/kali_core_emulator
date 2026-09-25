@@ -1,6 +1,6 @@
-# Linux Kali NetHunter🐉 and ParrotOS security🦜 proot-distro emulator
+# Linux Kali NetHunter🐉 & ParrotOS Security🦜 PRoot Emulator
                        _ROOT && UNROOT_
-A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency Termux terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
+A state-of-the-art, highly optimized Android application designed to run full guest Linux distributions (**Kali NetHunter** & **ParrotOS Security**) on unrooted devices using PRoot and low-latency terminal emulation, powered by a built-in premium **AdGuard VPN & DNS proxy firewall service**.
 
 ---
 
@@ -162,7 +162,7 @@ exec 3>&-
 
 Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
 
-> **Důležité:** Modul g2 **nikdy není** připojen k UDC — aktivaci/deaktivaci nechává na aplikaci (`UsbGadgetManager` / `/usbg2` API). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
+> **Důležité:** Modul g2 **nikdy není** připojen k UDC sám od sebe — aktivaci/deaktivaci dělá `usbtool` pod real rootem (guest přes `sudo` / su_daemon re-entry; configfs `/config/usb_gadget` je bindnutý do guesta). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
 
 ### Instalace
 - Flash přes Magisk (zip), vyžaduje **Magisk ≥ 20400**.
@@ -187,9 +187,8 @@ Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připra
 
 ### Použití z aplikace
 - Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
-- HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
-- **Spuštění skriptů z modulu přes API:** `POST /usbg2/exec` s body `{"args":["g2"]}` — spustí `/system/bin/usbtool <args>` pod real rootem (Magisk su). Argumenty se validují (jen `[a-zA-Z0-9_.-]`), `watch` je blokovaný (streamuje donekonečna).
-- **Z prootu:** `usbtool status|g1|g2|setup|host|device|detect|logs` (wrapper v `/usr/local/bin`, volá API) nebo `nh usb gadget <cmd>`.
+- **Přímé ovládání (bez API):** `usbtool status|g1|g2|setup|host|device|detect|logs` — guest wrapper zavolá `/system/bin/usbtool` pod real rootem přes `sudo` (su_daemon re-entry). `nh usb gadget <cmd>` je ekvivalent.
+- Příprava g2 (configfs) probíhá automaticky v `post-fs-data.sh` modulu při bootu; `usbtool setup` ji jen zopakuje ručně.
 - Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
 
 ---
@@ -233,14 +232,14 @@ To track the state of the guest container, the following sentinel files are mana
 - `.setup_done`: Touched upon completion of `bootstrap.sh` to prevent re-running setup operations.
 
 #### 3. Execution Entrypoints & Scripts
-- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader + libtalloc, and launches the guest shell with flag mounts (`-v 0 --kill-on-exit -0 --link2symlink --sysvipc`). It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
+- **`boot`** (Android Host, `assets/usr/bin/boot`): Universal PRoot launcher that replaced `launcher.sh`. It detects the CPU arch, deploys PRoot + loader (static, talloc linked in), prepares fake `/proc` and `/sys` substitutes, and launches the guest shell. Base flag mounts (`-v 0 --kill-on-exit -0 --link2symlink -L`) are shared, while `--sysvipc` and `--kernel-release` are omitted in minimal mode. It also implements the `su_daemon` re-entry mode (`boot -- <cmd>`) that re-enters PRoot as real root so `su`/`sudo` commands run INSIDE the guest sandbox.
 - **`/root/bootstrap.sh`** (Guest Guest OS): Runs when `.bootstrap_required` is present. It configures trusted apt sources, temporarily replaces the `debconf` perl module with mock shell handlers (to bypass unconfigured Perl dependencies), diverts virtualization-incompatible system commands (e.g. `systemctl`, `service`, `udevadm`) to `/bin/true`, installs core packages (`usrmerge`, `perl`, `zsh`, `sudo`, `curl`, `python3`), installs required python libraries (`requests`, `scapy`), creates the default user (`kali` or `parrot`) with passwordless sudo rights, and sets Zsh/Bash as default.
 - **`/root/entrypoint.sh`** (Guest Guest OS): Cleans up `dpkg` locks, restores `passwd` if it was incorrectly diverted, sets up user-specific `.zshrc` profiles, fixes `sudo` permissions (`chmod 4755`), and invokes the interactive login shell (`zsh` or fallback `/bin/bash`).
 
 #### 4. Shared Library & Dynamic Linker Fixes
 To prevent core dump or execution crashes in the sandboxed chroot:
 - The system loader is copied into the guest `lib/ld-linux-aarch64.so.1` and `lib64/ld-linux-aarch64.so.1`.
-- The helper library `libtalloc.so.2` is deployed into guest `lib/libtalloc.so.2`.
+- `talloc` is linked **statically** into `proot-static-*` (`libtalloc.a`); no `libtalloc.so.2` is deployed at runtime.
 - Any broken symbolic links for `bin/sh` and `bin/bash` in the guest OS are automatically dereferenced and replaced with solid binaries to prevent loader failures.
 
 #### 5. Deployed Helper Scripts — Unified `nh` CLI (Guest `/usr/local/bin/`)
@@ -258,7 +257,9 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh desktop` | `start`, `stop`, `status` |
 | `nh fix` | `pkg <name>`, `auto`, `permission <path>` |
 | `nh apps` | `usage` |
-| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control` |
+| `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control`, `bridge`, `gadget` |
+| `nh shi` | `start --root\|--shell\|--none`, `stop`, `status`, `exec <cmd>` |
+| `nh docs` | otevře `nethunter_docs.md` v pageru (`less -R -F`) |
 
 > Legacy scripts (`nethunter-*`, `vpn-on`, `vpn-off`, `vpn-cli`, `vpn-bypass`, `ignore-vpn`, `nethunter-agent-cli`, `nethunter-desktop`) are still present as **compatibility symlinks** pointing to `nh`. All new development and documentation should use the unified `nh` syntax.
 
@@ -361,9 +362,9 @@ Připojení USB zařízení už **nepřeruší** běžící terminálovou relaci
 
 ---
 
-## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+## 📦 Správa kontejnerů — `nh distro`
 
-Wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
+Správce PRoot kontejnerů (kali, parrot) — volá se z guestu **i z hostitele bez rootu** (localhost API bez auth).
 
 ```bash
 nh distro list                          # seznam distro + stav
@@ -387,6 +388,57 @@ curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
 **Endpoints** (`LocalApiServer.kt`): `GET /distro/list`, `GET /distro/ps`, `POST /distro/kill` (`session_id`+`force`), `POST /distro/remove` (`id`+`force`); `backup`/`restore` sdílejí existující `/rootfs/*`. Citlivé ops (`/distro/kill`, `/distro/remove`) jsou v `sensitiveEndpoints` — auth jen pro vzdálené.
 
 > **Fáze 2:** `install`, `progress`, `reset`, `login` (download+extract s progresem, spuštění shellu z hostitele).
+
+---
+
+## ⚡ CPU pin — `nh cpu`
+
+Každý syscall, který PRoot zachytí, je ptrace výměna guest ↔ proot. Na různých jádrech
+stojí ~320 µs (probouzení jádra), na jednom velkém jádru ~70–100 µs → shell, apt, git,
+skripty a `configure` jsou 2–5× rychlejší (`zsh -i` 1,5 → 0,7 s, exec 13 → 2,5 ms).
+Daň: celý guest jede na jednom jádru, paralelní výpočty (kompilace, john/hashcat, `xz -T0`,
+ML) spouštěj přes `nh cpu all`.
+
+Zapíná se **ikonou CPU v pravém horním rohu karty distra** (kali / parrot / docker, platí
+od dalšího bootu) nebo z CLI:
+
+```bash
+nh cpu status             # jádra, pin této session, uložené volby
+nh cpu on|off [distro]    # uložit pro další boot + hned aplikovat na běžící session
+nh cpu pin [N] | unpin    # jen živě (N = jádro, default nejrychlejší)
+nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne zpět)
+nh cpu run 7 cmd …        # příkaz na jádru N
+nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše na big / little …),
+                          # barevná tabulka + grafy, session se pak vrátí do původního stavu
+nh cpu boost on|off [N]   # root boost: scaling_min_freq=max pro policy jádra N (Magisk nh_cpuctl)
+nh cpu boost status       # aktuální boost stav všech policies
+```
+
+**`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
+najde do ~2 s podle `comm`/`argv[0]`, potomci zdědí všechna jádra). Čte se z prostředí
+každého procesu v guestu, takže funguje v `~/.zshrc` i jednorázově:
+
+```bash
+export CPU_ALL="make cargo john xz ffmpeg"
+export CPU_ALL='$(cat ~/cpu_all.txt)'     # nebo CPU_ALL=~/cpu_all.txt — soubor se čte živě
+CPU_ALL=make make -j8                     # jen pro tento příkaz
+```
+
+Mechanika: `boot` s `NH_CPU_PIN=1` zavolá `/system/bin/taskset -p <maska> $$` před `exec`
+proot (zdědí proot i guest) a spustí hlídače, který pin obnoví, když ho Android při změně
+cpusetu přepíše. Endpoint `GET|POST /distro/cpupin` (`{distro, enabled}`).
+
+### Magisk modul `nh_cpuctl` (volitelný, root)
+
+Statická bionic binárka `/system/bin/cpuctl`, kterou instaluje Magisk modul
+`magisk-modules/nh_cpuctl/`. Po bootu spustí démona s netlink proc connector —
+nahradí mksh hlídač z `boot` okamžitým zachycením nových procesů (EXEC/FORK),
+s fallbackem na `/proc` scan. Navíc poskytuje `cpuctl boost on|off` (cpufreq
+min=max, přežije jen do rebootu) a `cpuctl pin <maska> <pid>`.
+
+Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
+Zip: `cd magisk-modules && bash build.sh` → `nh_cpuctl-v1.0.zip`.
+Instalace: `su -c '/product/bin/magisk --install-module nh_cpuctl-v1.0.zip'`, reboot.
 
 ---
 
@@ -455,13 +507,11 @@ které rozbalí services panel:
 ```┌─────────────────────────────────────────────────────────┐
 │ [☰] [🏠]         🐉 KALI ▼       [touch] [🐚CLI|🖥GUI] │
 ├─────────────────────────────────────────────────────────┤
-│ ⚡SHIZU ●  [code] CODE ○  🔥 PHOENIX ○  [▶ ALL] [↻]  │
+│ ⚡SHIZU ●  [▶ ALL] [↻]  │
 ├─────────────────────────────────────────────────────────┤
 ```
 
 - **⚡ SHIZU** — Shizuku server status a ovládání
-- **[code] CODE** — code-server (VS Code v prohlížeči, :8443)
-- **🔥 PHOENIX** — Phoenix OTLP exportér
 - **▶ ALL** — spustí všechny služby
 - **↻** — refresh statusů (automaticky každých 5s)
 
@@ -481,62 +531,133 @@ Kliknutím na službu se rozbalí detail s akčními tlačítky:
 ```
 │ ⚡ SHIZUKU SERVER ●  pid:12345  self                    │
 │                                      [⏹ STOP]          │
-│ [code] CODE-SERVER ●  :8443                             │
 │                    [⏹ STOP]              [🌐 OPEN]      │
 ```
 
-### Spuštění Shizuku serveru
+### Privilege eskalace z PRootu — `nh shi`
 
-Automatická strategie `startServer()`:
-
-1. **Už běží?** → return true
-2. **`su` + Shizuku APK?** → `su -c "libshizuku.so --apk=<apk>"` → server běží jako **root**
-3. **`su` bez Shizuku APK?** → raw `su -c` fallback pro příkazy
-4. **ADB?** → pokus o start přes ADB shell
-5. **Nic?** → tlačítko **⚙ SETUP** otevře dialog s instrukcemi
-
-### CLI v PRootu
-
-Automaticky nasazeno do `/usr/local/bin/shizuku`:
+Od v4.5 má unified CLI **`nh shi`** kategorii, která spouští příkazy pod
+vyšším UID. Režim se přepíná jednou a platí pro všechny další `nh shi exec`:
 
 ```bash
-# Spuštění příkazu s vyššími právy
-shizuku -c "pm list packages"
-shizuku -c "settings put global airplane_mode 1"
-shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
-shizuku -c "svc wifi disable"
-shizuku -c "dumpsys battery set level 15"
+nh shi start --none      # shell_daemon pod uid 2000 (non-root, perzistentní)
+nh shi start --shell     # su fallback: su 2000 -c per command (jen root zařízení)
+nh shi start --root      # su fallback: su 0 -c per command (jen root zařízení)
 
-# Interaktivní shell
-shizuku
+nh shi exec "pm list packages | head"
+nh shi exec "settings put global airplane_mode_on 1"
+nh shi exec "appops set com.twitter POST_NOTIFICATIONS deny"
+nh shi exec "svc wifi disable"
+nh shi exec "dumpsys battery set level 15"
+
+nh shi status            # aktivní režim, su, shell_daemon, adb
+nh shi stop              # vypnout eskalaci (mode=none)
 ```
+
+`nh shi exec` jde přes `LocalApiServer`. Pokud běží `shell_daemon`, použije
+`POST /shizuku/daemon/exec` (TCP 127.0.0.1:13341); jinak fallback na
+`POST /shizuku/exec` (su režim). V obou případech se vrací stdout + exit code.
+
+### Tři režimy — kdy který
+
+| Režim | UID | Jak | Kdy použít |
+|---|---|---|---|
+| `--none` | 2000 | `shell_daemon` (jeden start přes `adb shell`, pak TCP) | Non-root zařízení (wireless debugging) |
+| `--shell` | 2000 | `su 2000 -c <cmd>` per command (Magisk) | Root zařízení, práva jako adb |
+| `--root` | 0 | `su 0 -c <cmd>` per command (Magisk) | Root zařízení, plná práva |
+
+> **`--none` = obdoba adb/Shizuku démona.** `shell_daemon` se jednou nahraje
+do `/data/local/tmp` a spustí pod shell UID (2000) přes `adb shell`; pak běží
+do rebootu a všechny další příkazy jdou jen přes TCP loopback — **žádné `su`,
+žádné `adb`, žádná Shizuku appka ani její knihovny**. Je to bratr `su_daemon`
+(ten běží pod rootem), ale cíleně bez rootu.
+>
+> Na zařízeních s Magisk `su` umí přepnout na libovolné UID (`su 2000 -c`),
+takže režimy `--shell`/`--root` fungují okamžitě — ale jsou to **fork-per-command**
+procesy, ne perzistentní démon.
+
+### HTTP API (port 1337, Bearer pro non-localhost)
+
+| Endpoint | Metoda | Popis |
+|---|---|---|
+| `/shizuku/status` | GET | `{su, su_path, active_mode, adb_available, shizuku:{...}}` |
+| `/shizuku/start` | POST | tělo `root` \| `shell` \| `none` → nastaví aktivní režim |
+| `/shizuku/stop` | POST | vypne eskalaci (`mode=none`) |
+| `/shizuku/exec` | POST | tělo = příkaz (nebo JSON `{command, mode}`) → `{stdout, exit_code, mode}` |
+| `/shizuku/daemon/status` | GET | `{running, port}` — stav `shell_daemon` |
+| `/shizuku/daemon/start` | POST | spustí `shell_daemon` (jen s `su`; non-root start přes `nh shi start --none`) |
+| `/shizuku/daemon/stop` | POST | `pkill` pod uid 2000 |
+| `/shizuku/daemon/exec` | POST | tělo = příkaz (nebo JSON `{command, cwd}`) → `{stdout, stderr, exit_code}` |
 
 ### Architektura
 
-| Komponenta | Cesta | Popis |
+| Komponenta | Cesta v APK | Popis |
 |---|---|---|
-| Server binárka | `assets/shizuku/libshizuku.so` | PIE executable (native starter) |
-| ADB knihovna | `assets/shizuku/libadb.so` | Native ADB klient |
-| Rish script | `assets/shizuku/rish.sh` | Rish wrapper pro PRoot |
-| Rish dex | `assets/shizuku/rish_shizuku.dex` | Rish Java třídy |
-| Manager | `ShizukuManager.kt` | Server lifecycle, status, exec |
-| ProotManager | `ProotManager.kt` | Nasazení rish do guestu |
+| shell_daemon binárka | `assets/shell_daemon` | Persistentní uid 2000 démon (TCP 13341, token) |
+| shell_daemon token | `<filesDir>/shell_daemon.token` | 128 hex znaků; guest ho vidí na stejné cestě (bind App Data `/data/user/0/com.linux_core`) |
+| Daemon klient | `ShellDaemonClient.kt` | Start (`su 2000`), exec přes TCP, token management |
+| Deploy | `ProotManager.deployShellDaemon()` | Kopíruje binárku + token do filesDir |
+| API | `LocalApiServer.kt` | `/shizuku/daemon/*` endpointy |
+
+> **Legacy Shizuku artefakty** (`assets/usr/lib/shizuku.apk`, `libshizuku.so`,
+> `librish.so`, `rish.sh`) zůstávají v APK pro zpětnou kompatibilitu s
+> `rikka.shizuku` klientem, ale `--none` už je nepoužívá.
+
+#### Klientská část Shizuku (Apache 2.0, RikkaApps/Shizuku-API)
+
+Aby server mohl doručit binder do naší appky, musí být v appce zaregistrovaný
+`ShizukuProvider` (ContentProvider) — server do něj volá
+`ContentProvider.call("sendBinder")`. Bez něj rish v guestu hlásí
+`Server is not running` (server nemá kam binder poslat).
+
+Zdroje (zkopírované z `RikkaApps/Shizuku-API`, `LICENSE` Apache 2.0):
+
+| Soubor | Účel |
+|---|---|
+| `rikka/shizuku/Shizuku.java` | klientská API (binder, permission, listeners) |
+| `rikka/shizuku/ShizukuBinderWrapper.java` | proxy binder přes `transactRemote` |
+| `rikka/shizuku/ShizukuProvider.java` | přijímá binder od serveru |
+| `rikka/shizuku/ShizukuRemoteProcess.java` | `Process` nad `newProcess` |
+| `rikka/shizuku/SystemServiceHelper.java` | reflexe `ServiceManager` |
+| `rikka/shizuku/ShizukuApiConstants.java` | konstanty protokolu |
+| `moe/shizuku/api/BinderContainer.java` | Parcelable wrapper binderu |
+| `rikka/sui/Sui.java` | Sui (Magisk modul) — vypnuto |
+| `app/src/main/aidl/moe/shizuku/server/*.aidl` | AIDL kontrakty serveru |
+
+Registrace v `AndroidManifest.xml`:
+
+```xml
+<provider
+    android:name="com.linux_core.core.LinuxCoreShizukuProvider"
+    android:authorities="com.linux_core.shizuku"
+    android:exported="true"
+    android:multiprocess="false"
+    android:directBootAware="true"
+    android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+```
+
+`LinuxCoreShizukuProvider` je tenký wrapper, který v `onCreate()` volá
+`disableAutomaticSuiInitialization()` — automatická Sui inicializace jde přes
+hidden-API reflexi (`ServiceManager.getService`) a na Androidu 9+ by shodila
+inicializaci provideru (NPE v `SystemServiceHelper`). Sui nepoužíváme.
 
 ### Podmínky
 
-- **Shizuku app** nainstalovaná (Play Store / F-Droid) + spuštěný server (root nebo ADB)
-- **Nebo root** (Magisk, `su`)
-- **Nebo ADB** (wireless debugging)
+- **Root zařízení** (Magisk) → `nh shi start --shell` nebo `--root`, funguje hned
+- **Non-root zařízení** → `nh shi start --none` + Shizuku server (adb pairing);
+  vyžaduje Shizuku app nainstalovanou (Play Store / F-Droid) NEBO bundlovaný
+  `shizuku.apk` spuštěný přes `adb`
+- **Bez rootu i bez adb** → eskalace není možná (app UID zůstává)
 
 ---
 
-## 📂 Open-with & `~/share` (Termux-style)
+## 📂 Open-with & `~/share`
 
 Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
 
 - **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
 - Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
-- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně docker image) → uvnitř guesta je složka vidět jako `~/share`.
 
 > Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
 
@@ -552,7 +673,7 @@ Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share
 Terminál jako Messenger chat-head nad ostatními aplikacemi.
 
 - **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
-- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + `TerminalView` + rohová úchytka ◢ pro resize.
 - **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
 
 ### Session režimy
@@ -566,14 +687,47 @@ Terminál jako Messenger chat-head nad ostatními aplikacemi.
 - Při prvním použití Android vyzve k povolení overlay — `nh float` ho sám otevře, povol a spusť znovu.
 - `nh float here` používá `$NETHUNTER_SESSION_ID` (stejný mechanismus jako `nh vpn ignore`).
 
+## 📈 Changelog — Režimy spouštění & fake systémová data
+
+Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící fake systémová data a sjednocuje nasazování PRoot binárek.
+
+### 1. Režimy spouštění D / I / M na každé kartě
+- Každé distro (Kali, Parrot, Docker) má vlastní trojici přepínačů **D** (plný, výchozí), **I** (izolovaný), **M** (minimální); volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>`.
+- Izolace a minimální režim jsou **nezávislé volby** — izolovaný režim se už nechová jako minimální (dřív ho launcher chybně přepínal).
+- Minimální režim navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+- Starší uložené volby se při prvním načtení **migrují** (původní `M`=plný → `D`, původní `D`=minimální → `M`), takže volba na zařízení po aktualizaci nepřepne na jiný režim.
+
+### 2. Fake `/proc` a `/sys` uvnitř kontejneru
+- Launcher vytváří statické náhrady (`loadavg`, `stat`, `uptime`, `version`, `vmstat` + čtyři `sysctl` hodnoty + prázdný `/sys/fs/selinux`) v `$FILES_DIR/nh/sysdata/<distro>/` a binduje je dovnitř.
+- Soubory v `/proc/sys` se vážou **jednotlivě**, ne celý adresář — zbytek `/proc/sys` zůstává živý.
+- Doplněny chybějící adresáře `sysctl/kernel` a `sysctl/fs/inotify` — dřív zápis pod `set -e` shodil start relace.
+- `/dev/shm` se binduje z `$FILES_DIR/nh/shm/<distro>`.
+
+### 3. Prostředí relace
+- Neminimální relace dostávají `HOME=/root`, `USER=root`, `TERM` (fallback `xterm-256color`), `MOZ_FAKE_NO_SANDBOX=1` a `PULSE_SERVER=127.0.0.1`.
+
+### 4. Nasazení PRoot binárek při startu aplikace
+- `ProotManager.setupProotEnvironment()` se volá hned v `MainActivity.onCreate()` → `boot`, `proot` a `loader` (static) jsou v `files/usr/bin` dřív, než se otevře terminál.
+- Nasazení je **hashované**: MD5 assetu se porovná s MD5 souboru na disku — změněný asset se přepíše, nezměněný se přeskočí. Žádný sidecar `.md5` se neukládá.
+
+### 5. Obnova rootfs — explicitní chyby
+- `RootfsManager` kontroluje návratové hodnoty `mkdirs()` při extrakci/obnově a při selhání vyhazuje `IOException` (dřív tiché `ENOENT`).
+- Obnova přejmenuje stávající rootfs na `.bak` a při chybě se vrátí zpět.
+
+### 6. CI podepisování
+- GitHub Actions staví debug APK **stejným** klíčem `app/release.jks` (alias `releaseKey`) → `adb install -r` funguje napříč sestaveními.
+- Hesla z GitHub secrets (`KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`); validace certifikátu je měkká (warning místo pádu buildu).
+
+---
+
 ## 📈 Version 4.4 Changelog (FLOAT-SHARE)
 
 Tento release přidává „Open with" / share do `~/share`, Picture-in-Picture režim terminálu a plovoucí terminálové okno (`nh float`):
 
-### 1. Open-with & `~/share` (Termux-style)
+### 1. Open-with & `~/share`
 - **`ShareReceiverActivity`** (exported, translucent) s filtry `ACTION_VIEW`/`ACTION_SEND`/`ACTION_SEND_MULTIPLE` pro `*/*` → appka viditelná v systémovém „Otevřít v aplikaci" i share sheetu.
 - Kopírování přijatých souborů do `filesDir/share/` (sanitizace jména, kolize `nazev (1).ext`), toast + otevření terminálu s `cd /root/share`.
-- `boot` skript binduje `$FILES_DIR/share → /root/share` (i non-termux docker) → guest vidí `~/share`.
+- `boot` skript binduje `$FILES_DIR/share → /root/share` (i docker image) → guest vidí `~/share`.
 
 ### 2. Picture-in-Picture (PiP)
 - Manifest `SYSTEM_ALERT_WINDOW` + `TerminalActivity` `supportsPictureInPicture`/`resizeableActivity`.
@@ -691,7 +845,7 @@ This release adds Shizuku privilege escalation, the services dashboard, replaces
 
 ### 2. Shizuku + Services Dashboard
 - **Self-contained Shizuku server:** Bundled `libshizuku.so` native server binary + ADB pairing + rish shell
-- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku, code-server, and Phoenix
+- **Services panel:** Collapsible second row in terminal topBar with status indicators (`●`/`○`) for Shizuku and the ADB shell daemon
 - **`shizuku` CLI in PRoot:** Auto-deployed to `/usr/local/bin/shizuku` — `shizuku -c "pm list packages"`
 - **Start strategies:** Existing Shizuku server → `su -c` → ADB shell → interactive setup dialog
 - **ShizukuManager.kt:** New module for server lifecycle, status checks, and privileged `exec()`
@@ -713,7 +867,7 @@ This release adds Shizuku privilege escalation, the services dashboard, replaces
 ## ⚙️ Technology Stack
 - **Kotlin & Jetpack Compose** for a modern, responsive UI.
 - **PRoot** for user-space chroot virtualization without root privileges.
-- **Termux Libraries** for low-latency terminal rendering.
+- **Terminal emulation libraries** for low-latency terminal rendering.
 - **AdGuard NatLibs** for secure network diagnostic intercepting.
 - **OkHttp & Apache Commons Compress** for robust rootfs downloads and extraction.
 

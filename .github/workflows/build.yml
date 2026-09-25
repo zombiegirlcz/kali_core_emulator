@@ -2,12 +2,20 @@ name: Build APK
 
 on:
   push:
-    branches: [master]
+    branches: [dev, master]
   workflow_dispatch:
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,22 +27,81 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
+          packages: 'platforms;android-36 build-tools;36.0.0 ndk;28.0.13004108'
+
+      - name: Restore release keystore
+        env:
+          RELEASE_JKS_BASE64: ${{ secrets.RELEASE_JKS_BASE64 }}
+        run: |
+          if [ -n "$RELEASE_JKS_BASE64" ]; then
+            printf '%s' "$RELEASE_JKS_BASE64" | base64 --decode > app/release.jks
+            chmod 600 app/release.jks
+          else
+            echo "::warning::RELEASE_JKS_BASE64 is not configured; Gradle will use debug signing"
+          fi
 
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Build native binaries and JNI library
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin the NDK explicitly to the version installed above (r28).
+          # Do NOT trust ANDROID_NDK_HOME on ubuntu-latest: it points at a
+          # preinstalled r27 whose static Bionic emits a PT_TLS segment with
+          # p_align=8, which the Android linker rejects at runtime with
+          # "executable's TLS segment is underaligned ... needs to be at least 64
+          # for ARM64 Bionic". r28 does not emit that segment for these binaries.
+          ndk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/ndk/28.0.13004108"
+          test -d "$ndk_root"
+          ndk_bin="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cc="$ndk_bin/aarch64-linux-android24-clang"
+          test -x "$cc"
+          echo "Using NDK: $ndk_root"
+          "$cc" --version | head -1
+
+          assets="app/src/main/assets"
+          jni="app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$assets" "$jni"
+
+          "$cc" -shared -fPIC \
+            -o "$jni/libusbfd_exporter.so" \
+            app/src/main/cpp/usbfd_jni.c -llog -landroid
+
+          "$cc" -static -o "$assets/usb_bridge" app/src/main/cpp/usb_bridge.c
+          "$cc" -o "$assets/su_daemon" app/src/main/cpp/su_daemon.c
+          "$cc" -static -o "$assets/su_wrapper" app/src/main/cpp/su_wrapper.c
+          "$cc" -o "$assets/ashell_pty" app/src/main/cpp/ashell_pty.c
+          "$cc" -o "$jni/libshelldaemon.so" app/src/main/cpp/shell_daemon.c
+
+          chmod 755 \
+            "$assets/usb_bridge" "$assets/su_daemon" "$assets/su_wrapper" \
+            "$assets/ashell_pty" "$jni/libshelldaemon.so"
+
+          for output in \
+            "$jni/libusbfd_exporter.so" "$jni/libshelldaemon.so" \
+            "$assets/usb_bridge" "$assets/su_daemon" "$assets/su_wrapper" \
+            "$assets/ashell_pty"; do
+            test -s "$output"
+            file "$output"
+          done
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest
+
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Check APK size
         run: ls -lh app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug

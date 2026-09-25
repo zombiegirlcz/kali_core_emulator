@@ -1,6 +1,9 @@
 #!/system/bin/sh
 # usb_g2_setup.sh — idempotentní příprava configfs USB gadget g2
 # (HID keyboard + Mass Storage + RNDIS), bez bindování UDC.
+#
+# Spouští se automaticky z post-fs-data.sh při bootu. Manuálně: usbtool setup
+# (v guestu pod sudo, na hostu pod rootem).
 
 set -e
 
@@ -9,6 +12,8 @@ LOG_DIR="/data/local/tmp"
 LOG="$LOG_DIR/usb_g2_setup.log"
 GADGET_ROOT="/config/usb_gadget"
 G2="$GADGET_ROOT/g2"
+
+mkdir -p "$LOG_DIR" 2>/dev/null || true
 
 # Try both common configfs mount points
 for c in /config /sys/kernel/config; do

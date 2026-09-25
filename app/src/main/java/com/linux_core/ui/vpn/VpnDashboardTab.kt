@@ -24,8 +24,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.linux_core.core.VpnCaptureService
-import com.linux_core.core.VpnProxyManager
+import com.linux_core.core.vpn.VpnCaptureService
+import com.linux_core.core.vpn.VpnProxyManager
 import kotlinx.coroutines.delay
 
 @Composable

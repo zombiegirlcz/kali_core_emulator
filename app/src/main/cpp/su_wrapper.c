@@ -72,6 +72,22 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
         ptr += term_len;
     }
 
+    // Session name (protocol extension, appended after TERM) — nepovinne.
+    // Kdyz NH_SU_SESSION je nastaveny, su_daemon nezabije root shell pri
+    // odpojeni klienta (surviving wireless-debugging drop, terminal tab
+    // close, atd.) — viz AGENTS.md "PRoot verze — tmux/multiplexery" a
+    // handle_persistent_session_su v su_daemon.c.
+    const char *session = getenv("NH_SU_SESSION");
+    if (session && session[0] != '\0') {
+        uint32_t session_len = (uint32_t)strlen(session);
+        if ((ptr + sizeof(uint32_t) + session_len) - (unsigned char *)payload_buf < BUFFER_SIZE) {
+            memcpy(ptr, &session_len, sizeof(uint32_t));
+            ptr += sizeof(uint32_t);
+            memcpy(ptr, session, session_len);
+            ptr += session_len;
+        }
+    }
+
     size_t payload_size = ptr - (unsigned char *)payload_buf;
 
     struct iovec io = { .iov_base = payload_buf, .iov_len = payload_size };

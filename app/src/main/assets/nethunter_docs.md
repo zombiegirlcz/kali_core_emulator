@@ -21,6 +21,46 @@ V rootfs se automaticky ověřuje a vytváří tato adresářová struktura:
 - **Oprava nefunkčních shell odkazů:** Pokud jsou `bin/sh` nebo `bin/bash` rozbité symlinky, nahradí se skutečnými kopiemi shellů.
 - **Předpřipravené API Wrappery:** V `/usr/local/bin` jsou nasazeny vlastní verze `apt`/`apt-get` ošetřující pády `debconf`, `dcheck` pro diagnostiku, `vpn-bypass` pro obcházení VPN filtru (port 13339) a sjednocený CLI nástroj `nh` aliasy starších příkazů (zpětná kompatibilita).
 
+### 🎛️ Režimy spouštění kontejneru (D / I / M)
+
+Každá karta distra (Kali, Parrot, Docker) má vlastní přepínač režimu spouštění. Volba se ukládá do `SharedPreferences("boot_modes")` pod klíčem `mode_<distro>` a launcheru se předává přes `NH_ISOLATED` / `NH_MINIMAL`.
+
+| Režim | Význam | Izolace | Minimální konfigurace | Co se binduje |
+|---|---|---|---|---|
+| **D** | plný (výchozí) | ne | ne | Android systém, úložiště, `$FILES_DIR/tmp`, `~/share`, fake `/proc` a `/sys` |
+| **I** | izolovaný | ano | ne | pouze `/dev`, `/proc`, `/sys` + fake `/proc` a `/sys` (žádné hostitelské cesty) |
+| **M** | minimální | ano | ano | pouze `/dev`, `/proc`, `/sys` (žádná fake data) |
+
+- Režim **M** navíc vypouští přepínače `--sysvipc` a `--kernel-release`.
+- Izolace a minimální konfigurace jsou **nezávislé volby** — izolovaný režim (**I**) pořád dostává fake systémová data i `/dev/shm`, jen nevidí hostitelské cesty.
+- Starší uložené volby se při prvním načtení migrují (původní `M`=plný → `D`, původní `D`=minimální → `M`).
+
+### 🧪 Fake systémová data (`/proc`, `/sys`)
+
+Android aplikacím část `/proc` a `/sys` blokuje nebo zkresluje. Launcher proto před startem kontejneru připraví statické náhrady v `$FILES_DIR/nh/sysdata/<distro>/` a přibinduje je dovnitř:
+
+| Soubor | Nahrazuje | Hodnota |
+|---|---|---|
+| `loadavg` | `/proc/loadavg` | `0.12 0.07 0.02 2/165 765` |
+| `stat` | `/proc/stat` | CPU řádky + `btime`, `ctxt`, `processes`, `softirq` |
+| `uptime` | `/proc/uptime` | `124.08 932.80` |
+| `version` | `/proc/version` | řetězec jádra kontejneru |
+| `vmstat` | `/proc/vmstat` | kompletní sada čítačů paměti |
+| `sysctl/kernel/cap_last_cap` | `/proc/sys/kernel/cap_last_cap` | `40` |
+| `sysctl/fs/inotify/max_user_watches` | `/proc/sys/fs/inotify/max_user_watches` | `4096` |
+| `sysctl/kernel/overflowuid` | `/proc/sys/kernel/overflowuid` | `65534` |
+| `sysctl/kernel/overflowgid` | `/proc/sys/kernel/overflowgid` | `65534` |
+| `sys_empty/` | `/sys/fs/selinux` | prázdný adresář |
+
+- Soubory v `/proc/sys` se vážou **jednotlivě**, ne celý adresář — zbytek `/proc/sys` zůstává živý.
+- Sdílená paměť kontejneru je v `$FILES_DIR/nh/shm/<distro>` a binduje se na `/dev/shm`.
+- Zámek pro emulaci pevných odkazů (`PROOT_L2S_DIR`) je umístěný v `<rootfs>/.l2s`, takže souběžné starty relací nekolidují.
+- V minimálním režimu (**M**) se fake data ani `/dev/shm` nevytvářejí.
+
+### 🌍 Prostředí relace
+
+Launcher nastavuje pro neminimální relace `HOME=/root`, `USER=root`, `TERM` (fallback `xterm-256color`), `MOZ_FAKE_NO_SANDBOX=1` a `PULSE_SERVER=127.0.0.1`. Android systémové proměnné (`ANDROID_ROOT`, `ANDROID_DATA`, …) se dědí pouze v plném režimu; izolované a minimální relace si nesou jen hodnoty z image.
+
 ## ⏰ Background auto-start (cron automatizace)
 
 Od verze 2026-08-14 se aplikace umí **sama spustit na pozadí po restartu zařízení** — hlavní použití je **cron automatizace** uvnitř PRoot guestu. (Permise `RECEIVE_BOOT_COMPLETED` dříve v manifestu chyběla; nyní je přidaná i s receiverem, který ji volá.)
@@ -55,7 +95,7 @@ nh <kategorie> <akce> [argumenty]
 
 **Hlavní kategorie:** `system`, `network`, `vpn`, `agent`, `log`, `device`, `api`, `desktop`, `fix`, `apps`, `usb`, `distro`, `help`, `list`
 
-> **Desktop (XFCE4):** hostitelská appka (`com.linux_core`) pouze spouští X server (`nh desktop start`, display `:1` na TCP 6000). Samotné vykreslování GUI běží v samostatné X11 launcher aplikaci (`com.linux_core.xlauncher`) — in-app WebView/noVNC renderoval byl odstraněn.
+> **Desktop (XFCE4):** hostitelská appka (`com.linux_core`) pouze spouští X server (`nh desktop start`, Xvfb display `:0` na TCP 6000). Samotné vykreslování GUI běží v samostatné X11 launcher aplikaci (`com.linux_core.xlauncher`) — in-app WebView/noVNC renderer byl odstraněn.
 
 **Příklady:**
 ```bash
@@ -70,9 +110,9 @@ nh log -n 50 -g TlsMitm          # logcat viewer
 
 Staré názvy (`nethunter-toast`, `vpn-cli`, `vpn-on`, `vpn-bypass`, `ignore-vpn`, ...) zůstávají funkční jako symlinky na `nh`.
 
-## 📦 Správa kontejnerů — `nh distro` (proot-distro-like)
+## 📦 Správa kontejnerů — `nh distro`
 
-`nh distro` je wrapper inspirovaný `proot-distro` pro správu PRoot kontejnerů (kali, parrot). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
+`nh distro` je správce PRoot kontejnerů (kali, parrot). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
 
 ```bash
 nh distro list                          # seznam distro + stav
@@ -87,7 +127,7 @@ nh distro help                          # nápověda
 
 **Bezpečnostní pojistka:** `kill`, `remove`, `restore` vyžadují `--force`, jinak vrtnou 409 `confirmation_required`.
 
-**Z hostitele bez rootu (Termux / adb shell):**
+**Z hostitele bez rootu (host shell / adb shell):**
 ```bash
 curl http://127.0.0.1:1337/distro/ps          # localhost = bez auth
 curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
@@ -459,7 +499,7 @@ nh usb send "/dev/bus/usb/001/002" exploit.bin
 
 Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
 
-> **Důležité:** Modul g2 **nikdy není** připojen k UDC — aktivaci/deaktivaci nechává na aplikaci (`UsbGadgetManager` / `/usbg2` API). Tak se dá přepínat mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) bez rebootu.
+> **Důležité:** Modul g2 **nikdy není** připojen k UDC sám od sebe — aktivaci/deaktivaci dělá `usbtool` pod real rootem (guest přes `sudo`; configfs `/config/usb_gadget` je bindnutý do guesta). Tak se dá přepínat mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) bez rebootu.
 
 ### Instalace
 - Flash přes Magisk (zip), vyžaduje **Magisk ≥ 20400** (`minMagisk=20400`).
@@ -483,10 +523,9 @@ Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připra
 | `libusbgx.so*`, `libusb-1.0.so*`, `libhidapi-libusb.so`, `libusbrelay.so`, `usb.ids` | nativní knihovny pro gadget/tools |
 
 ### Použití z aplikace
-- Aktivace g2 z UI / API: `UsbGadgetManager` nastaví UDC a aplikuje g2 konfiguraci.
-- HTTP API: `/usbg2` endpointy (start/stop/status) — viz `LocalApiServer`.
-- **Spuštění skriptů z modulu přes API:** `POST /usbg2/exec` s body `{"args":["g2"]}` — spustí `/system/bin/usbtool <args>` pod real rootem (Magisk su). Argumenty se validují (jen `[a-zA-Z0-9_.-]`), `watch` je blokovaný (streamuje donekonečna).
-- **Z prootu:** `usbtool status|g1|g2|setup|host|device|detect|logs` (wrapper v `/usr/local/bin`, volá API) nebo `nh usb gadget <cmd>`.
+- Aktivace g2: `usbtool g2` (případně `nh usb gadget g2`) bindne g2 na UDC pod real rootem.
+- **Přímé ovládání (bez API):** `usbtool status|g1|g2|setup|host|device|detect|logs` — guest wrapper zavolá `/system/bin/usbtool` pod real rootem přes `sudo`.
+- Příprava g2 (configfs) probíhá automaticky v `post-fs-data.sh` modulu při bootu; `usbtool setup` ji jen zopakuje ručně.
 - Po návratu do g1 modul zůstává pasivní (g2 není bound), stačí `usbtool g1`.
 
 ## 🌐 Přímé HTTP API Volání
@@ -513,7 +552,6 @@ V horní liště terminálu (vedle `🐉 KALI`) je tlačítko `▼`, které rozb
 |---|---|---|
 | `⚡ SHIZU` | `●` běží / `○` zastaven | START / STOP / SETUP |
 | `[code] CODE` | `●` běží / `○` zastaven | START / STOP / OPEN :8443 |
-| `🔥 PHOENIX` | `○` vždy (není health check) | CONFIGURE |
 
 ### CLI příkaz `shizuku`
 
@@ -546,72 +584,13 @@ Aplikace automaticky zkouší:
 - `su available` — root přes `su` k dispozici
 - `Shizuku APK ready` — Shizuku app je nainstalována
 
-## </> Editor (code-server / VS Code v prohlížeči)
-
-Editor provozuje code-server (VS Code jádro) uvnitř PRoot guestu na `127.0.0.1:8443`.
-
-### CLI (uvnitř guestu)
-
-| Příkaz | Popis |
-|--------|-------|
-| `code-server-ctl start` | Spustí code-server na pozadí |
-| `code-server-ctl stop` | Zastaví code-server |
-| `code-server-ctl status` | JSON stav: running/stopped/port_busy |
-| `code-server-ctl password` | Zobrazí heslo |
-| `code-server-ctl install` | Nainstaluje code-server pokud chybí |
-| `code-server-ctl info` | Konfigurace (port, workspace, cesty) |
-| `code-server-ctl log` | Posledních 50 řádků logu |
-
-### HTTP API (port 1337)
-
-Všechny endpointy pod `/editor/*` vyžadují Bearer token.
-`/editor/password` je navíc omezen na localhost (nesmí uniknout při `share_local_api=on`).
-
-| Endpoint | Metoda | Popis |
-|----------|--------|-------|
-| `/editor/start` | POST | Spustí code-server |
-| `/editor/stop` | POST | Zastaví code-server |
-| `/editor/status` | GET | Stav (`running`/`stopped`/`port_busy`) |
-| `/editor/password` | GET | Heslo (JSON) |
-| `/editor/info` | GET | Bind, port, workspace, cesty |
-
-### Bezpečnostní pravidla (analogie s VPN/MITM)
-
-1. **Bind na `127.0.0.1`** — nikdy `0.0.0.0`, natvrdo v config.yaml
-2. **Auth password** — vždy zapnutý, heslo generované náhodně, uložené v `config.yaml` (chmod 600)
-3. **Heslo není v `ps aux`** — ukládá se do configu, ne jako argument příkazové řádky (poučení z C1 security auditu)
-4. **/editor/password** — localhost-only i při `share_local_api=on`
-
-### Perzistence
-
-- Workspace: `/root/projects` (přežije restart kontejneru)
-- Nastavení a rozšíření: `/root/.local/share/code-server/`
-- Config: `/root/.config/code-server/config.yaml` (chmod 600)
-- PID: `/tmp/code-server.pid`
-- Log: `/tmp/code-server.log`
-
-### Rozšíření (Open VSX)
-
-Code-server defaultně používá `open-vsx.org` místo Microsoft Marketplace.
-Pro chybějící rozšíření: stáhnout `.vsix` a nainstalovat ručně:
-```bash
-code-server --install-extension /cesta/k/souboru.vsix
-```
-
-### Omezení a TODO
-
-- code-server musí být nainstalovaný v rootfs (automaticky přes `code-server-ctl install` nebo ručně)
-- WebView nezachytává `Ctrl+` kombinace — použití Hacker Keyboard je nutné pro pokročilé operace
-- Port 8443 je vázán pouze na localhost — pro přístup z jiného zařízení použít SSH tunel nebo VPN bypass proxy :13339
-- Workspace je omezen na `/root/projects` — nelze otevřít adresář mimo guest bez symlinku
-
-## 📂 Open-with & `~/share` (Termux-style)
+## 📂 Open-with & `~/share`
 
 Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share sheet — přijaté soubory dopadnou rovnou do guest terminálu.
 
 - **`ShareReceiverActivity`** (`exported=true`, translucent): intent filtry `ACTION_VIEW` / `ACTION_SEND` / `ACTION_SEND_MULTIPLE` pro `*/*`.
 - Soubory se zkopírují do `filesDir/share/` (jméno sanitizované proti path traversal, kolize → `nazev (1).ext`), zobrazí se toast a otevře se terminál s `cd /root/share && ls -la`.
-- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně non-termux docker) → uvnitř guesta je složka vidět jako `~/share`.
+- **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně docker image) → uvnitř guesta je složka vidět jako `~/share`.
 
 > Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
 
@@ -627,7 +606,7 @@ Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share
 Terminál jako Messenger chat-head nad ostatními aplikacemi.
 
 - **`FloatingTerminalService`** (foreground + `WindowManager` `TYPE_APPLICATION_OVERLAY`, focusable → IME funguje).
-- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + Termux `TerminalView` + rohová úchytka ◢ pro resize.
+- **Rozbalené okno:** titulková lišta (tažení pohybu, ◐ cyklus průhlednosti 100/85/70/55/40 %, ▁ minimalizovat, ✕ zavřít) + `TerminalView` + rohová úchytka ◢ pro resize.
 - **Minimalizováno:** 56dp bublina (drag, tap = obnovit, dlouhý stisk = zavřít). Geometrie + průhlednost v `SharedPreferences` (`float_terminal`).
 
 ### Session režimy
