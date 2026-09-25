@@ -35,28 +35,6 @@ Každá karta distra (Kali, Parrot, Docker) má vlastní přepínač režimu spo
 - Izolace a minimální konfigurace jsou **nezávislé volby** — izolovaný režim (**I**) pořád dostává fake systémová data i `/dev/shm`, jen nevidí hostitelské cesty.
 - Starší uložené volby se při prvním načtení migrují (původní `M`=plný → `D`, původní `D`=minimální → `M`).
 
-### 🏳️ Boot CLI flagy
-
-Boot skript (`usr/bin/boot`) přijímá volby kdekoli před `--` (vše za `--` je guest příkaz):
-
-```bash
-boot -d kali                     # DEFAULT mód (host bindy, fake /proc+/sys, Android env)
-boot -i parrot                   # ISOLATED mód (bez host bindů, fake /proc+/sys)
-boot -m kali                     # MINIMAL mód (jen /dev /proc /sys, bez --sysvipc)
-boot -b /sdcard:/mnt/sd kali     # extra bind mount (opakovatelné)
-boot --bind=/data/tmp:/mnt kali  # totéž, forma s rovnítkem
-boot --shared-tmp kali           # hostitelský $FILES_DIR/tmp jako guest /tmp (sdílený mezi sessions)
-boot docker alpine               # boot docker image
-boot -- ls -la                   # su_daemon re-entry (auto-detect distro)
-```
-
-Z `nh distro login` se extra bindy předávají přes `--bind`:
-```bash
-nh distro login kali --bind /sdcard:/mnt/sdcard
-```
-
-Env proměnné (`NH_ISOLATED`, `NH_MINIMAL`, `NH_FAKE_SYS`, `NH_SHARED_TMP`, `NH_EXTRA_BINDS`) nastavené volajícím (appka) mají nižší prioritu než CLI flagy.
-
 ### 🧪 Fake systémová data (`/proc`, `/sys`)
 
 Android aplikacím část `/proc` a `/sys` blokuje nebo zkresluje. Launcher proto před startem kontejneru připraví statické náhrady v `$FILES_DIR/nh/sysdata/<distro>/` a přibinduje je dovnitř:
@@ -134,17 +112,16 @@ Staré názvy (`nethunter-toast`, `vpn-cli`, `vpn-on`, `vpn-bypass`, `ignore-vpn
 
 ## 📦 Správa kontejnerů — `nh distro`
 
-`nh distro` je správce PRoot kontejnerů (kali, parrot, docker). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
+`nh distro` je správce PRoot kontejnerů (kali, parrot). Dá se volat z guestu **i z hostitele bez rootu** (localhost API bez auth).
 
 ```bash
 nh distro list                          # seznam distro + stav
 nh distro status                        # alias list
 nh distro ps                            # aktivní session (ID, distro, vpn-ignored)
 nh distro kill <session_id> [--force]   # ukončit session
-nh distro remove <id> [--force]         # smazat rootfs (kali|parrot|docker/<image>)
+nh distro remove <id> [--force]         # smazat rootfs (kali|parrot)
 nh distro backup [id]                   # záloha rootfs do Downloads (default kali)
 nh distro restore <soubor> [--force]    # obnova rootfs ze souboru v Downloads
-nh distro login <distro> [--bind src:dst ...]  # vstup do distro z host ashellu
 nh distro help                          # nápověda
 ```
 
@@ -156,27 +133,7 @@ curl http://127.0.0.1:1337/distro/ps          # localhost = bez auth
 curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
 ```
 
-### 🐳 Docker preset rootfs — `/.nh/manifest`
-
-Docker image (vytažený přes `nh distro pull docker/<image>`) může mít v rootfs soubor `/.nh/manifest`, který říká boot skriptu, jak image spustit. Formát KEY=VALUE po řádcích:
-
-| Klíč | Význam | Příklad |
-|---|---|---|
-| `NH_SHELL` | Login shell (cesta v guestu) | `/bin/sh` |
-| `NH_ENTRYPOINT` | Spustitelný skript místo login shellu | `/root/start.sh` |
-| `NH_BOOTSTRAP` | Jednorázový první start (značka `/.nh/bootstrap.done`) | `/bootstrap.sh` |
-| `NH_PATH` | PATH v guestu | `/usr/local/bin:/usr/bin:/bin` |
-| `NH_WORKDIR` | Pracovní adresář | `/root` |
-| `NH_ENV` | Proměnná navíc (opakovatelné, bez mezer) | `LANG=C.UTF-8` |
-| `NH_BIND` | Bind navíc (opakovatelné, absolutní host cesta) | `/data/local/tmp:/mnt/host` |
-
-Boot skript čte manifest čistě přes `read` (nic se nespouští). Manifest je volitelný — bez něj boot hledá shell v `bin/sh`, `usr/bin/sh`, `bin/bash`.
-
-```bash
-# Vstup do docker image z host shellu
-nh distro login docker/alpine
-nh distro login docker/ubuntu --bind /sdcard:/mnt/sdcard
-```
+> **Fáze 2 (plánováno):** `install`, `progress`, `reset`, `login` (download+extract rootfs s progresem, resp. spuštění shellu).
 
 ## 🔑 Root Bridge (`sudo` / `su`)
 
@@ -582,34 +539,6 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 * **Logcat záznamy:** `curl -s http://127.0.0.1:1337/app/logs?limit=100`
 * **USB zařízení:** `curl -s http://127.0.0.1:1337/usb/devices`
 * **USB poslat data:** `curl -s -X POST -H "Content-Type: application/json" -d '{"device_name":"/dev/bus/usb/001/002","data_base64":"$(base64 -w0 exploit.bin)"}' http://127.0.0.1:1337/usb/send`
-
-## ⚡ CPU pin — `nh cpu`
-
-Každý syscall, který PRoot zachytí, je ptrace výměna guest ↔ proot. Na různých jádrech stojí ~320 µs (probouzení jádra), na jednom velkém jádru ~70–100 µs → shell, apt, git, skripty a `configure` jsou **2–5× rychlejší**. Daň: celý guest jede na jednom jádru, paralelní výpočty (kompilace, john/hashcat, `xz -T0`) spouštěj přes `nh cpu all`.
-
-Zapíná se **ikonou CPU v pravém horním rohu karty distra** (kali / parrot / docker) nebo z CLI:
-
-```bash
-nh cpu status             # jádra (frekvence, governor), pin této session, uložené volby
-nh cpu on [distro]        # uložit pro další boot + hned aplikovat na běžící session
-nh cpu off [distro]       # vypnout CPU pin
-nh cpu pin [N]            # jen živě: session na jádro N (default nejrychlejší)
-nh cpu unpin              # zpět na všechna jádra
-nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne zpět)
-nh cpu run 7 cmd …        # příkaz na jádru N
-nh cpu bench [--quick]    # benchmark kombinací s barevnou tabulkou a grafy
-nh cpu boost on|off [N]   # root boost: scaling_min_freq=max (Magisk nh_cpuctl)
-nh cpu boost status       # aktuální boost stav
-```
-
-**`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je najde do ~2 s):
-```bash
-export CPU_ALL="make cargo john xz ffmpeg"          # v ~/.zshrc
-export CPU_ALL='$(cat ~/cpu_all.txt)'               # nebo ze souboru (čte hlídač živě)
-CPU_ALL=make make -j8                               # jen pro tento příkaz
-```
-
-HTTP API endpoint: `GET|POST /distro/cpupin` (`{distro, enabled}`).
 
 ## ⚡ Shizuku Integration — Privilege Escalation
 
