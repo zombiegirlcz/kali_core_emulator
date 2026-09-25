@@ -9,7 +9,7 @@
 # Env vars (set by caller or defaulted):
 #   PREFIX      — host usr prefix (default: /data/user/0/com.linux_core/files/usr)
 #   FILES_DIR   — app filesDir    (default: /data/user/0/com.linux_core/files)
-#   NH_MOUNT_STORAGE — "1" to bind /sdcard
+#   NH_MOUNT_STORAGE — "1" to bind /storage/self/primary (/sdcard, /storage/emulated/0, ...)
 #   NH_EXTRA_MOUNTS  — additional -b flags (from root_settings)
 #   NH_EXTRA_BINDS   — additional -b flags (from nh distro login --bind)
 #   NH_CWD           — working dir override (su_daemon re-entry)
@@ -145,7 +145,8 @@ apply_mode() {
 # proot-distro), guest tedy nedědí prostředí appky. Vypisuje slova VAR=VAL
 # pro word-splitting; hodnoty nesmí obsahovat mezery.
 guest_env() {
-    # proot si PROOT_LOADER/PROOT_TMP_DIR čte sám; guest wrapper PROOT_LOADER hned unsetne.
+    # proot si PROOT_LOADER/PROOT_TMP_DIR čte sám; guest wrapper je hned unsetne
+    # (PROOT_L2S_DIR v guestu zůstává, čte ho guest `ashell`).
     local _e="PROOT_LOADER=$LOADER PROOT_TMP_DIR=$FILES_DIR/tmp"
     [ -n "${PROOT_L2S_DIR:-}" ] && _e="$_e PROOT_L2S_DIR=$PROOT_L2S_DIR"
     _e="$_e HOME=/root USER=root LOGNAME=root"
@@ -170,7 +171,7 @@ guest_env() {
         _e="$_e ANDROID_TZDATA_ROOT=${ANDROID_TZDATA_ROOT:-/apex/com.android.tzdata}"
         [ -n "${BOOTCLASSPATH:-}" ] && _e="$_e BOOTCLASSPATH=$BOOTCLASSPATH"
         [ -n "${DEX2OATBOOTCLASSPATH:-}" ] && _e="$_e DEX2OATBOOTCLASSPATH=$DEX2OATBOOTCLASSPATH"
-        _e="$_e EXTERNAL_STORAGE=/sdcard"
+        [ "$NH_MOUNT_STORAGE" = "1" ] && _e="$_e EXTERNAL_STORAGE=/storage/emulated/0"
     fi
     echo "$_e"
 }
@@ -511,7 +512,28 @@ build_binds() {
     [ -n "${NH_EXTRA_MOUNTS:-}" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
     [ -n "${NH_EXTRA_BINDS:-}" ] && _binds="$_binds $NH_EXTRA_BINDS"
 
-    echo "$_binds"
+    dedupe_binds "$_binds"
+}
+
+# Odstraní opakované `-b src:dest` (stejný zdroj i cíl, `-b /x` == `-b /x:/x`),
+# např. extra bind /system z Root Bridge v módu D, kde ho boot už přidal.
+# Různé zdroje do stejného cíle nechává — pozdější bind je uživatelský override.
+dedupe_binds() {
+    local _out="" _seen=" " _next=0 _t _k
+    for _t in $1; do
+        if [ "$_next" = "1" ]; then
+            _next=0
+            case "$_t" in *:*) _k="$_t" ;; *) _k="$_t:$_t" ;; esac
+            case "$_seen" in *" $_k "*) log "duplicitní bind vynechán: $_t"; continue ;; esac
+            _seen="$_seen$_k "
+            _out="$_out -b $_t"
+        elif [ "$_t" = "-b" ]; then
+            _next=1
+        else
+            _out="$_out $_t"
+        fi
+    done
+    echo "${_out# }"
 }
 
 # ─── Host-shell image detection ─────────────────────────
@@ -601,7 +623,7 @@ boot_classic() {
        { [ -f "$ROOTFS/root/.bootstrap_required" ] || [ ! -f "$ROOTFS/root/.setup_done" ]; }; then
         echo "[boot] First run detected — running bootstrap..." >&2
         if env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
-            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/bash /root/bootstrap.sh'; then
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; exec /bin/bash /root/bootstrap.sh'; then
             rm -f "$ROOTFS/root/.bootstrap_required"
         else
             echo "[boot] WARNING: bootstrap failed — keeping .bootstrap_required" >&2
@@ -619,7 +641,7 @@ boot_classic() {
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -629,17 +651,17 @@ boot_classic() {
             # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
             # then exec the exact args verbatim (no shell re-quoting loss)
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
 
     # Normal boot: entrypoint or login shell
     if [ -f "$ROOTFS/root/entrypoint.sh" ]; then
         exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
-            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; exec /bin/sh /root/entrypoint.sh "$@"' -- "$@"
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; exec /bin/sh /root/entrypoint.sh "$@"' -- "$@"
     else
         exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w /root $BINDS \
-            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; cd /root && exec /bin/bash --login "$@"' -- "$@"
+            "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; cd /root && exec /bin/bash --login "$@"' -- "$@"
     fi
 }
 
@@ -735,7 +757,7 @@ boot_docker() {
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -743,7 +765,7 @@ boot_docker() {
                 set -- "$GUEST_SH" "$@"
             fi
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
         fi
     fi
 
@@ -753,19 +775,19 @@ boot_docker() {
         inject_profile "$ROOTFS"
         if [ -n "$ENTRYPOINT" ]; then
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
         else
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
         fi
     else
         # Normal image: entrypoint or login shell
         if [ -n "$ENTRYPOINT" ]; then
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
         else
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $GUEST_SH --login \"\$@\"" -- "$@"
         fi
     fi
 }

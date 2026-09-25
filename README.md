@@ -543,7 +543,7 @@ procesy, ne perzistentní démon.
 | Komponenta | Cesta v APK | Popis |
 |---|---|---|
 | shell_daemon binárka | `assets/shell_daemon` | Persistentní uid 2000 démon (TCP 13341, token) |
-| shell_daemon token | `<filesDir>/shell_daemon.token` | 128 hex znaků; guest ho vidí jako `/mnt/app/shell_daemon.token` |
+| shell_daemon token | `<filesDir>/shell_daemon.token` | 128 hex znaků; guest ho vidí na stejné cestě (bind App Data `/data/user/0/com.linux_core`) |
 | Daemon klient | `ShellDaemonClient.kt` | Start (`su 2000`), exec přes TCP, token management |
 | Deploy | `ProotManager.deployShellDaemon()` | Kopíruje binárku + token do filesDir |
 | API | `LocalApiServer.kt` | `/shizuku/daemon/*` endpointy |

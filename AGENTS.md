@@ -345,12 +345,21 @@ tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`
 je v základním řádku `build_binds()` ve **všech** módech. `NH_FAKE_SYS=0`
 (RootBridge → „Fake /proc & /sys", pref `bind_fake_sys`) dá guestu skutečný
 kernel/`/proc`/`/sys`, ale zachová `--sysvipc` + `/dev` fixes (Frida). Pref `bind_data`
-přidá `/data:/mnt/data` — obsah je čitelný jen v sudo seanci (`su_daemon` re-entry),
+přidá nativní bind `/data` — obsah je čitelný jen v sudo seanci (`su_daemon` re-entry),
 nikdy se nedělá hostitelský `mount --bind` (leak mountů do globálního namespace).
+
+**Root Bridge extra bindy jdou na nativní cesty** (2026-09-25): `-b /system`, `-b /vendor`,
+`-b /data/local/tmp`, `-b /config/usb_gadget`, `-b /data/misc/bluetooth`,
+`-b /data/user/0/com.linux_core`, `-b /data/user/0/com.kali.aiassistant`, `-b /data` (ne pro
+docker/Termux image). Žádné `/mnt/*`. `/dev/bus/usb` a `/sys/class/bluetooth` samostatný bind
+nemají (`/dev` a `/sys` jsou bindnuté vždy). `boot` `dedupe_binds()` vynechá bind se stejným
+zdrojem i cílem, který už přidal mód (např. `/system` v D). Guest env: `PROOT_TMP_DIR` se v guest
+wrapperu unsetuje (zbyl by vedle `TMPDIR`), `EXTERNAL_STORAGE=/storage/emulated/0` jen při
+`NH_MOUNT_STORAGE=1`.
 
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
-`/mnt/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`
+`/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`
 (`NH_ISOLATED/MINIMAL/FAKE_SYS/MOUNT_STORAGE/EXTRA_MOUNTS`) a `boot` ho nasourceuje,
 **jen když `NH_ENV_FROM_APP != 1`** (appka předává hodnoty přes env, ty mají přednost).
 
@@ -359,7 +368,7 @@ dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by 
 **git pod prootem (link2symlink):** PRoot `-L` mění git hardlinky (pack/idx/rev i loose objekty)
 na symlinky do `$ROOTFS/.l2s`. Když se `.l2s` vyčistí (nová session / přepnutí módu), symlinky
 osiří → `invalid object … Not a directory` a rozbitý repo (postihuje VŠECHNA repa v rootfs).
-Pojistka: `nh fix git [path]` materializuje symlinky na reálné soubory (přes host bind `/mnt/app`,
+Pojistka: `nh fix git [path]` materializuje symlinky na reálné soubory (přes host bind App Data `/data/user/0/com.linux_core`, fallback `/mnt/app`,
 kde jsou symlinky vidět; vyžaduje `bind_aiapp`). Pouštět po `git clone/gc/repack` pod prootem.
 
 **su_daemon / Root Bridge:** fork-per-connection (parent hned `accept()`, žádné blokování nových `sudo`),

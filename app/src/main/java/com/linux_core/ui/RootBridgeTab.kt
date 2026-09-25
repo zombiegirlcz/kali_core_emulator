@@ -750,16 +750,16 @@ fun RootBridgeTab(modifier: Modifier = Modifier) {
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
 
-                    // Checkbox items under /mnt/
+                    // Checkbox items — bindy na nativní cesty (host cesta = guest cesta)
                     val items = listOf(
-                        Triple("System", "/system → /mnt/system", "bind_system" to bindSystem),
-                        Triple("Vendor", "/vendor → /mnt/vendor", "bind_vendor" to bindVendor),
-                        Triple("Local TMP", "/data/local/tmp → /mnt/tmp", "bind_tmp" to bindTmp),
-                        Triple("USB Devices", "/dev/bus/usb → /mnt/usb", "bind_usb" to bindUsb),
-                        Triple("Bluetooth", "/sys/class/bluetooth → /sys/class/bluetooth", "bind_bluetooth" to bindBluetooth),
-                        Triple("App Data", "/data/user/0/com.linux_core → /mnt/app", "bind_app" to bindApp),
-                        Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant → /mnt/aiapp", "bind_aiapp" to bindAiApp),
-                        Triple("Data (root)", "/data → /mnt/data (obsah vidí jen sudo)", "bind_data" to bindData),
+                        Triple("System", "/system (v módu D už je)", "bind_system" to bindSystem),
+                        Triple("Vendor", "/vendor (v módu D už je)", "bind_vendor" to bindVendor),
+                        Triple("Local TMP", "/data/local/tmp", "bind_tmp" to bindTmp),
+                        Triple("USB Gadget", "/config/usb_gadget (/dev/bus/usb je vidět vždy)", "bind_usb" to bindUsb),
+                        Triple("Bluetooth", "/data/misc/bluetooth", "bind_bluetooth" to bindBluetooth),
+                        Triple("App Data", "/data/user/0/com.linux_core", "bind_app" to bindApp),
+                        Triple("AI App (kali_ai)", "/data/user/0/com.kali.aiassistant", "bind_aiapp" to bindAiApp),
+                        Triple("Data (root)", "/data (obsah vidí jen sudo)", "bind_data" to bindData),
                         Triple("Shared /tmp", "files/tmp → /tmp (boot --shared-tmp)", "shared_tmp" to sharedTmp)
                     )
 

@@ -160,9 +160,9 @@ object ExecCore {
         val bindData = rootPrefs.getBoolean("bind_data", false)
         val fakeSys = if (rootPrefs.getBoolean("bind_fake_sys", true)) "1" else "0"
         val extraMounts = buildString {
-            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+            if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant")
             // /data is only readable under real root (DAC + SELinux).
-            if (bindData) append(" -b /data:/mnt/data")
+            if (bindData) append(" -b /data")
         }
         // Root jen pokud je zapnutý cross-app bind / čtení /data A zároveň
         // dostupné su — jinak zůstává guest v app sandboxu (bezpečnější,

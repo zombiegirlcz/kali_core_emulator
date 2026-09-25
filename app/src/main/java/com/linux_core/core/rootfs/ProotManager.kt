@@ -315,34 +315,29 @@ object ProotManager {
 
         // Env proměnné pro boot skript (mount options, extra bindy)
         val rootPrefs = context.getSharedPreferences("root_settings", Context.MODE_PRIVATE)
+        // Extra bindy jdou na nativní cesty (guest vidí hostitelskou cestu 1:1).
+        // Bind, který boot v daném módu už přidal (např. /system v D), boot
+        // vynechá v dedupe_binds. /dev a /sys jsou bindnuté vždy, takže
+        // /dev/bus/usb ani /sys/class/bluetooth samostatný bind nepotřebují.
         val extraMounts =
             buildString {
-                if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system:/mnt/system")
-                if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor:/mnt/vendor")
-                if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp:/mnt/tmp")
-                if (rootPrefs.getBoolean("bind_usb", true)) {
-                    if (File("/dev/bus/usb").exists()) append(" -b /dev/bus/usb:/mnt/usb")
-                    // Gadget g2 ovládání: configfs musí být v guestu vidět pod sudo
-                    // (su_daemon re-entry) na stejné cestě jako na hostu, aby skripty
-                    // modulu custom_usb_g2_setup fungovaly bez úprav.
-                    if (File("/config/usb_gadget").exists()) {
-                        append(" -b /config/usb_gadget:/config/usb_gadget")
-                    }
+                if (rootPrefs.getBoolean("bind_system", true)) append(" -b /system")
+                if (rootPrefs.getBoolean("bind_vendor", false)) append(" -b /vendor")
+                if (rootPrefs.getBoolean("bind_tmp", false)) append(" -b /data/local/tmp")
+                // Gadget g2 ovládání: configfs musí být v guestu vidět pod sudo
+                // (su_daemon re-entry) na stejné cestě jako na hostu, aby skripty
+                // modulu custom_usb_g2_setup fungovaly bez úprav.
+                if (rootPrefs.getBoolean("bind_usb", true) && File("/config/usb_gadget").exists()) {
+                    append(" -b /config/usb_gadget")
                 }
-                if (rootPrefs.getBoolean(
-                        "bind_bluetooth",
-                        false,
-                    )
-                ) {
-                    append(" -b /sys/class/bluetooth:/sys/class/bluetooth -b /data/misc/bluetooth:/data/misc/bluetooth")
-                }
-                // bind_app default true: /mnt/app je nutne pro shell_daemon (path + token)
-                if (rootPrefs.getBoolean("bind_app", true)) append(" -b /data/user/0/com.linux_core:/mnt/app")
-                if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant:/mnt/aiapp")
+                if (rootPrefs.getBoolean("bind_bluetooth", false)) append(" -b /data/misc/bluetooth")
+                if (rootPrefs.getBoolean("bind_app", true)) append(" -b /data/user/0/com.linux_core")
+                if (rootPrefs.getBoolean("bind_aiapp", false)) append(" -b /data/user/0/com.kali.aiassistant")
                 // /data is only readable under real root (DAC + SELinux), so this
                 // mount is useful inside a sudo session (su_daemon re-entry), not
-                // in the plain app-UID session.
-                if (rootPrefs.getBoolean("bind_data", false)) append(" -b /data:/mnt/data")
+                // in the plain app-UID session. Docker (Termux) image má vlastní
+                // /data/data/com.termux v rootfs — nativní bind /data by ho zakryl.
+                if (rootPrefs.getBoolean("bind_data", false) && !isDockerImage) append(" -b /data")
             }
 
         val (nhIsolated, nhMinimal) = bootModeFlags(bootMode)
