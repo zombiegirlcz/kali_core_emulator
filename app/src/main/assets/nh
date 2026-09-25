@@ -2622,7 +2622,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
-        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" \
         "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
@@ -2818,6 +2818,173 @@ cpu_exec_mask() {  # <hexmask> <cmd...> — exec se zachováním PID
     exec "$@"
 }
 
+cpu_bench() {
+    command -v python3 >/dev/null 2>&1 || { echo "[-] nh cpu bench potřebuje python3"; exit 1; }
+    local tp
+    tp=$(cpu_tracer)
+    [ -n "$tp" ] && [ "$tp" != "0" ] || { echo "[-] mimo proot (TracerPid 0) — není co měřit"; exit 1; }
+    python3 - "$tp" "$@" <<'PYBENCH'
+import os, sys, time, subprocess, statistics
+
+tracer = int(sys.argv[1])
+args = sys.argv[2:]
+quick = "--quick" in args or "-q" in args
+R, B, D = "\033[0m", "\033[1m", "\033[2m"
+C = {"red": "\033[1;31m", "grn": "\033[1;32m", "yel": "\033[1;33m", "blu": "\033[1;34m",
+     "mag": "\033[1;35m", "cya": "\033[1;36m", "wht": "\033[1;37m", "gry": "\033[0;90m"}
+
+def online():
+    cpus = []
+    for n in sorted(os.listdir("/sys/devices/system/cpu")):
+        if n.startswith("cpu") and n[3:].isdigit():
+            try:
+                on = open(f"/sys/devices/system/cpu/{n}/online").read().strip() == "1"
+            except OSError:
+                on = True
+            if on:
+                cpus.append(int(n[3:]))
+    return cpus
+
+def maxfreq(c):
+    try:
+        return int(open(f"/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq").read())
+    except OSError:
+        return 0
+
+def tree(root):
+    kids = {}
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            st = open(f"/proc/{p}/stat").read()
+            ppid = int(st.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        kids.setdefault(ppid, []).append(int(p))
+    out, todo = [], [root]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo += kids.get(p, [])
+    return out
+
+def setaff(pid, cpus):
+    try:
+        os.sched_setaffinity(pid, cpus)
+        return True
+    except OSError:
+        return False
+
+cpus = online()
+freqs = {c: maxfreq(c) for c in cpus}
+top = max(freqs.values())
+big = [c for c in cpus if freqs[c] == top]
+little = [c for c in cpus if freqs[c] == min(freqs.values())]
+fast, slow = big[-1], little[0]
+me = os.getpid()
+orig_tracer = os.sched_getaffinity(tracer)
+orig_me = os.sched_getaffinity(me)
+
+combos = [
+    ("bez pinu (všechna jádra)",       set(cpus),   set(cpus)),
+    (f"proot cpu{fast}, guest volný",  {fast},      set(cpus)),
+    (f"vše na cpu{fast} (big)",        {fast},      {fast}),
+    (f"vše na big {'-'.join(map(str, big))}", set(big), set(big)),
+    (f"proot cpu{big[0]}, guest cpu{fast}", {big[0]}, {fast}),
+    (f"vše na cpu{slow} (little)",     {slow},      {slow}),
+]
+if len(big) < 2:
+    combos = [c for c in combos if not c[0].startswith("vše na big") and "guest cpu" not in c[0]]
+
+fd = os.open("/etc/hostname" if os.path.exists("/etc/hostname") else "/", os.O_RDONLY)
+link = next((p for p in ("/usr/bin/python3", "/bin/sh", "/usr/bin/env") if os.path.exists(p)), "/")
+true_bin = next((p for p in ("/bin/true", "/usr/bin/true") if os.path.exists(p)), None)
+n_sys = 300 if quick else 1500
+n_exec = 8 if quick else 25
+reps = 2 if quick else 3
+
+def t_loop(f, n):
+    t = time.perf_counter()
+    for _ in range(n):
+        f()
+    return (time.perf_counter() - t) / n * 1e6
+
+tests = [
+    ("fstat", "µs", lambda: t_loop(lambda: os.fstat(fd), n_sys)),
+    ("stat symlink", "µs", lambda: t_loop(lambda: os.stat(link), n_sys)),
+    ("open+close", "µs", lambda: t_loop(lambda: os.close(os.open(link, os.O_RDONLY)), n_sys)),
+]
+if true_bin:
+    tests.append(("exec /bin/true", "ms",
+                  lambda: t_loop(lambda: subprocess.run([true_bin]), n_exec) / 1000))
+
+def bar(v, vmax, width, col):
+    full = v / vmax * width if vmax else 0
+    blocks = "▏▎▍▌▋▊▉█"
+    n = int(full)
+    frac = int((full - n) * 8)
+    return col + "█" * n + (blocks[frac - 1] if frac else "") + R
+
+print(f"\n{B}{C['mag']}⚡ nh cpu bench{R}  {D}proot pid {tracer} · jádra {cpus} · big {big} ({top//1000} MHz) · little {little} ({min(freqs.values())//1000} MHz){R}")
+print(f"{D}Měří trasované syscally (ptrace výměna guest↔proot) pro různé přiřazení jader. "
+      f"{'rychlý režim' if quick else 'plný režim (--quick = rychlejší)'}{R}\n")
+
+results = []
+try:
+    for name, p_cpus, g_cpus in combos:
+        setaff(tracer, p_cpus)
+        setaff(me, g_cpus)
+        time.sleep(0.2)
+        row = []
+        for tname, unit, fn in tests:
+            fn()                                   # zahřátí (frekvence, cache)
+            row.append(statistics.median(fn() for _ in range(reps)))
+        results.append((name, row))
+        sys.stdout.write(f"  {C['gry']}✓{R} {name}\n")
+        sys.stdout.flush()
+finally:
+    for pid in tree(tracer):
+        setaff(pid, orig_tracer)
+    setaff(me, orig_me)
+
+base = results[0][1]
+print(f"\n{B}{C['wht']}{'kombinace':32s}" + "".join(f"{t[0]:>16s}" for t in tests) + f"{'zrychlení':>12s}{R}")
+print(D + "─" * (32 + 16 * len(tests) + 12) + R)
+scores = []
+for name, row in results:
+    sp = statistics.geometric_mean([b / v for b, v in zip(base, row) if v > 0])
+    scores.append(sp)
+for (name, row), sp in zip(results, scores):
+    cells = ""
+    for i, (v, (tname, unit, _)) in enumerate(zip(row, tests)):
+        best = min(r[1][i] for r in results)
+        worst = max(r[1][i] for r in results)
+        col = C["grn"] if v == best else C["red"] if v == worst else C["yel"]
+        cells += f"{col}{v:>11.1f} {unit:<3s}{R} "
+    spc = C["grn"] if sp >= 1.5 else C["yel"] if sp >= 1.05 else C["red"] if sp < 0.95 else C["wht"]
+    print(f"{name:32s}{cells}{spc}{sp:>9.2f}×{R}")
+
+print(f"\n{B}{C['wht']}Zrychlení proti „bez pinu“ (geometrický průměr testů){R}")
+smax = max(scores)
+for (name, _), sp in zip(results, scores):
+    col = C["grn"] if sp >= 1.5 else C["yel"] if sp >= 1.05 else C["red"] if sp < 0.95 else C["cya"]
+    print(f"  {name:32s} {bar(sp, smax, 30, col)} {col}{sp:.2f}×{R}")
+
+for i, (tname, unit, _) in enumerate(tests):
+    vals = [r[1][i] for r in results]
+    vmax = max(vals)
+    print(f"\n{B}{C['wht']}{tname}{R} {D}({unit}, kratší = lepší){R}")
+    for (name, row), v in zip(results, vals):
+        col = C["grn"] if v == min(vals) else C["red"] if v == vmax else C["blu"]
+        print(f"  {name:32s} {bar(v, vmax, 30, col)} {v:.1f}")
+
+best_i = max(range(len(scores)), key=scores.__getitem__)
+print(f"\n{B}Nejlepší:{R} {C['grn']}{results[best_i][0]}{R} ({scores[best_i]:.2f}× rychlejší než bez pinu)")
+print(f"{D}Session vrácena na původní masku {sorted(orig_tracer)}. Zapnout trvale: nh cpu on · výpočty: nh cpu all <cmd>{R}\n")
+PYBENCH
+}
+
 cpu_dispatch() {
     case "${1:-status}" in
         status|st)      cpu_status ;;
@@ -2827,6 +2994,7 @@ cpu_dispatch() {
         unpin)          cpu_live off ;;
         all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
         run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
+        bench|benchmark) shift; cpu_bench "$@" ;;
         help|--help|-h) help_cpu ;;
         *)              help_cpu; exit 1 ;;
     esac
@@ -2843,6 +3011,8 @@ help_cpu() {
     echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
     echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
     echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
+    echo "  ${GREEN}bench [--quick]${RST}        Benchmark kombinací (bez pinu / proot na big / vše na big / little…)"
+    echo "                         s barevnou tabulkou a grafy; session pak vrátí do původního stavu"
     echo ""
     echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
     echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"

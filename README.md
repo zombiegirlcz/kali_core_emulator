@@ -408,6 +408,8 @@ nh cpu on|off [distro]    # uložit pro další boot + hned aplikovat na běží
 nh cpu pin [N] | unpin    # jen živě (N = jádro, default nejrychlejší)
 nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne zpět)
 nh cpu run 7 cmd …        # příkaz na jádru N
+nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše na big / little …),
+                          # barevná tabulka + grafy, session se pak vrátí do původního stavu
 ```
 
 **`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
