@@ -391,6 +391,31 @@ curl -X POST http://127.0.0.1:1337/distro/remove -d '{"id":"kali","force":true}'
 
 ---
 
+## ⚡ CPU pin — `nh cpu`
+
+Každý syscall, který PRoot zachytí, je ptrace výměna guest ↔ proot. Na různých jádrech
+stojí ~320 µs (probouzení jádra), na jednom velkém jádru ~70–100 µs → shell, apt, git,
+skripty a `configure` jsou 2–5× rychlejší (`zsh -i` 1,5 → 0,7 s, exec 13 → 2,5 ms).
+Daň: celý guest jede na jednom jádru, paralelní výpočty (kompilace, john/hashcat, `xz -T0`,
+ML) spouštěj přes `nh cpu all`.
+
+Zapíná se **ikonou CPU v pravém horním rohu karty distra** (kali / parrot / docker, platí
+od dalšího bootu) nebo z CLI:
+
+```bash
+nh cpu status             # jádra, pin této session, uložené volby
+nh cpu on|off [distro]    # uložit pro další boot + hned aplikovat na běžící session
+nh cpu pin [N] | unpin    # jen živě (N = jádro, default nejrychlejší)
+nh cpu all make -j8       # příkaz na všech jádrech (hlídač ho nepřepne zpět)
+nh cpu run 7 cmd …        # příkaz na jádru N
+```
+
+Mechanika: `boot` s `NH_CPU_PIN=1` zavolá `/system/bin/taskset -p <maska> $$` před `exec`
+proot (zdědí proot i guest) a spustí hlídače, který pin obnoví, když ho Android při změně
+cpusetu přepíše. Endpoint `GET|POST /distro/cpupin` (`{distro, enabled}`).
+
+---
+
 ## ⌨️ Premium Hacker Keyboard
 
 The application integrates an advanced, fully customizable, and responsive overlay keypad split into 5 tabs for maximum efficiency:

@@ -552,6 +552,8 @@ object LocalApiServer {
                 path == "/distro/ps" && method == "GET" -> handleDistroPs(context, out)
                 path == "/distro/kill" && method == "POST" -> handleDistroKill(context, body, out)
                 path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
+                path == "/distro/cpupin" && method == "GET" -> handleCpuPinGet(context, out)
+                path == "/distro/cpupin" && method == "POST" -> handleCpuPinSet(context, body, out)
                 path == "/terminal/float" && method == "POST" -> handleTerminalFloat(context, body, out)
                 // Otevře plnohodnotný terminál (TerminalActivity) — používá X11 launcher
                 // (kali_GUI) pro přepnutí zpět do terminálu. Loopback = bez tokenu.
@@ -2399,6 +2401,32 @@ object LocalApiServer {
             }
             val deleted = RootfsManager.deleteRootfs(context, distro)
             sendResponse(out, 200, "OK", "{\"status\":\"removed\",\"distro\":\"$distroId\",\"deleted\":$deleted}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    // CPU pin per distro (UI ikona CPU, `nh cpu on|off`); platí od dalšího bootu.
+    private fun handleCpuPinGet(context: Context, out: OutputStream) {
+        val obj = JSONObject()
+        for (id in listOf("kali", "parrot", "docker")) {
+            obj.put(id, com.linux_core.core.rootfs.loadCpuPin(context, id))
+        }
+        sendResponse(out, 200, "OK", obj.toString())
+    }
+
+    private fun handleCpuPinSet(context: Context, body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val id = com.linux_core.core.rootfs.cpuPinKey(json.optString("distro", ""))
+            if (id !in listOf("kali", "parrot", "docker") || !json.has("enabled")) {
+                sendResponse(out, 400, "Bad Request",
+                    "{\"error\":\"expected {distro: kali|parrot|docker, enabled: bool}\"}")
+                return
+            }
+            val enabled = json.getBoolean("enabled")
+            com.linux_core.core.rootfs.saveCpuPin(context, id, enabled)
+            sendResponse(out, 200, "OK", "{\"distro\":\"$id\",\"enabled\":$enabled}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

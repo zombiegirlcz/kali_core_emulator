@@ -103,8 +103,11 @@ import com.linux_core.core.rootfs.RemoteDistroScript
 import com.linux_core.core.rootfs.RemoteRootfsCatalog
 import com.linux_core.core.rootfs.RootfsManager
 import com.linux_core.core.rootfs.loadBootMode
+import com.linux_core.core.rootfs.loadCpuPin
+import com.linux_core.core.rootfs.saveCpuPin
 import com.linux_core.core.rootfs.saveBootMode
 import com.linux_core.ui.components.BootModeChip
+import com.linux_core.ui.components.CpuPinToggle
 import com.linux_core.ui.terminal.TerminalActivity
 import com.linux_core.ui.theme.NethunteraioperatorTheme
 import com.linux_core.ui.vpn.VpnCenterScreen
@@ -363,10 +366,28 @@ fun MainScreen() {
     var bootAutostart by remember { mutableStateOf(sharedPrefs.getBoolean("boot_autostart", true)) }
     val bootModes = remember { mutableStateMapOf<String, String>() }
     fun bootModeFor(distroId: String): String = bootModes[distroId] ?: DEFAULT_BOOT_MODE
+
+    // CPU pin per distro (ikona CPU v pravém horním rohu karty), boot: NH_CPU_PIN
+    val cpuPins = remember { mutableStateMapOf<String, Boolean>() }
+
+    fun setCpuPin(
+        distroId: String,
+        enabled: Boolean,
+    ) {
+        cpuPins[distroId] = enabled
+        saveCpuPin(context, distroId, enabled)
+        Toast
+            .makeText(
+                context,
+                if (enabled) "CPU pin ON: 1 rychlé jádro (od dalšího bootu)" else "CPU pin OFF: všechna jádra (od dalšího bootu)",
+                Toast.LENGTH_SHORT,
+            ).show()
+    }
     LaunchedEffect(Unit) {
         bootModes["kali"] = loadBootMode(context, "kali", DEFAULT_BOOT_MODE)
         bootModes["parrot"] = loadBootMode(context, "parrot", DEFAULT_BOOT_MODE)
         bootModes["docker"] = loadBootMode(context, "docker", DEFAULT_BOOT_MODE)
+        for (id in listOf("kali", "parrot", "docker")) cpuPins[id] = loadCpuPin(context, id)
     }
     val scope = rememberCoroutineScope()
 
@@ -674,95 +695,102 @@ fun MainScreen() {
                                         containerColor = if (isSelected) Color(0xF20F111A) else Color(0xE608090D),
                                     ),
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                ) {
-                                    Box(
-                                        modifier =
-                                            Modifier
-                                                .size(54.dp)
-                                                .background(
-                                                    if (isSelected) activeColor.copy(alpha = 0.15f) else Color(0xFF12131A),
-                                                    CircleShape,
-                                                )
-                                                .border(
-                                                    width = 1.dp,
-                                                    color = if (isSelected) activeColor.copy(alpha = 0.5f) else Color(0xFF1E2026),
-                                                    shape = CircleShape,
-                                                ),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            text = if (distro.id == "kali") "🐉" else "🦜",
-                                            fontSize = 28.sp,
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Text(
-                                        text = distro.name,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isSelected) Color.White else Color.LightGray,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = if (distro.id == "kali") "PenTesting Env" else "Privacy OS",
-                                        fontSize = 9.sp,
-                                        color = Color.Gray,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.Center,
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
                                     ) {
                                         Box(
                                             modifier =
                                                 Modifier
-                                                    .size(6.dp)
-                                                    .background(if (exists) Color(0xFF00FF66) else Color.DarkGray, CircleShape),
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                                    .size(54.dp)
+                                                    .background(
+                                                        if (isSelected) activeColor.copy(alpha = 0.15f) else Color(0xFF12131A),
+                                                        CircleShape,
+                                                    )
+                                                    .border(
+                                                        width = 1.dp,
+                                                        color = if (isSelected) activeColor.copy(alpha = 0.5f) else Color(0xFF1E2026),
+                                                        shape = CircleShape,
+                                                    ),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                text = if (distro.id == "kali") "🐉" else "🦜",
+                                                fontSize = 28.sp,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(12.dp))
                                         Text(
-                                            text = if (exists) "INSTALLED" else "NOT READY",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = if (exists) Color(0xFF00FF66) else Color.DarkGray,
+                                            text = distro.name,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) Color.White else Color.LightGray,
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                         )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = if (distro.id == "kali") "PenTesting Env" else "Privacy OS",
+                                            fontSize = 9.sp,
+                                            color = Color.Gray,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center,
+                                        ) {
+                                            Box(
+                                                modifier =
+                                                    Modifier
+                                                        .size(6.dp)
+                                                        .background(if (exists) Color(0xFF00FF66) else Color.DarkGray, CircleShape),
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = if (exists) "INSTALLED" else "NOT READY",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = if (exists) Color(0xFF00FF66) else Color.DarkGray,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            BootModeChip(
+                                                label = "D",
+                                                selected = bootModeFor(distro.id) == "D",
+                                                onClick = {
+                                                    bootModes[distro.id] = "D"
+                                                    saveBootMode(context, distro.id, "D")
+                                                },
+                                            )
+                                            BootModeChip(
+                                                label = "I",
+                                                selected = bootModeFor(distro.id) == "I",
+                                                onClick = {
+                                                    bootModes[distro.id] = "I"
+                                                    saveBootMode(context, distro.id, "I")
+                                                },
+                                            )
+                                            BootModeChip(
+                                                label = "M",
+                                                selected = bootModeFor(distro.id) == "M",
+                                                onClick = {
+                                                    bootModes[distro.id] = "M"
+                                                    saveBootMode(context, distro.id, "M")
+                                                },
+                                            )
+                                        }
                                     }
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        BootModeChip(
-                                            label = "D",
-                                            selected = bootModeFor(distro.id) == "D",
-                                            onClick = {
-                                                bootModes[distro.id] = "D"
-                                                saveBootMode(context, distro.id, "D")
-                                            },
-                                        )
-                                        BootModeChip(
-                                            label = "I",
-                                            selected = bootModeFor(distro.id) == "I",
-                                            onClick = {
-                                                bootModes[distro.id] = "I"
-                                                saveBootMode(context, distro.id, "I")
-                                            },
-                                        )
-                                        BootModeChip(
-                                            label = "M",
-                                            selected = bootModeFor(distro.id) == "M",
-                                            onClick = {
-                                                bootModes[distro.id] = "M"
-                                                saveBootMode(context, distro.id, "M")
-                                            },
-                                        )
-                                    }
+                                    CpuPinToggle(
+                                        enabled = cpuPins[distro.id] == true,
+                                        onToggle = { setCpuPin(distro.id, it) },
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                                    )
                                 }
                             }
                         }
@@ -799,79 +827,86 @@ fun MainScreen() {
                                     containerColor = if (isDockerMode) Color(0xF20F111A) else Color(0xE608090D),
                                 ),
                         ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .size(54.dp)
-                                            .background(
-                                                if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.15f) else Color(0xFF12131A),
-                                                CircleShape,
-                                            )
-                                            .border(
-                                                width = 1.dp,
-                                                color = if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.5f) else Color(0xFF1E2026),
-                                                shape = CircleShape,
-                                            ),
-                                    contentAlignment = Alignment.Center,
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
-                                        // Docker whale icon (text-based)
-                                        Text(
-                                            text = "🐳",
-                                            fontSize = 24.sp,
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .size(54.dp)
+                                                .background(
+                                                    if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.15f) else Color(0xFF12131A),
+                                                    CircleShape,
+                                                )
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.5f) else Color(0xFF1E2026),
+                                                    shape = CircleShape,
+                                                ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                                            // Docker whale icon (text-based)
+                                            Text(
+                                                text = "🐳",
+                                                fontSize = 24.sp,
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "DOCKER HUB",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDockerMode) Color(0xFF00FF41) else Color.LightGray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Custom Image",
+                                        fontSize = 9.sp,
+                                        color = Color.Gray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    // Boot mode toggle for Docker
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        BootModeChip(
+                                            label = "D",
+                                            selected = bootModeFor("docker") == "D",
+                                            onClick = {
+                                                bootModes["docker"] = "D"
+                                                saveBootMode(context, "docker", "D")
+                                            },
+                                        )
+                                        BootModeChip(
+                                            label = "I",
+                                            selected = bootModeFor("docker") == "I",
+                                            onClick = {
+                                                bootModes["docker"] = "I"
+                                                saveBootMode(context, "docker", "I")
+                                            },
+                                        )
+                                        BootModeChip(
+                                            label = "M",
+                                            selected = bootModeFor("docker") == "M",
+                                            onClick = {
+                                                bootModes["docker"] = "M"
+                                                saveBootMode(context, "docker", "M")
+                                            },
                                         )
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "DOCKER HUB",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isDockerMode) Color(0xFF00FF41) else Color.LightGray,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                CpuPinToggle(
+                                    enabled = cpuPins["docker"] == true,
+                                    onToggle = { setCpuPin("docker", it) },
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Custom Image",
-                                    fontSize = 9.sp,
-                                    color = Color.Gray,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                // Boot mode toggle for Docker
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                ) {
-                                    BootModeChip(
-                                        label = "D",
-                                        selected = bootModeFor("docker") == "D",
-                                        onClick = {
-                                            bootModes["docker"] = "D"
-                                            saveBootMode(context, "docker", "D")
-                                        },
-                                    )
-                                    BootModeChip(
-                                        label = "I",
-                                        selected = bootModeFor("docker") == "I",
-                                        onClick = {
-                                            bootModes["docker"] = "I"
-                                            saveBootMode(context, "docker", "I")
-                                        },
-                                    )
-                                    BootModeChip(
-                                        label = "M",
-                                        selected = bootModeFor("docker") == "M",
-                                        onClick = {
-                                            bootModes["docker"] = "M"
-                                            saveBootMode(context, "docker", "M")
-                                        },
-                                    )
-                                }
                             }
                         }
                         Spacer(modifier = Modifier.weight(0.5f))

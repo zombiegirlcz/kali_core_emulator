@@ -370,6 +370,15 @@ kopie zdroje (linkName je od kořene archivu), procházení stromu jen přes nio
 (nenásleduje symlinky — `File.deleteRecursively()` přes absolutní symlink leze na host).
 Spec + validátor + prompt denního agenta: `ROOTFS-for-proot/AGENTS.md`, `tools/validate.py`.
 
+**Výkon PRoot = affinity, ne flagy (2026-09-25):** každý trasovaný syscall ~320 µs (i
+`fstat`/`getcwd`; netrasovaný `getpid` 0,5 µs) = latence ptrace výměny mezi jádry. Flagy
+(`-L`, `--sysvipc`, `--change-id`, počet bindů) jsou v šumu, `PROOT_NO_SECCOMP=1` 3× horší.
+Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN` (`boot`
+`cpu_pin_apply`, stav `$FILES_DIR/nh/cpu/pin.<pid>`, hlídač obnovuje pin po změně cpusetu;
+`free.<pid>` = PIDy z `nh cpu all`), pref `boot_modes/cpu_pin_<kali|parrot|docker>`, ikona
+`CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
+který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
+
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
 `/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`

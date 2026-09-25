@@ -382,6 +382,9 @@ object ProotManager {
         val mountStorageFlag = if (mountStorage) "1" else "0"
         val fakeSysFlag = if (rootPrefs.getBoolean("bind_fake_sys", true)) "1" else "0"
         val sharedTmp = rootPrefs.getBoolean("shared_tmp", false)
+        // CPU pin (ikona CPU na kartě distra): boot přišpendlí proot + guest na
+        // jedno rychlé jádro — ptrace výměna na jednom jádru je 3–5× rychlejší.
+        val cpuPinFlag = if (loadCpuPin(context, distroId)) "1" else "0"
 
         // `sudo` inside the guest is handled by su_daemon, which exec()s this
         // same boot script under real root. That child inherits only the
@@ -397,6 +400,7 @@ object ProotManager {
                     append("NH_FAKE_SYS='").append(fakeSysFlag).append("'\n")
                     append("NH_MOUNT_STORAGE='").append(mountStorageFlag).append("'\n")
                     append("NH_SHARED_TMP='").append(if (sharedTmp) "1" else "0").append("'\n")
+                    append("NH_CPU_PIN='").append(cpuPinFlag).append("'\n")
                     append("NH_EXTRA_MOUNTS='").append(extraMounts.replace("'", "'\\''")).append("'\n")
                 }
             )
@@ -414,6 +418,7 @@ object ProotManager {
                 // NH_FAKE_SYS=0 -> guest sees the real /proc + /sys (Frida et al.)
                 "NH_FAKE_SYS=$fakeSysFlag",
                 "NH_BOOT_MODE=$bootMode",
+                "NH_CPU_PIN=$cpuPinFlag",
                 // The variables above are authoritative for this session, so
                 // boot must not fall back to nh/root_env.
                 "NH_ENV_FROM_APP=1",

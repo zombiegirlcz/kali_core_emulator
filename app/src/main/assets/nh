@@ -1599,6 +1599,7 @@ help_dispatch() {
         apps)                     help_apps ;;
         usb)                      help_usb ;;
         distro)                   help_distro ;;
+        cpu)                      help_cpu ;;
         ashell)                   help_ashell ;;
         zkill)                    help_zkill ;;
         float)                    help_float ;;
@@ -1618,6 +1619,7 @@ help_dispatch() {
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "vpn" "" "Sledování provozu, TLS MITM, AI verdikty, bypass, ignore relace, SNI fallback"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "device" "(dev)" "Device Admin, baterie opt., dotyková gesta (tap/swipe/text/scroll), accessibility UI"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "distro" "" "Správa PRoot kontejnerů (kali, parrot): list, ps, kill, backup, restore, login"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "cpu" "" "CPU pin proot na jedno rychlé jádro (on/off/status), příkaz na všech jádrech (all)"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "usb" "" "USB Host (list, claim, bulk, control), raw USB bridge ioctl, USB gadget g2"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Pi-Coding Agent LLM konfig (provider, key, model), dotazy a chat"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
@@ -2620,6 +2622,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" \
         "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
@@ -2655,6 +2658,180 @@ help_docs() {
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh docs"
+    echo ""
+}
+
+# ─── CPU (pin proot + guest na jedno jádro) ────────────────
+# Každý syscall zachycený proot = ptrace výměna guest <-> proot. Na různých
+# jádrech ~320 µs, na jednom velkém ~70-100 µs. Stav session sdílí s boot
+# (cpu_pin_apply): $FILES_DIR/nh/cpu/pin.<proot pid> = maska, free.<pid> =
+# PIDy, které hlídač nechá na všech jádrech (nh cpu all).
+
+CPU_FILES_DIR="${FILES_DIR:-/data/user/0/com.linux_core/files}"
+CPU_STATE_DIR="$CPU_FILES_DIR/nh/cpu"
+
+cpu_tracer() { sed -n 's/^TracerPid:[[:space:]]*//p' /proc/$$/status 2>/dev/null; }
+
+cpu_all_mask() {
+    local m=0 c
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] && m=$(( m | (1 << ${c##*cpu}) ))
+    done
+    printf '%x' "$m"
+}
+
+cpu_fastest() {
+    local best=0 core=0 c f
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
+        [ "$f" -ge "$best" ] && { best=$f; core=${c##*cpu}; }
+    done
+    echo "$core"
+}
+
+cpu_setaff() {  # <hexmask> <pid>
+    if command -v taskset >/dev/null 2>&1; then
+        taskset -p "$1" "$2" >/dev/null 2>&1
+    else
+        python3 -c "import os,sys; m=int(sys.argv[1],16); os.sched_setaffinity(int(sys.argv[2]), [i for i in range(64) if m>>i&1])" "$1" "$2" 2>/dev/null
+    fi
+}
+
+cpu_getaff() {  # <pid> -> hex
+    if command -v taskset >/dev/null 2>&1; then
+        taskset -p "$1" 2>/dev/null | sed 's/.*: //'
+    else
+        python3 -c "import os,sys; print('%x' % sum(1<<c for c in os.sched_getaffinity(int(sys.argv[1]))))" "$1" 2>/dev/null
+    fi
+}
+
+cpu_tree() {  # <pid> -> pid a všichni potomci
+    local root=$1 all="" p pp line todo out
+    for p in /proc/[0-9]*; do
+        line=$(cat "$p/stat" 2>/dev/null) || continue
+        line=${line##*) }
+        set -- $line
+        all="$all ${p#/proc/}:$2"
+    done
+    todo=$root out=""
+    while [ -n "$todo" ]; do
+        set -- $todo; p=$1; shift; todo="$*"
+        out="$out $p"
+        for pp in $all; do [ "${pp#*:}" = "$p" ] && todo="$todo ${pp%%:*}"; done
+    done
+    echo $out
+}
+
+cpu_distro() { echo "${1:-${NH_DISTRO:-parrot}}" | sed 's/^docker:.*/docker/'; }
+
+cpu_status() {
+    local tp mask c f cur max gov on
+    printf "${WHITE}${BOLD}Jádra:${RST}\n"
+    for c in /sys/devices/system/cpu/cpu[0-9]*; do
+        on=$(cat "$c/online" 2>/dev/null || echo 1)
+        cur=$(cat "$c/cpufreq/scaling_cur_freq" 2>/dev/null || echo 0)
+        max=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo 0)
+        gov=$(cat "$c/cpufreq/scaling_governor" 2>/dev/null || echo "?")
+        printf "  %-6s %5s/%-5s MHz  %-10s %s\n" "${c##*/}" $((cur / 1000)) $((max / 1000)) "$gov" \
+            "$([ "$on" = 1 ] && echo online || echo offline)"
+    done
+    tp=$(cpu_tracer)
+    echo ""
+    printf "${WHITE}${BOLD}Tato session:${RST}\n"
+    if [ -n "$tp" ] && [ "$tp" != "0" ]; then
+        mask=$(cpu_getaff "$tp")
+        printf "  proot pid %s  maska %s  (všechna jádra = %s)\n" "$tp" "$mask" "$(cpu_all_mask)"
+        if [ "$mask" = "$(cpu_all_mask)" ]; then
+            printf "  pin: ${YELLOW}vypnutý${RST}\n"
+        else
+            printf "  pin: ${GREEN}zapnutý${RST}%s\n" "$([ -f "$CPU_STATE_DIR/pin.$tp" ] && echo " (hlídač běží)")"
+        fi
+    else
+        echo "  mimo proot (TracerPid 0)"
+    fi
+    echo ""
+    printf "${WHITE}${BOLD}Uloženo pro další boot:${RST}\n"
+    api_get "/distro/cpupin" | fmt '
+import sys, json
+d = json.load(sys.stdin)
+if not all(k in d for k in ("kali", "parrot", "docker")):
+    sys.exit(1)
+for k in ("kali", "parrot", "docker"):
+    print("  %-7s %s" % (k, "ON (1 jádro)" if d.get(k) else "off"))
+ ' || echo "  (API nedostupné nebo starší APK bez /distro/cpupin)"
+}
+
+cpu_live() {  # on|off — aplikuje na běžící session
+    local tp mask t
+    tp=$(cpu_tracer)
+    [ -n "$tp" ] && [ "$tp" != "0" ] || { echo "  mimo proot, živě nelze"; return 0; }
+    if [ "$1" = "on" ]; then
+        mask=$(printf '%x' $((1 << ${2:-$(cpu_fastest)})))
+        [ -d "$CPU_STATE_DIR" ] && echo "$mask" > "$CPU_STATE_DIR/pin.$tp" 2>/dev/null
+    else
+        mask=$(cpu_all_mask)
+        rm -f "$CPU_STATE_DIR/pin.$tp" "$CPU_STATE_DIR/free.$tp" 2>/dev/null
+    fi
+    for t in $(cpu_tree "$tp"); do cpu_setaff "$mask" "$t"; done
+    printf "  ${GREEN}✓${RST} běžící session (proot %s) → maska %s\n" "$tp" "$mask"
+}
+
+cpu_set() {  # on|off [distro] [--no-live]
+    local state=$1 d live=1 a
+    shift
+    for a in "$@"; do case "$a" in --no-live) live=0 ;; *) d=$a ;; esac; done
+    d=$(cpu_distro "$d")
+    api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"enabled\":$([ "$state" = on ] && echo true || echo false)}" \
+        | grep -q '"enabled"' \
+        && printf "  ${GREEN}✓${RST} %s: CPU pin %s od dalšího bootu (ikona CPU na kartě)\n" "$d" "$state" \
+        || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+    if [ "$live" = 1 ]; then cpu_live "$state"; fi
+}
+
+cpu_exec_mask() {  # <hexmask> <cmd...> — exec se zachováním PID
+    local mask=$1 tp
+    shift
+    [ $# -gt 0 ] || { echo "Použití: nh cpu all|run <cmd...>"; exit 1; }
+    tp=$(cpu_tracer)
+    # hlídač (boot) tenhle PID a jeho potomky nepřepne zpět na 1 jádro
+    [ -n "$tp" ] && [ -d "$CPU_STATE_DIR" ] && echo $$ >> "$CPU_STATE_DIR/free.$tp" 2>/dev/null
+    cpu_setaff "$mask" $$
+    exec "$@"
+}
+
+cpu_dispatch() {
+    case "${1:-status}" in
+        status|st)      cpu_status ;;
+        on)             shift; cpu_set on "$@" ;;
+        off)            shift; cpu_set off "$@" ;;
+        pin)            shift; cpu_live on "${1:-}" ;;
+        unpin)          cpu_live off ;;
+        all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
+        run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
+        help|--help|-h) help_cpu ;;
+        *)              help_cpu; exit 1 ;;
+    esac
+}
+
+help_cpu() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}CPU${RST} ${DIM}– pin proot + guestu na jedno rychlé jádro (2–5× rychlejší shell/apt/git)${RST}"
+    separator
+    echo "  ${GREEN}status${RST}                 Jádra (frekvence, governor), pin této session, uložené volby"
+    echo "  ${GREEN}on | off [distro]${RST}      Uložit pro další boot (= ikona CPU na kartě) a hned aplikovat"
+    echo "                         na běžící session (--no-live jen uloží). distro: kali|parrot|docker"
+    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
+    echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
+    echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
+    echo ""
+    echo "  ${YELLOW}Kdy pin ano/ne:${RST} ano pro shell, apt, git, skripty, configure; ne pro dlouhé"
+    echo "  paralelní výpočty (kompilace, cracking, komprese, ML) → na ně ${GREEN}nh cpu all${RST}."
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh cpu on"
+    echo "    nh cpu all make -j8"
+    echo "    nh cpu run 7 python3 bench.py"
     echo ""
 }
 
@@ -2697,6 +2874,7 @@ case "$CMD" in
     apps)                   apps_dispatch "$@" ;;
     usb)                    usb_dispatch "$@" ;;
     distro)                 distro_dispatch "$@" ;;
+    cpu)                    cpu_dispatch "$@" ;;
     zkill)                  zkill_dispatch "$@" ;;
     float)                  float_dispatch "$@" ;;
     ashell)                 exec ashell ;;  # deleguje na standalone /usr/local/bin/ashell
