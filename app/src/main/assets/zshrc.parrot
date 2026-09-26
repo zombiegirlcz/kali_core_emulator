@@ -137,8 +137,9 @@ if [ -f /etc/zsh_command_not_found ]; then
     . /etc/zsh_command_not_found
 fi
 
-# CPU_ALL — programs allowed on all cores when CPU pin is active
+# CPU_ALL — programs allowed on all cores when CPU pin is active.
+# Comma-separated (no spaces): guest_env() in `boot` word-splits its env string.
 if [ -z "${CPU_ALL:-}" ] && [ -f /usr/share/nh/cpu_all.conf ]; then
-    CPU_ALL=$(grep -v '^#' /usr/share/nh/cpu_all.conf | grep -v '^$' | tr '\n' ' ')
+    CPU_ALL=$(grep -v '^#' /usr/share/nh/cpu_all.conf | grep -v '^$' | paste -sd, -)
     export CPU_ALL
 fi

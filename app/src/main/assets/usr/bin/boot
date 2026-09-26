@@ -17,7 +17,7 @@
 #   BOOT_DEBUG       — "1" for verbose logging
 #   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
 #   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides);
-#                      guest env CPU_ALL="make cargo ~/list.txt" = programs left on all cores
+#                      guest env CPU_ALL="make,cargo,~/list.txt" = programs left on all cores
 
 set -e
 
@@ -159,8 +159,12 @@ guest_env() {
     [ -n "${NETHUNTER_SESSION_ID:-}" ] && _e="$_e NETHUNTER_SESSION_ID=$NETHUNTER_SESSION_ID"
     [ -n "${NH_DISTRO:-}" ] && _e="$_e NH_DISTRO=$NH_DISTRO"
 
+    # CPU_ALL default whitelist je v /usr/share/nh/cpu_all.conf (exportuje ho
+    # zshrc.kali/parrot uvnitř guestu). Tady jen propagujeme app/root_env hodnotu.
     if [ -n "${CPU_ALL:-}" ]; then
-        _e="$_e CPU_ALL=$CPU_ALL"
+        # Mezery → čárky: guest_env() se word-splittuje, hodnoty nesmí mít mezery.
+        # cpu_all_words() čárky zpátky rozsekne na slova.
+        _e="$_e CPU_ALL=$(echo "$CPU_ALL" | tr ' ' ',')"
     fi
 
     local _path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games"
