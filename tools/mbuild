@@ -36,7 +36,6 @@ pull_full_assets() {
         echo "    [OK] su_daemon ($(stat -c%s $SRC/app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
         echo "    [OK] su_wrapper ($(stat -c%s $SRC/app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
         echo "    [OK] usb_bridge ($(stat -c%s $SRC/app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
-        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/lib/linux-x11 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi
@@ -55,7 +54,7 @@ pull_full_assets() {
     echo "  -> pull magisk-modules z Volume -> magisk-modules/"
     if modal volume get --force  kali-build-data src/magisk-modules $SRC/ >/dev/null 2>&1; then
         echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
-        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
+        echo "    [OK] custom_usb_g2_setup ($(du -sh $SRC/magisk-modules/custom_usb_g2_setup 2>/dev/null | cut -f1 || echo '?'))"
     else
         echo "    [WARN] magisk-modules nenalezen na Volume"
     fi
