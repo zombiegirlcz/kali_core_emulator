@@ -968,21 +968,24 @@ boot_reentry() {
 CPU_DIR="$FILES_DIR/nh/cpu"
 TASKSET_BIN=/system/bin/taskset
 
-# Nejrychlejší jádra (max cpuinfo_max_freq), s více sessions se střídají.
+# `nh cpu bench` naměřil, že trasovaný syscall (ptrace výměna guest↔proot) je
+# na little jádru ~2× rychlejší než na big (frekvence nerozhoduje, rozhoduje
+# mezijádrová ptrace latence) a že dvě sessions na DVOU RŮZNÝCH big jádrech
+# jsou 100–200× pomalejší než cokoliv jiného (proot a guest se přepínají mezi
+# jádry přes ptrace na každý syscall). Proto: vyber jádro s NEJNIŽŠÍ
+# cpuinfo_max_freq (little cluster) a VŽDY stejné jedno konkrétní jádro —
+# žádný round-robin mezi sessions. Sdílení jednoho jádra více sessions je podle
+# benche pořád řádově lepší než rozjetí na dvě různá jádra.
 cpu_pick_core() {
-    local best=0 list="" c f n i
+    local best= c f core=
     for c in /sys/devices/system/cpu/cpu[0-9]*; do
         f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
         [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] || continue
         c=${c##*cpu}
-        if [ "$f" -gt "$best" ]; then best=$f; list=$c
-        elif [ "$f" -eq "$best" ]; then list="$list $c"; fi
+        if [ -z "$best" ] || [ "$f" -lt "$best" ]; then best=$f; core=$c
+        elif [ "$f" -eq "$best" ] && [ "$c" -lt "$core" ]; then core=$c; fi
     done
-    [ -n "$list" ] || { echo 0; return; }
-    set -- $list
-    n=$(ls "$CPU_DIR"/pin.* 2>/dev/null | wc -l)
-    i=$(( n % $# + 1 ))
-    eval echo "\${$i}"
+    echo "${core:-0}"
 }
 
 # Potomci PID (včetně něj), bez podstromů uvedených v $CPU_DIR/free.<root>.

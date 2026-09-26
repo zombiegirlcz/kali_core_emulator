@@ -2680,13 +2680,19 @@ cpu_all_mask() {
     printf '%x' "$m"
 }
 
+# `nh cpu bench` naměřilo, že little jádro (nejnižší cpuinfo_max_freq) je pro
+# trasované syscally (ptrace guest↔proot) ~2× rychlejší než big — frekvence
+# nerozhoduje, rozhoduje mezijádrová ptrace latence. Vždy stejné jedno jádro
+# (nejnižší číslo při shodě), stejná logika jako cpu_pick_core() v boot.
 cpu_fastest() {
-    local best=0 core=0 c f
+    local best= core= c f
     for c in /sys/devices/system/cpu/cpu[0-9]*; do
         f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
-        [ "$f" -ge "$best" ] && { best=$f; core=${c##*cpu}; }
+        c=${c##*cpu}
+        if [ -z "$best" ] || [ "$f" -lt "$best" ]; then best=$f; core=$c
+        elif [ "$f" -eq "$best" ] && [ "$c" -lt "$core" ]; then core=$c; fi
     done
-    echo "$core"
+    echo "${core:-0}"
 }
 
 cpu_setaff() {  # <hexmask> <pid>
