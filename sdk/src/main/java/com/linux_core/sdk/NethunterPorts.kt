@@ -7,7 +7,7 @@ package com.linux_core.sdk
  * dokud nejsou všechna volání přepsaná, tyto hodnoty MUSÍ zůstat v sync s existujícími literály.
  */
 object NethunterPorts {
-    /** `LocalApiServer` — REST most (baterka, wifi, GPS, VPN, USB, `/shell`, `/distro/*`). */
+    /** `LocalApiServer` — REST most (baterka, wifi, GPS, VPN, USB, `/shell`, `/distro/…`). */
     const val LOCAL_API = 1337
 
     /** AI agent démon (`nethunter_agent.py`, ReAct LLM). */
