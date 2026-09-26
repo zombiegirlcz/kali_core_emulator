@@ -107,6 +107,7 @@ window_dump.xml
 # Exemptions
 !app/src/main/res/xml/*.xml
 !**/src/main/AndroidManifest.xml
+!fdroid/index.json
 !windows_app/
 !windows_app/*.py
 !modal_build.py
