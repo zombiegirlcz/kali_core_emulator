@@ -381,7 +381,7 @@ Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN`
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
 
 **Magisk modul `nh_cpuctl` (volitelný, root):** statická binárka `cpuctl`
-(`app/src/main/cpp/cpuctl.c`, výstup `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
+(`app/src/main/cpp/cpuctl.c`, výstup `root/nh_cpuctl/system/bin/cpuctl`).
 `service.sh` po bootu spustí `cpuctl daemon` — netlink proc connector (EXEC/FORK eventy)
 okamžitě zachytí nové procesy a aplikuje session masku / CPU_ALL, s fallbackem na `/proc`
 scan. Heartbeat `$FILES_DIR/nh/cpu/cpuctld` (`<PID> <unix_ts>`, každých 5 s); `boot`

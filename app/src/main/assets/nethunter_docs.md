@@ -497,7 +497,7 @@ nh usb send "/dev/bus/usb/001/002" exploit.bin
 
 ## 🔌 USB Magisk Module — `custom_usb_g2_setup` (gadget g2)
 
-Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
+Samostatný Magisk modul (složka `root/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
 
 > **Důležité:** Modul g2 **nikdy není** připojen k UDC sám od sebe — aktivaci/deaktivaci dělá `usbtool` pod real rootem (guest přes `sudo`; configfs `/config/usb_gadget` je bindnutý do guesta). Tak se dá přepínat mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) bez rebootu.
 

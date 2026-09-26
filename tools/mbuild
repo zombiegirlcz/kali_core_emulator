@@ -52,12 +52,12 @@ pull_full_assets() {
     else
         echo "    [WARN] jniLibs nenalezen na Volume — zkompiluje je build_native"
     fi
-    echo "  -> pull magisk-modules z Volume -> magisk-modules/"
-    if modal volume get --force  kali-build-data src/magisk-modules $SRC/ >/dev/null 2>&1; then
-        echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
-        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
+    echo "  -> pull root/ z Volume -> root/"
+    if modal volume get --force  kali-build-data src/root $SRC/ >/dev/null 2>&1; then
+        echo "    [OK] root/ ($(du -sh $SRC/root 2>/dev/null | cut -f1))"
+        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/root/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
     else
-        echo "    [WARN] magisk-modules nenalezen na Volume"
+        echo "    [WARN] root/ nenalezen na Volume"
     fi
 }
 

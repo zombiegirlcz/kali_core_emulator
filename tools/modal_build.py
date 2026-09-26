@@ -256,13 +256,13 @@ def init_keys():
     print(f"[init] Key stored at {key_path}")
 
 def _deploy_usb_gadget_module(src_dir):
-    """Kopíruje custom_usb_g2_setup zip z repa na Volume do magisk-modules/."""
-    src_zip = os.path.join(src_dir, "magisk-modules", "custom_usb_g2_setup-v2.1.zip")
+    """Kopíruje custom_usb_g2_setup zip z repa na Volume do root/."""
+    src_zip = os.path.join(src_dir, "root", "custom_usb_g2_setup-v2.1.zip")
     if not os.path.exists(src_zip):
         print("[usb-module] custom_usb_g2_setup zip nenalezen — PŘESKOČEN")
         return
-    # Na Volume: src/magisk-modules/custom_usb_g2_setup-v2.1.zip
-    vol_magisk = "/vol/src/magisk-modules"
+    # Na Volume: src/root/custom_usb_g2_setup-v2.1.zip
+    vol_magisk = "/vol/src/root"
     os.makedirs(vol_magisk, exist_ok=True)
     dest_zip = os.path.join(vol_magisk, "custom_usb_g2_setup-v2.1.zip")
     if os.path.exists(dest_zip) and os.path.samefile(src_zip, dest_zip):
@@ -408,7 +408,7 @@ def _build_native_bin(src_dir):
     print("─" * 60)
     print("[native-bin] Building cpuctl (static, Magisk module)...")
     cpuctl_src = os.path.join(cpp_dir, "cpuctl.c")
-    cpuctl_dir = os.path.join(src_dir, "magisk-modules/nh_cpuctl/system/bin")
+    cpuctl_dir = os.path.join(src_dir, "root/nh_cpuctl/system/bin")
     os.makedirs(cpuctl_dir, exist_ok=True)
     cpuctl_path = os.path.join(cpuctl_dir, "cpuctl")
     if not os.path.exists(cpuctl_src):
@@ -1230,7 +1230,7 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/assets/su_daemon",
                      "app/src/main/assets/su_wrapper",
                      "app/src/main/assets/ashell_pty",
-                     "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
+                     "root/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,
     },
     "usrtools": {

@@ -160,7 +160,7 @@ exec 3>&-
 
 ## 🔌 USB Magisk Module — `custom_usb_g2_setup` (gadget g2)
 
-Samostatný Magisk modul (složka `magisk-modules/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
+Samostatný Magisk modul (složka `root/custom_usb_g2_setup/`) připravuje **configfs USB gadget g2** (HID keyboard + RNDIS + mass_storage) v `/config/usb_gadget` po bootu, aniž by sahal na aktivní systémový gadget g1.
 
 > **Důležité:** Modul g2 **nikdy není** připojen k UDC sám od sebe — aktivaci/deaktivaci dělá `usbtool` pod real rootem (guest přes `sudo` / su_daemon re-entry; configfs `/config/usb_gadget` je bindnutý do guesta). Přepínání mezi g1 (normální OTG) a g2 (HID/RNDIS/USB attack) tak nevyžaduje reboot.
 
@@ -431,13 +431,13 @@ cpusetu přepíše. Endpoint `GET|POST /distro/cpupin` (`{distro, enabled}`).
 ### Magisk modul `nh_cpuctl` (volitelný, root)
 
 Statická bionic binárka `/system/bin/cpuctl`, kterou instaluje Magisk modul
-`magisk-modules/nh_cpuctl/`. Po bootu spustí démona s netlink proc connector —
+`root/nh_cpuctl/`. Po bootu spustí démona s netlink proc connector —
 nahradí mksh hlídač z `boot` okamžitým zachycením nových procesů (EXEC/FORK),
 s fallbackem na `/proc` scan. Navíc poskytuje `cpuctl boost on|off` (cpufreq
 min=max, přežije jen do rebootu) a `cpuctl pin <maska> <pid>`.
 
-Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
-Zip: `cd magisk-modules && bash build.sh` → `nh_cpuctl-v1.0.zip`.
+Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `root/nh_cpuctl/system/bin/cpuctl`).
+Zip: `cd root && bash build.sh` → `nh_cpuctl-v1.0.zip`.
 Instalace: `su -c '/product/bin/magisk --install-module nh_cpuctl-v1.0.zip'`, reboot.
 
 ---
