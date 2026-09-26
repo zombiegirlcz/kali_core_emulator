@@ -255,24 +255,6 @@ def init_keys():
     build_vol.commit()
     print(f"[init] Key stored at {key_path}")
 
-def _deploy_usb_gadget_module(src_dir):
-    """Kopíruje custom_usb_g2_setup zip z repa na Volume do magisk-modules/."""
-    src_zip = os.path.join(src_dir, "magisk-modules", "custom_usb_g2_setup-v2.1.zip")
-    if not os.path.exists(src_zip):
-        print("[usb-module] custom_usb_g2_setup zip nenalezen — PŘESKOČEN")
-        return
-    # Na Volume: src/magisk-modules/custom_usb_g2_setup-v2.1.zip
-    vol_magisk = "/vol/src/magisk-modules"
-    os.makedirs(vol_magisk, exist_ok=True)
-    dest_zip = os.path.join(vol_magisk, "custom_usb_g2_setup-v2.1.zip")
-    if os.path.exists(dest_zip) and os.path.samefile(src_zip, dest_zip):
-        print(f"[usb-module] ZIP už na Volume — PŘESKOČEN")
-        return
-    shutil.copy2(src_zip, dest_zip)
-    print(f"[usb-module] Kopíruji USB gadget Magisk modul → {dest_zip}")
-    print(f"           ({os.path.getsize(dest_zip):,} B)")
-
-
 @app.function(
     image=base_image,
     volumes={"/vol": build_vol},
@@ -294,7 +276,6 @@ def build_native():
         os.path.join(src_dir, "app/src/main/assets", "usr"),
         "/vol/builds",
     )
-    _deploy_usb_gadget_module(src_dir)
     build_vol.commit()
     print("[native] Binaries committed to Volume.")
 
