@@ -1,160 +1,279 @@
-# Design: pluginový systém + vlastní balíčkový manažer (`nh plugin`)
+# Design: NetHunter monorepo — „F-Droid pro hackery"
 
 Datum: 2026-09-26
 Status: návrh k diskusi
+Autor kontext: zombiegirlcz
 
-## Cíl
+## Vize
 
-Rozříznout monolit `com.linux_core` na **malé neměnné jádro** + **pluginy**,
-které se instalují na vyžádání. Zdroj pravdy pro pluginy je **git**, resoluci
-závislostí a install orchestruje **agent** (13338), ale samotný install musí být
-deterministický i bez agenta (agent = pohodlí, ne podmínka).
+Jedno **monorepo na GitHubu**, které funguje jako **F-Droid repo pro hackery**:
+katalog APK aplikací (app marketplace) + katalog script/root pluginů (plugin
+marketplace). Monolit `com.linux_core` se rozřízne na **malé neměnné jádro**
+(zároveň = klient marketplace) + **pluginy**, které se instalují na vyžádání.
 
-## Zásadní rozhodnutí: dvě třídy pluginů
+Model přebíráme z **F-Droid** (formát metadat/indexu/podpisu), ale infrastruktura
+je **naše vlastní, nová** — ne cizí store. Rozlišení:
+- **Cizí (oficiální NetHunter store):** `com.linux_core.yml` (F-Droid `fdroiddata`
+  metadata) + `fastlane/metadata/android/en-US/` + submodul `nethunter-store-data`
+  (GitLab) slouží jen k **odeslání žádosti o zabalení APK do jejich storu**. Není
+  to naše úložiště, jen packaging request. → formát metadat **znovupoužijeme jako
+  vzor**, ale distribuci si stavíme sami.
+- **Naše (nové):** vlastní `fdroid/` katalog v monorepo + payloady na GitHub
+  Releases. Nezávislé na oficiálním storu.
+- Znovupoužitelné střípky, které už máme: Git LFS na `.apk`, cert pinning,
+  host whitelist, download+verify infra (`RootfsManager`).
 
-Ne všechno se hodí do APK. Rozdělení podle toho, co plugin doopravdy je:
+Zdroj pravdy = **git**. Resoluci závislostí a instalaci orchestruje **agent**
+(13338), ale install je deterministický i bez něj (git = pravda, agent = pohodlí).
 
-### A) Asset plugin (bez APK)
-Čistě `nh` rozšíření + nativní binárky + soubory do guestu / `filesDir`. Nasazuje
-se rozbalením do stromu, žádná instalace přes PackageManager.
+---
 
-- **Kandidáti:** `cpu` (nh cpu + `cpuctl` Magisk modul + cpu funkce v `boot`),
-  `usb` tools, `fix` tools, X11/desktop helpery, MITM CA/certy.
-- **Proč ne APK:** `nh cpu` je jen skript + `cpuctl` binárka; APK by přidalo jen
-  režii (podpis, PackageManager, IPC) bez užitku.
-- **Runtime:** žádný nový proces navíc; jede v guestu / přes `su_daemon`.
+## Mapa současného stavu (co / kde / jak)
 
-### B) App plugin (samostatné APK, `sharedUserId`)
-Samostatná Android appka se stejným keystorem a `sharedUserId="cz.nethunter.agent"`
-→ sdílí `filesDir` skupinu a UID, komunikuje přes `LocalApiServer` (1337),
-bound service nebo `ContentProvider`.
+### Repo top-level
+```
+app/                    jednomodulová Android app (:app)
+assets -> app/src/main/assets
+magisk-modules/         anti_phantom, custom_usb_g2_setup, linux_core_keepalive, nh_cpuctl
+tools/                  modal_build.py, mbuild (build JEN přes Modal)
+docs/plans/             design dokumenty
+fastlane/metadata/      Triple-T metadata (popisy, screenshoty) — pro CIZÍ store
+com.linux_core.yml      F-Droid fdroiddata metadata (Builds matrix) — pro CIZÍ store
+nethunter-store-data/   submodul (GitLab) — packaging request do oficiálního storu (ne naše infra)
+```
+- **git origin:** `github.com/zombiegirlcz/kali_core_emulator` (GitHub = pravda).
+- **submodul:** `nethunter-store-data` → GitLab.
 
-- **Kandidáti:** **VPN** (+ MITM + `AIBrain`), **AI agent démon** (13338),
-  `kali_GUI` (už dnes samostatné APK — první existující „plugin").
-- **Proč APK:** dlouho běžící služby s vlastním lifecyclem, notifikacemi,
-  VpnService oprávněním; profitují z Android sandboxu a updatů přes store.
+### Kotlin zdroj (app/src/main/java/com/linux_core), ~36 k řádků
+| Balíček | soubory | řádky | Role |
+|---|---:|---:|---|
+| `core/rootfs` | 6 | 4464 | `ProotManager`, `RootfsManager`, boot mode, `RemoteRootfsCatalog` — **JÁDRO** |
+| `core/vpn` | 12 | 4900 | VpnCaptureService, NatEngine, Firewall, Proxy, Peer, Log — **app plugin** |
+| `core/terminal` | 8 | 2282 | TerminalActivity/Service, ShellDaemon, Share, Boot — **JÁDRO** |
+| `core/mitm` | 3 | 1910 | TlsMitmEngine, MitmHttpParser/Store — **app plugin (s VPN)** |
+| `core/ai` | 8 | 1369 | AIBrain, VerdictEngine, Offensive/Defense — **app plugin (s VPN)** |
+| `core/device` | 9 | 1271 | Battery/Wifi/GPS/backup/git notifier — **JÁDRO (API)** |
+| `core/widget` | 4 | 1081 | WidgetProvider — **asset/app plugin** |
+| `core/assistant` | 7 | 1007 | Accessibility, NotifListener, DeviceAdmin, Voice — **app plugin** |
+| `core/usb` | 2 | 757 | UsbHostManager, usb_bridge — **app/asset plugin** |
+| `core/docker` | 2 | 733 | docker image extrakce — **JÁDRO (rootfs)** |
+| `core/` root | 2 | — | `LocalApiServer` (3444 ř., ~110 endpointů), `UsbFdExporter` — **JÁDRO** |
+| `ui/vpn` | 7 | 4399 | VPN taby — jde s VPN pluginem |
+| `ui/terminal` | 7 | 3791 | terminál UI — JÁDRO |
+| `security` | 10 | 1322 | Attestation, Cert, Biometric — JÁDRO |
+| `bridge` | 1 | 104 | **`CoreBridgeService` (exported) + `ICoreBridge.aidl`** — plugin IPC ✅ |
 
-## Co zůstává v jádře (neplugin)
+### Nativní (cpp → Modal → assets/jniLibs)
+| Zdroj | Artefakt | Třída |
+|---|---|---|
+| `su_daemon.c` | `assets/su_daemon` | **root plugin** |
+| `su_wrapper.c` | `assets/su_wrapper` | **root plugin** |
+| `cpuctl.c` | `magisk-modules/nh_cpuctl/system/bin/cpuctl` | **root plugin** |
+| `shell_daemon.c` | `jniLibs/libshelldaemon.so` | JÁDRO (ashell adb) |
+| `ashell_pty.c` | `assets/ashell_pty` | JÁDRO |
+| `usb_bridge.c` / `usbfd_jni.c` | `assets/usb_bridge`, `jniLibs/libusbfd_exporter.so` | usb plugin |
+| — | `jniLibs/liba/libio_utils/libcommon_native_jni/libadguard-*` | **VPN plugin** (AdGuard) |
+| — | proot-static-*, loader-static-* (usr/bin) | JÁDRO |
 
-„Kernel" NetHunteru — bez něj se nic nespustí, tudíž se needinstaluje:
+### `nh` CLI (assets/nh, 3390 ř.) — dispatch je **hardcoded**
+Kategorie: `system network vpn agent log device api desktop fix apps usb distro
+cpu zkill float compat`. Každá má `*_dispatch()` + `case` v `main()`. Přidání
+pluginu dnes = editace `nh`.
 
-- `ProotManager`, `RootfsManager`, `boot`, PRoot statické binárky + loader
-- `TerminalActivity/Service`, Termux emulátor
-- `LocalApiServer` (most 1337) + `su_daemon` / Root Bridge
-- `ShizukuManager`, `BootReceiver`/auto-start
-- `nh` runtime + dispatch registr (viz níže)
+### `LocalApiServer` — endpoint skupiny (~110)
+vpn(21), usb(17), accessibility(11), distro(8), shelldaemon(7), ashell(7),
+device(6), rootfs(4), battery(4), app(4), wifi/volume/clipboard(3)…
+→ VPN a USB endpointy odejdou s pluginy; distro/rootfs/shell/device/battery zůstanou.
 
-## Manifest pluginu (`.nh/plugin`)
+### Existující stavební kameny pro marketplace (de-riskuje projekt)
+1. **`ICoreBridge.aidl` + `CoreBridgeService` (exported)** — plugin↔jádro IPC
+   už definované: `prootExec`, `hostShell`, `elfExec`, `getStatus`
+   (`bridge_version`+`core_version`), `listDistros`. → **verzované API pro pluginy**.
+2. **`sharedUserId="cz.nethunter.agent"`** — shared UID cesta hotová.
+3. **`RootfsManager` + `RemoteRootfsCatalog`** — HTTPS download, SHA256 verify,
+   host whitelist, tar.xz extrakce, `Flow<Int>` progress. → **vzor pro fetch payloadu**.
+4. **F-Droid metadata formát** (`com.linux_core.yml` + fastlane) — máme z něj
+   vzor katalogu (i když dnes cílí na cizí store, ne na náš).
+5. **Git LFS** na `.apk` — payload distribuce připravená.
+6. **`magisk-modules/`** — seed root plugin repa.
 
-Plochý `KEY=VALUE` — stejný styl jako `.nh/manifest` u rootfs, parsovatelný `sed`em:
+---
+
+## Cílový monorepo layout
 
 ```
-NH_PLUGIN_NAME=cpu
-NH_PLUGIN_VERSION=1.2.0
-NH_PLUGIN_KIND=asset            # asset | app
-NH_PLUGIN_DEPS=                 # mezerami oddělené názvy pluginů
+kali_core_emulator/                (GitHub, monorepo)
+├── core/                          přejmenované z app/ — jádro + marketplace klient
+│   └── ... (ProotManager, terminal, LocalApiServer, bridge, security)
+├── plugins/
+│   ├── vpn/                       :plugins:vpn  → APK (app plugin)
+│   ├── agent/                     :plugins:agent → APK (AI agent démon)
+│   ├── assistant/                 :plugins:assistant → APK
+│   ├── cpu/                       asset plugin (nh.d + boot.d, žádný gradle modul)
+│   ├── usb/                       asset/app plugin
+│   └── fix/                       asset plugin
+├── root/                          root pluginy (bývalé magisk-modules/)
+│   ├── su-bridge/                 su_daemon + su_wrapper + cpp/
+│   ├── nh_cpuctl/
+│   ├── anti_phantom/
+│   └── ...
+├── fdroid/                        „F-Droid repo" — generovaný katalog
+│   ├── index.json                 podepsaný index (apps + pluginy + hash + sig)
+│   ├── metadata/*.yml             per-balík (jako com.linux_core.yml)
+│   └── (payloady přes GitHub Releases, ne v gitu)
+├── tools/                         modal_build.py rozšířený o per-modul build
+└── settings.gradle.kts            include(":core", ":plugins:vpn", ":plugins:agent", …)
+```
+Gradle: dnes jednomodul `:app`. Cíl = multi-modul. Sdílené API (`ICoreBridge`,
+konstanty portů, plugin manifest parser) → nový modul `:sdk` konzumovaný jádrem
+i app pluginy.
+
+---
+
+## Tři třídy pluginů
+
+### A) Asset plugin (bez APK)
+Skript + binárky + soubory do guestu/`filesDir`. Kandidáti: `cpu`, `usb`, `fix`,
+desktop/X11, MITM certy. Runtime: žádný proces navíc, běží v guestu / přes bridge.
+
+### B) App plugin (APK, shared UID)
+Samostatné APK, stejný keystore, `sharedUserId="cz.nethunter.agent"`, komunikace
+přes `CoreBridgeService` (AIDL) nebo 1337. Kandidáti: **VPN**(+MITM+AIBrain),
+**AI agent**, **assistant** (accessibility/notif/voice — těžká oprávnění zvlášť),
+`kali_GUI` (už existuje = první app plugin).
+
+### C) Root plugin (Magisk modul / su-deploy)
+Potřebuje skutečný root. Kandidáti: `su_daemon`+`su_wrapper` (Root Bridge),
+`cpuctl` (`nh_cpuctl`), `anti_phantom`, `custom_usb_g2_setup`,
+`linux_core_keepalive`, `parrot_elf_loader` (zmíněn v `elfExec`). Install = Magisk
+flash / su-deploy; bez rootu `nh plugin install` odmítne s hláškou. Jádro drží jen
+tenký deploy-hook v `ProotManager` (idempotentní `su_wrapper` shadow zůstává).
+
+## Co zůstává v jádře (needinstaluje se)
+PRoot binárky+`boot`, `ProotManager`, `RootfsManager`, docker extrakce, terminál
+(+ShellDaemon), `LocalApiServer` (most 1337) + tenký Root Bridge deploy-hook,
+`CoreBridgeService`, `ShizukuManager`, `security/`, auto-start, `nh` runtime +
+dynamický dispatch registr.
+
+---
+
+## Manifest pluginu (`.nh/plugin`, plochý KEY=VALUE — jako `.nh/manifest`)
+```
+NH_PLUGIN_NAME=vpn
+NH_PLUGIN_VERSION=4.5.0
+NH_PLUGIN_KIND=app              # asset | app | root
+NH_PLUGIN_NEEDS_ROOT=0
+NH_PLUGIN_DEPS=                 # mezerami oddělené pluginy
 NH_PLUGIN_MIN_CORE=20           # min versionCode jádra
+NH_PLUGIN_MAX_CORE=             # volitelný strop
+NH_PLUGIN_BRIDGE_API=1          # min bridge_version z ICoreBridge
 NH_PLUGIN_ABI=aarch64           # nebo "any"
 # asset:
-NH_PLUGIN_FILES=nh.d/cpu bin/cpuctl boot.d/cpu.sh
-NH_PLUGIN_NH_DISPATCH=cpu       # název, který se zaregistruje do `nh`
+NH_PLUGIN_FILES=nh.d/cpu boot.d/cpu.sh bin/cpuctl
+NH_PLUGIN_NH_DISPATCH=cpu
 NH_PLUGIN_HOOK_INSTALL=hooks/install.sh
 NH_PLUGIN_HOOK_REMOVE=hooks/remove.sh
 # app:
-NH_PLUGIN_APK=vpn.apk
 NH_PLUGIN_PKG=com.linux_core.vpn
-NH_PLUGIN_API_PROBE=/vpn/status # endpoint na 1337 pro health-check
+NH_PLUGIN_API_PROBE=/vpn/status
+# root:
+NH_PLUGIN_MAGISK_ID=nh_cpuctl
 ```
 
-SHA256 payloadu je v indexu registru (níže), ne v manifestu.
-
-## Registr (git)
-
-Nový git repo `nethunter-plugins` (analogie k `nethunter-store-data`), Git LFS pro
-`.apk`/binárky. Struktura:
-
+## „F-Droid" katalog (`fdroid/index.json`)
+Podepsaný index (jarsigner keystorem jako F-Droid), jeden záznam na balík+verzi:
+```json
+{
+  "repo": {"name":"NetHunter Hacker Store","address":"github releases base url"},
+  "packages": {
+    "com.linux_core.vpn": {"kind":"app","versions":[
+      {"versionCode":4500,"sha256":"…","sig":"…","url":"…/vpn-4.5.0.apk",
+       "minCore":20,"bridgeApi":1,"deps":[]}]},
+    "cpu": {"kind":"asset","versions":[
+      {"version":"1.2.0","sha256":"…","url":"…/cpu-1.2.0.tar.xz","minCore":20}]}
+  }
+}
 ```
-index.tsv                       # jeden řádek na plugin+verzi
-plugins/cpu/1.2.0/.nh/plugin
-plugins/cpu/1.2.0/nh.d/cpu
-plugins/cpu/1.2.0/bin/cpuctl
-plugins/vpn/4.5.0/.nh/plugin
-plugins/vpn/4.5.0/vpn.apk       # LFS
+Metadata pro zobrazení (popis, ikona, screenshoty) = fastlane struktura per balík.
+
+## Distribuce
+- **Registr/index/metadata** → git (monorepo `fdroid/`), verzované a diffovatelné.
+- **Payloady (APK, tar.xz binárky)** → **GitHub Releases assets** (nejdou proti
+  LFS kvótě, přímé URL, tag = verze). Whitelist host = github.com/objects.githubusercontent.com.
+- **Ne vlastní server** — ušetří cert pin údržbu (máš expiraci 2027-12-31 jako dluh).
+
+## `nh plugin` příkazy
 ```
-
-`index.tsv` (appka ho jen regexem čte, nespouští — jako u `RemoteRootfsCatalog`):
-
+nh plugin list | search [q] | info <name>
+nh plugin install <name>[@ver]   # resolve deps → fetch → verify sha+sig → deploy → hook
+nh plugin remove <name>
+nh plugin update [name]
+nh plugin enable | disable <name>
 ```
-name	version	kind	abi	sha256	min_core	path
-cpu	1.2.0	asset	aarch64	<sha>	20	plugins/cpu/1.2.0
-vpn	4.5.0	app	aarch64	<sha>	20	plugins/vpn/4.5.0
-```
+- **asset install:** fetch → SHA verify → rozbal do `$FILES_DIR/plugins/<name>` →
+  symlinky do `nh.d`/`boot.d` → guest deploy → hook.
+- **app install:** APK → SHA + **podpis stejným keystorem** (jinak shared UID
+  odmítne) → `pm install` přes Shizuku/su/dialog.
+- **root install:** vyžaduje root → SHA → Magisk flash/su-deploy → aktivace hooku.
+- **remove:** app=`pm uninstall`; asset=hook+smaž strom (nikdy přes symlink ven,
+  vzor `deleteRootfsTree`); root=odflash Magisk + odstranit hook.
 
-## `nh` dispatch — dynamický registr
+## Dynamický `nh` dispatch
+Jádro nese kmenové dispatche; `nh` na startu projde `$FILES_DIR/nh.d/*` a
+zaregistruje `<name>) source .../<name> ;;`. `boot.d/*.sh` se nasourcuje v `boot`
+(nový hook adresář, version-gated jako usrtools).
 
-Dnes je dispatch hardcoded (`cpu) cpu_dispatch ;;`). Aby šel plugin přidat bez
-úpravy `nh`:
+---
 
-- Jádro nese jen kmenové dispatche (system, network, distro, fix, …).
-- Instalované asset pluginy skládají soubory do `$FILES_DIR/nh.d/<name>`.
-- `nh` na startu projde `$FILES_DIR/nh.d/*` a zaregistruje `<name>) source .../<name> ;;`.
-- Guest binárky pluginu → `/usr/local/bin` přes `ProotManager` deploy, `boot.d/*.sh`
-  se nasourcuje v `boot` (nový hook adresář, gate-ovaný jako usrtools version gate).
+## Migrace — fáze (robustně, low-risk → high)
 
-## `nh plugin` — příkazy
+1. **`:sdk` modul + plugin API kontrakt.** Vytáhni `ICoreBridge`, port konstanty,
+   plugin manifest parser do `:sdk`. Jádro i pluginy ho konzumují. Verzuj
+   `bridge_version`. **Žádná extrakce funkcí** — chování beze změny.
+2. **`nh plugin` infra.** Dispatch + `nh.d`/`boot.d` loader + `index.json` parser
+   (`RemotePluginCatalog.kt`, vzor `RemoteRootfsCatalog`) + prázdný `fdroid/` repo
+   + `fdroid gen` skript v `tools/`. Jádro se chová identicky.
+3. **První asset plugin = `cpu`.** Nejmenší, izolovaný (nh cpu, boot cpu bloky,
+   `cpu_all.conf`). Ověří celý asset řetěz na nízkém riziku. `cpuctl` část →
+   root plugin `nh_cpuctl`.
+4. **Root repo reorg.** `magisk-modules/` + `su_daemon`/`su_wrapper` (+cpp+Modal
+   kroky) → `root/`. `ProotManager` zúžit na tenký deploy-hook.
+5. **První app plugin = VPN.** `core/vpn`+`core/mitm`+`core/ai`+`ui/vpn`+AdGuard
+   jniLibs → `:plugins:vpn` (`com.linux_core.vpn`, shared UID, most přes bridge/1337).
+   Odstranit VPN endpointy z jádra, přesměrovat přes bridge.
+6. **AI agent** (`nethunter_agent.py`, 13338) jako app plugin.
+7. **assistant** (accessibility/notif/voice/deviceadmin) jako app plugin — izoluje
+   nejcitlivější oprávnění mimo jádro.
+8. **Zbytek asset:** `usb`, `fix`, `desktop`, `widget`.
+9. **Katalog live:** `fdroid gen` v CI (GitHub Actions) při release tagu →
+   nahraje payloady na Releases, přegeneruje `index.json`, podepíše.
 
-```
-nh plugin list                  # nainstalované + verze
-nh plugin search [q]            # z index.tsv registru
-nh plugin info <name>
-nh plugin install <name>[@ver]  # resolve deps → fetch → verify sha → deploy
-nh plugin remove <name>         # hook remove + smaž soubory / uninstall APK
-nh plugin update [name]         # diff verzí proti registru
-nh plugin enable|disable <name> # bez smazání
-```
-
-- **asset install:** `git`/HTTPS fetch payloadu → ověř SHA256 → rozbal do
-  `$FILES_DIR/plugins/<name>` → symlinky do `nh.d`/`boot.d` → guest deploy → hook.
-- **app install:** stáhni `.apk` → ověř SHA256 + **podpis stejným keystorem**
-  (jinak `sharedUserId` odmítne) → `pm install` (přes Shizuku/su, jinak dialog).
-- **remove:** app = `pm uninstall`; asset = hook + smazání stromu (nikdy nemazat
-  přes symlink ven — použít `deleteRootfsTree` vzor).
-
-## Role agenta vs. git
-
-- **git = zdroj pravdy.** `nh plugin install` funguje čistě deterministicky:
-  fetch z indexu → SHA verify → deploy. Žádný agent není nutný.
-- **agent = pohodlná vrstva nad tím.** „Nainstaluj mi něco na cracking WPA" →
-  agent přeloží na `nh plugin install aircrack-suite`, vyřeší závislosti,
-  navrhne. Agent nikdy neobchází SHA/podpis verifikaci.
+---
 
 ## Bezpečnost (nepřekročitelné)
-
-- **App pluginy musí být podepsané `release.jks`** — jiný podpis rozbije shared UID.
-  Registr smí obsahovat jen appkou-důvěryhodně podepsané APK; ověř podpis před `pm install`.
-- SHA256 každého payloadu z indexu; HTTPS + host whitelist (rozšířit
-  `RootfsManager` whitelist o registr host).
-- `pm install`/`uninstall` jde přes `ShizukuManager` fallback řetěz, ne přímo.
+- **App/root pluginy podepsané `release.jks`** — jiný podpis rozbije shared UID.
+  Index smí nést jen důvěryhodně podepsané balíky; ověř podpis před instalací.
+- **Index podepsaný** (jarsigner), klient ověří před parsováním (F-Droid model).
+- SHA256 každého payloadu z indexu; HTTPS + rozšířit host whitelist o
+  github.com/objects.githubusercontent.com.
+- `pm install/uninstall` přes `ShizukuManager` fallback řetěz.
 - Asset deploy nikdy nemění perms systémových složek (bootloop pravidlo).
-- Blocklist destruktivních příkazů se pluginem nesmí obejít — hooky běží pod
-  stejným `ashell`/`su_daemon` režimem.
+- Blocklist destruktivních příkazů (su_daemon+LocalApiServer+ashell) se pluginem
+  neobchází; hooky běží pod stejným režimem.
+- Build **jen přes Modal**; per-modul APK build kroky do `modal_build.py`.
 
-## Migrace — fáze
-
-1. **Infra (žádná extrakce):** `nh plugin` dispatch + `nh.d`/`boot.d` loader +
-   `index.tsv` parser (`RemotePluginCatalog.kt`) + prázdný registr. Jádro se
-   chová identicky.
-2. **První asset plugin = `cpu`** (nejmenší, dobře izolovaný: nh cpu funkce,
-   `boot` cpu bloky, `cpuctl` Magisk, `cpu_all.conf`). Ověří celý řetěz na
-   nízkém riziku.
-3. **První app plugin = VPN** (už plánuješ oddělit). Vytáhni `vpn/`, `mitm/`,
-   `ai/` (AIBrain) do `com.linux_core.vpn`, shared UID, most přes 1337.
-4. **AI agent démon** jako app plugin (13338 už autentizovaný).
-5. **Zbytek asset pluginů:** `usb`, `fix`, `desktop`.
+## Rozhodnutá (dřívější diskuse)
+- **GitHub** (ne GitLab, ne vlastní server) — zdroj pravdy jádra, piny udržované.
+- **Monorepo** — jádro + app marketplace + plugin marketplace pohromadě.
+- **GitHub Releases** na payloady, git na index+metadata.
 
 ## Otevřené otázky
-
-1. Registr na GitLabu (jako store-data) nebo GitHubu (zdroj pravdy jádra)?
-2. Verzování pluginů proti `versionCode` jádra — jen `MIN_CORE`, nebo i strop?
-3. Sdílet `filesDir` mezi app pluginy přes shared UID, nebo každý svůj + IPC?
-4. Offline režim: bundlovat „core" pluginy (cpu) rovnou v APK jako fallback?
+1. `nethunter-store-data` (GitLab submodul) je **packaging request do cizího
+   oficiálního storu**, ne náš katalog — nechat beze změny jako publikační kanál
+   pro hlavní APK, náš `fdroid/` katalog stavět nezávisle. (Potvrdit, že chceme
+   hlavní APK dál nabízet i přes oficiální store, nebo jen přes náš.)
+2. `:sdk` publikovat jako maven artefakt (pro externí autory pluginů), nebo jen
+   interní modul?
+3. Offline fallback: bundlovat „core" asset pluginy (cpu) rovnou v jádru APK?
+4. Verze bridge API: jak řešit breaking change (plugin `MIN_CORE` + `BRIDGE_API`
+   strop — stačí, nebo potřeba i deprecation okno?).
