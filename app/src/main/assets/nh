@@ -3224,47 +3224,58 @@ PYSUM
 }
 
 cpu_isolate() {
-    local tp mask pinned_hex all_mask avoid_mask
+    local tp mask all_mask avoid_mask
     tp=$(cpu_tracer)
     if [ -z "$tp" ] || [ "$tp" = "0" ]; then
         echo "  mimo proot, nelze"; return 1
     fi
     mask=$(cpu_getaff "$tp")
     all_mask=$(cpu_all_mask)
-    # compute inverse: all cores EXCEPT proot's
     avoid_mask=$(python3 -c "
 m=int('$mask',16); a=int('$all_mask',16)
 inv = a & ~m
 print('%x' % inv if inv else '%x' % a)
 " 2>/dev/null)
-    printf "${WHITE}${BOLD}CPU ISOLATE${RST} — přesouvám appku a šum z jádra proot\n"
-    printf "  proot maska: 0x%s  zbytek: 0x%s\n" "$mask" "$avoid_mask"
-    # find com.linux_core PIDs and pin them away
-    local moved=0
-    python3 -c "
-import os
-pinned = set('$mask')
-avoid = '$avoid_mask'
-for d in os.listdir('/proc'):
+    printf "${WHITE}${BOLD}CPU ISOLATE${RST} — přesouvám šum z proot jádra\n"
+    printf "  proot maska: 0x%s  zbytek: 0x%s\n\n" "$mask" "$avoid_mask"
+    python3 - "$avoid_mask" "$tp" <<'PYEOF'
+import os, sys
+
+avoid = sys.argv[1]
+proot_pid = sys.argv[2]
+# host processes to move off proot core
+noise_patterns = [
+    "com.linux", "linux_core", "nethunter",
+    "dropbear", "sshd", "ssh-agent",
+    "busybox", "crond", "cron",
+]
+moved = 0
+for d in os.listdir("/proc"):
     if not d.isdigit(): continue
     try:
-        with open(f'/proc/{d}/comm') as f: comm = f.read().strip()
-        if 'com.linux' in comm or 'linux_core' in comm:
-            print(d, comm)
-    except: pass
-" 2>/dev/null | while read pid name; do
-        cpu_setaff "$avoid_mask" "$pid" && {
-            printf "  ${GREEN}✓${RST} %s (pid %s) → maska 0x%s\n" "$name" "$pid" "$avoid_mask"
-            moved=$((moved + 1))
-        }
-    done
-    # also move dropbear, ssh-agent, busybox (common idle noise)
-    for name in dropbear ssh-agent busybox; do
-        for p in $(pgrep -x "$name" 2>/dev/null); do
-            cpu_setaff "$avoid_mask" "$p" 2>/dev/null && \
-                printf "  ${GREEN}✓${RST} %s (pid %s) → maska 0x%s\n" "$name" "$p" "$avoid_mask"
-        done
-    done
+        with open(f"/proc/{d}/comm") as f: comm = f.read().strip()
+    except: continue
+    if d == proot_pid: continue
+    hit = any(p in comm for p in noise_patterns)
+    if hit:
+        if os.system(f"taskset -p {avoid} {d} >/dev/null 2>&1") == 0:
+            print(f"  \033[1;32m✓\033[0m {comm} (pid {d}) → 0x{avoid}")
+            moved += 1
+        else:
+            # fallback python
+            try:
+                m = int(avoid, 16)
+                cores = [i for i in range(64) if m >> i & 1]
+                os.sched_setaffinity(int(d), cores)
+                print(f"  \033[1;32m✓\033[0m {comm} (pid {d}) → 0x{avoid}")
+                moved += 1
+            except: pass
+
+if moved == 0:
+    print("  žádné šumové procesy nenalezeny na proot jádru")
+else:
+    print(f"\n  přesunuto: {moved} procesů")
+PYEOF
     echo ""
     printf "  Hotovo. Spusť ${CYAN}nh cpu trace${RST} pro ověření.\n"
 }

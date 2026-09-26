@@ -159,6 +159,14 @@ guest_env() {
     [ -n "${NETHUNTER_SESSION_ID:-}" ] && _e="$_e NETHUNTER_SESSION_ID=$NETHUNTER_SESSION_ID"
     [ -n "${NH_DISTRO:-}" ] && _e="$_e NH_DISTRO=$NH_DISTRO"
 
+    # CPU_ALL default whitelist — programy co mají běžet na všech jádrech i při CPU pinu.
+    # Uživatel přebije vlastním export CPU_ALL="..." v ~/.zshrc.
+    if [ "${NH_CPU_PIN:-0}" = "1" ] && [ -z "${CPU_ALL:-}" ]; then
+        _e="$_e CPU_ALL=make cargo rustc gcc g++ cc c++ clang clang++ ld as ar john hashcat xz gzip bzip2 zstd pigz lz4 ffmpeg x264 x265 node npm npx claude python3 pip3 starship java javac gradle kotlin kotlinc go msfconsole nmap masscan hydra aircrack-ng reaver wash"
+    elif [ -n "${CPU_ALL:-}" ]; then
+        _e="$_e CPU_ALL=$CPU_ALL"
+    fi
+
     local _path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games"
     if [ "$NH_MINIMAL" = "1" ]; then
         echo "$_e PATH=$_path"
@@ -1060,6 +1068,28 @@ cpu_pin_watch() {
     rm -f "$file" "$CPU_DIR/free.$pid"
 }
 
+cpu_pin_isolate_host() {
+    # Přesunout host procesy z proot jádra na zbylá jádra.
+    # $1 = hex maska proot jádra
+    local proot_mask=$1 all_mask avoid p comm
+    all_mask=0
+    for p in /sys/devices/system/cpu/cpu[0-9]*; do
+        all_mask=$(( all_mask | (1 << ${p##*cpu}) ))
+    done
+    avoid=$(printf '%x' $(( all_mask & ~0x$proot_mask )))
+    [ "$avoid" != "0" ] || return 0
+    for p in /proc/[0-9]*/comm; do
+        comm=$(cat "$p" 2>/dev/null) || continue
+        case "$comm" in
+            com.linux_core*|linux_core*|nethunter*|dropbear|sshd)
+                local pid=${p#/proc/}; pid=${pid%/comm}
+                $TASKSET_BIN -p "$avoid" "$pid" >/dev/null 2>&1 && \
+                    log "CPU isolate: $comm ($pid) → 0x$avoid"
+                ;;
+        esac
+    done
+}
+
 cpu_pin_apply() {
     [ "${NH_CPU_PIN:-0}" = "1" ] && [ -x "$TASKSET_BIN" ] || return 0
     local core mask
@@ -1076,6 +1106,8 @@ cpu_pin_apply() {
     if $TASKSET_BIN -p "$mask" $$ >/dev/null 2>&1; then
         echo "$mask" > "$CPU_DIR/pin.$$"
         log "CPU pin: cpu$core (mask $mask)"
+        # isolate: přesunout host procesy (appku, agenta) z proot jádra
+        cpu_pin_isolate_host "$mask"
         # Root daemon (cpuctld) má netlink proc connector a obnoví pin
         # okamžitě. Pokud běží (<15 s heartbeat), mksh hlídač je zbytečný.
         local _cpuctld_fresh=0
