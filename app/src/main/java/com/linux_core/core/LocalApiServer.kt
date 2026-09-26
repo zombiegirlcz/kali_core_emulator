@@ -19,6 +19,7 @@ import com.linux_core.core.usb.UsbHostManager
 import com.linux_core.core.vpn.TrafficAggregator
 import com.linux_core.core.vpn.VpnCaptureService
 import com.linux_core.core.vpn.VpnLogManager
+import com.linux_core.sdk.NethunterPorts
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -82,7 +83,7 @@ import java.util.regex.Pattern
 
 object LocalApiServer {
     private const val TAG = "LocalApiServer"
-    private const val PORT = 1337
+    private const val PORT = NethunterPorts.LOCAL_API
     private const val ASHELL_PTY_PORT = 13340
 
     // shell_daemon / ashell ADB (uid 2000, non-root)

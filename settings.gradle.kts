@@ -25,4 +25,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "nethunter-ai-operator"
 include(":app")
+include(":sdk")
  
