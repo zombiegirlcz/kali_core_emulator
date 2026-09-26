@@ -2622,7 +2622,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
-        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu trace [SEC]" "cpu boost on|off [N]" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu trace [SEC]" "cpu isolate" "cpu boost on|off [N]" \
         "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
@@ -3032,10 +3032,10 @@ cpu_trace() {
 # ts,syscall_us,proot_core,core_freq_mhz,pinned_proc_count,procs_on_core
 HEADER
 
-    local elapsed=0 prev_line=""
+    local elapsed=0
     while [ "$elapsed" -lt "$dur" ]; do
         python3 - "$tp" "$mask" "$logfile" "$pinned_cores" <<'PYEOF'
-import os, sys, time, re
+import os, sys, time
 
 tp = sys.argv[1]
 mask = int(sys.argv[2], 16)
@@ -3044,10 +3044,10 @@ pinned = set(sys.argv[4].split())
 
 ts = time.strftime("%H:%M:%S")
 
-# 1) syscall latency benchmark (getpid is traced by proot)
-n = 200
+# 1) syscall latency — os.stat() is actually traced by proot (unlike getpid which glibc caches)
+n = 100
 t0 = time.monotonic()
-for _ in range(n): os.getpid()
+for _ in range(n): os.stat("/proc/self/stat")
 lat = (time.monotonic() - t0) * 1e6 / n
 
 # 2) which core is proot actually on
@@ -3062,50 +3062,44 @@ try:
         freq = int(f.read().strip()) // 1000
 except: freq = 0
 
-# 4) scan all procs: who's on our pinned core(s), top CPU consumers
+# 4) scan ALL host procs: who's on our pinned core(s) + delta CPU time
 on_pinned = []
-all_procs = []
 for d in os.listdir("/proc"):
     if not d.isdigit(): continue
-    pid = d
     try:
-        with open(f"/proc/{pid}/stat") as f:
+        with open(f"/proc/{d}/stat") as f:
             raw = f.read()
         comm_end = raw.rindex(")")
         comm = raw[raw.index("(")+1:comm_end]
         fields = raw[comm_end+2:].split()
         utime, stime = int(fields[11]), int(fields[12])
         proc_core = fields[36]
-        all_procs.append((utime + stime, pid, comm, proc_core))
+        state = fields[0]
         if proc_core in pinned:
-            on_pinned.append((utime + stime, pid, comm))
+            on_pinned.append((utime + stime, d, comm, state))
     except: pass
 
 on_pinned.sort(reverse=True)
-all_procs.sort(reverse=True)
 
-# format pinned procs (top 10)
-pinned_str = " ".join(f"{c}:{p}:{t}" for t, p, c in on_pinned[:10])
+# format: comm:pid:cputicks:state (top 12)
+pinned_str = " ".join(f"{c}:{p}:{t}:{s}" for t, p, c, s in on_pinned[:12])
 
-# log line
 with open(logfile, "a") as f:
     f.write(f"{ts},{lat:.0f},{proot_core},{freq},{len(on_pinned)},{pinned_str}\n")
 
 # live output
-if lat < 150:
-    col = "\033[1;32m"  # green
-elif lat < 300:
-    col = "\033[1;33m"  # yellow
-else:
-    col = "\033[1;31m"  # red
-rst = "\033[0m"
-dim = "\033[2m"
+if lat < 150:   col = "\033[1;32m"
+elif lat < 300: col = "\033[1;33m"
+else:           col = "\033[1;31m"
+rst, dim, yel = "\033[0m", "\033[2m", "\033[1;33m"
 
-sys.stdout.write(f"\r  {ts} {col}{lat:5.0f}µs{rst}  core:{proot_core} {freq}MHz  {len(on_pinned)} procs na jádru")
-# show top 3 noise on pinned core (excluding proot itself and our shell)
-noise = [(t, p, c) for t, p, c in on_pinned if c not in ("python3", "sh", "cat") and p != tp][:3]
+sys.stdout.write(f"\r  {ts} {col}{lat:5.0f}µs{rst}  core:{proot_core} {freq}MHz  {len(on_pinned)} procs")
+
+# noise: non-proot processes with significant CPU time on pinned core
+noise = [(t, p, c) for t, p, c, s in on_pinned
+         if c not in ("python3", "sh", "cat", "sleep", "proot", "nh") and p != tp and t > 10][:3]
 if noise:
-    sys.stdout.write(f"  {dim}noise: {' '.join(c for _,_,c in noise)}{rst}")
+    sys.stdout.write(f"  {yel}noise: {' '.join(f'{c}({t})' for t,p,c in noise)}{rst}")
 sys.stdout.write("   ")
 sys.stdout.flush()
 PYEOF
@@ -3117,11 +3111,14 @@ PYEOF
     echo ""
     printf "${WHITE}${BOLD}=== TRACE SUMMARY ===${RST}\n"
 
-    python3 - "$logfile" <<'PYSUM'
+    python3 - "$logfile" "$tp" <<'PYSUM'
 import sys, collections
 
+logfile = sys.argv[1]
+proot_pid = sys.argv[2]
+
 lines = []
-for l in open(sys.argv[1]):
+for l in open(logfile):
     l = l.strip()
     if not l or l.startswith("#"): continue
     parts = l.split(",", 5)
@@ -3141,70 +3138,135 @@ freqs_by_core = collections.defaultdict(list)
 for l in lines:
     freqs_by_core[l[2]].append(l[3])
 
-print(f"\n  Syscall latence:")
+print(f"\n  Syscall latence (os.stat, trasovaný prootem):")
 print(f"    min={min(lats)}µs  max={max(lats)}µs  avg={sum(lats)//len(lats)}µs  median={sorted(lats)[len(lats)//2]}µs")
 slow = sum(1 for l in lats if l > 300)
 print(f"    vzorků: {len(lats)}  pomalých >300µs: {slow} ({100*slow//max(len(lats),1)}%)")
 
-# detect throttling: freq dropping over time
+# trend: first vs last quarter
+q = max(len(lats)//4, 1)
+first_q = lats[:q]
+last_q = lats[-q:]
+avg_first = sum(first_q) // len(first_q)
+avg_last = sum(last_q) // len(last_q)
+if avg_last > avg_first * 1.5 and avg_last > 100:
+    print(f"\n  \033[1;31mZPOMALENÍ v čase!\033[0m {avg_first}µs → {avg_last}µs ({100*(avg_last-avg_first)//max(avg_first,1)}% nárůst)")
+
+# detect throttling
 first_half = [l[3] for l in lines[:len(lines)//2]]
 second_half = [l[3] for l in lines[len(lines)//2:]]
 if first_half and second_half:
     avg1 = sum(first_half) // len(first_half)
     avg2 = sum(second_half) // len(second_half)
     if avg2 < avg1 * 0.85:
-        print(f"\n  \033[1;31mTHROTTLING DETEKOVÁN!\033[0m freq: {avg1}→{avg2} MHz ({100*(avg1-avg2)//avg1}% pokles)")
+        print(f"\n  \033[1;31mTHROTTLING!\033[0m freq: {avg1}→{avg2} MHz ({100*(avg1-avg2)//avg1}% pokles)")
     elif avg2 < avg1 * 0.95:
         print(f"\n  \033[1;33mMírný throttling:\033[0m freq: {avg1}→{avg2} MHz ({100*(avg1-avg2)//avg1}% pokles)")
 
-print(f"\n  Proot běžel na jádrech: {dict(cores)}")
+print(f"\n  Proot na jádrech: {dict(cores)}")
 for c in sorted(freqs_by_core):
     fs = freqs_by_core[c]
     print(f"    jádro {c}: {min(fs)}-{max(fs)} MHz (avg {sum(fs)//len(fs)})")
 
-# lat per core
-lat_by_core = collections.defaultdict(list)
-for l in lines:
-    lat_by_core[l[2]].append(l[1])
-print(f"\n  Latence per jádro:")
-for c in sorted(lat_by_core):
-    ls = lat_by_core[c]
-    print(f"    jádro {c}: avg={sum(ls)//len(ls)}µs  min={min(ls)}  max={max(ls)}  ({len(ls)} vzorků)")
+# noise analysis: track CPU time DELTA per process across samples
+proc_samples = collections.defaultdict(list)  # name -> [(sample_idx, cputime)]
+for idx, l in enumerate(lines):
+    if len(l) <= 5 or not l[5]: continue
+    for tok in l[5].split():
+        parts = tok.split(":")
+        if len(parts) >= 3:
+            name, pid, ticks = parts[0], parts[1], int(parts[2])
+            proc_samples[f"{name}:{pid}"].append((idx, ticks))
 
-# noise: persistent processes on pinned core
-proc_freq = collections.Counter()
-for l in lines:
-    if len(l) > 5 and l[5]:
-        for tok in l[5].split():
-            parts = tok.split(":")
-            if parts: proc_freq[parts[0]] += 1
+print(f"\n  \033[1;33mCPU čas na pinovaném jádru\033[0m (delta za trace):")
+deltas = []
+for key, samples in proc_samples.items():
+    if len(samples) >= 2:
+        dt = samples[-1][1] - samples[0][1]
+        name = key.split(":")[0]
+        pid = key.split(":")[1]
+        deltas.append((dt, name, pid, len(samples)))
 
-if proc_freq:
-    total = len(lines)
-    persistent = [(name, cnt) for name, cnt in proc_freq.most_common(20) if cnt > total * 0.3]
-    if persistent:
-        print(f"\n  \033[1;33mPersistentní procesy na pinovaném jádru\033[0m (>30% vzorků):")
-        for name, cnt in persistent:
-            pct = 100 * cnt // total
-            marker = " ← ZABÍJÍ VÝKON" if pct > 70 and name not in ("proot", "sh", "bash", "zsh") else ""
-            print(f"    {name:24s} {pct:3d}% ({cnt}/{total}){marker}")
-    else:
-        print(f"\n  \033[1;32mŽádný persistentní šum\033[0m na pinovaném jádru")
+deltas.sort(reverse=True)
+total_delta = sum(d[0] for d in deltas) or 1
+for dt, name, pid, cnt in deltas[:12]:
+    pct = 100 * dt // total_delta
+    bar = "█" * (pct // 3) + "░" * (10 - pct // 3)
+    marker = ""
+    if name in ("proot",): marker = " (tracer — OK)"
+    elif dt > 0 and name not in ("sh", "zsh", "bash", "python3", "sleep", "nh", "cat"):
+        if pct > 20:
+            marker = f" ← \033[1;31mZABÍJÍ VÝKON\033[0m"
+        elif pct > 5:
+            marker = f" ← \033[1;33mšumí\033[0m"
+    print(f"    {bar} {pct:3d}%  {dt:6d} ticks  {name:20s} pid:{pid} ({cnt}×){marker}")
+
+# app process detection
+app_delta = sum(dt for dt, name, pid, _ in deltas if "com.linux" in name or "linux_core" in name)
+proot_delta = sum(dt for dt, name, pid, _ in deltas if name == "proot")
+if app_delta > 0 and proot_delta > 0:
+    ratio = app_delta * 100 // proot_delta
+    if ratio > 50:
+        print(f"\n  \033[1;31m⚠ APP PROCES žere {ratio}% CPU proot traceru na stejném jádru!\033[0m")
+        print(f"    → Řešení: nh cpu isolate  (odstaví appku z proot jádra)")
 
 # recommendation
-if lats:
-    avg_lat = sum(lats) // len(lats)
-    if avg_lat < 120:
-        print(f"\n  \033[1;32m✓ Výkon OK\033[0m ({avg_lat}µs avg)")
-    elif avg_lat < 250:
-        print(f"\n  \033[1;33m⚠ Mírně pomalé\033[0m ({avg_lat}µs avg) — zkus jiné jádro: nh cpu pin <N>")
-    else:
-        best_core = min(lat_by_core, key=lambda c: sum(lat_by_core[c])//len(lat_by_core[c]))
-        print(f"\n  \033[1;31m✗ Pomalé\033[0m ({avg_lat}µs avg) — nejlepší jádro: {best_core}")
-        print(f"    → nh cpu pin {best_core}")
+avg_lat = sum(lats) // len(lats)
+if avg_lat < 120:
+    print(f"\n  \033[1;32m✓ Výkon OK\033[0m ({avg_lat}µs avg)")
+elif avg_lat < 250:
+    print(f"\n  \033[1;33m⚠ Mírně pomalé\033[0m ({avg_lat}µs avg)")
+else:
+    print(f"\n  \033[1;31m✗ Pomalé\033[0m ({avg_lat}µs avg)")
 
-print(f"\n  Log: \033[1;36m{sys.argv[1]}\033[0m")
+print(f"\n  Log: \033[1;36m{logfile}\033[0m")
 PYSUM
+}
+
+cpu_isolate() {
+    local tp mask pinned_hex all_mask avoid_mask
+    tp=$(cpu_tracer)
+    if [ -z "$tp" ] || [ "$tp" = "0" ]; then
+        echo "  mimo proot, nelze"; return 1
+    fi
+    mask=$(cpu_getaff "$tp")
+    all_mask=$(cpu_all_mask)
+    # compute inverse: all cores EXCEPT proot's
+    avoid_mask=$(python3 -c "
+m=int('$mask',16); a=int('$all_mask',16)
+inv = a & ~m
+print('%x' % inv if inv else '%x' % a)
+" 2>/dev/null)
+    printf "${WHITE}${BOLD}CPU ISOLATE${RST} — přesouvám appku a šum z jádra proot\n"
+    printf "  proot maska: 0x%s  zbytek: 0x%s\n" "$mask" "$avoid_mask"
+    # find com.linux_core PIDs and pin them away
+    local moved=0
+    python3 -c "
+import os
+pinned = set('$mask')
+avoid = '$avoid_mask'
+for d in os.listdir('/proc'):
+    if not d.isdigit(): continue
+    try:
+        with open(f'/proc/{d}/comm') as f: comm = f.read().strip()
+        if 'com.linux' in comm or 'linux_core' in comm:
+            print(d, comm)
+    except: pass
+" 2>/dev/null | while read pid name; do
+        cpu_setaff "$avoid_mask" "$pid" && {
+            printf "  ${GREEN}✓${RST} %s (pid %s) → maska 0x%s\n" "$name" "$pid" "$avoid_mask"
+            moved=$((moved + 1))
+        }
+    done
+    # also move dropbear, ssh-agent, busybox (common idle noise)
+    for name in dropbear ssh-agent busybox; do
+        for p in $(pgrep -x "$name" 2>/dev/null); do
+            cpu_setaff "$avoid_mask" "$p" 2>/dev/null && \
+                printf "  ${GREEN}✓${RST} %s (pid %s) → maska 0x%s\n" "$name" "$p" "$avoid_mask"
+        done
+    done
+    echo ""
+    printf "  Hotovo. Spusť ${CYAN}nh cpu trace${RST} pro ověření.\n"
 }
 
 cpu_dispatch() {
@@ -3219,6 +3281,7 @@ cpu_dispatch() {
         bench|benchmark) shift; cpu_bench "$@" ;;
         boost)          shift; cpu_boost "$@" ;;
         trace)          shift; cpu_trace "$@" ;;
+        isolate)        cpu_isolate ;;
         help|--help|-h) help_cpu ;;
         *)              help_cpu; exit 1 ;;
     esac
@@ -3239,6 +3302,7 @@ help_cpu() {
     echo "                         s barevnou tabulkou a grafy; session pak vrátí do původního stavu"
     echo "  ${GREEN}trace [SEC] [FILE]${RST}     Trasovat latenci, frekvence, šum na pinovaném jádru (default 60s)"
     echo "                         Detekuje throttling, identifikuje procesy co kradou CPU čas"
+    echo "  ${GREEN}isolate${RST}                Přesunout appku a šum z proot jádra na jiná jádra"
     echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
     echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
     echo ""
