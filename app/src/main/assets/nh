@@ -3383,10 +3383,16 @@ help_plugin() {
 
 # ─── Plugin dispatch loader (nh.d) ──────────────────────────
 # Asset pluginy (Fáze 2, docs/plans/2026-09-26-plugin-system-design.md) nasazují
-# spustitelné shell fragmenty do $PREFIX/etc/nh.d/<name>; každý definuje
-# <name>_dispatch() a se najde přes fallback v "case $CMD" níže. Prázdný/
-# neexistující adresář = no-op, existující hardcoded dispatch beze změny.
-NH_PLUGIN_DISPATCH_DIR="${PREFIX:-/data/data/com.termux/files/usr}/etc/nh.d"
+# spustitelné shell fragmenty do nh.d/<name>, sourcované odtud, kde `nh` sám
+# leží (ProotManager deployuje "nh" i "nh.d/" do stejného <rootfs>/usr/local/bin/,
+# viz deployApiScripts — NE $PREFIX/etc, to je Termux konvence, kterou tento
+# rootfs layout nedodržuje). "command -v nh" napevno resolvuje na skutečnou
+# cestu bez ohledu na to, jak/odkud byl `nh` spuštěn ($0 by u bare "nh" z PATH
+# nemusel obsahovat adresář). Každý fragment definuje <name>_dispatch() a najde
+# se přes fallback v "case $CMD" níže. Prázdný/neexistující adresář = no-op,
+# existující hardcoded dispatch beze změny.
+NH_SELF_PATH="$(command -v -- nh 2>/dev/null || echo "$0")"
+NH_PLUGIN_DISPATCH_DIR="$(dirname -- "$NH_SELF_PATH")/nh.d"
 if [ -d "$NH_PLUGIN_DISPATCH_DIR" ]; then
     for _nh_plugin_fragment in "$NH_PLUGIN_DISPATCH_DIR"/*; do
         [ -f "$_nh_plugin_fragment" ] && . "$_nh_plugin_fragment"

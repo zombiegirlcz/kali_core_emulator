@@ -32,7 +32,7 @@ object ProotManager {
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
     // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
-    private const val USR_TOOLS_VERSION = "layout-20260815-1"
+    private const val USR_TOOLS_VERSION = "layout-20260926-1"
 
     /**
      * Načte `/.nh/manifest` docker image (KEY=VALUE po řádcích, `#` komentáře).
@@ -82,10 +82,16 @@ object ProotManager {
         // (aktuálně prázdné).
         val hostPrefixBinDir = File(rootDir, "usr/bin")
         val hostPrefixLibDir = File(rootDir, "usr/lib")
+        // usr/etc/boot.d: boot.d loader (Fáze 3, docs/plans/2026-09-26-plugin-system-design.md)
+        // — asset pluginy sourcované z `boot` (cpu.sh bundled by default, viz cpu_pin_apply
+        // přesunuté sem beze změny chování). Stejný deployDir/version-gate vzor jako bin/lib.
+        val hostPrefixBootDDir = File(rootDir, "usr/etc/boot.d")
         hostPrefixBinDir.mkdirs()
         hostPrefixLibDir.mkdirs()
+        hostPrefixBootDDir.mkdirs()
         deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true, version = USR_TOOLS_VERSION)
         deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false, version = USR_TOOLS_VERSION)
+        deployDir(context, "usr/etc/boot.d", hostPrefixBootDDir, executable = true, version = USR_TOOLS_VERSION)
 
         // Static proot/loader do usr/bin (kanonické jméno pro boot skript Fáze 2)
         val suffix = detectArchSuffix()
