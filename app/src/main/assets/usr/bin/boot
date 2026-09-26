@@ -17,7 +17,7 @@
 #   BOOT_DEBUG       — "1" for verbose logging
 #   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
 #   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides);
-#                      guest env CPU_ALL="make cargo ~/list.txt" = programs left on all cores
+#                      guest env CPU_ALL="make,cargo,~/list.txt" = programs left on all cores
 
 set -e
 
@@ -162,9 +162,11 @@ guest_env() {
     # CPU_ALL default whitelist — programy co mají běžet na všech jádrech i při CPU pinu.
     # Uživatel přebije vlastním export CPU_ALL="..." v ~/.zshrc.
     if [ "${NH_CPU_PIN:-0}" = "1" ] && [ -z "${CPU_ALL:-}" ]; then
-        _e="$_e CPU_ALL=make cargo rustc gcc g++ cc c++ clang clang++ ld as ar john hashcat xz gzip bzip2 zstd pigz lz4 ffmpeg x264 x265 node npm npx claude python3 pip3 starship java javac gradle kotlin kotlinc go msfconsole nmap masscan hydra aircrack-ng reaver wash"
+        _e="$_e CPU_ALL=make,cargo,rustc,gcc,g++,cc,c++,clang,clang++,ld,as,ar,john,hashcat,xz,gzip,bzip2,zstd,pigz,lz4,ffmpeg,x264,x265,node,npm,npx,claude,python3,pip3,starship,java,javac,gradle,kotlin,kotlinc,go,msfconsole,nmap,masscan,hydra,aircrack-ng,reaver,wash"
     elif [ -n "${CPU_ALL:-}" ]; then
-        _e="$_e CPU_ALL=$CPU_ALL"
+        # Mezery → čárky: guest_env() se word-splittuje, hodnoty nesmí mít mezery.
+        # cpu_all_words() čárky zpátky rozsekne na slova.
+        _e="$_e CPU_ALL=$(echo "$CPU_ALL" | tr ' ' ',')"
     fi
 
     local _path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games"
