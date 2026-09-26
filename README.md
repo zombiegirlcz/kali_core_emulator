@@ -437,7 +437,7 @@ s fallbackem na `/proc` scan. Navíc poskytuje `cpuctl boost on|off` (cpufreq
 min=max, přežije jen do rebootu) a `cpuctl pin <maska> <pid>`.
 
 Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
-Zip: `cd magisk-modules && bash build.sh` → `nh_cpuctl-v1.0.zip`.
+Zip: `cd magisk-modules && python3 magiskb.py` (všechny moduly) nebo `python3 magiskb.py nh_cpuctl` → `nh_cpuctl-v1.0.zip`.
 Instalace: `su -c '/product/bin/magisk --install-module nh_cpuctl-v1.0.zip'`, reboot.
 
 ---
