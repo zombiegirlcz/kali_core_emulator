@@ -136,3 +136,9 @@ fi
 if [ -f /etc/zsh_command_not_found ]; then
     . /etc/zsh_command_not_found
 fi
+
+# CPU_ALL — programs allowed on all cores when CPU pin is active
+if [ -z "${CPU_ALL:-}" ] && [ -f /usr/share/nh/cpu_all.conf ]; then
+    CPU_ALL=$(grep -v '^#' /usr/share/nh/cpu_all.conf | grep -v '^$' | tr '\n' ' ')
+    export CPU_ALL
+fi

@@ -159,11 +159,7 @@ guest_env() {
     [ -n "${NETHUNTER_SESSION_ID:-}" ] && _e="$_e NETHUNTER_SESSION_ID=$NETHUNTER_SESSION_ID"
     [ -n "${NH_DISTRO:-}" ] && _e="$_e NH_DISTRO=$NH_DISTRO"
 
-    # CPU_ALL default whitelist — programy co mají běžet na všech jádrech i při CPU pinu.
-    # Uživatel přebije vlastním export CPU_ALL="..." v ~/.zshrc.
-    if [ "${NH_CPU_PIN:-0}" = "1" ] && [ -z "${CPU_ALL:-}" ]; then
-        _e="$_e CPU_ALL=make cargo rustc gcc g++ cc c++ clang clang++ ld as ar john hashcat xz gzip bzip2 zstd pigz lz4 ffmpeg x264 x265 node npm npx claude python3 pip3 starship java javac gradle kotlin kotlinc go msfconsole nmap masscan hydra aircrack-ng reaver wash"
-    elif [ -n "${CPU_ALL:-}" ]; then
+    if [ -n "${CPU_ALL:-}" ]; then
         _e="$_e CPU_ALL=$CPU_ALL"
     fi
 
