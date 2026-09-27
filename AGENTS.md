@@ -416,6 +416,9 @@ Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN`
 `/proc/<pid>/environ` guest procesů, cesty v něm relativně k rootfs z `-r` v cmdline proot), pref `boot_modes/cpu_pin_<kali|parrot|docker>`, ikona
 `CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
+Hlídač čte `/proc/<pid>/{cmdline,environ}` **jen** přes `proc_lines()` (`dd count=1` + `timeout`),
+nikdy `tr … < /proc/…`: u zaniklého PID se toybox `tr` zacyklí na chybě `read()` (~50 % jádra)
+a hlídač visí navždy (2026-09-27, osiřelé `tr`/`head` pod `boot`).
 
 **`nh cpu core <N|auto> [distro]`** (2026-09-27): persistentní manuální override jádra,
 odděleně od `nh cpu pin [N]` (ten je jen živý/session-only, nepřežije boot). Motivace: `nh cpu bench`
