@@ -1,0 +1,7 @@
+id=nh_audit_execute_dontaudit
+name=NetHunter Audit Execute Flood Fix
+version=v1.0
+versionCode=1
+author=NetHunter Operator
+description=Potlacuje SELinux "avc: granted execute" audit zahlceni z PRoot exec retezu (proot -> ld-linux-aarch64.so.1 -> loader -> binarka), ktere jinak preplni kernel audit_backlog_limit (64) a audit_rate_limit (5/s) a muze zamrznout cely system (system_server vcetne), ne jen appku. Jen dontaudit na jiz POVOLENYCH akcich - nemeni zadne opravneni.
+minMagisk=20400

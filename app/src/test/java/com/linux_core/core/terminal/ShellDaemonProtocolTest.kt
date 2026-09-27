@@ -74,9 +74,9 @@ class ShellDaemonProtocolTest {
     @Test
     fun `stop rezim posila mode byte za magic`() {
         val kt = ktSource()
-        val magicIdx = kt.indexOf("out.writeInt(SH_MAGIC)", kt.indexOf("fun stopDaemon"))
+        val magicIdx = kt.indexOf("writeIntLE(out, SH_MAGIC)", kt.indexOf("fun stopDaemon"))
         val modeIdx = kt.indexOf("out.writeByte(SH_MODE_STOP)", kt.indexOf("fun stopDaemon"))
-        assertTrue("stopDaemon: writeInt(SH_MAGIC) chybi", magicIdx >= 0)
+        assertTrue("stopDaemon: writeIntLE(out, SH_MAGIC) chybi", magicIdx >= 0)
         assertTrue("stopDaemon: writeByte(SH_MODE_STOP) chybi", modeIdx >= 0)
         assertTrue("stopDaemon: mode byte musi nasledovat az za magic", modeIdx > magicIdx)
     }
@@ -102,25 +102,36 @@ class ShellDaemonProtocolTest {
         // Regrese: `ashell adb stop` drive volal `adb shell kill` — bez
         // pripojeneho adb tise selhal a daemon bezel dal. Stop i zjisteni
         // stavu musi primarne jit pres LocalApiServer.
-        val sh = File("src/main/assets/ashell").readText()
+        val c = File("src/main/cpp/ashell.c").readText()
         assertTrue(
             "ashell stop musi volat API /shelldaemon/stop",
-            sh.contains("POST \"/shelldaemon/stop\"")
+            c.contains("http_request(\"POST\", \"/shelldaemon/stop\"")
         )
         assertTrue(
-            "daemon_alive musi primarne pouzit API /shelldaemon/status",
-            sh.contains("daemon_api_json") && sh.contains("/shelldaemon/status")
+            "shelldaemon_alive musi primarne pouzit API /shelldaemon/status",
+            c.contains("shelldaemon_alive") &&
+                c.contains("http_request(\"GET\", \"/shelldaemon/status\"")
         )
     }
 
     @Test
     fun `exec rezim posila mode byte za magic`() {
         val kt = ktSource()
-        val magicIdx = kt.indexOf("out.writeInt(SH_MAGIC)")
+        val magicIdx = kt.indexOf("writeIntLE(out, SH_MAGIC)")
         val modeIdx = kt.indexOf("out.writeByte(SH_MODE_EXEC)")
-        assertTrue("writeInt(SH_MAGIC) chybi", magicIdx >= 0)
+        assertTrue("writeIntLE(out, SH_MAGIC) chybi", magicIdx >= 0)
         assertTrue("writeByte(SH_MODE_EXEC) chybi", modeIdx >= 0)
         assertTrue("mode byte musi nasledovat az za magic", modeIdx > magicIdx)
+    }
+
+    @Test
+    fun `klient posila cisla little-endian jako nativni daemon`() {
+        // DataOutputStream.writeInt/writeLong a readInt jsou big-endian,
+        // shell_daemon.c cte nativne (LE) -> daemon hlasi "spatny magic".
+        val kt = ktSource()
+        for (bad in listOf("out.writeInt(", "out.writeLong(", "inp.readInt()")) {
+            assertTrue("ShellDaemonClient nesmi pouzivat big-endian $bad", !kt.contains(bad))
+        }
     }
 
     @Test

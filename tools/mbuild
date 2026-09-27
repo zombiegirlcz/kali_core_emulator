@@ -28,6 +28,12 @@ CMD="${1:-}"
 
 cd "$SRC"
 
+# Aktuální lokální branch — jde vždy explicitně jako --branch do modal_build.py::sync.
+# `modal run modal_build.py::sync` volá funkci PŘÍMO a obchází local_entrypoint (main()),
+# takže _detect_branch() uvnitř modal_build.py se v tomto volání nikdy nespustí — bez
+# tohoto by sync vždy spadl na fallback GITHUB_BRANCH bez ohledu na to, na jaké branch jsi.
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo dev)"
+
 # ── Pull celého assets z Volume do lokálního app/src/main/assets ──
 pull_full_assets() {
     echo "  -> pull CELÝ assets z Volume -> app/src/main/assets/"
@@ -36,7 +42,6 @@ pull_full_assets() {
         echo "    [OK] su_daemon ($(stat -c%s $SRC/app/src/main/assets/su_daemon 2>/dev/null || echo '?') B)"
         echo "    [OK] su_wrapper ($(stat -c%s $SRC/app/src/main/assets/su_wrapper 2>/dev/null || echo '?') B)"
         echo "    [OK] usb_bridge ($(stat -c%s $SRC/app/src/main/assets/usb_bridge 2>/dev/null || echo '?') B)"
-        echo "    [OK] linux-x11 ($(stat -c%s $SRC/app/src/main/assets/usr/lib/linux-x11 2>/dev/null || echo '?') B)"
     else
         echo "    [WARN] assets nenalezen na Volume — zkompiluje je build_native"
     fi
@@ -55,7 +60,7 @@ pull_full_assets() {
     echo "  -> pull magisk-modules z Volume -> magisk-modules/"
     if modal volume get --force  kali-build-data src/magisk-modules $SRC/ >/dev/null 2>&1; then
         echo "    [OK] magisk-modules/ ($(du -sh $SRC/magisk-modules 2>/dev/null | cut -f1))"
-        echo "    [OK] custom_usb_g2_setup ($(stat -c%s $SRC/magisk-modules/custom_usb_g2_setup-v2.1.zip 2>/dev/null || echo '?') B)"
+        echo "    [OK] custom_usb_g2_setup ($(du -sh $SRC/magisk-modules/custom_usb_g2_setup 2>/dev/null | cut -f1 || echo '?'))"
     else
         echo "    [WARN] magisk-modules nenalezen na Volume"
     fi
@@ -80,8 +85,8 @@ check_native_binaries() {
 case "$CMD" in
     # ── SYNC příkazy ──
     sync)
-        echo "=== SYNC (git clone/pull z GitHubu) ==="
-        modal run modal_build.py::sync 2>&1 | tail -10
+        echo "=== SYNC (git fetch + reset --hard origin/${BRANCH}) ==="
+        modal run modal_build.py::sync --branch "$BRANCH" 2>&1 | tail -10
         ;;
     clean)
         echo "=== CLEAN (smaže src + gradle-cache na Volume) ==="
@@ -94,8 +99,8 @@ case "$CMD" in
         for a in "$@"; do
             case "$a" in -f|--force) FORCE="--force";; esac
         done
-        echo "=== SMART BUILD (sync + inkrementální proot/native/gradle)${FORCE:+ [FORCE]} ==="
-        modal run modal_build.py::sync > build.log | cat
+        echo "=== SMART BUILD (sync + inkrementální proot/native/gradle, branch: ${BRANCH})${FORCE:+ [FORCE]} ==="
+        modal run modal_build.py::sync --branch "$BRANCH" > build.log | cat
         if [ -n "$FORCE" ]; then
             modal run modal_build.py::smart_build --force >> build.log | cat
         else

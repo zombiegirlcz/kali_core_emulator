@@ -69,7 +69,9 @@ def _detect_branch():
     """Přečte aktuální větev z lokálního .git/HEAD (fallback na _DEFAULT_BRANCH).
 
     Prochází od adresáře skriptu nahoru, protože skript je v tools/ ale
-    .git je v kořeni repa.
+    .git je v kořeni repa. Volání přes `modal run modal_build.py::sync`
+    (jak to dělá mbuild) tuhle funkci obchází — mbuild předává branch
+    vlastní detekcí přes `--branch`.
     """
     d = os.path.dirname(os.path.abspath(__file__))
     while True:
@@ -176,8 +178,13 @@ def sync(branch: str = ""):
 
     Nahrazuje upload_basic/upload_force/upload_clean. Žádný rsync z telefonu —
     Modal si repo stahuje sám přes vlastní síť. Výsledný strom na Volume vždy
-    1:1 odpovídá větvi na GitHubu (deterministické). Větev se čte z lokálního
-    .git/HEAD (fallback na _DEFAULT_BRANCH).
+    1:1 odpovídá dané větvi na GitHubu (deterministické, žádná otázka
+    "mazat, nebo ne" jako u rsyncu).
+
+    `branch` by měl vždy přijít explicitně od volajícího (mbuild předává
+    aktuální lokální branch přes `--branch`) — prázdná hodnota spadne na
+    _DEFAULT_BRANCH (fallback pro ruční `modal run modal_build.py::sync` bez
+    argumentu).
     """
     if not branch:
         branch = _DEFAULT_BRANCH
@@ -273,24 +280,6 @@ def init_keys():
     build_vol.commit()
     print(f"[init] Key stored at {key_path}")
 
-def _deploy_usb_gadget_module(src_dir):
-    """Kopíruje custom_usb_g2_setup zip z repa na Volume do magisk-modules/."""
-    src_zip = os.path.join(src_dir, "magisk-modules", "custom_usb_g2_setup-v2.1.zip")
-    if not os.path.exists(src_zip):
-        print("[usb-module] custom_usb_g2_setup zip nenalezen — PŘESKOČEN")
-        return
-    # Na Volume: src/magisk-modules/custom_usb_g2_setup-v2.1.zip
-    vol_magisk = "/vol/src/magisk-modules"
-    os.makedirs(vol_magisk, exist_ok=True)
-    dest_zip = os.path.join(vol_magisk, "custom_usb_g2_setup-v2.1.zip")
-    if os.path.exists(dest_zip) and os.path.samefile(src_zip, dest_zip):
-        print(f"[usb-module] ZIP už na Volume — PŘESKOČEN")
-        return
-    shutil.copy2(src_zip, dest_zip)
-    print(f"[usb-module] Kopíruji USB gadget Magisk modul → {dest_zip}")
-    print(f"           ({os.path.getsize(dest_zip):,} B)")
-
-
 @app.function(
     image=base_image,
     volumes={"/vol": build_vol},
@@ -312,7 +301,6 @@ def build_native():
         os.path.join(src_dir, "app/src/main/assets", "usr"),
         "/vol/builds",
     )
-    _deploy_usb_gadget_module(src_dir)
     build_vol.commit()
     print("[native] Binaries committed to Volume.")
 
@@ -401,6 +389,24 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
+    # ashell (guest CLI klient, nahrazuje puvodni /bin/sh skript — viz
+    # AGENTS.md #11 "Druhy zdroj audit boure": kazdy fork+exec (curl,
+    # python3) na hostu generoval vlastni "avc: granted execute" zaznam.
+    # Staticky bionic binary (stejny toolchain jako su_wrapper) bezi v
+    # guestu pod PRootem stejne jako driv skript, ale mluvi HTTP/binarni
+    # protokoly (ashell_pty na 13340, LocalApiServer na 1337) primo raw
+    # sockety — bez dalsich forku/execu na hot paths (-c, adb <cmd>).
+    print("─" * 60)
+    print("[native-bin] Building ashell (static)...")
+    ashell_src = os.path.join(cpp_dir, "ashell.c")
+    ashell_bin_path = os.path.join(assets_dir, "ashell")
+    if not os.path.exists(ashell_src):
+        print(f"[native-bin] {ashell_src} chybí — ashell PŘESKOČEN")
+    else:
+        cmd = [cc, "-static", "-o", ashell_bin_path, ashell_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(ashell_bin_path):,} B)")
     # shell_daemon (persistentni shell-UID daemon, obdoba su_daemon pro uid 2000)
     #
     # Deploy cestou jniLibs (stejne jako Shizuku libshizuku.so): zdroj je
@@ -1124,6 +1130,16 @@ def build():
         )
         sys.exit(1)
 
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=src_dir, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    commit = subprocess.run(
+        ["git", "log", "-1", "--format=%h %s"],
+        cwd=src_dir, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    print(f"[build] Building from branch '{branch}': {commit}")
+
     # ---- local.properties ----
     with open(os.path.join(src_dir, "local.properties"), "w") as f:
         f.write(f"sdk.dir={ANDROID_SDK_ROOT}\n")
@@ -1241,6 +1257,7 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/cpp/su_daemon.c",
                      "app/src/main/cpp/su_wrapper.c",
                      "app/src/main/cpp/ashell_pty.c",
+                     "app/src/main/cpp/ashell.c",
                      "app/src/main/cpp/shell_daemon.c",
                      "app/src/main/cpp/cpuctl.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
@@ -1248,6 +1265,7 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/assets/su_daemon",
                      "app/src/main/assets/su_wrapper",
                      "app/src/main/assets/ashell_pty",
+                     "app/src/main/assets/ashell",
                      "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,
     },

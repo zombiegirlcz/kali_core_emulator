@@ -84,7 +84,7 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 | `TlsMitmEngine` / `TlsClientHelloParser` | TLS MITM (`TlsMitmSession`), SNI extrakce, dešifrovaný provoz |
 | `AIBrain` / `AIBrainWorker` / `VerdictEngine` | ONNX klasifikace toků (`vpn_brain_v7.onnx`, LightGBM) |
 | `VpnLogManager` / `VpnFirewallManager` / `VpnProxyManager` / `VpnPeerManager` | logy, IP blocklist, custom `IP:Port` proxy, Mesh VPN |
-| `ShizukuManager` | Privilegované příkazy bez rootu (Shizuku → su -c → ADB → dialog) |
+| `ShellDaemonClient` / `shell_daemon` | Privilegované příkazy bez rootu (uid 2000, `ashell adb`) — nahradilo odstraněný ShizukuManager (2026-09-19) |
 | `UsbHostManager` / `usb_bridge.c` / `usbfd_jni.c` | Raw USB pro mtkclient/EDL (`/usb/stream` binární frame protokol) |
 | `core/` je ~66 souborů, `ui/` 8, `security/` 10 — nevyjmenovávat všechny, viz README |
 
@@ -257,10 +257,19 @@ emulátor v daemonu (tmux model) — dnes `handle_attach` po zavření socketu s
   (tam `--ez ashellMode true` u `ashell-adb` nepatří).
 - V `TerminalActivity` (`onNewIntent` i `setupAndStartSession`) musí být `rootfsDirName == "ashell-adb"`
   vyhodnoceno **před** `ashellMode` (přidána i explicitní podmínka `!= "ashell-adb"`).
-- **Přežití vypnutí wireless debugging:** proces spuštěný přes `adb shell` žije v adbd session
-  cgroup (`/sys/fs/cgroup/uid_0/pid_<adbd>`); vypnutí wireless debugging ukončí adbd → cgroup se
-  zabije → daemon umře. Trvalé přežití = spustit/přesunout daemona do root cgroup (`su 2000 -c …`
-  nebo zápis do `/sys/fs/cgroup/cgroup.procs` jako root) + `oom_score_adj=-1000`. Bez roota nelze.
+- **OPRAVA (2026-09-27, ověřeno na zařízení — tvrzení níže bylo NESPRÁVNÉ):** démon **přežívá**
+  vypnutí wireless debugging bez roota. Stejný `pid` odpovídal na `/shelldaemon/status` i po
+  `adb_wifi_enabled=0`. Důvod: `main()` v `shell_daemon.c` se démonizuje (`fork()` + `setsid()` v
+  dítěti, `stdin`→`/dev/null`, viz sekce „Daemonizace" u `bind()`/`listen()`) — přesně stejný trik
+  jako Shizuku (`nohup`/`setsid` v `start.sh`). `setsid()` odpojí proces od `adb shell`u ovládajícího
+  terminálu/session → je imunní vůči SIGHUP při zavření adbd spojení. Cgroup teorie níže (kdyby
+  platila) by `setsid()` nevyřešil (cgroup ≠ session), ale empiricky proces PŘEŽÍVÁ, takže buď cgroup
+  vůbec neumírá při pouhém vypnutí wireless debugging (jen SIGHUP by bez `setsid()` zabil), nebo je
+  teorie z 2026-09-25 mylná. Původní text (nechán jako historie/pro referenci, NEŘÍDIT se jím):
+  ~~proces spuštěný přes `adb shell` žije v adbd session cgroup (`/sys/fs/cgroup/uid_0/pid_<adbd>`);
+  vypnutí wireless debugging ukončí adbd → cgroup se zabije → daemon umře. Trvalé přežití =
+  spustit/přesunout daemona do root cgroup (`su 2000 -c …` nebo zápis do `/sys/fs/cgroup/cgroup.procs`
+  jako root) + `oom_score_adj=-1000`. Bez roota nelze.~~
 - Diagnostika: `ashell -c 'curl -s 127.0.0.1:1337/shelldaemon/info'` (nezávislé na adb),
   PID file `/data/local/tmp/shelldaemon.pid`.
 
@@ -338,6 +347,34 @@ tmux a PTY fungují.
 Viz `_SELINUX_FIX_C` + `selinux_fix_o` v `tools/modal_build.py::_build_proot_one_arch()`.
 **Detekce binárky:** NON-USERLAND proot má `.l2s.` string (USERLAND měl `.proot.l2s.`).
 
+**Druhý zdroj audit bouře — `execute`, ne `setattr` (2026-09-27, fatální reboot zařízení):**
+`--wrap=chmod` řeší jen `setattr proc:dir`. Nezávisle na tom každý exec řetěz v PRootu
+(`proot` → `ld-linux-aarch64.so.1` → `loader` → binárka) generuje vlastní
+`avc: granted { execute }` na `untrusted_app_27:app_data_file:file` — to je kernelová
+LSM hook na `execve()`, nejde to obejít v proot/loader kódu. Pod PRoot workloadem to
+zahltí `audit_backlog_limit=64`/`audit_rate_limit=5` (`dmesg`: `audit_lost=21095`,
+`rate limit exceeded`). `audit_log_start()` je synchronní kernelová cesta sdílená
+VŠEMI procesy v systému → přeplněná fronta dokázala zaseknout i `system_server`
+(pozorován MIUI `FW_SCOUT_HANG` na hwbinder volání hned po pádu), ne jen appku.
+**OPRAVA (2026-09-27, ověřeno na zařízení — recidiva freezu, modul nikdy nebyl nainstalovaný):**
+`dontaudit untrusted_app_27 app_data_file:file { execute execute_no_trans }`
+(`magisk-modules/audit_flood_fix/sepolicy.rule`) je proti tomuhle **bezúčinný** —
+`dontaudit` potlačuje logování ZAMÍTNUTÝCH přístupů, ale `execute` je tu ALLOW;
+jeho logování řídí samostatný `auditallow untrusted_app_27 app_data_file:file
+{ execute execute_no_trans }` v MIUI vendor policy (`magiskpolicy --print-rules`
+ho ukázal souběžně s `dontaudit` — nesouvisí s žádným naším modulem, `dontaudit`
+ho nepřebije). Skutečný fix: `auditctl -r 1000` (Android auditctl na tomto
+zařízení podporuje jen `-r rate`, ne `-b backlog`) — zvedne `audit_rate_limit`
+z defaultní `5` msg/s, což je pro PRoot execve-řetězec workload hluboko
+nedostatečné. Ověřeno: po `auditctl -r 1000` **žádný** další `audit_lost` i pod
+zátěží (40× exec v proot), zatímco `dontaudit` fix (aplikovaný živě přes
+`magiskpolicy --live`) na běžící storm nic nezměnil. `audit_flood_fix/service.sh`
+teď dělá obojí (`dontaudit` pro starý `setattr` mechanismus + `auditctl -r 1000`
+jako hlavní fix), čeká na `sys.boot_completed`. META-INF zkopírováno ze
+sesterského `anti_phantom` modulu. **Modul samotný ale nikdy nebyl nainstalovaný
+do `/data/adb/modules/`** (jen v repu) — proto se freeze zopakoval; při
+podobném incidentu nejdřív zkontrolovat `ls /data/adb/modules/audit_flood_fix`.
+
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
 tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`,
@@ -379,6 +416,25 @@ Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN`
 `/proc/<pid>/environ` guest procesů, cesty v něm relativně k rootfs z `-r` v cmdline proot), pref `boot_modes/cpu_pin_<kali|parrot|docker>`, ikona
 `CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
+Hlídač čte `/proc/<pid>/{cmdline,environ}` **jen** přes `proc_lines()` (`dd count=1` + `timeout`),
+nikdy `tr … < /proc/…`: u zaniklého PID se toybox `tr` zacyklí na chybě `read()` (~50 % jádra)
+a hlídač visí navždy (2026-09-27, osiřelé `tr`/`head` pod `boot`).
+
+**`nh cpu core <N|auto> [distro]`** (2026-09-27): persistentní manuální override jádra,
+odděleně od `nh cpu pin [N]` (ten je jen živý/session-only, nepřežije boot). Motivace: `nh cpu bench`
+naměřil v jedné session „little 2× rychlejší", v jiné „big 1.18× rychlejší" — rozdíl byl kontaminace
+běžící AI-agent session (Claude Code sám běží ve stejném guest cpuset jako proot, `nh cpu trace`
+ho ukázal jako 47–51 % šumu na pinovaném jádru, `nh cpu isolate` ho nezachytí — `noise_patterns`
+v `cpu_isolate()` je natvrdo daný seznam known daemonů, ne obecná detekce). Uživatel chtěl způsob,
+jak automatiku (`cpu_pick_core()`/`cpu_fastest()`, heuristika „nejnižší cpuinfo_max_freq") natvrdo
+přebít a mít jistotu, že se jádro nebude nikdy přepínat pod ním. Implementace: `BootModePersistence.kt`
+(`loadCpuPinCore`/`saveCpuPinCore`, `null` = automatika, SharedPreferences `-1` sentinel), `ProotManager.kt`
+(`NH_CPU_PIN_CORE` env — mechanismus v `boot`'s `cpu_pin_apply()` uz existoval,
+`core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}`, jen nebyl nikde vystavený uživateli), `LocalApiServer.kt`
+(`/distro/cpupin` GET/POST rozšířeno o `"core": int|null`, POST teď akceptuje `enabled` NEBO `core`
+samostatně — nemusí se posílat obojí), `assets/nh` (`cpu_core()` + dispatch `core)` + `cpu_status()`
+zobrazuje manuální/automatický stav). **Neplést s `nh cpu pin [N]`** — ten mění jen běžící session,
+`nh cpu core` mění perzistentní volbu pro příští booty daného distra.
 
 **Magisk modul `nh_cpuctl` (volitelný, root):** statická binárka `cpuctl`
 (`app/src/main/cpp/cpuctl.c`, výstup `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
@@ -389,6 +445,26 @@ scan. Heartbeat `$FILES_DIR/nh/cpu/cpuctld` (`<PID> <unix_ts>`, každých 5 s); 
 `cpuctl boost on|off [N]` nastaví scaling_min_freq=max pro policy jádra N (přežije jen
 do rebootu). `cpuctl pin <hexmask> <pid>` one-shot. `cpuctl status` vše.
 `nh cpu boost on|off|status` → `sudo /system/bin/cpuctl boost …`.
+
+**Řízení CPU cizích aplikací (`cpuctl apps`/`app-pin`, 2026-09-27):** `cpuctl apps [N]` čte
+per-balíček CPU% (2 vzorky 1 s od sebe z `/proc/<pid>/stat` utime+stime), aktuální masku a
+uid; **jen aplikace** (`uid >= 10000`, konstanta `APP_UID_MIN`) — systémové procesy se nikdy
+nečtou ani nepinují. `cpuctl app-pin <balíček> <hexmask|off>` uloží pravidlo do
+`$CPU_DIR/app.<balíček>` a hned pinuje všechny běžící PIDy balíčku (`pin_pkg`); daemon pravidla
+načítá v HB smyčce (`scan_apprules`), aplikuje na nové procesy (`handle_new_app` v `handle_new`)
+a obnovuje po změně cpusetu (`repin_apps`). Balíček = první token `/proc/<pid>/cmdline` bez
+`:subprocess`. Vystaveno: `nh cpu apps [N]` / `nh cpu app <balíček> <jádra|off>` (guest, přes
+`sudo`), API `GET /cpu/apps` + `POST /cpu/apps/pin` (`{package, cores:"0-3"|null}`, Bearer +
+localhost gate — v `sensitiveEndpoints`), a UI `CpuAppsActivity` (spouští se z CPU řádku v
+services panelu, volá cpuctl přes `su -c` jako `runCpuBoost`). **Neplést** `nh cpu app` (cizí
+appka) s `nh cpu core/pin` (proot session).
+
+**Non-root měření (`cpu_apps_raw` v `assets/nh`, `nh cpu apps`/`appmon`):** tři úrovně —
+app uid nevidí cizí `/proc` (`hidepid`), uid 2000 (`ashell adb`, `dumpsys cpuinfo`) **měří** ale
+**nepinuje**, root (nh_cpuctl) obojí. `cpu_apps_raw` vrací TSV a kódem zdroj (0 root / 2 non-root
+dumpsys / 1 nic); `cpu_apps` tiskne tabulku, `cpu_appmon` živé bary (čistý sh+awk, bez python).
+**Přidělení jader cizí appce je fyzicky root-only** (`sched_setaffinity` na cizí uid = `CAP_SYS_NICE`);
+non-root pinování nelze — neslibovat ho v UI ani CLI.
 
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
@@ -403,6 +479,22 @@ na symlinky do `$ROOTFS/.l2s`. Když se `.l2s` vyčistí (nová session / přepn
 osiří → `invalid object … Not a directory` a rozbitý repo (postihuje VŠECHNA repa v rootfs).
 Pojistka: `nh fix git [path]` materializuje symlinky na reálné soubory (přes host bind App Data `/data/user/0/com.linux_core`, fallback `/mnt/app`,
 kde jsou symlinky vidět; vyžaduje `bind_aiapp`). Pouštět po `git clone/gc/repack` pod prootem.
+
+**`ShellDaemonClient.kt` ↔ `shell_daemon.c` byl endianness-broken od začátku (2026-09-27):**
+Kotlinovo `DataOutputStream.writeInt/writeLong` a `DataInputStream.readInt` jsou podle Java
+kontraktu VŽDY big-endian, ale `shell_daemon.c` čte/píše `uint32_t`/`uint64_t` čistě nativně
+(`read_all(fd, &x, sizeof(x))`, žádné `ntohl`/`htonl`) — na aarch64 little-endian. Důsledek: KAŽDÉ
+volání `exec()`/`install()`/`stopDaemon()`'s SH_MODE_STOP z appky posílalo magii `SHLL`
+byte-prohozenou (`0x4c4c4853` místo `0x53484c4c`); démon to zalogoval jako `spatny magic` a **zavřel
+socket bez odpovědi** (appka ještě psala zbytek požadavku → "Broken pipe"/"Connection reset").
+Interaktivní `--attach` cesta (`ashell adb shell` bez args → `libshelldaemon.so --attach`, C-to-C)
+tím postižena NEBYLA (nativní klient, stejná endianness na obou stranách) — proto bug přežil
+nepovšimnutý, non-interaktivní `ashell adb <cmd>`/`/shelldaemon/exec` vždy padal na fallback.
+Fix: `writeIntLE`/`writeLongLE`/`readIntLE` helpery v `ShellDaemonClient.kt` (manuální bajt-po-bajtu
+LE write/read) namísto `writeInt`/`writeLong`/`readInt`. **Nevracet zpět na `DataOutputStream.writeInt`**
+pro cokoliv, co jde na `shell_daemon.c` socket — ten protokol je a zůstává nativní (LE), ne network
+byte order. Diagnostika: restartovat démon s `> logfile 2>&1` místo `> /dev/null 2>&1` (`ashell adb start`
+default přesměrovává stderr do /dev/null, takže `spatny magic`/crash hlášky jsou jinak ztracené).
 
 **su_daemon / Root Bridge:** fork-per-connection (parent hned `accept()`, žádné blokování nových `sudo`),
 POLLHUP → SIGKILL command childa, config v `g_*` globálech, ignorovat SIGPIPE, `pkill -x` (ne `-f`),
@@ -420,6 +512,22 @@ v guestu to maskuje PRootův seccomp filtr). Deploy musí mít exec bit + versio
 **Auto-start:** `RECEIVE_BOOT_COMPLETED` + `.core.BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED;
 **ne** LOCKED_BOOT_COMPLETED — filesDir je credential-encrypted), `TerminalService` START_STICKY
 restart s dedupem (jedna cron session) a backoffem; toggle `boot_autostart`.
+
+**`ashell` je od 2026-09-27 nativní binárka, ne `/bin/sh` skript** (`app/src/main/cpp/ashell.c`,
+build v `_build_native_bin` v `tools/modal_build.py`, `-static` stejným `aarch64-linux-android24-clang`
+toolchainem jako `su_wrapper`/`ashell_pty` — bionic binárka běžně běží i v glibc guestu, PRoot je
+ptrace-based a ABI trasovaného procesu nerozlišuje). Motivace: starý skript dělal `curl`+`python3` na
+KAŽDÉ volání (`api_call()`/`daemon_exec()`) a psal si dočasný `.py` klient pro `ashell_pty` protokol —
+každý ten fork+exec generoval vlastní `avc: granted { execute }` (viz „Druhý zdroj audit bouře" výše);
+`-c` dělal 1 extra exec (python3 pro PTY bridge), `ashell adb <cmd>` dělal 2 (curl+python3). Nativní
+klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1:13340, framing
+`0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
+execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
+uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell). Nízko-frekventní
+větve (`adb start/stop`, `-e` editor, otevření PTY okna) klidně používají `system()`/`execvp` — nejsou
+hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known ploché tvary odpovědí
+tohoto projektu, ne obecný parser) — **nerozšiřovat na obecné vnořené struktury** bez rozmyslu.
+Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiální artefakt musí přes Modal).
 
 **Launcher:** flag `-E` pro proot **neexistuje** — LD_PRELOAD/PROOT_LOADER se v guestu řeší přes
 `/bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"'` před prvním exec.

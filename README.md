@@ -445,7 +445,25 @@ nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše
                           # barevná tabulka + grafy, session se pak vrátí do původního stavu
 nh cpu boost on|off [N]   # root boost: scaling_min_freq=max pro policy jádra N (Magisk nh_cpuctl)
 nh cpu boost status       # aktuální boost stav všech policies
+nh cpu apps [N]           # CPU zátěž ostatních aplikací (top N; root i non-root)
+nh cpu appmon [SEC] [TOP]  # živý grafický monitor CPU aplikací (bary, refresh 2 s)
+nh cpu app <pkg> <jádra|off>  # přišpendlit cizí aplikaci na jádra (root; 0-3 / 4,6 / off)
 ```
+
+**Cizí aplikace** (`nh cpu apps` / `nh cpu appmon` / `nh cpu app`, taky UI „⚙ APLIKACE" v services
+panelu) — tři úrovně přístupu podle oprávnění:
+
+| Úroveň | Měření CPU cizích appek | Přidělení jader |
+|---|---|---|
+| App proces (uid 10xxx) | ne (`hidepid` skryje cizí `/proc`) | ne |
+| Non-root shell (uid 2000, `ashell adb start`) | **ano** (`dumpsys cpuinfo`) | ne |
+| Root (Magisk `nh_cpuctl`) | ano (+ uid a maska) | **ano** |
+
+`apps`/`appmon` **měří i non-root** (přes uid 2000 — jednou spáruj wireless debugging a
+`ashell adb start`), root dá navíc uid a masku jader. **Přidělení jader je root-only** —
+`sched_setaffinity` na cizí proces je kernelový `CAP_SYS_NICE`, žádné Android API to neobejde.
+Pin se týká jen aplikací (uid ≥ 10000), systémové procesy zůstávají nedotčené; daemon masku
+obnoví i po restartu appky.
 
 **`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
 najde do ~2 s podle `comm`/`argv[0]`, potomci zdědí všechna jádra). Čte se z prostředí
@@ -470,7 +488,7 @@ s fallbackem na `/proc` scan. Navíc poskytuje `cpuctl boost on|off` (cpufreq
 min=max, přežije jen do rebootu) a `cpuctl pin <maska> <pid>`.
 
 Build: `zsh mbuild native` (kompiluje `app/src/main/cpp/cpuctl.c` → `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
-Zip: `cd magisk-modules && bash build.sh` → `nh_cpuctl-v1.0.zip`.
+Zip: `cd magisk-modules && python3 magiskb.py` (všechny moduly) nebo `python3 magiskb.py nh_cpuctl` → `nh_cpuctl-v1.0.zip`.
 Instalace: `su -c '/product/bin/magisk --install-module nh_cpuctl-v1.0.zip'`, reboot.
 
 ---

@@ -26,18 +26,18 @@ import java.io.File
  */
 class ShellDaemonStopFallbackTest {
 
-    private fun ashell(): String = File("src/main/assets/ashell").readText()
+    private fun ashell(): String = File("src/main/cpp/ashell.c").readText()
 
     private fun client(): String =
         File("src/main/java/com/linux_core/core/terminal/ShellDaemonClient.kt").readText()
 
-    /** Vytáhne blok `stop)` .. `;;` z case v ashellu. */
+    /** Vytáhne větev `stop` z cmd_adb() v ashell.c (až po větev `status`). */
     private fun ashellStopBranch(): String {
         val src = ashell()
-        val start = src.indexOf("        stop)")
-        assertTrue("ashell: vetev 'stop)' nenalezena", start >= 0)
-        val end = src.indexOf(";;", start)
-        assertTrue("ashell: konec vetve 'stop)' (';;') nenalezen", end > start)
+        val start = src.indexOf("if (strcmp(sub, \"stop\") == 0)")
+        assertTrue("ashell.c: vetev 'stop' nenalezena", start >= 0)
+        val end = src.indexOf("if (strcmp(sub, \"status\") == 0)", start)
+        assertTrue("ashell.c: konec vetve 'stop' nenalezen", end > start)
         return src.substring(start, end)
     }
 
@@ -61,7 +61,7 @@ class ShellDaemonStopFallbackTest {
         )
         assertTrue(
             "ashell stop musí po neúspěchu skončit nenulovým kódem, když daemon pořád běží",
-            stop.contains("exit 1")
+            stop.contains("return 1")
         )
     }
 

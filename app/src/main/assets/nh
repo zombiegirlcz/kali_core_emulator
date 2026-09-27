@@ -2622,7 +2622,7 @@ list_cmds() {
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
-        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu boost on|off [N]" \
+        "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu trace [SEC]" "cpu isolate" "cpu boost on|off [N]" \
         "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
@@ -2680,13 +2680,19 @@ cpu_all_mask() {
     printf '%x' "$m"
 }
 
+# `nh cpu bench` naměřilo, že little jádro (nejnižší cpuinfo_max_freq) je pro
+# trasované syscally (ptrace guest↔proot) ~2× rychlejší než big — frekvence
+# nerozhoduje, rozhoduje mezijádrová ptrace latence. Vždy stejné jedno jádro
+# (nejnižší číslo při shodě), stejná logika jako cpu_pick_core() v boot.
 cpu_fastest() {
-    local best=0 core=0 c f
+    local best= core= c f
     for c in /sys/devices/system/cpu/cpu[0-9]*; do
         f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
-        [ "$f" -ge "$best" ] && { best=$f; core=${c##*cpu}; }
+        c=${c##*cpu}
+        if [ -z "$best" ] || [ "$f" -lt "$best" ]; then best=$f; core=$c
+        elif [ "$f" -eq "$best" ] && [ "$c" -lt "$core" ]; then core=$c; fi
     done
-    echo "$core"
+    echo "${core:-0}"
 }
 
 cpu_setaff() {  # <hexmask> <pid>
@@ -2776,7 +2782,15 @@ d = json.load(sys.stdin)
 if not all(k in d for k in ("kali", "parrot", "docker")):
     sys.exit(1)
 for k in ("kali", "parrot", "docker"):
-    print("  %-7s %s" % (k, "ON (1 jádro)" if d.get(k) else "off"))
+    v = d.get(k) or {}
+    en = v.get("enabled") if isinstance(v, dict) else v
+    core = v.get("core") if isinstance(v, dict) else None
+    if not en:
+        print("  %-7s off" % k)
+    elif core is not None:
+        print("  %-7s ON (cpu%d, manuální — %s)" % (k, core, "nh cpu core auto zruší"))
+    else:
+        print("  %-7s ON (automatika — nejpomalejší max freq)" % k)
  ' || echo "  (API nedostupné nebo starší APK bez /distro/cpupin)"
     echo ""
     printf "${WHITE}${BOLD}Root CPU daemon (Magisk nh_cpuctl):${RST}\n"
@@ -2824,6 +2838,34 @@ cpu_set() {  # on|off [distro] [--no-live]
         && printf "  ${GREEN}✓${RST} %s: CPU pin %s od dalšího bootu (ikona CPU na kartě)\n" "$d" "$state" \
         || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
     if [ "$live" = 1 ]; then cpu_live "$state"; fi
+}
+
+# Manuální volba jádra (persistentní, per distro) — přebíjí automatiku
+# (cpu_pick_core()/cpu_fastest() = jádro s nejnižším cpuinfo_max_freq).
+# Bez tohohle nemá uživatel žádnou cestu, jak zabránit automatickému
+# přepínání jádra při každém bootu/hlídačově obnově pinu.
+cpu_core() {  # <N|auto> [distro]
+    local val=$1 d
+    shift
+    d=$(cpu_distro "${1:-}")
+    case "$val" in
+        auto)
+            api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"core\":null}" | grep -q '"distro"' \
+                && printf "  ${GREEN}✓${RST} %s: CPU jádro zpět na automatiku od dalšího bootu\n" "$d" \
+                || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+            cpu_live on "$(cpu_fastest)"
+            ;;
+        ''|*[!0-9]*)
+            echo "Použití: nh cpu core <N|auto> [distro]"
+            return 1
+            ;;
+        *)
+            api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"core\":$val}" | grep -q '"distro"' \
+                && printf "  ${GREEN}✓${RST} %s: CPU natvrdo na cpu%s od dalšího bootu (žádná automatika, žádné přepínání)\n" "$d" "$val" \
+                || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+            cpu_live on "$val"
+            ;;
+    esac
 }
 
 cpu_exec_mask() {  # <hexmask> <cmd...> — exec se zachováním PID
@@ -3013,6 +3055,413 @@ cpu_boost() {
     esac
 }
 
+# Převede "0-3", "4,6,7", "2" na hex masku (stejná logika jako cpu_run/core).
+cpu_cores_to_mask() {  # <spec> -> hex, "" při chybě
+    local spec=$1 m=0 part a b i
+    for part in $(echo "$spec" | tr ',' ' '); do
+        case "$part" in
+            *-*) a=${part%-*}; b=${part#*-}
+                 case "$a$b" in *[!0-9]*) return 1 ;; esac
+                 [ "$a" -le "$b" ] || return 1
+                 i=$a; while [ "$i" -le "$b" ]; do m=$(( m | (1 << i) )); i=$(( i + 1 )); done ;;
+            *[!0-9]*) return 1 ;;
+            *)   m=$(( m | (1 << part) )) ;;
+        esac
+    done
+    [ "$m" -ne 0 ] || return 1
+    printf '%x' "$m"
+}
+
+cpu_root_ready() {  # 0 = daemon běží, jinak vypíše hint a vrátí 1
+    local hb_pid hb_ts now_s
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then return 0; fi
+    fi
+    echo "  ${YELLOW}Root CPU daemon (Magisk nh_cpuctl) neběží.${RST}"
+    echo "  Řízení CPU cizích aplikací vyžaduje root modul nh_cpuctl."
+    return 1
+}
+
+# Sdílený zdroj dat pro apps/appmon. Tiskne TSV "pkg<TAB>cpu<TAB>uid<TAB>mask".
+# Návratový kód = zdroj: 0 root daemon (přesné, uid+maska), 2 non-root
+# (uid 2000 dumpsys, jen CPU%), 1 = žádný zdroj. Non-root měření je čtení,
+# ne řízení — pinování jde jen s rootem (kernelový CAP_SYS_NICE).
+cpu_apps_raw() {  # [N]
+    local hb_pid hb_ts now_s raw
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then
+            sudo /system/bin/cpuctl apps "${1:-0}" | awk 'NR>1'
+            return 0
+        fi
+    fi
+    # non-root: uid 2000 přes ashell adb (dumpsys cpuinfo). Vyžaduje jednou
+    # spárované wireless debugging + `ashell adb start` — žádný root.
+    # POZOR: `nh` má vlastní funkci ashell() (otevře nové okno host shellu),
+    # která by binárku zastínila a argumenty zahodila → nové okno při každém
+    # volání. `command` funkce přeskočí a spustí přímo /usr/local/bin/ashell.
+    raw=$(command ashell adb dumpsys cpuinfo 2>/dev/null) || raw=""
+    [ -n "$raw" ] || return 1
+    echo "$raw" | awk '
+        {
+            pct=$1
+            if (pct !~ /%/) next
+            sub(/%.*/, "", pct); sub(/^\+/, "", pct)
+            if (pct+0 <= 0) next
+            tok=$2
+            if (tok !~ /\//) next
+            name=tok; sub(/^[0-9]+\//, "", name); sub(/:.*/, "", name)
+            if (name !~ /\./) next            # jen balíčky (mají tečku)
+            printf "%s\t%s\t-\t-\n", name, pct
+        }'
+    return 2
+}
+
+# nh cpu apps [N] — přehled CPU zátěže ostatních aplikací (root i non-root)
+cpu_apps() {
+    local n=${1:-20} data rc src
+    data=$(cpu_apps_raw 0); rc=$?
+    case $rc in
+        0) src="root daemon (nh_cpuctl) — s uid a maskou jader" ;;
+        2) src="non-root (uid 2000, dumpsys) — jen CPU%, pinování vyžaduje root" ;;
+        *) echo "  ${YELLOW}Žádný zdroj dat o CPU cizích aplikací.${RST}"
+           echo "  Root:     nainstaluj Magisk modul ${CYAN}nh_cpuctl${RST}."
+           echo "  Non-root: spusť ${CYAN}ashell adb start${RST} (jednou spáruj wireless debugging)."
+           return 1 ;;
+    esac
+    printf "  ${DIM}zdroj: %s${RST}\n" "$src"
+    { printf "PKG\tCPU\tUID\tMASK\n"; echo "$data" | sort -t"$(printf '\t')" -k2 -nr | head -n "$n"; } \
+      | awk -F'\t' -v grn="$GREEN" -v yel="$YELLOW" -v red="$RED" -v rst="$RST" \
+            -v bold="$BOLD" -v white="$WHITE" '
+        NR==1 { printf "  %s%-40s %8s %8s   %s%s\n", bold white, "APLIKACE", "CPU%", "UID", "JÁDRA", rst; next }
+        {
+            col = ($2+0 >= 50 ? red : ($2+0 >= 15 ? yel : grn))
+            printf "  %-40s %s%7.1f%%%s %8s   %s\n", $1, col, $2, rst, $3, $4
+        }'
+}
+
+# nh cpu appmon [SEC] [TOP] — živý grafický monitor CPU aplikací (root i non-root)
+cpu_appmon() {
+    local sec=${1:-0} top=${2:-15} data rc src end=0 tab
+    tab=$(printf '\t')
+    case "$sec" in ''|*[!0-9]*) sec=0 ;; esac
+    case "$top" in ''|*[!0-9]*) top=15 ;; esac
+    [ "$sec" -gt 0 ] && end=$(( $(date +%s) + sec ))
+    trap 'printf "\033[?25h\n"; return 0' INT
+    printf '\033[?25l'
+    while :; do
+        data=$(cpu_apps_raw 0); rc=$?
+        printf '\033[H\033[2J'
+        if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then
+            printf "  ${YELLOW}Žádný zdroj dat.${RST}  Root: ${CYAN}nh_cpuctl${RST} · Non-root: ${CYAN}ashell adb start${RST}\n"
+            sleep 2
+            [ "$end" -ne 0 ] && [ "$(date +%s)" -ge "$end" ] && break
+            continue
+        fi
+        [ "$rc" = 0 ] && src="root daemon (nh_cpuctl)" || src="non-root (uid 2000, dumpsys)"
+        printf "  ${BOLD}${MAGENTA}nh cpu appmon${RST}  ${DIM}zdroj: %s · %s · Ctrl-C konec${RST}\n\n" "$src" "$(date +%H:%M:%S)"
+        echo "$data" | sort -t"$tab" -k2 -nr | head -n "$top" | awk -F'\t' \
+            -v g="$GREEN" -v y="$YELLOW" -v r="$RED" -v rst="$RST" '
+            {
+                cpu=$2+0; n=int(cpu/100*30); if(n>30)n=30; if(n<0)n=0
+                col=(cpu>=50?r:(cpu>=15?y:g))
+                bar=""; for(i=0;i<n;i++)bar=bar"█"; for(i=n;i<30;i++)bar=bar"░"
+                printf "  %-32.32s %s%s%s %6.1f%%\n", $1, col, bar, rst, cpu
+            }'
+        [ "$end" -ne 0 ] && [ "$(date +%s)" -ge "$end" ] && break
+        sleep 2
+    done
+    printf '\033[?25h'
+}
+
+# nh cpu app <balíček> <jádra|off> — přišpendlí cizí aplikaci na jádra
+cpu_app() {
+    local pkg=$1 spec=$2 mask
+    [ -n "$pkg" ] && [ -n "$spec" ] || {
+        echo "Použití: nh cpu app <balíček> <jádra|off>"
+        echo "  např. nh cpu app com.android.chrome 0-3   (jen little jádra)"
+        echo "        nh cpu app com.android.chrome off   (zpět na všechna)"
+        return 1
+    }
+    cpu_root_ready || return 1
+    if [ "$spec" = "off" ]; then
+        sudo /system/bin/cpuctl app-pin "$pkg" off
+        return $?
+    fi
+    mask=$(cpu_cores_to_mask "$spec") || { echo "  [-] Neplatná jádra: $spec (např. 0-3 nebo 4,6,7)"; return 1; }
+    sudo /system/bin/cpuctl app-pin "$pkg" "$mask"
+}
+
+cpu_trace() {
+    local dur=${1:-60} logfile="${2:-/tmp/cpu_trace_$(date +%Y%m%d_%H%M%S).log}"
+    local tp interval=2
+    tp=$(cpu_tracer)
+    if [ -z "$tp" ] || [ "$tp" = "0" ]; then
+        echo "  mimo proot, trace nelze"; return 1
+    fi
+    local mask=$(cpu_getaff "$tp")
+    local pinned_cores=$(python3 -c "m=int('$mask',16); print(' '.join(str(i) for i in range(64) if m>>i&1))" 2>/dev/null)
+    printf "${WHITE}${BOLD}CPU TRACE${RST} — %ss → %s\n" "$dur" "$logfile"
+    printf "  proot pid: %s  maska: 0x%s  jádra: [%s]\n\n" "$tp" "$mask" "$pinned_cores"
+
+    cat > "$logfile" <<HEADER
+# nh cpu trace — $(date)
+# proot=$tp mask=0x$mask pinned=[$pinned_cores] dur=${dur}s interval=${interval}s
+#
+# ts,syscall_us,proot_core,core_freq_mhz,pinned_proc_count,procs_on_core
+HEADER
+
+    local elapsed=0
+    while [ "$elapsed" -lt "$dur" ]; do
+        python3 - "$tp" "$mask" "$logfile" "$pinned_cores" <<'PYEOF'
+import os, sys, time
+
+tp = sys.argv[1]
+mask = int(sys.argv[2], 16)
+logfile = sys.argv[3]
+pinned = set(sys.argv[4].split())
+
+ts = time.strftime("%H:%M:%S")
+
+# 1) syscall latency — os.stat() is actually traced by proot (unlike getpid which glibc caches)
+n = 100
+t0 = time.monotonic()
+for _ in range(n): os.stat("/proc/self/stat")
+lat = (time.monotonic() - t0) * 1e6 / n
+
+# 2) which core is proot actually on
+try:
+    with open(f"/proc/{tp}/stat") as f:
+        proot_core = f.read().split(")")[1].split()[36]
+except: proot_core = "?"
+
+# 3) freq of that core
+try:
+    with open(f"/sys/devices/system/cpu/cpu{proot_core}/cpufreq/scaling_cur_freq") as f:
+        freq = int(f.read().strip()) // 1000
+except: freq = 0
+
+# 4) scan ALL host procs: who's on our pinned core(s) + delta CPU time
+on_pinned = []
+for d in os.listdir("/proc"):
+    if not d.isdigit(): continue
+    try:
+        with open(f"/proc/{d}/stat") as f:
+            raw = f.read()
+        comm_end = raw.rindex(")")
+        comm = raw[raw.index("(")+1:comm_end]
+        fields = raw[comm_end+2:].split()
+        utime, stime = int(fields[11]), int(fields[12])
+        proc_core = fields[36]
+        state = fields[0]
+        if proc_core in pinned:
+            on_pinned.append((utime + stime, d, comm, state))
+    except: pass
+
+on_pinned.sort(reverse=True)
+
+# format: comm:pid:cputicks:state (top 12)
+pinned_str = " ".join(f"{c}:{p}:{t}:{s}" for t, p, c, s in on_pinned[:12])
+
+with open(logfile, "a") as f:
+    f.write(f"{ts},{lat:.0f},{proot_core},{freq},{len(on_pinned)},{pinned_str}\n")
+
+# live output
+if lat < 150:   col = "\033[1;32m"
+elif lat < 300: col = "\033[1;33m"
+else:           col = "\033[1;31m"
+rst, dim, yel = "\033[0m", "\033[2m", "\033[1;33m"
+
+sys.stdout.write(f"\r  {ts} {col}{lat:5.0f}µs{rst}  core:{proot_core} {freq}MHz  {len(on_pinned)} procs")
+
+# noise: non-proot processes with significant CPU time on pinned core
+noise = [(t, p, c) for t, p, c, s in on_pinned
+         if c not in ("python3", "sh", "cat", "sleep", "proot", "nh") and p != tp and t > 10][:3]
+if noise:
+    sys.stdout.write(f"  {yel}noise: {' '.join(f'{c}({t})' for t,p,c in noise)}{rst}")
+sys.stdout.write("   ")
+sys.stdout.flush()
+PYEOF
+        sleep "$interval"
+        elapsed=$(( elapsed + interval ))
+    done
+
+    echo ""
+    echo ""
+    printf "${WHITE}${BOLD}=== TRACE SUMMARY ===${RST}\n"
+
+    python3 - "$logfile" "$tp" <<'PYSUM'
+import sys, collections
+
+logfile = sys.argv[1]
+proot_pid = sys.argv[2]
+
+lines = []
+for l in open(logfile):
+    l = l.strip()
+    if not l or l.startswith("#"): continue
+    parts = l.split(",", 5)
+    if len(parts) < 5: continue
+    try:
+        ts, lat, core, freq, n_pinned = parts[0], int(parts[1]), parts[2], int(parts[3]), int(parts[4])
+        procs_raw = parts[5] if len(parts) > 5 else ""
+        lines.append((ts, lat, core, freq, n_pinned, procs_raw))
+    except: pass
+
+if not lines:
+    print("  (prázdný log)"); sys.exit(0)
+
+lats = [l[1] for l in lines]
+cores = collections.Counter(l[2] for l in lines)
+freqs_by_core = collections.defaultdict(list)
+for l in lines:
+    freqs_by_core[l[2]].append(l[3])
+
+print(f"\n  Syscall latence (os.stat, trasovaný prootem):")
+print(f"    min={min(lats)}µs  max={max(lats)}µs  avg={sum(lats)//len(lats)}µs  median={sorted(lats)[len(lats)//2]}µs")
+slow = sum(1 for l in lats if l > 300)
+print(f"    vzorků: {len(lats)}  pomalých >300µs: {slow} ({100*slow//max(len(lats),1)}%)")
+
+# trend: first vs last quarter
+q = max(len(lats)//4, 1)
+first_q = lats[:q]
+last_q = lats[-q:]
+avg_first = sum(first_q) // len(first_q)
+avg_last = sum(last_q) // len(last_q)
+if avg_last > avg_first * 1.5 and avg_last > 100:
+    print(f"\n  \033[1;31mZPOMALENÍ v čase!\033[0m {avg_first}µs → {avg_last}µs ({100*(avg_last-avg_first)//max(avg_first,1)}% nárůst)")
+
+# detect throttling
+first_half = [l[3] for l in lines[:len(lines)//2]]
+second_half = [l[3] for l in lines[len(lines)//2:]]
+if first_half and second_half:
+    avg1 = sum(first_half) // len(first_half)
+    avg2 = sum(second_half) // len(second_half)
+    if avg2 < avg1 * 0.85:
+        print(f"\n  \033[1;31mTHROTTLING!\033[0m freq: {avg1}→{avg2} MHz ({100*(avg1-avg2)//avg1}% pokles)")
+    elif avg2 < avg1 * 0.95:
+        print(f"\n  \033[1;33mMírný throttling:\033[0m freq: {avg1}→{avg2} MHz ({100*(avg1-avg2)//avg1}% pokles)")
+
+print(f"\n  Proot na jádrech: {dict(cores)}")
+for c in sorted(freqs_by_core):
+    fs = freqs_by_core[c]
+    print(f"    jádro {c}: {min(fs)}-{max(fs)} MHz (avg {sum(fs)//len(fs)})")
+
+# noise analysis: track CPU time DELTA per process across samples
+proc_samples = collections.defaultdict(list)  # name -> [(sample_idx, cputime)]
+for idx, l in enumerate(lines):
+    if len(l) <= 5 or not l[5]: continue
+    for tok in l[5].split():
+        parts = tok.split(":")
+        if len(parts) >= 3:
+            name, pid, ticks = parts[0], parts[1], int(parts[2])
+            proc_samples[f"{name}:{pid}"].append((idx, ticks))
+
+print(f"\n  \033[1;33mCPU čas na pinovaném jádru\033[0m (delta za trace):")
+deltas = []
+for key, samples in proc_samples.items():
+    if len(samples) >= 2:
+        dt = samples[-1][1] - samples[0][1]
+        name = key.split(":")[0]
+        pid = key.split(":")[1]
+        deltas.append((dt, name, pid, len(samples)))
+
+deltas.sort(reverse=True)
+total_delta = sum(d[0] for d in deltas) or 1
+for dt, name, pid, cnt in deltas[:12]:
+    pct = 100 * dt // total_delta
+    bar = "█" * (pct // 3) + "░" * (10 - pct // 3)
+    marker = ""
+    if name in ("proot",): marker = " (tracer — OK)"
+    elif dt > 0 and name not in ("sh", "zsh", "bash", "python3", "sleep", "nh", "cat"):
+        if pct > 20:
+            marker = f" ← \033[1;31mZABÍJÍ VÝKON\033[0m"
+        elif pct > 5:
+            marker = f" ← \033[1;33mšumí\033[0m"
+    print(f"    {bar} {pct:3d}%  {dt:6d} ticks  {name:20s} pid:{pid} ({cnt}×){marker}")
+
+# app process detection
+app_delta = sum(dt for dt, name, pid, _ in deltas if "com.linux" in name or "linux_core" in name)
+proot_delta = sum(dt for dt, name, pid, _ in deltas if name == "proot")
+if app_delta > 0 and proot_delta > 0:
+    ratio = app_delta * 100 // proot_delta
+    if ratio > 50:
+        print(f"\n  \033[1;31m⚠ APP PROCES žere {ratio}% CPU proot traceru na stejném jádru!\033[0m")
+        print(f"    → Řešení: nh cpu isolate  (odstaví appku z proot jádra)")
+
+# recommendation
+avg_lat = sum(lats) // len(lats)
+if avg_lat < 120:
+    print(f"\n  \033[1;32m✓ Výkon OK\033[0m ({avg_lat}µs avg)")
+elif avg_lat < 250:
+    print(f"\n  \033[1;33m⚠ Mírně pomalé\033[0m ({avg_lat}µs avg)")
+else:
+    print(f"\n  \033[1;31m✗ Pomalé\033[0m ({avg_lat}µs avg)")
+
+print(f"\n  Log: \033[1;36m{logfile}\033[0m")
+PYSUM
+}
+
+cpu_isolate() {
+    local tp mask all_mask avoid_mask
+    tp=$(cpu_tracer)
+    if [ -z "$tp" ] || [ "$tp" = "0" ]; then
+        echo "  mimo proot, nelze"; return 1
+    fi
+    mask=$(cpu_getaff "$tp")
+    all_mask=$(cpu_all_mask)
+    avoid_mask=$(python3 -c "
+m=int('$mask',16); a=int('$all_mask',16)
+inv = a & ~m
+print('%x' % inv if inv else '%x' % a)
+" 2>/dev/null)
+    printf "${WHITE}${BOLD}CPU ISOLATE${RST} — přesouvám šum z proot jádra\n"
+    printf "  proot maska: 0x%s  zbytek: 0x%s\n\n" "$mask" "$avoid_mask"
+    python3 - "$avoid_mask" "$tp" <<'PYEOF'
+import os, sys
+
+avoid = sys.argv[1]
+proot_pid = sys.argv[2]
+# host processes to move off proot core
+noise_patterns = [
+    "com.linux", "linux_core", "nethunter",
+    "dropbear", "sshd", "ssh-agent",
+    "busybox", "crond", "cron",
+]
+moved = 0
+for d in os.listdir("/proc"):
+    if not d.isdigit(): continue
+    try:
+        with open(f"/proc/{d}/comm") as f: comm = f.read().strip()
+    except: continue
+    if d == proot_pid: continue
+    hit = any(p in comm for p in noise_patterns)
+    if hit:
+        if os.system(f"taskset -p {avoid} {d} >/dev/null 2>&1") == 0:
+            print(f"  \033[1;32m✓\033[0m {comm} (pid {d}) → 0x{avoid}")
+            moved += 1
+        else:
+            # fallback python
+            try:
+                m = int(avoid, 16)
+                cores = [i for i in range(64) if m >> i & 1]
+                os.sched_setaffinity(int(d), cores)
+                print(f"  \033[1;32m✓\033[0m {comm} (pid {d}) → 0x{avoid}")
+                moved += 1
+            except: pass
+
+if moved == 0:
+    print("  žádné šumové procesy nenalezeny na proot jádru")
+else:
+    print(f"\n  přesunuto: {moved} procesů")
+PYEOF
+    echo ""
+    printf "  Hotovo. Spusť ${CYAN}nh cpu trace${RST} pro ověření.\n"
+}
+
 cpu_dispatch() {
     case "${1:-status}" in
         status|st)      cpu_status ;;
@@ -3020,10 +3469,16 @@ cpu_dispatch() {
         off)            shift; cpu_set off "$@" ;;
         pin)            shift; cpu_live on "${1:-}" ;;
         unpin)          cpu_live off ;;
+        core)           shift; cpu_core "${1:-}" "${2:-}" ;;
         all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
         run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
         bench|benchmark) shift; cpu_bench "$@" ;;
         boost)          shift; cpu_boost "$@" ;;
+        apps)           shift; cpu_apps "${1:-}" ;;
+        appmon)         shift; cpu_appmon "${1:-}" "${2:-}" ;;
+        app)            shift; cpu_app "${1:-}" "${2:-}" ;;
+        trace)          shift; cpu_trace "$@" ;;
+        isolate)        cpu_isolate ;;
         help|--help|-h) help_cpu ;;
         *)              help_cpu; exit 1 ;;
     esac
@@ -3037,13 +3492,26 @@ help_cpu() {
     echo "  ${GREEN}status${RST}                 Jádra (frekvence, governor), pin této session, uložené volby"
     echo "  ${GREEN}on | off [distro]${RST}      Uložit pro další boot (= ikona CPU na kartě) a hned aplikovat"
     echo "                         na běžící session (--no-live jen uloží). distro: kali|parrot|docker"
-    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
+    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě (nepřežije boot): session na jádro N (default automatika) / zpět na všechna"
+    echo "  ${GREEN}core <N|auto> [distro]${RST} Persistentní volba jádra — přebíjí automatiku natrvalo (žádné"
+    echo "                         přepínání při bootu/hlídačově obnově). ${GREEN}auto${RST} = zpět na heuristiku"
     echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
     echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
     echo "  ${GREEN}bench [--quick]${RST}        Benchmark kombinací (bez pinu / proot na big / vše na big / little…)"
     echo "                         s barevnou tabulkou a grafy; session pak vrátí do původního stavu"
+    echo "  ${GREEN}trace [SEC] [FILE]${RST}     Trasovat latenci, frekvence, šum na pinovaném jádru (default 60s)"
+    echo "                         Detekuje throttling, identifikuje procesy co kradou CPU čas"
+    echo "  ${GREEN}isolate${RST}                Přesunout appku a šum z proot jádra na jiná jádra"
     echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
     echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
+    echo ""
+    echo "  ${WHITE}${BOLD}Cizí aplikace${RST}"
+    echo "  ${GREEN}apps [N]${RST}               Přehled CPU zátěže ostatních aplikací (top N, default 20)"
+    echo "  ${GREEN}appmon [SEC] [TOP]${RST}     Živý grafický monitor CPU aplikací (bary, refresh 2 s; Ctrl-C konec)"
+    echo "                         Měření jde ${GREEN}i non-root${RST} (uid 2000: ${CYAN}ashell adb start${RST}) i root (nh_cpuctl)"
+    echo "  ${GREEN}app <balíček> <jádra|off>${RST} Přišpendlit aplikaci na jádra (0-3 / 4,6 / off = všechna)"
+    echo "                         ${YELLOW}Vyžaduje root${RST} (nh_cpuctl) — pinování cizích procesů je kernelový CAP_SYS_NICE."
+    echo "                         Daemon masku obnoví i po restartu appky. off = zrušit pravidlo."
     echo ""
     echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
     echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"
@@ -3058,6 +3526,8 @@ help_cpu() {
     echo "    nh cpu on"
     echo "    nh cpu all make -j8"
     echo "    nh cpu run 7 python3 bench.py"
+    echo "    nh cpu apps"
+    echo "    nh cpu app com.android.chrome 0-3"
     echo ""
 }
 

@@ -17,7 +17,7 @@
 #   BOOT_DEBUG       — "1" for verbose logging
 #   NH_FAKE_SYS      — "0" disables the fake /proc + /sys overlay (real kernel view)
 #   NH_CPU_PIN       — "1" pins proot + guest to one fast core (NH_CPU_PIN_CORE overrides);
-#                      guest env CPU_ALL="make cargo ~/list.txt" = programs left on all cores
+#                      guest env CPU_ALL="make,cargo,~/list.txt" = programs left on all cores
 
 set -e
 
@@ -158,6 +158,14 @@ guest_env() {
     [ -n "${LC_CTYPE:-}" ] && _e="$_e LC_CTYPE=$LC_CTYPE"
     [ -n "${NETHUNTER_SESSION_ID:-}" ] && _e="$_e NETHUNTER_SESSION_ID=$NETHUNTER_SESSION_ID"
     [ -n "${NH_DISTRO:-}" ] && _e="$_e NH_DISTRO=$NH_DISTRO"
+
+    # CPU_ALL default whitelist je v /usr/share/nh/cpu_all.conf (exportuje ho
+    # zshrc.kali/parrot uvnitř guestu). Tady jen propagujeme app/root_env hodnotu.
+    if [ -n "${CPU_ALL:-}" ]; then
+        # Mezery → čárky: guest_env() se word-splittuje, hodnoty nesmí mít mezery.
+        # cpu_all_words() čárky zpátky rozsekne na slova.
+        _e="$_e CPU_ALL=$(echo "$CPU_ALL" | tr ' ' ',')"
+    fi
 
     local _path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/games:/usr/games"
     if [ "$NH_MINIMAL" = "1" ]; then
@@ -960,21 +968,24 @@ boot_reentry() {
 CPU_DIR="$FILES_DIR/nh/cpu"
 TASKSET_BIN=/system/bin/taskset
 
-# Nejrychlejší jádra (max cpuinfo_max_freq), s více sessions se střídají.
+# `nh cpu bench` naměřil, že trasovaný syscall (ptrace výměna guest↔proot) je
+# na little jádru ~2× rychlejší než na big (frekvence nerozhoduje, rozhoduje
+# mezijádrová ptrace latence) a že dvě sessions na DVOU RŮZNÝCH big jádrech
+# jsou 100–200× pomalejší než cokoliv jiného (proot a guest se přepínají mezi
+# jádry přes ptrace na každý syscall). Proto: vyber jádro s NEJNIŽŠÍ
+# cpuinfo_max_freq (little cluster) a VŽDY stejné jedno konkrétní jádro —
+# žádný round-robin mezi sessions. Sdílení jednoho jádra více sessions je podle
+# benche pořád řádově lepší než rozjetí na dvě různá jádra.
 cpu_pick_core() {
-    local best=0 list="" c f n i
+    local best= c f core=
     for c in /sys/devices/system/cpu/cpu[0-9]*; do
         f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
         [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] || continue
         c=${c##*cpu}
-        if [ "$f" -gt "$best" ]; then best=$f; list=$c
-        elif [ "$f" -eq "$best" ]; then list="$list $c"; fi
+        if [ -z "$best" ] || [ "$f" -lt "$best" ]; then best=$f; core=$c
+        elif [ "$f" -eq "$best" ] && [ "$c" -lt "$core" ]; then core=$c; fi
     done
-    [ -n "$list" ] || { echo 0; return; }
-    set -- $list
-    n=$(ls "$CPU_DIR"/pin.* 2>/dev/null | wc -l)
-    i=$(( n % $# + 1 ))
-    eval echo "\${$i}"
+    echo "${core:-0}"
 }
 
 # Potomci PID (včetně něj), bez podstromů uvedených v $CPU_DIR/free.<root>.
@@ -1000,13 +1011,27 @@ cpu_tree() {
     echo $out
 }
 
+# /proc/<pid>/{cmdline,environ} → řádky. NIKDY ne `tr … < /proc/…`: když
+# proces mezitím zanikne, toybox tr dostává z read() chybu místo EOF a točí
+# se v ní navždy (~50 % jádra), hlídač visí na $(…) a přežije svou session.
+# `dd count=1` udělá přesně jedno read() a skončí i při chybě; timeout je
+# pojistka pro případ, že by visel i dd.
+proc_lines() {  # <soubor v /proc>
+    [ -r "$1" ] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 dd if="$1" bs=131072 count=1 2>/dev/null
+    else
+        dd if="$1" bs=131072 count=1 2>/dev/null
+    fi | tr '\0' '\n'
+}
+
 # CPU_ALL v prostředí procesu v guestu = programy, které mají jet na všech
 # jádrech (make, cargo, john, xz, …). Slova oddělená mezerou/čárkou/řádkem;
 # slovo s cestou (/…, ~/…) je soubor se seznamem, doslovné '$(cat SOUBOR)'
 # (hodnota v jednoduchých uvozovkách) se čte stejně. Cesty jsou v guestu.
 cpu_all_words() {  # <pid> <rootfs>
     local v w
-    v=$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^CPU_ALL=//p' | head -n 1)
+    v=$(proc_lines "/proc/$1/environ" | sed -n 's/^CPU_ALL=//p' | head -n 1)
     [ -n "$v" ] || return 0
     v=$(echo "$v" | sed 's/\$(cat[[:space:]]*\([^)]*\))/\1/g' | tr ',;' '  ')
     for w in $v; do
@@ -1029,7 +1054,7 @@ cpu_pin_watch() {
     while kill -0 "$pid" 2>/dev/null && [ -f "$file" ]; do
         # rootfs z příkazové řádky proot (-r <cesta>) kvůli souborům v CPU_ALL;
         # hned po startu je $pid ještě boot (exec proot proběhne až potom)
-        [ -n "$rootfs" ] || rootfs=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '/^-r$/{n;p;q}')
+        [ -n "$rootfs" ] || rootfs=$(proc_lines "/proc/$pid/cmdline" | sed -n '/^-r$/{n;p;q}')
         # nové procesy s CPU_ALL, jejichž jméno je na seznamu → všechna jádra
         for t in $(cpu_tree "$pid"); do
             case "$seen" in *" $t "*) continue ;; esac
@@ -1038,7 +1063,7 @@ cpu_pin_watch() {
             w=$(cpu_all_words "$t" "$rootfs")
             [ -n "$w" ] || continue
             { read -r comm < "/proc/$t/comm"; } 2>/dev/null || continue
-            argv=$(tr '\0' '\n' < "/proc/$t/cmdline" 2>/dev/null | head -n 1); argv=${argv##*/}
+            argv=$(proc_lines "/proc/$t/cmdline" | head -n 1); argv=${argv##*/}
             case " $(echo $w) " in
                 *" $comm "*|*" $argv "*)
                     $TASKSET_BIN -p "$all_mask" "$t" >/dev/null 2>&1 && echo "$t" >> "$CPU_DIR/free.$pid"
@@ -1060,6 +1085,28 @@ cpu_pin_watch() {
     rm -f "$file" "$CPU_DIR/free.$pid"
 }
 
+cpu_pin_isolate_host() {
+    # Přesunout host procesy z proot jádra na zbylá jádra.
+    # $1 = hex maska proot jádra
+    local proot_mask=$1 all_mask avoid p comm
+    all_mask=0
+    for p in /sys/devices/system/cpu/cpu[0-9]*; do
+        all_mask=$(( all_mask | (1 << ${p##*cpu}) ))
+    done
+    avoid=$(printf '%x' $(( all_mask & ~0x$proot_mask )))
+    [ "$avoid" != "0" ] || return 0
+    for p in /proc/[0-9]*/comm; do
+        comm=$(cat "$p" 2>/dev/null) || continue
+        case "$comm" in
+            com.linux_core*|linux_core*|nethunter*|dropbear|sshd)
+                local pid=${p#/proc/}; pid=${pid%/comm}
+                $TASKSET_BIN -p "$avoid" "$pid" >/dev/null 2>&1 && \
+                    log "CPU isolate: $comm ($pid) → 0x$avoid"
+                ;;
+        esac
+    done
+}
+
 cpu_pin_apply() {
     [ "${NH_CPU_PIN:-0}" = "1" ] && [ -x "$TASKSET_BIN" ] || return 0
     local core mask
@@ -1076,6 +1123,8 @@ cpu_pin_apply() {
     if $TASKSET_BIN -p "$mask" $$ >/dev/null 2>&1; then
         echo "$mask" > "$CPU_DIR/pin.$$"
         log "CPU pin: cpu$core (mask $mask)"
+        # isolate: přesunout host procesy (appku, agenta) z proot jádra
+        cpu_pin_isolate_host "$mask"
         # Root daemon (cpuctld) má netlink proc connector a obnoví pin
         # okamžitě. Pokud běží (<15 s heartbeat), mksh hlídač je zbytečný.
         local _cpuctld_fresh=0

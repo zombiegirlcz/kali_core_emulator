@@ -33,7 +33,7 @@ class ShellDaemonInstallModeTest {
     private fun apiServer(): String =
         File("src/main/java/com/linux_core/core/LocalApiServer.kt").readText()
 
-    private fun ashell(): String = File("src/main/assets/ashell").readText()
+    private fun ashell(): String = File("src/main/cpp/ashell.c").readText()
 
     private fun cDefine(src: String, name: String): Long {
         val re = Regex("""#define\s+$name\s+(0x[0-9A-Fa-f]+|\d+)u?""")
@@ -89,7 +89,7 @@ class ShellDaemonInstallModeTest {
         assertTrue("klient neposila SH_MODE_INSTALL", kt.contains("out.writeByte(SH_MODE_INSTALL)"))
         assertTrue(
             "klient musi poslat uint64 velikost APK pred streamem",
-            Regex("""out\.writeLong\s*\(\s*apkFile\.length\s*\(\s*\)\s*\)""").containsMatchIn(kt)
+            Regex("""writeLongLE\s*\(\s*out\s*,\s*apkFile\.length\s*\(\s*\)\s*\)""").containsMatchIn(kt)
         )
     }
 
