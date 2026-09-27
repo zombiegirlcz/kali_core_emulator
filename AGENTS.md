@@ -257,10 +257,19 @@ emulátor v daemonu (tmux model) — dnes `handle_attach` po zavření socketu s
   (tam `--ez ashellMode true` u `ashell-adb` nepatří).
 - V `TerminalActivity` (`onNewIntent` i `setupAndStartSession`) musí být `rootfsDirName == "ashell-adb"`
   vyhodnoceno **před** `ashellMode` (přidána i explicitní podmínka `!= "ashell-adb"`).
-- **Přežití vypnutí wireless debugging:** proces spuštěný přes `adb shell` žije v adbd session
-  cgroup (`/sys/fs/cgroup/uid_0/pid_<adbd>`); vypnutí wireless debugging ukončí adbd → cgroup se
-  zabije → daemon umře. Trvalé přežití = spustit/přesunout daemona do root cgroup (`su 2000 -c …`
-  nebo zápis do `/sys/fs/cgroup/cgroup.procs` jako root) + `oom_score_adj=-1000`. Bez roota nelze.
+- **OPRAVA (2026-09-27, ověřeno na zařízení — tvrzení níže bylo NESPRÁVNÉ):** démon **přežívá**
+  vypnutí wireless debugging bez roota. Stejný `pid` odpovídal na `/shelldaemon/status` i po
+  `adb_wifi_enabled=0`. Důvod: `main()` v `shell_daemon.c` se démonizuje (`fork()` + `setsid()` v
+  dítěti, `stdin`→`/dev/null`, viz sekce „Daemonizace" u `bind()`/`listen()`) — přesně stejný trik
+  jako Shizuku (`nohup`/`setsid` v `start.sh`). `setsid()` odpojí proces od `adb shell`u ovládajícího
+  terminálu/session → je imunní vůči SIGHUP při zavření adbd spojení. Cgroup teorie níže (kdyby
+  platila) by `setsid()` nevyřešil (cgroup ≠ session), ale empiricky proces PŘEŽÍVÁ, takže buď cgroup
+  vůbec neumírá při pouhém vypnutí wireless debugging (jen SIGHUP by bez `setsid()` zabil), nebo je
+  teorie z 2026-09-25 mylná. Původní text (nechán jako historie/pro referenci, NEŘÍDIT se jím):
+  ~~proces spuštěný přes `adb shell` žije v adbd session cgroup (`/sys/fs/cgroup/uid_0/pid_<adbd>`);
+  vypnutí wireless debugging ukončí adbd → cgroup se zabije → daemon umře. Trvalé přežití =
+  spustit/přesunout daemona do root cgroup (`su 2000 -c …` nebo zápis do `/sys/fs/cgroup/cgroup.procs`
+  jako root) + `oom_score_adj=-1000`. Bez roota nelze.~~
 - Diagnostika: `ashell -c 'curl -s 127.0.0.1:1337/shelldaemon/info'` (nezávislé na adb),
   PID file `/data/local/tmp/shelldaemon.pid`.
 
