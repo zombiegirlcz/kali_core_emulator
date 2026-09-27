@@ -3100,8 +3100,10 @@ cpu_apps_raw() {  # [N]
     fi
     # non-root: uid 2000 přes ashell adb (dumpsys cpuinfo). Vyžaduje jednou
     # spárované wireless debugging + `ashell adb start` — žádný root.
-    command -v ashell >/dev/null 2>&1 || return 1
-    raw=$(ashell adb dumpsys cpuinfo 2>/dev/null) || raw=""
+    # POZOR: `nh` má vlastní funkci ashell() (otevře nové okno host shellu),
+    # která by binárku zastínila a argumenty zahodila → nové okno při každém
+    # volání. `command` funkce přeskočí a spustí přímo /usr/local/bin/ashell.
+    raw=$(command ashell adb dumpsys cpuinfo 2>/dev/null) || raw=""
     [ -n "$raw" ] || return 1
     echo "$raw" | awk '
         {
