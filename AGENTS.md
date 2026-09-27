@@ -459,6 +459,13 @@ localhost gate — v `sensitiveEndpoints`), a UI `CpuAppsActivity` (spouští se
 services panelu, volá cpuctl přes `su -c` jako `runCpuBoost`). **Neplést** `nh cpu app` (cizí
 appka) s `nh cpu core/pin` (proot session).
 
+**`cpuctl` binárka musí jít spolu se zdrojem (2026-09-27):** `apps`/`app-pin` byly v `cpuctl.c`
+commitnuté bez přebuildu a modul na telefonu zůstal v1.0, která je nezná →
+`nh cpu apps/app` i `tools/usage-cpu.sh` modul „neviděly" (přebuild až f8ab7e7). Od v1.1 má
+`cpuctl version` (`CPUCTL_VERSION` = `module.prop` version); `nh` (`cpu_ctl_new`) a test podle
+něj (fallback: `app-pin` v nápovědě) hlásí starou binárku. Po změně `cpuctl.c`: `zsh mbuild native` → commit binárky → navýšit `module.prop` →
+`python3 magisk-modules/magiskb.py nh_cpuctl` → flash + reboot.
+
 **Non-root měření (`cpu_apps_raw` v `assets/nh`, `nh cpu apps`/`appmon`):** tři úrovně —
 app uid nevidí cizí `/proc` (`hidepid`), uid 2000 (`ashell adb`, `dumpsys cpuinfo`) **měří** ale
 **nepinuje**, root (nh_cpuctl) obojí. `cpu_apps_raw` vrací TSV a kódem zdroj (0 root / 2 non-root

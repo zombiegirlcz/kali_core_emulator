@@ -34,6 +34,10 @@
 #include <unistd.h>
 
 /* ── Constants ─────────────────────────────────────────────────────── */
+/* Verze binárky = verze modulu (magisk-modules/nh_cpuctl/module.prop).
+ * `cpuctl version` ji vypíše; nh/usage-cpu.sh podle ní poznají starou
+ * binárku (v1.0 neznala apps/app-pin ani version → exit 1). */
+#define CPUCTL_VERSION  "1.1"
 #define FILES_DIR       "/data/user/0/com.linux_core/files"
 #define CPU_DIR         FILES_DIR "/nh/cpu"
 #define LOG_DIR         "/data/adb/cpuctl"
@@ -1121,9 +1125,11 @@ int main(int argc, char **argv) {
             "  status               show everything\n"
             "  pin <hexmask> <pid>  one-shot affinity\n"
             "  apps [N]             per-app CPU%% (1s sample)\n"
-            "  app-pin <pkg> <hexmask|off>  pin an app's processes\n");
+            "  app-pin <pkg> <hexmask|off>  pin an app's processes\n"
+            "  version              print version\n");
         return 1;
     }
+    if (strcmp(argv[1], "version") == 0) { printf("cpuctl %s\n", CPUCTL_VERSION); return 0; }
     if (strcmp(argv[1], "daemon") == 0) return daemon_main();
     if (strcmp(argv[1], "boost") == 0)  return cmd_boost(argc - 2, argv + 2);
     if (strcmp(argv[1], "status") == 0) return cmd_status();
