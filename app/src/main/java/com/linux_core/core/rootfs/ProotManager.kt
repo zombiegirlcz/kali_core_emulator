@@ -385,6 +385,11 @@ object ProotManager {
         // CPU pin (ikona CPU na kartě distra): boot přišpendlí proot + guest na
         // jedno rychlé jádro — ptrace výměna na jednom jádru je 3–5× rychlejší.
         val cpuPinFlag = if (loadCpuPin(context, distroId)) "1" else "0"
+        // Manuální override jádra (`nh cpu core <N>`) — null = automatika
+        // (boot spočítá cpu_pick_core() sám). Nastavená hodnota jde do
+        // NH_CPU_PIN_CORE, kterou `cpu_pin_apply()` v boot skriptu čte jako
+        // prioritní před vlastní heuristikou.
+        val cpuPinCore = loadCpuPinCore(context, distroId)
 
         // `sudo` inside the guest is handled by su_daemon, which exec()s this
         // same boot script under real root. That child inherits only the
@@ -401,6 +406,9 @@ object ProotManager {
                     append("NH_MOUNT_STORAGE='").append(mountStorageFlag).append("'\n")
                     append("NH_SHARED_TMP='").append(if (sharedTmp) "1" else "0").append("'\n")
                     append("NH_CPU_PIN='").append(cpuPinFlag).append("'\n")
+                    if (cpuPinCore != null) {
+                        append("NH_CPU_PIN_CORE='").append(cpuPinCore).append("'\n")
+                    }
                     append("NH_EXTRA_MOUNTS='").append(extraMounts.replace("'", "'\\''")).append("'\n")
                 }
             )
@@ -423,6 +431,9 @@ object ProotManager {
                 // boot must not fall back to nh/root_env.
                 "NH_ENV_FROM_APP=1",
             )
+        if (cpuPinCore != null) {
+            envVars.add("NH_CPU_PIN_CORE=$cpuPinCore")
+        }
         // DEFAULT (neizolovaný) mód: předej Android env z host procesu, aby v guestu
         // fungovaly bionic binárky (linker64, ART) a nástroje čtoucí
         // ANDROID_ROOT/DATA (viz docs/proot-cmd-mod.md, sekce DEFAULT).

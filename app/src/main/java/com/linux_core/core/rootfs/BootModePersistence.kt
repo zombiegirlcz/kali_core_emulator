@@ -116,3 +116,25 @@ fun loadCpuPin(context: Context, distroId: String): Boolean =
 fun saveCpuPin(context: Context, distroId: String, enabled: Boolean) {
     prefs(context).edit().putBoolean(CPU_PIN_PREFIX + cpuPinKey(distroId), enabled).apply()
 }
+
+/**
+ * Manuální volba jádra pro CPU pin (`nh cpu core <N|auto>`), per distro.
+ * `null` = automatika (`cpu_pick_core()`/`cpu_fastest()` v boot/nh vyberou
+ * jádro s nejnižším `cpuinfo_max_freq` — little cluster, viz
+ * `proot_perf_cpu_pin` memory). Nastavená hodnota přebíjí automatiku přes
+ * `NH_CPU_PIN_CORE` env (boot ho už čte: `core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}`),
+ * takže hlídač/root daemon žádnou budoucí session nepřepíná zpět na automatiku.
+ */
+private const val CPU_PIN_CORE_PREFIX = "cpu_pin_core_"
+
+fun loadCpuPinCore(context: Context, distroId: String): Int? {
+    val v = prefs(context).getInt(CPU_PIN_CORE_PREFIX + cpuPinKey(distroId), -1)
+    return if (v >= 0) v else null
+}
+
+fun saveCpuPinCore(context: Context, distroId: String, core: Int?) {
+    val editor = prefs(context).edit()
+    val key = CPU_PIN_CORE_PREFIX + cpuPinKey(distroId)
+    if (core == null) editor.remove(key) else editor.putInt(key, core)
+    editor.apply()
+}

@@ -417,6 +417,22 @@ Pin proot + guestu na jedno velké jádro = 3–5× rychlejší → `NH_CPU_PIN`
 `CpuPinToggle` na kartě distra, `nh cpu`. Hlídač se spouští dvojitým forkem — dítě procesu,
 který pak `exec`-ne proot, by proot sklízel jako neznámý tracee.
 
+**`nh cpu core <N|auto> [distro]`** (2026-09-27): persistentní manuální override jádra,
+odděleně od `nh cpu pin [N]` (ten je jen živý/session-only, nepřežije boot). Motivace: `nh cpu bench`
+naměřil v jedné session „little 2× rychlejší", v jiné „big 1.18× rychlejší" — rozdíl byl kontaminace
+běžící AI-agent session (Claude Code sám běží ve stejném guest cpuset jako proot, `nh cpu trace`
+ho ukázal jako 47–51 % šumu na pinovaném jádru, `nh cpu isolate` ho nezachytí — `noise_patterns`
+v `cpu_isolate()` je natvrdo daný seznam known daemonů, ne obecná detekce). Uživatel chtěl způsob,
+jak automatiku (`cpu_pick_core()`/`cpu_fastest()`, heuristika „nejnižší cpuinfo_max_freq") natvrdo
+přebít a mít jistotu, že se jádro nebude nikdy přepínat pod ním. Implementace: `BootModePersistence.kt`
+(`loadCpuPinCore`/`saveCpuPinCore`, `null` = automatika, SharedPreferences `-1` sentinel), `ProotManager.kt`
+(`NH_CPU_PIN_CORE` env — mechanismus v `boot`'s `cpu_pin_apply()` uz existoval,
+`core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}`, jen nebyl nikde vystavený uživateli), `LocalApiServer.kt`
+(`/distro/cpupin` GET/POST rozšířeno o `"core": int|null`, POST teď akceptuje `enabled` NEBO `core`
+samostatně — nemusí se posílat obojí), `assets/nh` (`cpu_core()` + dispatch `core)` + `cpu_status()`
+zobrazuje manuální/automatický stav). **Neplést s `nh cpu pin [N]`** — ten mění jen běžící session,
+`nh cpu core` mění perzistentní volbu pro příští booty daného distra.
+
 **Magisk modul `nh_cpuctl` (volitelný, root):** statická binárka `cpuctl`
 (`app/src/main/cpp/cpuctl.c`, výstup `magisk-modules/nh_cpuctl/system/bin/cpuctl`).
 `service.sh` po bootu spustí `cpuctl daemon` — netlink proc connector (EXEC/FORK eventy)

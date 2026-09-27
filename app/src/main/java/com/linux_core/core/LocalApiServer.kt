@@ -2406,11 +2406,16 @@ object LocalApiServer {
         }
     }
 
-    // CPU pin per distro (UI ikona CPU, `nh cpu on|off`); platí od dalšího bootu.
+    // CPU pin per distro (UI ikona CPU, `nh cpu on|off|core`); platí od dalšího bootu.
+    // "core": null = automatika (cpu_pick_core()/cpu_fastest() v boot/nh); číslo =
+    // manuální override (`nh cpu core <N>`), viz NH_CPU_PIN_CORE v ProotManager.
     private fun handleCpuPinGet(context: Context, out: OutputStream) {
         val obj = JSONObject()
         for (id in listOf("kali", "parrot", "docker")) {
-            obj.put(id, com.linux_core.core.rootfs.loadCpuPin(context, id))
+            val entry = JSONObject()
+            entry.put("enabled", com.linux_core.core.rootfs.loadCpuPin(context, id))
+            entry.put("core", com.linux_core.core.rootfs.loadCpuPinCore(context, id) ?: JSONObject.NULL)
+            obj.put(id, entry)
         }
         sendResponse(out, 200, "OK", obj.toString())
     }
@@ -2419,14 +2424,21 @@ object LocalApiServer {
         try {
             val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
             val id = com.linux_core.core.rootfs.cpuPinKey(json.optString("distro", ""))
-            if (id !in listOf("kali", "parrot", "docker") || !json.has("enabled")) {
+            if (id !in listOf("kali", "parrot", "docker") || (!json.has("enabled") && !json.has("core"))) {
                 sendResponse(out, 400, "Bad Request",
-                    "{\"error\":\"expected {distro: kali|parrot|docker, enabled: bool}\"}")
+                    "{\"error\":\"expected {distro: kali|parrot|docker, enabled?: bool, core?: int|null}\"}")
                 return
             }
-            val enabled = json.getBoolean("enabled")
-            com.linux_core.core.rootfs.saveCpuPin(context, id, enabled)
-            sendResponse(out, 200, "OK", "{\"distro\":\"$id\",\"enabled\":$enabled}")
+            if (json.has("enabled")) {
+                com.linux_core.core.rootfs.saveCpuPin(context, id, json.getBoolean("enabled"))
+            }
+            if (json.has("core")) {
+                val core = if (json.isNull("core")) null else json.getInt("core")
+                com.linux_core.core.rootfs.saveCpuPinCore(context, id, core)
+            }
+            val enabled = com.linux_core.core.rootfs.loadCpuPin(context, id)
+            val core = com.linux_core.core.rootfs.loadCpuPinCore(context, id)
+            sendResponse(out, 200, "OK", "{\"distro\":\"$id\",\"enabled\":$enabled,\"core\":${core ?: "null"}}")
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

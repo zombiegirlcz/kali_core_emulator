@@ -2782,7 +2782,15 @@ d = json.load(sys.stdin)
 if not all(k in d for k in ("kali", "parrot", "docker")):
     sys.exit(1)
 for k in ("kali", "parrot", "docker"):
-    print("  %-7s %s" % (k, "ON (1 jádro)" if d.get(k) else "off"))
+    v = d.get(k) or {}
+    en = v.get("enabled") if isinstance(v, dict) else v
+    core = v.get("core") if isinstance(v, dict) else None
+    if not en:
+        print("  %-7s off" % k)
+    elif core is not None:
+        print("  %-7s ON (cpu%d, manuální — %s)" % (k, core, "nh cpu core auto zruší"))
+    else:
+        print("  %-7s ON (automatika — nejpomalejší max freq)" % k)
  ' || echo "  (API nedostupné nebo starší APK bez /distro/cpupin)"
     echo ""
     printf "${WHITE}${BOLD}Root CPU daemon (Magisk nh_cpuctl):${RST}\n"
@@ -2830,6 +2838,34 @@ cpu_set() {  # on|off [distro] [--no-live]
         && printf "  ${GREEN}✓${RST} %s: CPU pin %s od dalšího bootu (ikona CPU na kartě)\n" "$d" "$state" \
         || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
     if [ "$live" = 1 ]; then cpu_live "$state"; fi
+}
+
+# Manuální volba jádra (persistentní, per distro) — přebíjí automatiku
+# (cpu_pick_core()/cpu_fastest() = jádro s nejnižším cpuinfo_max_freq).
+# Bez tohohle nemá uživatel žádnou cestu, jak zabránit automatickému
+# přepínání jádra při každém bootu/hlídačově obnově pinu.
+cpu_core() {  # <N|auto> [distro]
+    local val=$1 d
+    shift
+    d=$(cpu_distro "${1:-}")
+    case "$val" in
+        auto)
+            api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"core\":null}" | grep -q '"distro"' \
+                && printf "  ${GREEN}✓${RST} %s: CPU jádro zpět na automatiku od dalšího bootu\n" "$d" \
+                || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+            cpu_live on "$(cpu_fastest)"
+            ;;
+        ''|*[!0-9]*)
+            echo "Použití: nh cpu core <N|auto> [distro]"
+            return 1
+            ;;
+        *)
+            api_post_json "/distro/cpupin" "{\"distro\":\"$d\",\"core\":$val}" | grep -q '"distro"' \
+                && printf "  ${GREEN}✓${RST} %s: CPU natvrdo na cpu%s od dalšího bootu (žádná automatika, žádné přepínání)\n" "$d" "$val" \
+                || echo "  [-] API nedostupné nebo starší APK — pro další boot neuloženo"
+            cpu_live on "$val"
+            ;;
+    esac
 }
 
 cpu_exec_mask() {  # <hexmask> <cmd...> — exec se zachováním PID
@@ -3293,6 +3329,7 @@ cpu_dispatch() {
         off)            shift; cpu_set off "$@" ;;
         pin)            shift; cpu_live on "${1:-}" ;;
         unpin)          cpu_live off ;;
+        core)           shift; cpu_core "${1:-}" "${2:-}" ;;
         all)            shift; cpu_exec_mask "$(cpu_all_mask)" "$@" ;;
         run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
         bench|benchmark) shift; cpu_bench "$@" ;;
@@ -3312,7 +3349,9 @@ help_cpu() {
     echo "  ${GREEN}status${RST}                 Jádra (frekvence, governor), pin této session, uložené volby"
     echo "  ${GREEN}on | off [distro]${RST}      Uložit pro další boot (= ikona CPU na kartě) a hned aplikovat"
     echo "                         na běžící session (--no-live jen uloží). distro: kali|parrot|docker"
-    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě: session na jádro N (default nejrychlejší) / zpět na všechna"
+    echo "  ${GREEN}pin [N] | unpin${RST}        Jen živě (nepřežije boot): session na jádro N (default automatika) / zpět na všechna"
+    echo "  ${GREEN}core <N|auto> [distro]${RST} Persistentní volba jádra — přebíjí automatiku natrvalo (žádné"
+    echo "                         přepínání při bootu/hlídačově obnově). ${GREEN}auto${RST} = zpět na heuristiku"
     echo "  ${GREEN}all <cmd...>${RST}           Spustit příkaz na všech jádrech (make -j8, john, xz -T0, ffmpeg)"
     echo "  ${GREEN}run <N> <cmd...>${RST}       Spustit příkaz na jádru N"
     echo "  ${GREEN}bench [--quick]${RST}        Benchmark kombinací (bez pinu / proot na big / vše na big / little…)"
