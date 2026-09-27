@@ -2802,6 +2802,11 @@ for k in ("kali", "parrot", "docker"):
             hb_age=$(( now_s - hb_ts ))
             if [ "$hb_age" -lt 15 ]; then
                 printf "  ${GREEN}běží${RST} (pid %s, heartbeat %ss)\n" "$hb_pid" "$hb_age"
+                if cpu_ctl_new; then
+                    printf "  cpuctl %s (apps/app-pin OK)\n" "$CPU_CTL_VER"
+                else
+                    printf "  ${YELLOW}cpuctl v1.0 — stará binárka, bez apps/app-pin → přeflashuj nh_cpuctl-v1.1${RST}\n"
+                fi
             else
                 printf "  ${RED}neběží${RST} (starý heartbeat %ss)\n" "$hb_age"
             fi
@@ -3072,12 +3077,34 @@ cpu_cores_to_mask() {  # <spec> -> hex, "" při chybě
     printf '%x' "$m"
 }
 
+# Nainstalovaná binárka /system/bin/cpuctl umí apps/app-pin? Stará v1.0 (modul
+# flashnutý před 2026-09-27) je nezná a nezná ani `version` → exit 1. Výsledek
+# se cachuje (sudo je drahé); CPU_CTL_VER = vypsaná verze nebo prázdné.
+CPU_CTL_CHECKED=0
+CPU_CTL_VER=""
+cpu_ctl_new() {
+    if [ "$CPU_CTL_CHECKED" = 0 ]; then
+        CPU_CTL_CHECKED=1
+        CPU_CTL_VER=$(sudo /system/bin/cpuctl version 2>/dev/null | sed -n 's/^cpuctl //p' | head -n1)
+    fi
+    [ -n "$CPU_CTL_VER" ]
+}
+
+cpu_ctl_old_hint() {
+    echo "  ${YELLOW}Nainstalovaný modul nh_cpuctl je starý (v1.0) — neumí apps/app-pin.${RST}" >&2
+    echo "  Přeflashuj ${CYAN}nh_cpuctl-v1.1.zip${RST} (magisk-modules/magiskb.py) a restartuj telefon." >&2
+}
+
 cpu_root_ready() {  # 0 = daemon běží, jinak vypíše hint a vrátí 1
     local hb_pid hb_ts now_s
     if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
         read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
         now_s=$(date +%s)
-        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then return 0; fi
+        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then
+            cpu_ctl_new && return 0
+            cpu_ctl_old_hint
+            return 1
+        fi
     fi
     echo "  ${YELLOW}Root CPU daemon (Magisk nh_cpuctl) neběží.${RST}"
     echo "  Řízení CPU cizích aplikací vyžaduje root modul nh_cpuctl."
@@ -3094,8 +3121,12 @@ cpu_apps_raw() {  # [N]
         read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
         now_s=$(date +%s)
         if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then
-            sudo /system/bin/cpuctl apps "${1:-0}" | awk 'NR>1'
-            return 0
+            if cpu_ctl_new; then
+                sudo /system/bin/cpuctl apps "${1:-0}" | awk 'NR>1'
+                return 0
+            fi
+            # daemon běží, ale binárka je stará → zkus aspoň non-root měření
+            cpu_ctl_old_hint
         fi
     fi
     # non-root: uid 2000 přes ashell adb (dumpsys cpuinfo). Vyžaduje jednou

@@ -54,18 +54,51 @@ nonroot_up() {
 }
 
 # ── Detekce režimu ──────────────────────────────────────────────────────────
+# Root režim má 4 podmínky; každou hlásíme zvlášť, ať je vidět, KTERÁ chybí
+# (dřív jedna souhrnná podmínka tiše spadla do non-root / „žádný zdroj").
 head_ "1) Prostředí a zdroj dat"
 MODE="none"
-if [ -n "$PRIV" ] && priv "test -x $CPUCTL" && root_daemon_up; then
+ROOT_OK=1
+if [ -n "$PRIV" ]; then
+    ok "privilegovaná cesta: $PRIV"
+else
+    ROOT_OK=0; info "sudo/su nedostupné (root režim vypnutý)"
+fi
+if [ "$ROOT_OK" = 1 ]; then
+    if priv "test -x $CPUCTL"; then
+        ok "$CPUCTL existuje (Magisk modul nh_cpuctl nainstalovaný)"
+    else
+        ROOT_OK=0; bad "$CPUCTL chybí — nainstaluj Magisk modul nh_cpuctl (+ restart)"
+    fi
+fi
+if [ "$ROOT_OK" = 1 ]; then
+    CTL_VER=$(priv "$CPUCTL version" | sed -n 's/^cpuctl //p' | head -n1)
+    if [ -n "$CTL_VER" ]; then
+        ok "cpuctl $CTL_VER (umí apps/app-pin)"
+    else
+        ROOT_OK=0
+        bad "cpuctl je stará binárka v1.0 (bez apps/app-pin/version)"
+        info "přeflashuj nh_cpuctl-v1.1.zip (python3 magisk-modules/magiskb.py nh_cpuctl) a restartuj"
+    fi
+fi
+if [ "$ROOT_OK" = 1 ]; then
+    if root_daemon_up; then
+        ok "nh_cpuctl daemon běží (heartbeat $CPU_STATE_DIR/cpuctld)"
+    else
+        ROOT_OK=0; bad "nh_cpuctl daemon neběží (chybí/starý heartbeat $CPU_STATE_DIR/cpuctld)"
+        [ -d "$CPU_STATE_DIR" ] || info "$CPU_STATE_DIR v guestu není vidět — zapni Root Bridge → App Data (bind_app)"
+    fi
+fi
+
+if [ "$ROOT_OK" = 1 ]; then
     MODE="root"
-    ok "root režim: sudo/su + $CPUCTL + běžící nh_cpuctl daemon"
+    ok "root režim: měření i pinování"
 elif nonroot_up; then
     MODE="nonroot"
-    ok "non-root režim: uid 2000 (ashell adb dumpsys cpuinfo)"
-    [ -n "$PRIV" ] && info "root je k dispozici, ale nh_cpuctl daemon neběží — pinování se přeskočí"
+    ok "non-root režim: uid 2000 (ashell adb dumpsys cpuinfo) — jen měření"
 else
     bad "žádný zdroj dat o CPU cizích aplikací"
-    info "root:     nainstaluj Magisk modul nh_cpuctl"
+    info "root:     nainstaluj Magisk modul nh_cpuctl v1.1"
     info "non-root: spusť 'ashell adb start' (jednou spáruj wireless debugging)"
     exit 2
 fi
