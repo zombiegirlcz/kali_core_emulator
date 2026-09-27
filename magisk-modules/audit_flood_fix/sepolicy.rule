@@ -1,0 +1,23 @@
+# --- NetHunter: audit execute flood fix ---
+#
+# Diagnostika (2026-09-27, fatalni reboot zarizeni):
+#   dmesg po ~27 min od bootu:
+#     audit: audit_lost=21095 audit_rate_limit=5 audit_backlog_limit=64
+#     audit: rate limit exceeded
+#   Kazdy jeden shell prikaz v PRootu spusti retez execve() volani
+#   (proot -> ld-linux-aarch64.so.1 -> loader -> skutecna binarka) a KAZDY
+#   z nich generuje vlastni "avc: granted { execute }" zaznam, protoze
+#   policie ma na tuto domenu nastavene auditovani i JIZ POVOLENYCH execute
+#   akci. Kernel audit_backlog_limit=64 / audit_rate_limit=5 je default pro
+#   beznou appku, co skoro nic neexekuuje - pod PRoot workloadem se preplni
+#   v radu desitek zaznamu/s.
+#
+#   audit_log_start() je synchronni kernelova cesta sdilena VSEMI procesy
+#   v systemu (soucast execve() security hooku), ne jen touto appkou -
+#   preplnena fronta dokaze zaseknout i system_server (pozorovan MIUI
+#   FW_SCOUT_HANG na hwbinder volani hned po padu), ne jen com.linux_core.
+#
+# Toto pravidlo NEMENI zadne opravneni (execute uz je allow v policii),
+# jen potlaci jeho logovani -> nulovy bezpecnostni dopad, jen snizeni
+# objemu audit provozu, ktery kernel jinak zahazoval a blokoval na nem.
+dontaudit untrusted_app_27 app_data_file:file { execute execute_no_trans }

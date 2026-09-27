@@ -338,6 +338,21 @@ tmux a PTY fungují.
 Viz `_SELINUX_FIX_C` + `selinux_fix_o` v `tools/modal_build.py::_build_proot_one_arch()`.
 **Detekce binárky:** NON-USERLAND proot má `.l2s.` string (USERLAND měl `.proot.l2s.`).
 
+**Druhý zdroj audit bouře — `execute`, ne `setattr` (2026-09-27, fatální reboot zařízení):**
+`--wrap=chmod` řeší jen `setattr proc:dir`. Nezávisle na tom každý exec řetěz v PRootu
+(`proot` → `ld-linux-aarch64.so.1` → `loader` → binárka) generuje vlastní
+`avc: granted { execute }` na `untrusted_app_27:app_data_file:file` — to je kernelová
+LSM hook na `execve()`, nejde to obejít v proot/loader kódu. Pod PRoot workloadem to
+zahltí `audit_backlog_limit=64`/`audit_rate_limit=5` (`dmesg`: `audit_lost=21095`,
+`rate limit exceeded`). `audit_log_start()` je synchronní kernelová cesta sdílená
+VŠEMI procesy v systému → přeplněná fronta dokázala zaseknout i `system_server`
+(pozorován MIUI `FW_SCOUT_HANG` na hwbinder volání hned po pádu), ne jen appku.
+Fix: `magisk-modules/audit_flood_fix/sepolicy.rule`
+(`dontaudit untrusted_app_27 app_data_file:file { execute execute_no_trans }`) —
+jen ztlumí log na už POVOLENÝCH akcích, žádná změna oprávnění. `service.sh` v témže
+modulu dělá to samé přes `magiskpolicy --live` jako záložní cestu pro instalaci za
+běhu bez rebootu. META-INF zkopírováno ze sesterského `anti_phantom` modulu.
+
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
 tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`,
