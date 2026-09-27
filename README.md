@@ -412,7 +412,14 @@ nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše
                           # barevná tabulka + grafy, session se pak vrátí do původního stavu
 nh cpu boost on|off [N]   # root boost: scaling_min_freq=max pro policy jádra N (Magisk nh_cpuctl)
 nh cpu boost status       # aktuální boost stav všech policies
+nh cpu apps [N]           # CPU zátěž ostatních aplikací (top N, root nh_cpuctl)
+nh cpu app <pkg> <jádra|off>  # přišpendlit cizí aplikaci na jádra (0-3 / 4,6 / off)
 ```
+
+**Cizí aplikace** (`nh cpu apps` / `nh cpu app`, taky UI „⚙ APLIKACE" v services panelu) — vidí
+CPU zátěž ostatních aplikací a umí je přišpendlit na vybraná jádra (např. těžkou appku na
+little jádra, ať nedusí proot). Vyžaduje root modul `nh_cpuctl`; týká se jen aplikací
+(uid ≥ 10000), systémové procesy zůstávají nedotčené. Daemon masku obnoví i po restartu appky.
 
 **`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
 najde do ~2 s podle `comm`/`argv[0]`, potomci zdědí všechna jádra). Čte se z prostředí

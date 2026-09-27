@@ -84,7 +84,7 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 | `TlsMitmEngine` / `TlsClientHelloParser` | TLS MITM (`TlsMitmSession`), SNI extrakce, dešifrovaný provoz |
 | `AIBrain` / `AIBrainWorker` / `VerdictEngine` | ONNX klasifikace toků (`vpn_brain_v7.onnx`, LightGBM) |
 | `VpnLogManager` / `VpnFirewallManager` / `VpnProxyManager` / `VpnPeerManager` | logy, IP blocklist, custom `IP:Port` proxy, Mesh VPN |
-| `ShizukuManager` | Privilegované příkazy bez rootu (Shizuku → su -c → ADB → dialog) |
+| `ShellDaemonClient` / `shell_daemon` | Privilegované příkazy bez rootu (uid 2000, `ashell adb`) — nahradilo odstraněný ShizukuManager (2026-09-19) |
 | `UsbHostManager` / `usb_bridge.c` / `usbfd_jni.c` | Raw USB pro mtkclient/EDL (`/usb/stream` binární frame protokol) |
 | `core/` je ~66 souborů, `ui/` 8, `security/` 10 — nevyjmenovávat všechny, viz README |
 
@@ -442,6 +442,19 @@ scan. Heartbeat `$FILES_DIR/nh/cpu/cpuctld` (`<PID> <unix_ts>`, každých 5 s); 
 `cpuctl boost on|off [N]` nastaví scaling_min_freq=max pro policy jádra N (přežije jen
 do rebootu). `cpuctl pin <hexmask> <pid>` one-shot. `cpuctl status` vše.
 `nh cpu boost on|off|status` → `sudo /system/bin/cpuctl boost …`.
+
+**Řízení CPU cizích aplikací (`cpuctl apps`/`app-pin`, 2026-09-27):** `cpuctl apps [N]` čte
+per-balíček CPU% (2 vzorky 1 s od sebe z `/proc/<pid>/stat` utime+stime), aktuální masku a
+uid; **jen aplikace** (`uid >= 10000`, konstanta `APP_UID_MIN`) — systémové procesy se nikdy
+nečtou ani nepinují. `cpuctl app-pin <balíček> <hexmask|off>` uloží pravidlo do
+`$CPU_DIR/app.<balíček>` a hned pinuje všechny běžící PIDy balíčku (`pin_pkg`); daemon pravidla
+načítá v HB smyčce (`scan_apprules`), aplikuje na nové procesy (`handle_new_app` v `handle_new`)
+a obnovuje po změně cpusetu (`repin_apps`). Balíček = první token `/proc/<pid>/cmdline` bez
+`:subprocess`. Vystaveno: `nh cpu apps [N]` / `nh cpu app <balíček> <jádra|off>` (guest, přes
+`sudo`), API `GET /cpu/apps` + `POST /cpu/apps/pin` (`{package, cores:"0-3"|null}`, Bearer +
+localhost gate — v `sensitiveEndpoints`), a UI `CpuAppsActivity` (spouští se z CPU řádku v
+services panelu, volá cpuctl přes `su -c` jako `runCpuBoost`). **Neplést** `nh cpu app` (cizí
+appka) s `nh cpu core/pin` (proot session).
 
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné

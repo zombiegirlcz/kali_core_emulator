@@ -112,6 +112,13 @@
             </intent-filter>
         </activity>
 
+        <!-- CPU zátěž a přišpendlení cizích aplikací (root, Magisk nh_cpuctl) -->
+        <activity
+            android:name=".ui.CpuAppsActivity"
+            android:exported="false"
+            android:label="CPU aplikací"
+            android:theme="@style/Theme.Nethunteraioperator" />
+
         <!-- „Open with“ / share příjemce — uloží soubor do ~/share a otevře terminál -->
         <activity
             android:name=".core.terminal.ShareReceiverActivity"

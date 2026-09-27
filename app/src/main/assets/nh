@@ -3055,6 +3055,66 @@ cpu_boost() {
     esac
 }
 
+# Převede "0-3", "4,6,7", "2" na hex masku (stejná logika jako cpu_run/core).
+cpu_cores_to_mask() {  # <spec> -> hex, "" při chybě
+    local spec=$1 m=0 part a b i
+    for part in $(echo "$spec" | tr ',' ' '); do
+        case "$part" in
+            *-*) a=${part%-*}; b=${part#*-}
+                 case "$a$b" in *[!0-9]*) return 1 ;; esac
+                 [ "$a" -le "$b" ] || return 1
+                 i=$a; while [ "$i" -le "$b" ]; do m=$(( m | (1 << i) )); i=$(( i + 1 )); done ;;
+            *[!0-9]*) return 1 ;;
+            *)   m=$(( m | (1 << part) )) ;;
+        esac
+    done
+    [ "$m" -ne 0 ] || return 1
+    printf '%x' "$m"
+}
+
+cpu_root_ready() {  # 0 = daemon běží, jinak vypíše hint a vrátí 1
+    local hb_pid hb_ts now_s
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then return 0; fi
+    fi
+    echo "  ${YELLOW}Root CPU daemon (Magisk nh_cpuctl) neběží.${RST}"
+    echo "  Řízení CPU cizích aplikací vyžaduje root modul nh_cpuctl."
+    return 1
+}
+
+# nh cpu apps [N] — přehled CPU zátěže ostatních aplikací (přes root daemon)
+cpu_apps() {
+    cpu_root_ready || return 1
+    local n=${1:-20}
+    sudo /system/bin/cpuctl apps "$n" | awk -v grn="$GREEN" -v yel="$YELLOW" \
+        -v red="$RED" -v rst="$RST" -v bold="$BOLD" -v white="$WHITE" '
+        NR==1 { printf "  %s%-40s %8s %8s   %s%s\n", bold white, "APLIKACE", "CPU%", "UID", "JÁDRA", rst; next }
+        {
+            col = ($2+0 >= 50 ? red : ($2+0 >= 15 ? yel : grn))
+            printf "  %-40s %s%7.1f%%%s %8s   %s\n", $1, col, $2, rst, $3, $4
+        }'
+}
+
+# nh cpu app <balíček> <jádra|off> — přišpendlí cizí aplikaci na jádra
+cpu_app() {
+    local pkg=$1 spec=$2 mask
+    [ -n "$pkg" ] && [ -n "$spec" ] || {
+        echo "Použití: nh cpu app <balíček> <jádra|off>"
+        echo "  např. nh cpu app com.android.chrome 0-3   (jen little jádra)"
+        echo "        nh cpu app com.android.chrome off   (zpět na všechna)"
+        return 1
+    }
+    cpu_root_ready || return 1
+    if [ "$spec" = "off" ]; then
+        sudo /system/bin/cpuctl app-pin "$pkg" off
+        return $?
+    fi
+    mask=$(cpu_cores_to_mask "$spec") || { echo "  [-] Neplatná jádra: $spec (např. 0-3 nebo 4,6,7)"; return 1; }
+    sudo /system/bin/cpuctl app-pin "$pkg" "$mask"
+}
+
 cpu_trace() {
     local dur=${1:-60} logfile="${2:-/tmp/cpu_trace_$(date +%Y%m%d_%H%M%S).log}"
     local tp interval=2
@@ -3334,6 +3394,8 @@ cpu_dispatch() {
         run)            shift; c=$1; shift; cpu_exec_mask "$(printf '%x' $((1 << c)))" "$@" ;;
         bench|benchmark) shift; cpu_bench "$@" ;;
         boost)          shift; cpu_boost "$@" ;;
+        apps)           shift; cpu_apps "${1:-}" ;;
+        app)            shift; cpu_app "${1:-}" "${2:-}" ;;
         trace)          shift; cpu_trace "$@" ;;
         isolate)        cpu_isolate ;;
         help|--help|-h) help_cpu ;;
@@ -3362,6 +3424,11 @@ help_cpu() {
     echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
     echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
     echo ""
+    echo "  ${WHITE}${BOLD}Cizí aplikace${RST} ${DIM}(vyžaduje root modul nh_cpuctl)${RST}"
+    echo "  ${GREEN}apps [N]${RST}               Přehled CPU zátěže ostatních aplikací (top N, default 20)"
+    echo "  ${GREEN}app <balíček> <jádra|off>${RST} Přišpendlit aplikaci na jádra (0-3 / 4,6 / off = všechna)"
+    echo "                         Daemon masku obnoví i po restartu appky. off = zrušit pravidlo."
+    echo ""
     echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
     echo "  (hlídač je najde do ~2 s; jejich potomci zdědí všechna jádra):"
     echo "    export CPU_ALL=\"make cargo john xz ffmpeg\"          # v ~/.zshrc"
@@ -3375,6 +3442,8 @@ help_cpu() {
     echo "    nh cpu on"
     echo "    nh cpu all make -j8"
     echo "    nh cpu run 7 python3 bench.py"
+    echo "    nh cpu apps"
+    echo "    nh cpu app com.android.chrome 0-3"
     echo ""
 }
 

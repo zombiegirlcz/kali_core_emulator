@@ -439,7 +439,7 @@ object LocalApiServer {
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/usb/",
-                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon")
+                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/cpu/apps")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -554,6 +554,8 @@ object LocalApiServer {
                 path == "/distro/remove" && method == "POST" -> handleDistroRemove(context, body, out)
                 path == "/distro/cpupin" && method == "GET" -> handleCpuPinGet(context, out)
                 path == "/distro/cpupin" && method == "POST" -> handleCpuPinSet(context, body, out)
+                path == "/cpu/apps" && method == "GET" -> handleCpuAppsGet(out)
+                path == "/cpu/apps/pin" && method == "POST" -> handleCpuAppsPin(body, out)
                 path == "/terminal/float" && method == "POST" -> handleTerminalFloat(context, body, out)
                 // Otevře plnohodnotný terminál (TerminalActivity) — používá X11 launcher
                 // (kali_GUI) pro přepnutí zpět do terminálu. Loopback = bez tokenu.
@@ -2439,6 +2441,103 @@ object LocalApiServer {
             val enabled = com.linux_core.core.rootfs.loadCpuPin(context, id)
             val core = com.linux_core.core.rootfs.loadCpuPinCore(context, id)
             sendResponse(out, 200, "OK", "{\"distro\":\"$id\",\"enabled\":$enabled,\"core\":${core ?: "null"}}")
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
+    // ── CPU control for foreign apps (root, via Magisk nh_cpuctl) ─────────
+    // App proces má su přes Magisk (stejně jako runCpuBoost); cpuctl je
+    // v /system/bin z modulu nh_cpuctl. Bez rootu/modulu → chyba, nic se
+    // nepředstírá. `apps` pinuje/čte jen aplikace (uid >= 10000), systémové
+    // procesy nikdy — gate je přímo v cpuctl.c.
+
+    private fun cpuctlRoot(cpuctlArgs: String): Pair<Int, String> {
+        return try {
+            val pb = ProcessBuilder("su", "-c", "/system/bin/cpuctl $cpuctlArgs")
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val outText = proc.inputStream.bufferedReader().readText()
+            val done = proc.waitFor(12, java.util.concurrent.TimeUnit.SECONDS)
+            if (!done) { proc.destroyForcibly(); return -1 to "cpuctl timeout" }
+            proc.exitValue() to outText
+        } catch (e: Exception) {
+            -1 to (e.message ?: "su/cpuctl unavailable")
+        }
+    }
+
+    private fun coresToMask(spec: String): Long? {
+        var m = 0L
+        for (part in spec.split(",").map { it.trim() }.filter { it.isNotEmpty() }) {
+            if ("-" in part) {
+                val (a, b) = part.split("-", limit = 2)
+                val lo = a.toIntOrNull() ?: return null
+                val hi = b.toIntOrNull() ?: return null
+                if (lo < 0 || hi > 63 || lo > hi) return null
+                for (i in lo..hi) m = m or (1L shl i)
+            } else {
+                val c = part.toIntOrNull() ?: return null
+                if (c < 0 || c > 63) return null
+                m = m or (1L shl c)
+            }
+        }
+        return if (m != 0L) m else null
+    }
+
+    private fun handleCpuAppsGet(out: OutputStream) {
+        val (code, text) = cpuctlRoot("apps 0")
+        if (code != 0) {
+            sendResponse(out, 503, "Service Unavailable",
+                "{\"error\":\"nh_cpuctl not available\",\"detail\":${JSONObject.quote(text.trim())}}")
+            return
+        }
+        val arr = org.json.JSONArray()
+        for (line in text.lineSequence()) {
+            val f = line.split("\t")
+            if (f.size < 4 || f[0] == "PKG") continue
+            val pct = f[1].toDoubleOrNull() ?: continue
+            arr.put(JSONObject().apply {
+                put("package", f[0])
+                put("cpu", pct)
+                put("uid", f[2].toIntOrNull() ?: -1)
+                put("mask", f[3])
+            })
+        }
+        sendResponse(out, 200, "OK", JSONObject().put("apps", arr).toString())
+    }
+
+    private fun handleCpuAppsPin(body: String, out: OutputStream) {
+        try {
+            val json = if (body.trim().isNotEmpty()) JSONObject(body) else JSONObject()
+            val pkg = json.optString("package", "")
+            if (pkg.isEmpty() || !pkg.all { it.isLetterOrDigit() || it == '.' || it == '_' }) {
+                sendResponse(out, 400, "Bad Request",
+                    "{\"error\":\"expected {package: <name>, cores: \\\"0-3\\\"|null}\"}")
+                return
+            }
+            val coresRaw = if (json.isNull("cores")) "" else json.optString("cores", "")
+            val arg: String
+            if (coresRaw.isEmpty() || coresRaw == "off") {
+                arg = "off"
+            } else {
+                val mask = coresToMask(coresRaw)
+                if (mask == null) {
+                    sendResponse(out, 400, "Bad Request", "{\"error\":\"invalid cores: $coresRaw\"}")
+                    return
+                }
+                arg = java.lang.Long.toHexString(mask)
+            }
+            val (code, text) = cpuctlRoot("app-pin $pkg $arg")
+            if (code != 0) {
+                sendResponse(out, 503, "Service Unavailable",
+                    "{\"error\":\"nh_cpuctl not available\",\"detail\":${JSONObject.quote(text.trim())}}")
+                return
+            }
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("package", pkg)
+                put("cores", if (arg == "off") JSONObject.NULL else coresRaw)
+                put("result", text.trim())
+            }.toString())
         } catch (e: Exception) {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
         }

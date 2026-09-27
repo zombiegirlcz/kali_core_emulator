@@ -412,6 +412,27 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
                     },
                 )
             }
+
+            row.addView(
+                Button(this).apply {
+                    text = "⚙ APLIKACE"
+                    textSize = 9f
+                    setTextColor(Color.parseColor("#00D2FF"))
+                    background = createRoundedDrawable(Color.parseColor("#0a1420"), 6f, Color.parseColor("#00D2FF"), 1f)
+                    setPadding(10, 4, 10, 4)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        ).apply { leftMargin = 8 }
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        this@updateServiceDetail.startActivity(
+                            android.content.Intent(this@updateServiceDetail, com.linux_core.ui.CpuAppsActivity::class.java),
+                        )
+                    }
+                },
+            )
         }
     }
 

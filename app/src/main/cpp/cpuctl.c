@@ -6,6 +6,8 @@
  *   cpuctl boost on|off [N]  — cpufreq min=max for policy of core N
  *   cpuctl status            — daemon, sessions, boost, frequencies
  *   cpuctl pin <hexmask> <pid> — one-shot: set affinity for pid + descendants
+ *   cpuctl apps [N]          — per-app CPU% (1s sample), current core mask
+ *   cpuctl app-pin <pkg> <hexmask|off> — pin every process of an app package
  *
  * Build: aarch64-linux-android24-clang -static -o cpuctl cpuctl.c
  */
@@ -63,6 +65,14 @@ static int g_nsess;
 typedef struct { pid_t pid; int tries; } pending_t;
 static pending_t g_pend[512];
 static int g_npend;
+
+/* Per-app pin rules (foreign apps): file $CPU_DIR/app.<package> = hexmask.
+ * Only apps (uid >= APP_UID_MIN) are ever pinned — never system services. */
+#define MAX_APPRULES  64
+#define APP_UID_MIN   10000
+typedef struct { char pkg[128]; unsigned long mask; } apprule_t;
+static apprule_t g_apps[MAX_APPRULES];
+static int g_napps;
 
 /* ── File helpers ──────────────────────────────────────────────────── */
 
@@ -229,6 +239,52 @@ static int get_rootfs(pid_t pid, char *out, int sz) {
         i += (int)strlen(&buf[i]) + 1;
     }
     return -1;
+}
+
+/* Real UID of a process (reads Uid: line of /proc/<pid>/status). */
+static int get_uid_of(pid_t pid) {
+    char path[64], buf[4096];
+    snprintf(path, sizeof path, "/proc/%d/status", pid);
+    if (read_file(path, buf, sizeof buf) <= 0) return -1;
+    char *u = strstr(buf, "Uid:");
+    if (!u) return -1;
+    int uid = -1;
+    sscanf(u, "Uid: %d", &uid);   /* space matches the tab too */
+    return uid;
+}
+
+/* Android package name = first cmdline token, minus any ":subprocess". */
+static int get_pkg(pid_t pid, char *out, int sz) {
+    char path[64], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/cmdline", pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    int n = (int)read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = '\0';                 /* first token already NUL-terminated */
+    char *colon = strchr(buf, ':');
+    if (colon) *colon = '\0';
+    /* skip kernel threads / paths — a package name has a dot, no slash */
+    if (buf[0] == '/' || buf[0] == '\0') return -1;
+    strncpy(out, buf, sz - 1);
+    out[sz - 1] = '\0';
+    return 0;
+}
+
+/* utime + stime in clock ticks (fields 14/15 of /proc/<pid>/stat). */
+static unsigned long get_jiffies(pid_t pid) {
+    char path[64], buf[1024];
+    snprintf(path, sizeof path, "/proc/%d/stat", pid);
+    if (read_file(path, buf, sizeof buf) <= 0) return 0;
+    char *rp = strrchr(buf, ')');   /* comm may contain spaces/parens */
+    if (!rp) return 0;
+    unsigned long ut = 0, st = 0;
+    /* after ')': state + 10 numbers (ppid..cmajflt) then utime stime */
+    if (sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
+               &ut, &st) < 2)
+        return 0;
+    return ut + st;
 }
 
 /* ── Ancestry and free-list ────────────────────────────────────────── */
@@ -443,6 +499,81 @@ static void free_pid(pid_t pid, session_t *s) {
     chown_app(path);
 }
 
+/* ── Per-app pin rules (foreign apps) ──────────────────────────────── */
+
+/* Pin every running process of <pkg> (apps only) to <mask>. Returns count. */
+static int pin_pkg(const char *pkg, unsigned long mask) {
+    DIR *d = opendir("/proc");
+    if (!d) return 0;
+    struct dirent *de;
+    int n = 0;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t p = (pid_t)atoi(de->d_name);
+        if (p <= 0) continue;
+        char cur[128];
+        if (get_pkg(p, cur, sizeof cur) != 0 || strcmp(cur, pkg) != 0) continue;
+        if (get_uid_of(p) < APP_UID_MIN) continue;   /* never touch system */
+        if (set_aff(p, mask) == 0) n++;
+    }
+    closedir(d);
+    return n;
+}
+
+static void scan_apprules(void) {
+    g_napps = 0;
+    DIR *d = opendir(CPU_DIR);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && g_napps < MAX_APPRULES) {
+        if (strncmp(de->d_name, "app.", 4) != 0) continue;
+        char path[PATH_MAX], buf[32];
+        snprintf(path, sizeof path, "%s/%s", CPU_DIR, de->d_name);
+        if (read_file(path, buf, sizeof buf) <= 0) continue;
+        unsigned long mask = strtoul(buf, NULL, 16);
+        if (!mask) continue;
+        strncpy(g_apps[g_napps].pkg, de->d_name + 4, sizeof(g_apps[0].pkg) - 1);
+        g_apps[g_napps].pkg[sizeof(g_apps[0].pkg) - 1] = '\0';
+        g_apps[g_napps].mask = mask;
+        g_napps++;
+    }
+    closedir(d);
+}
+
+/* A freshly forked/exec'd process — apply its package rule if any. */
+static void handle_new_app(pid_t pid) {
+    if (g_napps == 0) return;
+    char pkg[128];
+    if (get_pkg(pid, pkg, sizeof pkg) != 0 || !pkg[0]) return;
+    for (int i = 0; i < g_napps; i++) {
+        if (strcmp(g_apps[i].pkg, pkg) != 0) continue;
+        if (get_uid_of(pid) >= APP_UID_MIN) set_aff(pid, g_apps[i].mask);
+        return;
+    }
+}
+
+/* cpuset changes reset affinity — periodically re-assert app rules. */
+static void repin_apps(void) {
+    if (g_napps == 0) return;
+    DIR *d = opendir("/proc");
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t p = (pid_t)atoi(de->d_name);
+        if (p <= 0) continue;
+        char pkg[128];
+        if (get_pkg(p, pkg, sizeof pkg) != 0 || !pkg[0]) continue;
+        for (int i = 0; i < g_napps; i++) {
+            if (strcmp(g_apps[i].pkg, pkg) != 0) continue;
+            if (get_uid_of(p) >= APP_UID_MIN && get_aff(p) != g_apps[i].mask)
+                set_aff(p, g_apps[i].mask);
+            break;
+        }
+    }
+    closedir(d);
+}
+
 /* ── Session scanning ──────────────────────────────────────────────── */
 
 static void scan_sessions(void) {
@@ -497,6 +628,7 @@ static void repin_sessions(void) {
 /* ── Handle new process ────────────────────────────────────────────── */
 
 static void handle_new(pid_t pid) {
+    handle_new_app(pid);
     session_t *s = find_session(pid);
     if (!s) return;
     if (is_freed(pid, s->pid)) return;
@@ -612,11 +744,13 @@ static int daemon_main(void) {
 
         if (now - last_hb >= HB_INTERVAL) {
             scan_sessions();
+            scan_apprules();
             write_heartbeat();
             last_hb = now;
         }
         if (now - last_rp >= REPIN_INTERVAL) {
             repin_sessions();
+            repin_apps();
             last_rp = now;
         }
         if (now - last_pend >= 1) {
@@ -833,6 +967,13 @@ static int cmd_status(void) {
                on[0] == '1' ? "online" : "offline");
     }
 
+    /* app pin rules */
+    scan_apprules();
+    printf("\nApp pins (%d):\n", g_napps);
+    if (g_napps == 0) printf("  (none)\n");
+    for (int i = 0; i < g_napps; i++)
+        printf("  %-40s mask=%lx\n", g_apps[i].pkg, g_apps[i].mask);
+
     /* boost */
     printf("\nBoost:\n");
     char *bargs[] = {"status"};
@@ -858,6 +999,116 @@ static int cmd_pin(const char *hex, const char *spid) {
     return 0;
 }
 
+/* ── Apps: per-package CPU usage (foreign apps) ────────────────────── */
+
+typedef struct { char pkg[128]; int uid; unsigned long jiff, mask; } appstat_t;
+
+static int cmd_apps(int argc, char **argv) {
+    int topn = (argc >= 1) ? atoi(argv[0]) : 0;
+
+    static pid_t s_pid[4096];
+    static unsigned long s_j[4096];
+    int ns = 0;
+    DIR *d = opendir("/proc");
+    if (!d) { fprintf(stderr, "cpuctl: cannot read /proc\n"); return 1; }
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && ns < 4096) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t p = (pid_t)atoi(de->d_name);
+        if (p <= 0) continue;
+        s_pid[ns] = p;
+        s_j[ns] = get_jiffies(p);
+        ns++;
+    }
+    closedir(d);
+
+    struct timespec ts = { 1, 0 };
+    nanosleep(&ts, NULL);
+
+    static appstat_t agg[1024];
+    int nagg = 0;
+    for (int i = 0; i < ns; i++) {
+        pid_t p = s_pid[i];
+        unsigned long j2 = get_jiffies(p);
+        if (j2 < s_j[i]) continue;                 /* pid reused */
+        char pkg[128];
+        if (get_pkg(p, pkg, sizeof pkg) != 0 || !pkg[0]) continue;
+        int uid = get_uid_of(p);
+        if (uid < APP_UID_MIN) continue;           /* apps only */
+        int f = -1;
+        for (int k = 0; k < nagg; k++)
+            if (strcmp(agg[k].pkg, pkg) == 0) { f = k; break; }
+        if (f < 0 && nagg < 1024) {
+            f = nagg++;
+            strncpy(agg[f].pkg, pkg, sizeof(agg[0].pkg) - 1);
+            agg[f].pkg[sizeof(agg[0].pkg) - 1] = '\0';
+            agg[f].uid = uid;
+            agg[f].jiff = 0;
+            agg[f].mask = get_aff(p);
+        }
+        if (f >= 0) agg[f].jiff += (j2 - s_j[i]);
+    }
+
+    long hz = sysconf(_SC_CLK_TCK);
+    if (hz <= 0) hz = 100;
+
+    for (int i = 0; i < nagg; i++) {               /* selection sort desc */
+        int best = i;
+        for (int k = i + 1; k < nagg; k++)
+            if (agg[k].jiff > agg[best].jiff) best = k;
+        if (best != i) { appstat_t t = agg[i]; agg[i] = agg[best]; agg[best] = t; }
+    }
+
+    printf("PKG\tCPU\tUID\tMASK\n");
+    int shown = 0;
+    for (int i = 0; i < nagg; i++) {
+        if (topn > 0 && shown >= topn) break;
+        double pct = (double)agg[i].jiff * 100.0 / (double)hz;  /* over 1s */
+        printf("%s\t%.1f\t%d\t%lx\n", agg[i].pkg, pct, agg[i].uid, agg[i].mask);
+        shown++;
+    }
+    return 0;
+}
+
+static int cmd_app_pin(const char *pkg, const char *arg) {
+    if (!pkg || !*pkg || !arg) {
+        fprintf(stderr, "Usage: cpuctl app-pin <package> <hexmask|off>\n");
+        return 1;
+    }
+    for (const char *p = pkg; *p; p++)
+        if (!(isalnum((unsigned char)*p) || *p == '.' || *p == '_')) {
+            fprintf(stderr, "cpuctl: invalid package name\n");
+            return 1;
+        }
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "%s/app.%s", CPU_DIR, pkg);
+
+    if (strcmp(arg, "off") == 0) {
+        unlink(path);
+        int n = pin_pkg(pkg, all_mask());
+        printf("app-pin off: %s restored to all cores (%d procs)\n", pkg, n);
+        return 0;
+    }
+    unsigned long mask = strtoul(arg, NULL, 16);
+    if (!mask) {
+        fprintf(stderr, "Usage: cpuctl app-pin <package> <hexmask|off>\n");
+        return 1;
+    }
+    struct stat st;
+    g_app_uid = (stat(FILES_DIR, &st) == 0) ? (int)st.st_uid : -1;
+    mkdir(CPU_DIR, 0755);
+    char buf[32];
+    snprintf(buf, sizeof buf, "%lx", mask);
+    if (write_file(path, buf) != 0) {
+        fprintf(stderr, "cpuctl: cannot write %s (need root)\n", path);
+        return 1;
+    }
+    chown_app(path);
+    int n = pin_pkg(pkg, mask);
+    printf("app-pin: %s mask=%lx (%d procs)\n", pkg, mask, n);
+    return 0;
+}
+
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
@@ -868,12 +1119,19 @@ int main(int argc, char **argv) {
             "  boost on|off [core]  cpufreq boost\n"
             "  boost status         show boost state\n"
             "  status               show everything\n"
-            "  pin <hexmask> <pid>  one-shot affinity\n");
+            "  pin <hexmask> <pid>  one-shot affinity\n"
+            "  apps [N]             per-app CPU%% (1s sample)\n"
+            "  app-pin <pkg> <hexmask|off>  pin an app's processes\n");
         return 1;
     }
     if (strcmp(argv[1], "daemon") == 0) return daemon_main();
     if (strcmp(argv[1], "boost") == 0)  return cmd_boost(argc - 2, argv + 2);
     if (strcmp(argv[1], "status") == 0) return cmd_status();
+    if (strcmp(argv[1], "apps") == 0)   return cmd_apps(argc - 2, argv + 2);
+    if (strcmp(argv[1], "app-pin") == 0) {
+        if (argc < 4) { fprintf(stderr, "Usage: cpuctl app-pin <package> <hexmask|off>\n"); return 1; }
+        return cmd_app_pin(argv[2], argv[3]);
+    }
     if (strcmp(argv[1], "pin") == 0) {
         if (argc < 4) { fprintf(stderr, "Usage: cpuctl pin <hexmask> <pid>\n"); return 1; }
         return cmd_pin(argv[2], argv[3]);
