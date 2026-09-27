@@ -347,11 +347,24 @@ zahltí `audit_backlog_limit=64`/`audit_rate_limit=5` (`dmesg`: `audit_lost=2109
 `rate limit exceeded`). `audit_log_start()` je synchronní kernelová cesta sdílená
 VŠEMI procesy v systému → přeplněná fronta dokázala zaseknout i `system_server`
 (pozorován MIUI `FW_SCOUT_HANG` na hwbinder volání hned po pádu), ne jen appku.
-Fix: `magisk-modules/audit_flood_fix/sepolicy.rule`
-(`dontaudit untrusted_app_27 app_data_file:file { execute execute_no_trans }`) —
-jen ztlumí log na už POVOLENÝCH akcích, žádná změna oprávnění. `service.sh` v témže
-modulu dělá to samé přes `magiskpolicy --live` jako záložní cestu pro instalaci za
-běhu bez rebootu. META-INF zkopírováno ze sesterského `anti_phantom` modulu.
+**OPRAVA (2026-09-27, ověřeno na zařízení — recidiva freezu, modul nikdy nebyl nainstalovaný):**
+`dontaudit untrusted_app_27 app_data_file:file { execute execute_no_trans }`
+(`magisk-modules/audit_flood_fix/sepolicy.rule`) je proti tomuhle **bezúčinný** —
+`dontaudit` potlačuje logování ZAMÍTNUTÝCH přístupů, ale `execute` je tu ALLOW;
+jeho logování řídí samostatný `auditallow untrusted_app_27 app_data_file:file
+{ execute execute_no_trans }` v MIUI vendor policy (`magiskpolicy --print-rules`
+ho ukázal souběžně s `dontaudit` — nesouvisí s žádným naším modulem, `dontaudit`
+ho nepřebije). Skutečný fix: `auditctl -r 1000` (Android auditctl na tomto
+zařízení podporuje jen `-r rate`, ne `-b backlog`) — zvedne `audit_rate_limit`
+z defaultní `5` msg/s, což je pro PRoot execve-řetězec workload hluboko
+nedostatečné. Ověřeno: po `auditctl -r 1000` **žádný** další `audit_lost` i pod
+zátěží (40× exec v proot), zatímco `dontaudit` fix (aplikovaný živě přes
+`magiskpolicy --live`) na běžící storm nic nezměnil. `audit_flood_fix/service.sh`
+teď dělá obojí (`dontaudit` pro starý `setattr` mechanismus + `auditctl -r 1000`
+jako hlavní fix), čeká na `sys.boot_completed`. META-INF zkopírováno ze
+sesterského `anti_phantom` modulu. **Modul samotný ale nikdy nebyl nainstalovaný
+do `/data/adb/modules/`** (jen v repu) — proto se freeze zopakoval; při
+podobném incidentu nejdřív zkontrolovat `ls /data/adb/modules/audit_flood_fix`.
 
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
