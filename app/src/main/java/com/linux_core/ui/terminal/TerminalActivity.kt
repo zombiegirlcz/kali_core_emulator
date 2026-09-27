@@ -122,6 +122,14 @@ class TerminalActivity : ComponentActivity() {
     internal lateinit var btnAdb: Button
     internal lateinit var btnCpu: Button
     internal val servicesUpdateHandler = Handler(Looper.getMainLooper())
+
+    // Poslední stav služeb změřený na pozadí. UI (indikátor i detail) kreslí
+    // JEN z těchto hodnot — ShellDaemonClient.status() otevírá socket, a na
+    // UI vlákně by skončil NetworkOnMainThreadException → falešné "stopped".
+    @Volatile internal var lastAdbStatus =
+        com.linux_core.core.terminal.ShellDaemonStatus(running = false)
+
+    @Volatile internal var lastCpuAlive = false
     internal val servicesPoller =
         object : Runnable {
             override fun run() {
@@ -131,6 +139,8 @@ class TerminalActivity : ComponentActivity() {
                             com.linux_core.core.terminal.ShellDaemonClient
                                 .status()
                         val cpuRunning = isCpuDaemonAlive()
+                        lastAdbStatus = adbSt
+                        lastCpuAlive = cpuRunning
                         runOnUiThread {
                             updateServiceIndicator("adb", btnAdb, adbSt.running)
                             updateServiceIndicator("cpu", btnCpu, cpuRunning)
