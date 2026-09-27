@@ -192,7 +192,7 @@ object ShellDaemonClient {
                 s.connect(InetSocketAddress("127.0.0.1", PORT), 2500)
                 s.soTimeout = 5000
                 val out = DataOutputStream(s.getOutputStream())
-                out.writeInt(SH_MAGIC)
+                writeIntLE(out, SH_MAGIC)
                 out.writeByte(SH_MODE_STOP)
                 writeBlob(out, token.toByteArray(Charsets.UTF_8))
                 out.flush()
@@ -200,7 +200,7 @@ object ShellDaemonClient {
                 // worker stihl poslat SIGTERM parentovi.
                 try {
                     val inp = DataInputStream(s.getInputStream())
-                    inp.readInt(); readBlob(inp); readBlob(inp)
+                    readIntLE(inp); readBlob(inp); readBlob(inp)
                 } catch (_: Exception) { }
             }
             true
@@ -257,7 +257,7 @@ object ShellDaemonClient {
                 s.soTimeout = 120_000
                 val out = DataOutputStream(s.getOutputStream())
                 // Protokol: magic (4B) + mode (1B) + token + cmd + cwd
-                out.writeInt(SH_MAGIC)
+                writeIntLE(out, SH_MAGIC)
                 out.writeByte(SH_MODE_EXEC)
                 writeBlob(out, token.toByteArray(Charsets.UTF_8))
                 writeBlob(out, command.toByteArray(Charsets.UTF_8))
@@ -265,7 +265,7 @@ object ShellDaemonClient {
                 out.flush()
 
                 val inp = DataInputStream(s.getInputStream())
-                val code = inp.readInt()
+                val code = readIntLE(inp)
                 val stdout = readBlob(inp)
                 val stderr = readBlob(inp)
                 JSONObject().apply {
@@ -306,11 +306,11 @@ object ShellDaemonClient {
                 s.connect(InetSocketAddress("127.0.0.1", PORT), 2500)
                 s.soTimeout = 600_000  // install muze trvat (velke APK)
                 val out = DataOutputStream(s.getOutputStream())
-                out.writeInt(SH_MAGIC)
+                writeIntLE(out, SH_MAGIC)
                 out.writeByte(SH_MODE_INSTALL)
                 writeBlob(out, token.toByteArray(Charsets.UTF_8))
                 writeBlob(out, args.toByteArray(Charsets.UTF_8))
-                out.writeLong(apkFile.length())
+                writeLongLE(out, apkFile.length())
                 // stream APK po blokech
                 apkFile.inputStream().use { ins ->
                     val buf = ByteArray(65536)
@@ -323,7 +323,7 @@ object ShellDaemonClient {
                 out.flush()
 
                 val inp = DataInputStream(s.getInputStream())
-                val code = inp.readInt()
+                val code = readIntLE(inp)
                 val stdout = readBlob(inp)
                 val stderr = readBlob(inp)
                 JSONObject().apply {
@@ -344,13 +344,42 @@ object ShellDaemonClient {
         }
     }
 
+    /**
+     * Protokol shell_daemon.c čte `uint32_t`/`uint64_t` čísla čistě nativně
+     * (`read_all(fd, &x, sizeof(x))`, žádné `ntohl`/`htonl`) — na aarch64 to
+     * je little-endian. `DataOutputStream.writeInt/writeLong` a
+     * `DataInputStream.readInt` jsou ale podle Java kontraktu VŽDY
+     * big-endian, bez ohledu na platformu. Bez těchto LE helperů daemon
+     * vidí prohozenou magii (`0x4c4c4853` místo `0x53484c4c`), okamžitě
+     * zavře socket bez odpovědi → klient dostane "Broken pipe"/"Connection
+     * reset". Zjištěno 2026-09-27 přes log démona (`spatny magic ...`).
+     */
+    private fun writeIntLE(out: DataOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v ushr 8) and 0xFF)
+        out.write((v ushr 16) and 0xFF)
+        out.write((v ushr 24) and 0xFF)
+    }
+
+    private fun writeLongLE(out: DataOutputStream, v: Long) {
+        for (i in 0 until 8) out.write(((v ushr (8 * i)) and 0xFFL).toInt())
+    }
+
+    private fun readIntLE(inp: DataInputStream): Int {
+        val b0 = inp.readUnsignedByte()
+        val b1 = inp.readUnsignedByte()
+        val b2 = inp.readUnsignedByte()
+        val b3 = inp.readUnsignedByte()
+        return b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24)
+    }
+
     private fun writeBlob(out: DataOutputStream, data: ByteArray) {
-        out.writeInt(data.size)
+        writeIntLE(out, data.size)
         if (data.isNotEmpty()) out.write(data)
     }
 
     private fun readBlob(inp: DataInputStream): String {
-        val n = inp.readInt()
+        val n = readIntLE(inp)
         if (n <= 0) return ""
         val buf = ByteArray(n)
         inp.readFully(buf)

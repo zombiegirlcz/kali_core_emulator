@@ -432,6 +432,22 @@ osiří → `invalid object … Not a directory` a rozbitý repo (postihuje VŠE
 Pojistka: `nh fix git [path]` materializuje symlinky na reálné soubory (přes host bind App Data `/data/user/0/com.linux_core`, fallback `/mnt/app`,
 kde jsou symlinky vidět; vyžaduje `bind_aiapp`). Pouštět po `git clone/gc/repack` pod prootem.
 
+**`ShellDaemonClient.kt` ↔ `shell_daemon.c` byl endianness-broken od začátku (2026-09-27):**
+Kotlinovo `DataOutputStream.writeInt/writeLong` a `DataInputStream.readInt` jsou podle Java
+kontraktu VŽDY big-endian, ale `shell_daemon.c` čte/píše `uint32_t`/`uint64_t` čistě nativně
+(`read_all(fd, &x, sizeof(x))`, žádné `ntohl`/`htonl`) — na aarch64 little-endian. Důsledek: KAŽDÉ
+volání `exec()`/`install()`/`stopDaemon()`'s SH_MODE_STOP z appky posílalo magii `SHLL`
+byte-prohozenou (`0x4c4c4853` místo `0x53484c4c`); démon to zalogoval jako `spatny magic` a **zavřel
+socket bez odpovědi** (appka ještě psala zbytek požadavku → "Broken pipe"/"Connection reset").
+Interaktivní `--attach` cesta (`ashell adb shell` bez args → `libshelldaemon.so --attach`, C-to-C)
+tím postižena NEBYLA (nativní klient, stejná endianness na obou stranách) — proto bug přežil
+nepovšimnutý, non-interaktivní `ashell adb <cmd>`/`/shelldaemon/exec` vždy padal na fallback.
+Fix: `writeIntLE`/`writeLongLE`/`readIntLE` helpery v `ShellDaemonClient.kt` (manuální bajt-po-bajtu
+LE write/read) namísto `writeInt`/`writeLong`/`readInt`. **Nevracet zpět na `DataOutputStream.writeInt`**
+pro cokoliv, co jde na `shell_daemon.c` socket — ten protokol je a zůstává nativní (LE), ne network
+byte order. Diagnostika: restartovat démon s `> logfile 2>&1` místo `> /dev/null 2>&1` (`ashell adb start`
+default přesměrovává stderr do /dev/null, takže `spatny magic`/crash hlášky jsou jinak ztracené).
+
 **su_daemon / Root Bridge:** fork-per-connection (parent hned `accept()`, žádné blokování nových `sudo`),
 POLLHUP → SIGKILL command childa, config v `g_*` globálech, ignorovat SIGPIPE, `pkill -x` (ne `-f`),
 fail-closed bez launcheru (`_exit(126)`), **re-entry do PRoot** místo host `chroot` (ochrana proti
