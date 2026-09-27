@@ -62,7 +62,31 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-GITHUB_BRANCH = "dev"
+GITHUB_BRANCH = "dev"  # fallback, pokud volající sync() nepředá branch explicitně
+
+
+def _detect_branch():
+    """Přečte aktuální větev z lokálního .git/HEAD (fallback na GITHUB_BRANCH).
+
+    Prochází od adresáře skriptu nahoru, protože skript je v tools/ ale
+    .git je v kořeni repa. Používá se jen v main()/local_entrypoint — volání
+    přes `modal run modal_build.py::sync` (jak to dělá mbuild) tuhle funkci
+    obchází, proto mbuild předává branch vlastní detekcí přes `--branch`.
+    """
+    d = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        head_file = os.path.join(d, ".git", "HEAD")
+        if os.path.isfile(head_file):
+            with open(head_file) as f:
+                content = f.read().strip()
+            if content.startswith("ref: refs/heads/"):
+                return content[len("ref: refs/heads/"):]
+            return GITHUB_BRANCH
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return GITHUB_BRANCH
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
@@ -149,24 +173,31 @@ usrtools_image = (
     timeout=600,
     memory=1024,
 )
-def sync():
+def sync(branch: str = ""):
     """Git clone (poprvé) nebo fetch + reset --hard (dál) přímo z GitHubu.
 
     Nahrazuje upload_basic/upload_force/upload_clean. Žádný rsync z telefonu —
     Modal si repo stahuje sám přes vlastní síť. Výsledný strom na Volume vždy
-    1:1 odpovídá GITHUB_BRANCH na GitHubu (deterministické, žádná otázka
+    1:1 odpovídá dané větvi na GitHubu (deterministické, žádná otázka
     "mazat, nebo ne" jako u rsyncu).
+
+    `branch` by měl vždy přijít explicitně od volajícího (mbuild předává
+    aktuální lokální branch přes `--branch`) — prázdná hodnota spadne na
+    GITHUB_BRANCH (fallback pro ruční `modal run modal_build.py::sync` bez
+    argumentu).
     """
+    if not branch:
+        branch = GITHUB_BRANCH
     token = os.environ.get("GITHUB_TOKEN", "")
     auth = f"{token}@" if token else ""
     repo_url = f"https://{auth}github.com/{GITHUB_REPO}.git"
     dest = "/vol/src"
 
     if os.path.isdir(os.path.join(dest, ".git")):
-        print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{GITHUB_BRANCH}")
+        print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{branch}")
         subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
-        subprocess.run(["git", "fetch", "origin", GITHUB_BRANCH], cwd=dest, check=True)
-        subprocess.run(["git", "reset", "--hard", f"origin/{GITHUB_BRANCH}"], cwd=dest, check=True)
+        subprocess.run(["git", "fetch", "origin", branch], cwd=dest, check=True)
+        subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=dest, check=True)
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
         # ZÁMĚRNĚ BEZ `git clean`: ponechává postavené build artefakty
         # (proot-static-*, loader-static-*, *.so, binárky v assets/), které NEjsou
@@ -174,11 +205,11 @@ def sync():
         # Volume a podle `git diff` rozhodne o skipu. `reset --hard` aktualizuje
         # tracked soubory 1:1 na GitHub; untracked artefakty přežijí sync.
     else:
-        print(f"[sync] Klonuji {GITHUB_REPO}@{GITHUB_BRANCH} -> {dest}")
+        print(f"[sync] Klonuji {GITHUB_REPO}@{branch} -> {dest}")
         if os.path.isdir(dest):
             shutil.rmtree(dest)
         subprocess.run(
-            ["git", "clone", "--branch", GITHUB_BRANCH, repo_url, dest],
+            ["git", "clone", "--branch", branch, repo_url, dest],
             check=True,
         )
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
@@ -1105,6 +1136,16 @@ def build():
         )
         sys.exit(1)
 
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=src_dir, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    commit = subprocess.run(
+        ["git", "log", "-1", "--format=%h %s"],
+        cwd=src_dir, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    print(f"[build] Building from branch '{branch}': {commit}")
+
     # ---- local.properties ----
     with open(os.path.join(src_dir, "local.properties"), "w") as f:
         f.write(f"sdk.dir={ANDROID_SDK_ROOT}\n")
@@ -1397,7 +1438,7 @@ def main():
     if cmd == "init":
         init_keys.remote()
     elif cmd == "sync":
-        sync.remote()
+        sync.remote(branch=_detect_branch())
     elif cmd == "clean":
         clean.remote()
     elif cmd == "native":
