@@ -617,7 +617,7 @@ static void adb_help(void) {
 "  ashell adb push <L> <R>        cp -r L R (uid 2000)\n"
 "  ashell adb pull <R> <L>        cp -r R L (uid 2000)\n"
 "  ashell adb devices             nas shell_daemon jako jedine \"zarizeni\"\n"
-"  ashell adb -c '<cmd>'          cista app-uid cesta (mimo daemona)\n\n"
+"  ashell adb -c '<cmd>'          totez co \"ashell adb <cmd>\" (uid 2000, pres daemona)\n\n"
 "Pozn.: daemon bezi jako Android shell (uid 2000), takze vidi /system/bin\n"
 "nastroje (pm, am, logcat, settings, ...). `adb` binarka se nepouziva.\n");
 }
