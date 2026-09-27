@@ -640,6 +640,11 @@ static int cmd_adb(int argc, char **argv) {
         char *daemon_path = pathresp ? json_get_string(pathresp, "path") : NULL;
         char *token = pathresp ? json_get_string(pathresp, "token") : NULL;
         free(pathresp);
+        const char *token_override = getenv("SHELLDAEMON_TOKEN");
+        if (token_override && *token_override) {
+            free(token);
+            token = strdup(token_override);
+        }
         if (!daemon_path || !*daemon_path) {
             fprintf(stderr, "[-] Neznám cestu k libshelldaemon.so.\n");
             fprintf(stderr, "    Ověř, že appka běží: curl -s http://127.0.0.1:1337/shelldaemon/info\n");
