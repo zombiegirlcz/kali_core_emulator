@@ -73,6 +73,8 @@ if [ "$ROOT_OK" = 1 ]; then
 fi
 if [ "$ROOT_OK" = 1 ]; then
     CTL_VER=$(priv "$CPUCTL version" | sed -n 's/^cpuctl //p' | head -n1)
+    # build před příkazem `version`, který už apps umí → podle nápovědy
+    [ -z "$CTL_VER" ] && priv "$CPUCTL 2>&1" | grep -q 'app-pin' && CTL_VER="1.0+apps"
     if [ -n "$CTL_VER" ]; then
         ok "cpuctl $CTL_VER (umí apps/app-pin)"
     else

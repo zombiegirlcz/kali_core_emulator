@@ -3078,7 +3078,7 @@ cpu_cores_to_mask() {  # <spec> -> hex, "" při chybě
 }
 
 # Nainstalovaná binárka /system/bin/cpuctl umí apps/app-pin? Stará v1.0 (modul
-# flashnutý před 2026-09-27) je nezná a nezná ani `version` → exit 1. Výsledek
+# flashnutý před 2026-09-27) je nezná — `version` ani `app-pin` v nápovědě. Výsledek
 # se cachuje (sudo je drahé); CPU_CTL_VER = vypsaná verze nebo prázdné.
 CPU_CTL_CHECKED=0
 CPU_CTL_VER=""
@@ -3086,6 +3086,10 @@ cpu_ctl_new() {
     if [ "$CPU_CTL_CHECKED" = 0 ]; then
         CPU_CTL_CHECKED=1
         CPU_CTL_VER=$(sudo /system/bin/cpuctl version 2>/dev/null | sed -n 's/^cpuctl //p' | head -n1)
+        # build z 2026-09-27 před `version` už apps umí — poznat podle nápovědy
+        if [ -z "$CPU_CTL_VER" ] && sudo /system/bin/cpuctl 2>&1 | grep -q 'app-pin'; then
+            CPU_CTL_VER="1.0+apps"
+        fi
     fi
     [ -n "$CPU_CTL_VER" ]
 }
