@@ -62,16 +62,16 @@ build_vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Modal forwarduje env z lokalniho shellu, takze GITHUB_REPO v exportu by
 # prepisoval default a GUI/assistant by klonovaly core. Proto literál.
 GITHUB_REPO = "zombiegirlcz/kali_core_emulator"
-GITHUB_BRANCH = "dev"  # fallback, pokud volající sync() nepředá branch explicitně
+_DEFAULT_BRANCH = "master"
 
 
 def _detect_branch():
-    """Přečte aktuální větev z lokálního .git/HEAD (fallback na GITHUB_BRANCH).
+    """Přečte aktuální větev z lokálního .git/HEAD (fallback na _DEFAULT_BRANCH).
 
     Prochází od adresáře skriptu nahoru, protože skript je v tools/ ale
-    .git je v kořeni repa. Používá se jen v main()/local_entrypoint — volání
-    přes `modal run modal_build.py::sync` (jak to dělá mbuild) tuhle funkci
-    obchází, proto mbuild předává branch vlastní detekcí přes `--branch`.
+    .git je v kořeni repa. Volání přes `modal run modal_build.py::sync`
+    (jak to dělá mbuild) tuhle funkci obchází — mbuild předává branch
+    vlastní detekcí přes `--branch`.
     """
     d = os.path.dirname(os.path.abspath(__file__))
     while True:
@@ -81,12 +81,12 @@ def _detect_branch():
                 content = f.read().strip()
             if content.startswith("ref: refs/heads/"):
                 return content[len("ref: refs/heads/"):]
-            return GITHUB_BRANCH
+            return _DEFAULT_BRANCH
         parent = os.path.dirname(d)
         if parent == d:
             break
         d = parent
-    return GITHUB_BRANCH
+    return _DEFAULT_BRANCH
 
 
 # ── Image with Android SDK + JDK 21 + NDK ────────────────────────────────────
@@ -183,11 +183,11 @@ def sync(branch: str = ""):
 
     `branch` by měl vždy přijít explicitně od volajícího (mbuild předává
     aktuální lokální branch přes `--branch`) — prázdná hodnota spadne na
-    GITHUB_BRANCH (fallback pro ruční `modal run modal_build.py::sync` bez
+    _DEFAULT_BRANCH (fallback pro ruční `modal run modal_build.py::sync` bez
     argumentu).
     """
     if not branch:
-        branch = GITHUB_BRANCH
+        branch = _DEFAULT_BRANCH
     token = os.environ.get("GITHUB_TOKEN", "")
     auth = f"{token}@" if token else ""
     repo_url = f"https://{auth}github.com/{GITHUB_REPO}.git"
@@ -199,11 +199,6 @@ def sync(branch: str = ""):
         subprocess.run(["git", "fetch", "origin", branch], cwd=dest, check=True)
         subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=dest, check=True)
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
-        # ZÁMĚRNĚ BEZ `git clean`: ponechává postavené build artefakty
-        # (proot-static-*, loader-static-*, *.so, binárky v assets/), které NEjsou
-        # v gitu (untracked). Díky tomu `smart_build` najde proot/lib/bin na
-        # Volume a podle `git diff` rozhodne o skipu. `reset --hard` aktualizuje
-        # tracked soubory 1:1 na GitHub; untracked artefakty přežijí sync.
     else:
         print(f"[sync] Klonuji {GITHUB_REPO}@{branch} -> {dest}")
         if os.path.isdir(dest):
@@ -214,13 +209,12 @@ def sync(branch: str = ""):
         )
         subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
 
-    # Zamaskovat token v remote URL, kdyby si někdo dal `git remote -v`.
     subprocess.run(
         ["git", "remote", "set-url", "origin", f"https://github.com/{GITHUB_REPO}.git"],
         cwd=dest, check=True,
     )
     build_vol.commit()
-    print("[sync] Hotovo. Tracked strom = 1:1 GitHub; build artefakty (proot/lib/bin) zachovány.")
+    print(f"[sync] Hotovo. Tracked strom = 1:1 GitHub ({branch}); build artefakty zachovány.")
 
 
 @app.function(

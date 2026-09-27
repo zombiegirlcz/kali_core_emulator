@@ -1011,13 +1011,27 @@ cpu_tree() {
     echo $out
 }
 
+# /proc/<pid>/{cmdline,environ} → řádky. NIKDY ne `tr … < /proc/…`: když
+# proces mezitím zanikne, toybox tr dostává z read() chybu místo EOF a točí
+# se v ní navždy (~50 % jádra), hlídač visí na $(…) a přežije svou session.
+# `dd count=1` udělá přesně jedno read() a skončí i při chybě; timeout je
+# pojistka pro případ, že by visel i dd.
+proc_lines() {  # <soubor v /proc>
+    [ -r "$1" ] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 dd if="$1" bs=131072 count=1 2>/dev/null
+    else
+        dd if="$1" bs=131072 count=1 2>/dev/null
+    fi | tr '\0' '\n'
+}
+
 # CPU_ALL v prostředí procesu v guestu = programy, které mají jet na všech
 # jádrech (make, cargo, john, xz, …). Slova oddělená mezerou/čárkou/řádkem;
 # slovo s cestou (/…, ~/…) je soubor se seznamem, doslovné '$(cat SOUBOR)'
 # (hodnota v jednoduchých uvozovkách) se čte stejně. Cesty jsou v guestu.
 cpu_all_words() {  # <pid> <rootfs>
     local v w
-    v=$(tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^CPU_ALL=//p' | head -n 1)
+    v=$(proc_lines "/proc/$1/environ" | sed -n 's/^CPU_ALL=//p' | head -n 1)
     [ -n "$v" ] || return 0
     v=$(echo "$v" | sed 's/\$(cat[[:space:]]*\([^)]*\))/\1/g' | tr ',;' '  ')
     for w in $v; do
@@ -1040,7 +1054,7 @@ cpu_pin_watch() {
     while kill -0 "$pid" 2>/dev/null && [ -f "$file" ]; do
         # rootfs z příkazové řádky proot (-r <cesta>) kvůli souborům v CPU_ALL;
         # hned po startu je $pid ještě boot (exec proot proběhne až potom)
-        [ -n "$rootfs" ] || rootfs=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '/^-r$/{n;p;q}')
+        [ -n "$rootfs" ] || rootfs=$(proc_lines "/proc/$pid/cmdline" | sed -n '/^-r$/{n;p;q}')
         # nové procesy s CPU_ALL, jejichž jméno je na seznamu → všechna jádra
         for t in $(cpu_tree "$pid"); do
             case "$seen" in *" $t "*) continue ;; esac
@@ -1049,7 +1063,7 @@ cpu_pin_watch() {
             w=$(cpu_all_words "$t" "$rootfs")
             [ -n "$w" ] || continue
             { read -r comm < "/proc/$t/comm"; } 2>/dev/null || continue
-            argv=$(tr '\0' '\n' < "/proc/$t/cmdline" 2>/dev/null | head -n 1); argv=${argv##*/}
+            argv=$(proc_lines "/proc/$t/cmdline" | head -n 1); argv=${argv##*/}
             case " $(echo $w) " in
                 *" $comm "*|*" $argv "*)
                     $TASKSET_BIN -p "$all_mask" "$t" >/dev/null 2>&1 && echo "$t" >> "$CPU_DIR/free.$pid"

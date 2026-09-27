@@ -157,8 +157,6 @@ internal fun TerminalActivity.toggleServicesPanel() {
 
     if (isServicesExpanded) {
         updateAllServiceIndicators()
-        servicesUpdateHandler.removeCallbacks(servicesPoller)
-        servicesUpdateHandler.post(servicesPoller)
     } else {
         servicesDetailPanel.visibility = View.GONE
         expandedService = null
@@ -178,44 +176,20 @@ internal fun TerminalActivity.toggleServiceDetail(service: String) {
     }
 }
 
+/**
+ * Překreslí indikátory z posledního stavu a vyžádá nové měření na pozadí
+ * (servicesPoller). Nikdy nevolá síť na UI vlákně.
+ */
 internal fun TerminalActivity.updateAllServiceIndicators() {
-    updateServiceIndicator("adb", btnAdb)
-    updateServiceIndicator("cpu", btnCpu)
+    updateServiceIndicator("adb", btnAdb, lastAdbStatus.running)
+    updateServiceIndicator("cpu", btnCpu, lastCpuAlive)
 
     val svc = expandedService
     if (svc != null) {
         updateServiceDetail(svc)
     }
-}
-
-internal fun TerminalActivity.updateServiceIndicator(
-    service: String,
-    button: Button,
-) {
-    val running =
-        when (service) {
-            "adb" -> {
-                com.linux_core.core.terminal.ShellDaemonClient
-                    .status()
-                    .running
-            }
-
-            "cpu" -> isCpuDaemonAlive()
-
-            else -> {
-                false
-            }
-        }
-
-    val icon = if (running) "●" else "○"
-    val color = if (running) Color.parseColor("#00FF41") else Color.GRAY
-    button.text =
-        when (service) {
-            "adb" -> "📡 ADB $icon"
-            "cpu" -> "⚡ CPU $icon"
-            else -> button.text
-        }
-    button.setTextColor(color)
+    servicesUpdateHandler.removeCallbacks(servicesPoller)
+    servicesUpdateHandler.post(servicesPoller)
 }
 
 /**
@@ -238,7 +212,8 @@ internal fun TerminalActivity.updateServiceIndicator(
 }
 
 /**
- * Update service detail (calls status() inline — used from button handlers).
+ * Update service detail z posledního stavu změřeného na pozadí (UI vlákno,
+ * žádná síť — viz lastAdbStatus).
  */
 internal fun TerminalActivity.updateServiceDetail(service: String) {
     servicesDetailPanel.removeAllViews()
@@ -256,9 +231,7 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
 
     when (service) {
         "adb" -> {
-            val st =
-                com.linux_core.core.terminal.ShellDaemonClient
-                    .status()
+            val st = lastAdbStatus
             val icon = if (st.running) "●" else "○"
             val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
 
