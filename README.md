@@ -412,14 +412,25 @@ nh cpu bench [--quick]    # benchmark kombinací (bez pinu / proot na big / vše
                           # barevná tabulka + grafy, session se pak vrátí do původního stavu
 nh cpu boost on|off [N]   # root boost: scaling_min_freq=max pro policy jádra N (Magisk nh_cpuctl)
 nh cpu boost status       # aktuální boost stav všech policies
-nh cpu apps [N]           # CPU zátěž ostatních aplikací (top N, root nh_cpuctl)
-nh cpu app <pkg> <jádra|off>  # přišpendlit cizí aplikaci na jádra (0-3 / 4,6 / off)
+nh cpu apps [N]           # CPU zátěž ostatních aplikací (top N; root i non-root)
+nh cpu appmon [SEC] [TOP]  # živý grafický monitor CPU aplikací (bary, refresh 2 s)
+nh cpu app <pkg> <jádra|off>  # přišpendlit cizí aplikaci na jádra (root; 0-3 / 4,6 / off)
 ```
 
-**Cizí aplikace** (`nh cpu apps` / `nh cpu app`, taky UI „⚙ APLIKACE" v services panelu) — vidí
-CPU zátěž ostatních aplikací a umí je přišpendlit na vybraná jádra (např. těžkou appku na
-little jádra, ať nedusí proot). Vyžaduje root modul `nh_cpuctl`; týká se jen aplikací
-(uid ≥ 10000), systémové procesy zůstávají nedotčené. Daemon masku obnoví i po restartu appky.
+**Cizí aplikace** (`nh cpu apps` / `nh cpu appmon` / `nh cpu app`, taky UI „⚙ APLIKACE" v services
+panelu) — tři úrovně přístupu podle oprávnění:
+
+| Úroveň | Měření CPU cizích appek | Přidělení jader |
+|---|---|---|
+| App proces (uid 10xxx) | ne (`hidepid` skryje cizí `/proc`) | ne |
+| Non-root shell (uid 2000, `ashell adb start`) | **ano** (`dumpsys cpuinfo`) | ne |
+| Root (Magisk `nh_cpuctl`) | ano (+ uid a maska) | **ano** |
+
+`apps`/`appmon` **měří i non-root** (přes uid 2000 — jednou spáruj wireless debugging a
+`ashell adb start`), root dá navíc uid a masku jader. **Přidělení jader je root-only** —
+`sched_setaffinity` na cizí proces je kernelový `CAP_SYS_NICE`, žádné Android API to neobejde.
+Pin se týká jen aplikací (uid ≥ 10000), systémové procesy zůstávají nedotčené; daemon masku
+obnoví i po restartu appky.
 
 **`CPU_ALL`** — programy, které při pinu automaticky pojedou na všech jádrech (hlídač je
 najde do ~2 s podle `comm`/`argv[0]`, potomci zdědí všechna jádra). Čte se z prostředí

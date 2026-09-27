@@ -456,6 +456,13 @@ localhost gate — v `sensitiveEndpoints`), a UI `CpuAppsActivity` (spouští se
 services panelu, volá cpuctl přes `su -c` jako `runCpuBoost`). **Neplést** `nh cpu app` (cizí
 appka) s `nh cpu core/pin` (proot session).
 
+**Non-root měření (`cpu_apps_raw` v `assets/nh`, `nh cpu apps`/`appmon`):** tři úrovně —
+app uid nevidí cizí `/proc` (`hidepid`), uid 2000 (`ashell adb`, `dumpsys cpuinfo`) **měří** ale
+**nepinuje**, root (nh_cpuctl) obojí. `cpu_apps_raw` vrací TSV a kódem zdroj (0 root / 2 non-root
+dumpsys / 1 nic); `cpu_apps` tiskne tabulku, `cpu_appmon` živé bary (čistý sh+awk, bez python).
+**Přidělení jader cizí appce je fyzicky root-only** (`sched_setaffinity` na cizí uid = `CAP_SYS_NICE`);
+non-root pinování nelze — neslibovat ho v UI ani CLI.
+
 **`sudo` dědí nastavení přes soubor:** `su_daemon` `execv`-ne `boot -- cmd` pod rootem, ale
 dítě dědí **jen prostředí daemonu** (žádné `NH_*`) → sudo session by měla prázdné
 `/data` a fake `uname -r`. Proto `ProotManager` zapisuje `$FILES_DIR/nh/root_env`

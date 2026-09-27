@@ -3084,17 +3084,95 @@ cpu_root_ready() {  # 0 = daemon běží, jinak vypíše hint a vrátí 1
     return 1
 }
 
-# nh cpu apps [N] — přehled CPU zátěže ostatních aplikací (přes root daemon)
+# Sdílený zdroj dat pro apps/appmon. Tiskne TSV "pkg<TAB>cpu<TAB>uid<TAB>mask".
+# Návratový kód = zdroj: 0 root daemon (přesné, uid+maska), 2 non-root
+# (uid 2000 dumpsys, jen CPU%), 1 = žádný zdroj. Non-root měření je čtení,
+# ne řízení — pinování jde jen s rootem (kernelový CAP_SYS_NICE).
+cpu_apps_raw() {  # [N]
+    local hb_pid hb_ts now_s raw
+    if [ -f "$CPU_STATE_DIR/cpuctld" ]; then
+        read -r hb_pid hb_ts < "$CPU_STATE_DIR/cpuctld" 2>/dev/null || true
+        now_s=$(date +%s)
+        if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then
+            sudo /system/bin/cpuctl apps "${1:-0}" | awk 'NR>1'
+            return 0
+        fi
+    fi
+    # non-root: uid 2000 přes ashell adb (dumpsys cpuinfo). Vyžaduje jednou
+    # spárované wireless debugging + `ashell adb start` — žádný root.
+    command -v ashell >/dev/null 2>&1 || return 1
+    raw=$(ashell adb dumpsys cpuinfo 2>/dev/null) || raw=""
+    [ -n "$raw" ] || return 1
+    echo "$raw" | awk '
+        {
+            pct=$1
+            if (pct !~ /%/) next
+            sub(/%.*/, "", pct); sub(/^\+/, "", pct)
+            if (pct+0 <= 0) next
+            tok=$2
+            if (tok !~ /\//) next
+            name=tok; sub(/^[0-9]+\//, "", name); sub(/:.*/, "", name)
+            if (name !~ /\./) next            # jen balíčky (mají tečku)
+            printf "%s\t%s\t-\t-\n", name, pct
+        }'
+    return 2
+}
+
+# nh cpu apps [N] — přehled CPU zátěže ostatních aplikací (root i non-root)
 cpu_apps() {
-    cpu_root_ready || return 1
-    local n=${1:-20}
-    sudo /system/bin/cpuctl apps "$n" | awk -v grn="$GREEN" -v yel="$YELLOW" \
-        -v red="$RED" -v rst="$RST" -v bold="$BOLD" -v white="$WHITE" '
+    local n=${1:-20} data rc src
+    data=$(cpu_apps_raw 0); rc=$?
+    case $rc in
+        0) src="root daemon (nh_cpuctl) — s uid a maskou jader" ;;
+        2) src="non-root (uid 2000, dumpsys) — jen CPU%, pinování vyžaduje root" ;;
+        *) echo "  ${YELLOW}Žádný zdroj dat o CPU cizích aplikací.${RST}"
+           echo "  Root:     nainstaluj Magisk modul ${CYAN}nh_cpuctl${RST}."
+           echo "  Non-root: spusť ${CYAN}ashell adb start${RST} (jednou spáruj wireless debugging)."
+           return 1 ;;
+    esac
+    printf "  ${DIM}zdroj: %s${RST}\n" "$src"
+    { printf "PKG\tCPU\tUID\tMASK\n"; echo "$data" | sort -t"$(printf '\t')" -k2 -nr | head -n "$n"; } \
+      | awk -F'\t' -v grn="$GREEN" -v yel="$YELLOW" -v red="$RED" -v rst="$RST" \
+            -v bold="$BOLD" -v white="$WHITE" '
         NR==1 { printf "  %s%-40s %8s %8s   %s%s\n", bold white, "APLIKACE", "CPU%", "UID", "JÁDRA", rst; next }
         {
             col = ($2+0 >= 50 ? red : ($2+0 >= 15 ? yel : grn))
             printf "  %-40s %s%7.1f%%%s %8s   %s\n", $1, col, $2, rst, $3, $4
         }'
+}
+
+# nh cpu appmon [SEC] [TOP] — živý grafický monitor CPU aplikací (root i non-root)
+cpu_appmon() {
+    local sec=${1:-0} top=${2:-15} data rc src end=0 tab
+    tab=$(printf '\t')
+    case "$sec" in ''|*[!0-9]*) sec=0 ;; esac
+    case "$top" in ''|*[!0-9]*) top=15 ;; esac
+    [ "$sec" -gt 0 ] && end=$(( $(date +%s) + sec ))
+    trap 'printf "\033[?25h\n"; return 0' INT
+    printf '\033[?25l'
+    while :; do
+        data=$(cpu_apps_raw 0); rc=$?
+        printf '\033[H\033[2J'
+        if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then
+            printf "  ${YELLOW}Žádný zdroj dat.${RST}  Root: ${CYAN}nh_cpuctl${RST} · Non-root: ${CYAN}ashell adb start${RST}\n"
+            sleep 2
+            [ "$end" -ne 0 ] && [ "$(date +%s)" -ge "$end" ] && break
+            continue
+        fi
+        [ "$rc" = 0 ] && src="root daemon (nh_cpuctl)" || src="non-root (uid 2000, dumpsys)"
+        printf "  ${BOLD}${MAGENTA}nh cpu appmon${RST}  ${DIM}zdroj: %s · %s · Ctrl-C konec${RST}\n\n" "$src" "$(date +%H:%M:%S)"
+        echo "$data" | sort -t"$tab" -k2 -nr | head -n "$top" | awk -F'\t' \
+            -v g="$GREEN" -v y="$YELLOW" -v r="$RED" -v rst="$RST" '
+            {
+                cpu=$2+0; n=int(cpu/100*30); if(n>30)n=30; if(n<0)n=0
+                col=(cpu>=50?r:(cpu>=15?y:g))
+                bar=""; for(i=0;i<n;i++)bar=bar"█"; for(i=n;i<30;i++)bar=bar"░"
+                printf "  %-32.32s %s%s%s %6.1f%%\n", $1, col, bar, rst, cpu
+            }'
+        [ "$end" -ne 0 ] && [ "$(date +%s)" -ge "$end" ] && break
+        sleep 2
+    done
+    printf '\033[?25h'
 }
 
 # nh cpu app <balíček> <jádra|off> — přišpendlí cizí aplikaci na jádra
@@ -3395,6 +3473,7 @@ cpu_dispatch() {
         bench|benchmark) shift; cpu_bench "$@" ;;
         boost)          shift; cpu_boost "$@" ;;
         apps)           shift; cpu_apps "${1:-}" ;;
+        appmon)         shift; cpu_appmon "${1:-}" "${2:-}" ;;
         app)            shift; cpu_app "${1:-}" "${2:-}" ;;
         trace)          shift; cpu_trace "$@" ;;
         isolate)        cpu_isolate ;;
@@ -3424,9 +3503,12 @@ help_cpu() {
     echo "  ${GREEN}boost on|off [N]${RST}       Root boost: scaling_min_freq=max pro nejrychlejší jádro (N=číslo jádra)"
     echo "                         Vyžaduje Magisk modul nh_cpuctl. Přežije jen do rebootu."
     echo ""
-    echo "  ${WHITE}${BOLD}Cizí aplikace${RST} ${DIM}(vyžaduje root modul nh_cpuctl)${RST}"
+    echo "  ${WHITE}${BOLD}Cizí aplikace${RST}"
     echo "  ${GREEN}apps [N]${RST}               Přehled CPU zátěže ostatních aplikací (top N, default 20)"
+    echo "  ${GREEN}appmon [SEC] [TOP]${RST}     Živý grafický monitor CPU aplikací (bary, refresh 2 s; Ctrl-C konec)"
+    echo "                         Měření jde ${GREEN}i non-root${RST} (uid 2000: ${CYAN}ashell adb start${RST}) i root (nh_cpuctl)"
     echo "  ${GREEN}app <balíček> <jádra|off>${RST} Přišpendlit aplikaci na jádra (0-3 / 4,6 / off = všechna)"
+    echo "                         ${YELLOW}Vyžaduje root${RST} (nh_cpuctl) — pinování cizích procesů je kernelový CAP_SYS_NICE."
     echo "                         Daemon masku obnoví i po restartu appky. off = zrušit pravidlo."
     echo ""
     echo "  ${YELLOW}CPU_ALL:${RST} programy, které při pinu automaticky pojedou na všech jádrech"
