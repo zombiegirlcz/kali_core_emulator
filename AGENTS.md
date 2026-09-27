@@ -449,6 +449,22 @@ v guestu to maskuje PRootův seccomp filtr). Deploy musí mít exec bit + versio
 **ne** LOCKED_BOOT_COMPLETED — filesDir je credential-encrypted), `TerminalService` START_STICKY
 restart s dedupem (jedna cron session) a backoffem; toggle `boot_autostart`.
 
+**`ashell` je od 2026-09-27 nativní binárka, ne `/bin/sh` skript** (`app/src/main/cpp/ashell.c`,
+build v `_build_native_bin` v `tools/modal_build.py`, `-static` stejným `aarch64-linux-android24-clang`
+toolchainem jako `su_wrapper`/`ashell_pty` — bionic binárka běžně běží i v glibc guestu, PRoot je
+ptrace-based a ABI trasovaného procesu nerozlišuje). Motivace: starý skript dělal `curl`+`python3` na
+KAŽDÉ volání (`api_call()`/`daemon_exec()`) a psal si dočasný `.py` klient pro `ashell_pty` protokol —
+každý ten fork+exec generoval vlastní `avc: granted { execute }` (viz „Druhý zdroj audit bouře" výše);
+`-c` dělal 1 extra exec (python3 pro PTY bridge), `ashell adb <cmd>` dělal 2 (curl+python3). Nativní
+klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1:13340, framing
+`0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
+execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
+uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell). Nízko-frekventní
+větve (`adb start/stop`, `-e` editor, otevření PTY okna) klidně používají `system()`/`execvp` — nejsou
+hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known ploché tvary odpovědí
+tohoto projektu, ne obecný parser) — **nerozšiřovat na obecné vnořené struktury** bez rozmyslu.
+Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiální artefakt musí přes Modal).
+
 **Launcher:** flag `-E` pro proot **neexistuje** — LD_PRELOAD/PROOT_LOADER se v guestu řeší přes
 `/bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"'` před prvním exec.
 

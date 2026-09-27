@@ -364,6 +364,24 @@ def _build_native_bin(src_dir):
         print(f"  {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
         print(f"  OK  ({os.path.getsize(pty_bin_path):,} B)")
+    # ashell (guest CLI klient, nahrazuje puvodni /bin/sh skript — viz
+    # AGENTS.md #11 "Druhy zdroj audit boure": kazdy fork+exec (curl,
+    # python3) na hostu generoval vlastni "avc: granted execute" zaznam.
+    # Staticky bionic binary (stejny toolchain jako su_wrapper) bezi v
+    # guestu pod PRootem stejne jako driv skript, ale mluvi HTTP/binarni
+    # protokoly (ashell_pty na 13340, LocalApiServer na 1337) primo raw
+    # sockety — bez dalsich forku/execu na hot paths (-c, adb <cmd>).
+    print("─" * 60)
+    print("[native-bin] Building ashell (static)...")
+    ashell_src = os.path.join(cpp_dir, "ashell.c")
+    ashell_bin_path = os.path.join(assets_dir, "ashell")
+    if not os.path.exists(ashell_src):
+        print(f"[native-bin] {ashell_src} chybí — ashell PŘESKOČEN")
+    else:
+        cmd = [cc, "-static", "-o", ashell_bin_path, ashell_src]
+        print(f"  {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"  OK  ({os.path.getsize(ashell_bin_path):,} B)")
     # shell_daemon (persistentni shell-UID daemon, obdoba su_daemon pro uid 2000)
     #
     # Deploy cestou jniLibs (stejne jako Shizuku libshizuku.so): zdroj je
@@ -1204,6 +1222,7 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/cpp/su_daemon.c",
                      "app/src/main/cpp/su_wrapper.c",
                      "app/src/main/cpp/ashell_pty.c",
+                     "app/src/main/cpp/ashell.c",
                      "app/src/main/cpp/shell_daemon.c",
                      "app/src/main/cpp/cpuctl.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
@@ -1211,6 +1230,7 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/assets/su_daemon",
                      "app/src/main/assets/su_wrapper",
                      "app/src/main/assets/ashell_pty",
+                     "app/src/main/assets/ashell",
                      "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,
     },
