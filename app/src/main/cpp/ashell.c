@@ -18,6 +18,7 @@
  *
  * Zachovava CLI grammar puvodniho /bin/sh skriptu (assets/ashell):
  *   ashell                          otevre host shell (cmd activity / HTTP)
+ *   ashell --tmux|-tx               otevre host shell rovnou v tmuxu
  *   ashell -c|--cmd '<prikaz>'      spusti prikaz na hostiteli
  *   ashell adb start|stop|status    shell_daemon (uid 2000) lifecycle
  *   ashell adb shell [<cmd>]        interaktivni PTY / jednorazovy prikaz
@@ -52,6 +53,19 @@
 #define API_PORT       1337
 #define PTY_PORT       13340
 #define API_HOST_TOKEN_PATH "/data/data/com.linux_core/shared_prefs/api_security.xml"
+
+/* Verbose/debug marker: zapne se vlajkou `-v`/`--verbose` (před -c) nebo
+ * env ASHELL_DEBUG=1. Když je zapnutý, `ashell -c ...` napíše na stderr,
+ * kterou cestou příkaz reálně šel — přímý PTY most (127.0.0.1:13340) vs.
+ * HTTP fallback (/shell). Slouží k ověření, že ashell_pty daemon žije. */
+static int g_verbose = 0;
+
+/* ssh-styl `-t`/`--tty`: vynutí serverový PTY pro `ashell -c` (job control,
+ * isatty, resize). BEZ něj jede `-c` v levném pipe režimu (žádná kernelová
+ * tty line-discipline, žádný per-loop traced ioctl pod prootem) — to je
+ * default, protože `-c` je typicky jednorázový/skriptový příkaz. Interaktivní
+ * TUI (htop, vi) chtějí `ashell -tc <cmd>`. */
+static int g_force_pty = 0;
 
 /* ── malé dynamické buffery ─────────────────────────────────────────── */
 
@@ -407,19 +421,49 @@ static int send_frame(int fd, unsigned char type, const void *payload, size_t le
 /* PTY_UNAVAILABLE: ashell_pty neběží nebo handshake selhal -> HTTP fallback */
 #define PTY_UNAVAILABLE (-1000)
 
-static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *rootfs, const char *term) {
+/* SIGWINCH → jen nastaví flag; velikost okna se přepošle až v relay smyčce.
+ * Díky tomu smyčka může blokovat na select() bez timeoutu a nemusí se každou
+ * iteraci ptát TIOCGWINSZ (traced ioctl pod prootem). */
+static volatile sig_atomic_t g_winch = 0;
+static void on_sigwinch(int sig) { (void)sig; g_winch = 1; }
+
+/* want_pty = žádost o serverový PTY (F_HELLO interactive flag). Když 0, běží
+ * příkaz na hostu v pipe režimu (levnější, čistý výstup). Lokální terminál se
+ * přepíná do raw módu jen v PTY režimu (jinak by to rozbilo cooked vstup pro
+ * roury). */
+static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *rootfs,
+                              const char *term, int want_pty) {
     int fd = tcp_connect(PTY_PORT);
     if (fd < 0) return PTY_UNAVAILABLE;
 
     int is_tty = isatty(STDIN_FILENO);
+    int pty_mode = want_pty;              /* žádáme serverový PTY? */
+    int raw_stdin = pty_mode && is_tty;   /* jen pak saháme na lokální terminál */
+
     struct termios old_termios;
     int have_old = 0;
-    if (is_tty) {
+    if (raw_stdin) {
         if (tcgetattr(STDIN_FILENO, &old_termios) == 0) {
             have_old = 1;
             struct termios raw = old_termios;
             cfmakeraw(&raw);
             tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        }
+    }
+
+    /* SIGWINCH handler jen v PTY režimu s tty — bez SA_RESTART, aby select()
+     * vracel EINTR a smyčka poslala novou velikost okna. */
+    struct sigaction sa_old_winch;
+    int winch_installed = 0;
+    if (pty_mode && is_tty) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_sigwinch;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        if (sigaction(SIGWINCH, &sa, &sa_old_winch) == 0) {
+            winch_installed = 1;
+            g_winch = 1;                  /* vynuť první poslání velikosti */
         }
     }
 
@@ -432,30 +476,32 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
     sb_append(&hello, "\0", 1);
     sb_appends(&hello, term ? term : "xterm-256color");
     sb_append(&hello, "\0", 1);
-    sb_appends(&hello, is_tty ? "1" : "0");
+    sb_appends(&hello, pty_mode ? "1" : "0");
     sb_append(&hello, "\0", 1);
     if (send_frame(fd, F_HELLO, hello.buf, hello.len) < 0) {
         sb_free(&hello);
+        if (winch_installed) sigaction(SIGWINCH, &sa_old_winch, NULL);
         if (have_old) tcsetattr(STDIN_FILENO, TCSADRAIN, &old_termios);
         close(fd);
         return PTY_UNAVAILABLE;
     }
     sb_free(&hello);
 
-    int last_cols = -1, last_rows = -1;
+    if (g_verbose)
+        fprintf(stderr, "[ashell] via PTY (ashell_pty @ 127.0.0.1:%d, pty=%d)\n",
+                PTY_PORT, pty_mode);
+
     int exit_code = 0;
     int stdin_open = 1;
     unsigned char buf[8192];
 
     for (;;) {
-        if (is_tty) {
+        /* Velikost okna posíláme jen když ji SIGWINCH označil (init + resize). */
+        if (pty_mode && is_tty && g_winch) {
+            g_winch = 0;
             struct winsize ws;
-            int cols = 80, rows = 24;
             if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col && ws.ws_row) {
-                cols = ws.ws_col; rows = ws.ws_row;
-            }
-            if (cols != last_cols || rows != last_rows) {
-                last_cols = cols; last_rows = rows;
+                int cols = ws.ws_col, rows = ws.ws_row;
                 unsigned char wp[8];
                 wp[0] = (unsigned char)(cols >> 24); wp[1] = (unsigned char)(cols >> 16);
                 wp[2] = (unsigned char)(cols >> 8);  wp[3] = (unsigned char)(cols);
@@ -470,13 +516,13 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
         FD_SET(fd, &rfds);
         int maxfd = fd;
         if (stdin_open) { FD_SET(STDIN_FILENO, &rfds); if (STDIN_FILENO > maxfd) maxfd = STDIN_FILENO; }
-        struct timeval tv = { 0, 200000 };
-        int sel = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+        /* Blokující select (žádný timeout) → nula syscallů, když je klid.
+         * SIGWINCH ho přeruší (EINTR) → nahoře přepošleme velikost. */
+        int sel = select(maxfd + 1, &rfds, NULL, NULL, NULL);
         if (sel < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (sel == 0) continue;
 
         if (FD_ISSET(fd, &rfds)) {
             unsigned char hdr[5];
@@ -531,6 +577,7 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
         }
     }
 
+    if (winch_installed) sigaction(SIGWINCH, &sa_old_winch, NULL);
     if (have_old) tcsetattr(STDIN_FILENO, TCSADRAIN, &old_termios);
     close(fd);
     return exit_code;
@@ -549,6 +596,7 @@ static int cmd_dash_c(int argc, char **argv) {
     if (argc < 1) {
         fprintf(stderr, "[-] Usage: ashell -c '<prikaz>'\n");
         fprintf(stderr, "    Pro multi-command: ashell -c \"ls -la && echo ok\"\n");
+        fprintf(stderr, "    Interaktivni TUI (htop/vi): ashell -tc '<prikaz>' (vynuti PTY)\n");
         return 1;
     }
     strbuf joined; sb_init(&joined);
@@ -573,11 +621,15 @@ static int cmd_dash_c(int argc, char **argv) {
     const char *term = getenv("TERM");
     if (!term || !*term) term = "xterm-256color";
 
-    int rc = run_via_ashell_pty(joined.buf, cwd, rootfs_host, term);
+    int rc = run_via_ashell_pty(joined.buf, cwd, rootfs_host, term, g_force_pty);
     if (rc != PTY_UNAVAILABLE) {
         sb_free(&joined);
         return rc;
     }
+
+    if (g_verbose)
+        fprintf(stderr, "[ashell] via HTTP fallback (/shell @ 127.0.0.1:%d) — ashell_pty nedostupny\n",
+                API_PORT);
 
     char *token = read_auth_token();
     rc = run_via_http_shell(joined.buf, token);
@@ -946,24 +998,38 @@ static int cmd_config_edit(char *token) {
 
 /* ── bare `ashell` — otevři host shell (mimo PRoot) ──────────────────── */
 
-static int cmd_open_host_shell(void) {
-    printf("[*] Opouštím PRoot container → host app shell...\n");
-    char *cmdargv[] = {
+static int cmd_open_host_shell(int use_tmux) {
+    printf("[*] Opouštím PRoot container → host app shell%s...\n",
+           use_tmux ? " (tmux)" : "");
+    /* --tmux/-tx: predame TerminalActivity extra ashellTmux=true, aby session
+     * bezela rovnou v tmuxu misto holeho sh (viz startAshellSession). */
+    char *cmdargv_plain[] = {
         "cmd", "activity", "start-activity", "-n",
         "com.linux_core/com.linux_core.ui.terminal.TerminalActivity",
         "--es", "rootfsDirName", "ashell-host",
         "--ez", "mountStorage", "false",
         "--ez", "ashellMode", "true", NULL
     };
-    if (run_cmd_argv(cmdargv) == 0) {
-        printf("[+] Host shell started (via cmd activity)\n");
+    char *cmdargv_tmux[] = {
+        "cmd", "activity", "start-activity", "-n",
+        "com.linux_core/com.linux_core.ui.terminal.TerminalActivity",
+        "--es", "rootfsDirName", "ashell-host",
+        "--ez", "mountStorage", "false",
+        "--ez", "ashellMode", "true",
+        "--ez", "ashellTmux", "true", NULL
+    };
+    if (run_cmd_argv(use_tmux ? cmdargv_tmux : cmdargv_plain) == 0) {
+        printf("[+] Host shell started (via cmd activity)%s\n",
+               use_tmux ? " — tmux session 'ashell'" : "");
         printf("    Nový terminál otevřen — jste v Android host shellu.\n");
         return 0;
     }
     fprintf(stderr, "[!] cmd activity se nezdařil, zkouším fallback...\n");
 
     char *token = read_auth_token();
-    char *resp = http_request("POST", "/ashell", NULL, token, NULL, NULL);
+    char *resp = http_request("POST", "/ashell",
+                              use_tmux ? "{\"tmux\":true}" : NULL,
+                              token, use_tmux ? "application/json" : NULL, NULL);
     free(token);
     if (!resp) {
         print_no_response("/ashell");
@@ -985,6 +1051,50 @@ static int cmd_open_host_shell(void) {
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+
+    const char *dbg_env = getenv("ASHELL_DEBUG");
+    if (dbg_env && *dbg_env && strcmp(dbg_env, "0") != 0) g_verbose = 1;
+
+    /* Vedoucí boolean vlajky (před podpříkazem): `-v`/`--verbose` (debug marker),
+     * `-t`/`--tty` (vynuť serverový PTY). Podporováno oddělené (`-v -t -c`) i
+     * slepené getopt clustery (`-vtc`, `-tc`, `-vc`, `-ve`). Terminální selektory
+     * `-c`/`-e` berou argument, takže ve slepeném clusteru musí být POSLEDNÍ;
+     * opačné pořadí (`-cv`) by bylo dvojznačné a NEpodporuje se. */
+    while (argc >= 2) {
+        if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0) {
+            g_verbose = 1;
+        } else if (strcmp(argv[1], "-t") == 0 || strcmp(argv[1], "--tty") == 0) {
+            g_force_pty = 1;
+        } else {
+            break;
+        }
+        argv[1] = argv[0]; argv++; argc--;   /* spotřebuj vlajku, posuň argv */
+    }
+    /* Slepený short cluster booleanů (+ volitelný terminální selektor na konci). */
+    if (argc >= 2 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0') {
+        const char *cl = argv[1] + 1;   /* přeskoč '-' */
+        int all_known = 1;
+        for (const char *p = cl; *p; p++) {
+            if (*p == 'v' || *p == 't') continue;
+            if ((*p == 'c' || *p == 'e') && p[1] == '\0') continue;   /* selektor, jen poslední */
+            all_known = 0; break;
+        }
+        if (all_known) {
+            char sel = '\0';
+            for (const char *p = cl; *p; p++) {
+                if (*p == 'v') g_verbose = 1;
+                else if (*p == 't') g_force_pty = 1;
+                else sel = *p;   /* 'c' nebo 'e' */
+            }
+            if (sel) {
+                static char remapped[3] = { '-', '\0', '\0' };
+                remapped[1] = sel;
+                argv[1] = remapped;
+            } else {
+                argv[1] = argv[0]; argv++; argc--;   /* cluster jen booleanů (`-vt`) */
+            }
+        }
+    }
 
     if (argc >= 2 && strcmp(argv[1], "adb") == 0) {
         return cmd_adb(argc - 2, argv + 2);
@@ -1015,5 +1125,13 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    return cmd_open_host_shell();
+    /* bare `ashell [--tmux|-tx]` → host shell (mimo proot, uid appky).
+     * Flag muze byt kdekoli v argv (zbytek argumentu se pro holy host shell
+     * neinterpretuje). Zadny jiny subcommand sem nedosahne — vsechny vyse
+     * jsou exact-match na argv[1] a vraceji driv. */
+    int use_tmux = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--tmux") == 0 || strcmp(argv[i], "-tx") == 0) use_tmux = 1;
+    }
+    return cmd_open_host_shell(use_tmux);
 }

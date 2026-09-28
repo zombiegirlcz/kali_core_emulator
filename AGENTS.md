@@ -530,7 +530,18 @@ každý ten fork+exec generoval vlastní `avc: granted { execute }` (viz „Druh
 klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1:13340, framing
 `0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
 execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
-uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell). Nízko-frekventní
+uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell) + vedoucí boolean vlajky
+`-v`/`--verbose` (debug marker, nebo env `ASHELL_DEBUG=1`) a `-t`/`--tty` (vynuť serverový PTY). Oddělené
+i slepené getopt clustery (`-vtc`, `-tc`, `-vc`, `-ve`); terminální `-c`/`-e` berou argument → ve slepeném
+clusteru MUSÍ být poslední, opačné pořadí (`-cv`) NE. `-v` → `ashell -c` napíše na stderr, kterou cestou šel:
+`via PTY (…13340…)` vs. `via HTTP fallback (/shell)` (marker na stderr, stdout čistý).
+**`ashell -c` default = PIPE režim (ssh model, `interactive=0` v HELLO)**, ne PTY — levnější (žádná
+kernelová tty line-discipline, čistý výstup, žádný per-loop traced ioctl pod prootem). PTY se vyžádá jen
+`-t` (`ashell -tc htop`) — interaktivní TUI bez `-t` spadnou na „not a terminal". **Nevracet zpět na
+`interactive = isatty(stdin)`** (over-selektovalo PTY pro každý příkaz z terminálu). Relay smyčka v
+`run_via_ashell_pty` je **event-driven**: blokující `select` bez timeoutu + `SIGWINCH` handler (bez
+`SA_RESTART` → EINTR přepošle velikost okna) — žádný 200ms polling ani per-loop `TIOCGWINSZ`, takže když
+příkaz tiše běží, klient (pod prootem) nedělá žádné trasované syscally. Nízko-frekventní
 větve (`adb start/stop`, `-e` editor, otevření PTY okna) klidně používají `system()`/`execvp` — nejsou
 hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known ploché tvary odpovědí
 tohoto projektu, ne obecný parser) — **nerozšiřovat na obecné vnořené struktury** bez rozmyslu.
