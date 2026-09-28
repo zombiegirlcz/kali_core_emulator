@@ -18,6 +18,7 @@
  *
  * Zachovava CLI grammar puvodniho /bin/sh skriptu (assets/ashell):
  *   ashell                          otevre host shell (cmd activity / HTTP)
+ *   ashell --tmux|-tx               otevre host shell rovnou v tmuxu
  *   ashell -c|--cmd '<prikaz>'      spusti prikaz na hostiteli
  *   ashell adb start|stop|status    shell_daemon (uid 2000) lifecycle
  *   ashell adb shell [<cmd>]        interaktivni PTY / jednorazovy prikaz
@@ -946,24 +947,38 @@ static int cmd_config_edit(char *token) {
 
 /* ── bare `ashell` — otevři host shell (mimo PRoot) ──────────────────── */
 
-static int cmd_open_host_shell(void) {
-    printf("[*] Opouštím PRoot container → host app shell...\n");
-    char *cmdargv[] = {
+static int cmd_open_host_shell(int use_tmux) {
+    printf("[*] Opouštím PRoot container → host app shell%s...\n",
+           use_tmux ? " (tmux)" : "");
+    /* --tmux/-tx: predame TerminalActivity extra ashellTmux=true, aby session
+     * bezela rovnou v tmuxu misto holeho sh (viz startAshellSession). */
+    char *cmdargv_plain[] = {
         "cmd", "activity", "start-activity", "-n",
         "com.linux_core/com.linux_core.ui.terminal.TerminalActivity",
         "--es", "rootfsDirName", "ashell-host",
         "--ez", "mountStorage", "false",
         "--ez", "ashellMode", "true", NULL
     };
-    if (run_cmd_argv(cmdargv) == 0) {
-        printf("[+] Host shell started (via cmd activity)\n");
+    char *cmdargv_tmux[] = {
+        "cmd", "activity", "start-activity", "-n",
+        "com.linux_core/com.linux_core.ui.terminal.TerminalActivity",
+        "--es", "rootfsDirName", "ashell-host",
+        "--ez", "mountStorage", "false",
+        "--ez", "ashellMode", "true",
+        "--ez", "ashellTmux", "true", NULL
+    };
+    if (run_cmd_argv(use_tmux ? cmdargv_tmux : cmdargv_plain) == 0) {
+        printf("[+] Host shell started (via cmd activity)%s\n",
+               use_tmux ? " — tmux session 'ashell'" : "");
         printf("    Nový terminál otevřen — jste v Android host shellu.\n");
         return 0;
     }
     fprintf(stderr, "[!] cmd activity se nezdařil, zkouším fallback...\n");
 
     char *token = read_auth_token();
-    char *resp = http_request("POST", "/ashell", NULL, token, NULL, NULL);
+    char *resp = http_request("POST", "/ashell",
+                              use_tmux ? "{\"tmux\":true}" : NULL,
+                              token, use_tmux ? "application/json" : NULL, NULL);
     free(token);
     if (!resp) {
         print_no_response("/ashell");
@@ -1015,5 +1030,13 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    return cmd_open_host_shell();
+    /* bare `ashell [--tmux|-tx]` → host shell (mimo proot, uid appky).
+     * Flag muze byt kdekoli v argv (zbytek argumentu se pro holy host shell
+     * neinterpretuje). Zadny jiny subcommand sem nedosahne — vsechny vyse
+     * jsou exact-match na argv[1] a vraceji driv. */
+    int use_tmux = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--tmux") == 0 || strcmp(argv[i], "-tx") == 0) use_tmux = 1;
+    }
+    return cmd_open_host_shell(use_tmux);
 }

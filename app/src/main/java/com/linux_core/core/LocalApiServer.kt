@@ -1365,6 +1365,8 @@ object LocalApiServer {
      *   - "adb-shell" (default z `ashell adb shell`) → rootfsDirName="ashell-adb",
      *     terminal poběží pod uid 2000 přes shell_daemon (--attach).
      *   - cokoli jiného / prázdné → rootfsDirName="ashell-host" (app uid).
+     *   - volitelně {"tmux":true} (jen host-shell) → session poběží v tmuxu
+     *     (extra ashellTmux, viz TerminalActivity.startAshellSession).
      * Výstup: 200 + JSON s {status, pwd, uid}.
      */
     private fun handleAshell(context: Context, body: String, out: OutputStream) {
@@ -1373,9 +1375,12 @@ object LocalApiServer {
             return
         }
         try {
-            val adbShell = try {
-                JSONObject(body.ifBlank { "{}" }).optString("mode", "") == "adb-shell"
-            } catch (_: Exception) { false }
+            val json = try {
+                JSONObject(body.ifBlank { "{}" })
+            } catch (_: Exception) { JSONObject() }
+            val adbShell = json.optString("mode", "") == "adb-shell"
+            // tmux jen pro app-uid host shell (ne pro adb-shell/uid 2000).
+            val useTmux = !adbShell && json.optBoolean("tmux", false)
 
             val rootfsDirName = if (adbShell) "ashell-adb" else "ashell-host"
             // Spustíme novou TerminalActivity v "ashell módu".
@@ -1391,6 +1396,7 @@ object LocalApiServer {
                 // Pro adb-shell (uid 2000) ho NESMÍME nastavit, jinak se
                 // rootfsDirName=="ashell-adb" vůbec nevyhodnotí.
                 putExtra("ashellMode", !adbShell)
+                if (useTmux) putExtra("ashellTmux", true)
             }
             ctx.startActivity(intent)
             sendResponse(out, 200, "OK", JSONObject().apply {

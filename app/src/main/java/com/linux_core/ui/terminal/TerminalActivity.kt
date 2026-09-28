@@ -1369,7 +1369,13 @@ class TerminalActivity : ComponentActivity() {
     }
 
     private fun startAshellSession() {
-        Log.i(TAG, "startAshellSession: escape proot → host app shell")
+        // ashellTmux (z `ashell --tmux`/`-tx` nebo /ashell {"tmux":true}) otevře
+        // host session rovnou v tmuxu místo holého sh. tmux běží mimo proot pod
+        // uid appky nad reálným host PTY (Termux emulátor), takže proot pitfally
+        // ("not a terminal", viz AGENTS.md) se ho netýkají — jediná podmínka je
+        // host (bionic) tmux binárka v PATH.
+        val useTmux = intent.getBooleanExtra("ashellTmux", false)
+        Log.i(TAG, "startAshellSession: escape proot → host app shell (tmux=$useTmux)")
         val cwd = filesDir
 
         // Host-side nástroje (mimo proot) pro kontext com.linux_core.
@@ -1392,7 +1398,24 @@ class TerminalActivity : ComponentActivity() {
         Log.i(TAG, "ashell PATH: $fullPath")
         Log.i(TAG, "ashell PREFIX=${hostPrefix.absolutePath} (bin/lib ready)")
 
-        val cmd = arrayOf("/system/bin/sh", "-i")
+        val cmd =
+            if (useTmux) {
+                // Otevři session přímo v tmuxu. tmux hledáme v PATH ($PREFIX/bin,
+                // /system/bin). Socket dáme do $HOME (filesDir) přes TMUX_TMPDIR —
+                // default /tmp na Android hostu nemusí být zapisovatelný. ENV skript
+                // (ashell.conf) sourcujeme i tady, aby tmux server dostal stejné
+                // prostředí (hlavně unset LD_LIBRARY_PATH — viz SIGBUS lekce níže).
+                // Když host tmux není nasazený, čistě spadneme na `sh -i`.
+                val launch =
+                    "[ -n \"\$ENV\" ] && [ -r \"\$ENV\" ] && . \"\$ENV\" 2>/dev/null; " +
+                        "if command -v tmux >/dev/null 2>&1; then " +
+                        "TMUX_TMPDIR=\"\$HOME\" exec tmux -u new-session -A -s ashell; " +
+                        "else echo \"[ashell] tmux nenalezen v PATH — nasad host (bionic) tmux do \$PREFIX/bin; spoustim cisty shell.\"; " +
+                        "exec /system/bin/sh -i; fi"
+                arrayOf("/system/bin/sh", "-c", launch)
+            } else {
+                arrayOf("/system/bin/sh", "-i")
+            }
         // ashell.conf -> ENV skript pro interaktivní mksh (čte $ENV při startu):
         // vynech `block` řádky (ty řeší /shell API), expanduj ${FILES_DIR}.
         var ashellEnvScript: String? = null
@@ -1422,6 +1445,9 @@ class TerminalActivity : ComponentActivity() {
                 "PREFIX=${hostPrefix.absolutePath}",
                 "LD_LIBRARY_PATH=${hostPrefixLib.absolutePath}:/system/lib64:/system/lib",
                 "TERM=xterm-256color",
+                // tmux (a interaktivní podshelly) potřebují SHELL — na Android hostu
+                // není /etc/passwd, jinak by tmux zkusil neexistující /bin/sh.
+                "SHELL=/system/bin/sh",
                 "ANDROID_DATA=/data",
                 "ANDROID_ROOT=/system",
             )
