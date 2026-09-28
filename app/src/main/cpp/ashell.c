@@ -54,6 +54,12 @@
 #define PTY_PORT       13340
 #define API_HOST_TOKEN_PATH "/data/data/com.linux_core/shared_prefs/api_security.xml"
 
+/* Verbose/debug marker: zapne se vlajkou `-v`/`--verbose` (před -c) nebo
+ * env ASHELL_DEBUG=1. Když je zapnutý, `ashell -c ...` napíše na stderr,
+ * kterou cestou příkaz reálně šel — přímý PTY most (127.0.0.1:13340) vs.
+ * HTTP fallback (/shell). Slouží k ověření, že ashell_pty daemon žije. */
+static int g_verbose = 0;
+
 /* ── malé dynamické buffery ─────────────────────────────────────────── */
 
 typedef struct {
@@ -443,6 +449,10 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
     }
     sb_free(&hello);
 
+    if (g_verbose)
+        fprintf(stderr, "[ashell] via PTY (ashell_pty @ 127.0.0.1:%d, interactive=%d)\n",
+                PTY_PORT, is_tty);
+
     int last_cols = -1, last_rows = -1;
     int exit_code = 0;
     int stdin_open = 1;
@@ -579,6 +589,10 @@ static int cmd_dash_c(int argc, char **argv) {
         sb_free(&joined);
         return rc;
     }
+
+    if (g_verbose)
+        fprintf(stderr, "[ashell] via HTTP fallback (/shell @ 127.0.0.1:%d) — ashell_pty nedostupny\n",
+                API_PORT);
 
     char *token = read_auth_token();
     rc = run_via_http_shell(joined.buf, token);
@@ -1000,6 +1014,18 @@ static int cmd_open_host_shell(int use_tmux) {
 
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
+
+    const char *dbg_env = getenv("ASHELL_DEBUG");
+    if (dbg_env && *dbg_env && strcmp(dbg_env, "0") != 0) g_verbose = 1;
+
+    /* Volitelná leading vlajka `-v`/`--verbose` (před podpříkazem) — posune
+     * argv o jedna, takže zbytek dispatch zůstává 1:1. */
+    if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
+        g_verbose = 1;
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
 
     if (argc >= 2 && strcmp(argv[1], "adb") == 0) {
         return cmd_adb(argc - 2, argv + 2);

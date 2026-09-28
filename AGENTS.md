@@ -530,7 +530,9 @@ každý ten fork+exec generoval vlastní `avc: granted { execute }` (viz „Druh
 klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1:13340, framing
 `0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
 execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
-uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell). Nízko-frekventní
+uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell) + leading `-v`/`--verbose`
+(nebo env `ASHELL_DEBUG=1`) → `ashell -c` napíše na stderr, kterou cestou šel: `via PTY (…13340…)` vs.
+`via HTTP fallback (/shell)` — diagnostika, že `ashell_pty` daemon žije (marker jde na stderr, stdout je čistý). Nízko-frekventní
 větve (`adb start/stop`, `-e` editor, otevření PTY okna) klidně používají `system()`/`execvp` — nejsou
 hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known ploché tvary odpovědí
 tohoto projektu, ne obecný parser) — **nerozšiřovat na obecné vnořené struktury** bez rozmyslu.
