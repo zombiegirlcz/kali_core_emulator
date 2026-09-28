@@ -52,6 +52,36 @@ class TerminalService : Service() {
 
         fun getSessionById(id: String): TerminalSession? = idToSession[id]
 
+        /**
+         * Zapíše text do aktivní terminálové session (pro /terminal/input).
+         *
+         * Termux terminál je canvas bez 'editable' a11y node, takže
+         * ACTION_SET_TEXT na něm nefunguje. Tahle cesta jde přímo do session:
+         * přednostně emulátorová paste() (bracketed paste + sanitizace ESC/C1),
+         * fallback raw write().
+         *
+         * @param sessionId konkrétní session, nebo null → naposledy přidaná běžící.
+         * @return true, když se text zapsal do běžící session.
+         */
+        fun writeToActiveSession(text: String, sessionId: String? = null): Boolean {
+            val session =
+                (if (sessionId != null) idToSession[sessionId] else null)
+                    ?: sessions.lastOrNull { it.isRunning }
+                    ?: return false
+            return try {
+                val emulator = session.getEmulator()
+                if (emulator != null) {
+                    emulator.paste(text)
+                } else {
+                    session.write(text)
+                }
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "writeToActiveSession failed: ${e.message}")
+                false
+            }
+        }
+
         /** Session ID of the headless background (cron) boot, if one is active.
          *  Guards against duplicate cron sessions (MED-2) and drives auto-
          *  relaunch after a clean death (MED-3). */

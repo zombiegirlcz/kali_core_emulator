@@ -1216,10 +1216,32 @@ except: print(f'{R}✘ parse error{N}')
 }
 
 device_longclick() {
+    # Podpora: <text>  NEBO  <x> <y> (dva číselné argumenty = souřadnice).
+    # API /accessibility/longclick bere obojí; a11y ACTION_LONG_CLICK na
+    # Button bez longClickable vrací ok=false, ale gesto 600 ms na souřadnice projde.
+    if [ $# -eq 2 ] && [ "$1" -eq "$1" ] 2>/dev/null && [ "$2" -eq "$2" ] 2>/dev/null; then
+        api_post_json "/accessibility/longclick" "{\"x\":$1,\"y\":$2}" | fmt "
+import sys, json
+G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if d.get('success'): print(f'{G}✔ longclick $1,$2{N}')
+    else: print(R + \"✘ longclick failed: \" + str(d.get(\"error\",\"unknown\")) + N)
+except: print(f'{R}✘ parse error{N}')
+"
+        return
+    fi
     local text="$*"
-    [ -z "$text" ] && { echo "Usage: nh device longclick <text>"; exit 1; }
-    api_post_json "/accessibility/longclick" "{\"text\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$text")}" >/dev/null
-    echo "sent"
+    [ -z "$text" ] && { echo "Usage: nh device longclick <text> | <x> <y>"; exit 1; }
+    api_post_json "/accessibility/longclick" "{\"text\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$text")}" | fmt "
+import sys, json
+G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if d.get('success'): print(f'{G}✔ longclick \"$text\"{N}')
+    else: print(R + \"✘ longclick failed: \" + str(d.get(\"error\",\"not found\")) + N)
+except: print(f'{R}✘ parse error{N}')
+"
 }
 
 device_swipe() {
@@ -1238,20 +1260,76 @@ device_text() {
     else
         payload=$(python3 -c "import json,sys; print(json.dumps({'text':sys.argv[1]}))" "$text")
     fi
-    api_post_json "/accessibility/text" "$payload" >/dev/null
-    echo "sent"
+    local resp ok
+    resp=$(api_post_json "/accessibility/text" "$payload")
+    ok=$(printf '%s' "$resp" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('success'))
+except: print('None')" 2>/dev/null)
+    if [ "$ok" = "True" ]; then
+        echo "✔ text sent (accessibility)"
+        return
+    fi
+    # Fallback: terminálové plátno není 'editable' (Termux canvas) → pošli text
+    # do aktivní terminálové session přes /terminal/input (session.write()).
+    local term_payload term_ok
+    term_payload=$(python3 -c "import json,sys; print(json.dumps({'text':sys.argv[1]}))" "$text")
+    term_ok=$(api_post_json "/terminal/input" "$term_payload" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('success'))
+except: print('None')" 2>/dev/null)
+    if [ "$term_ok" = "True" ]; then
+        echo "✔ text sent (terminal session)"
+    else
+        echo "✘ text failed (a11y: no editable target; terminal: no active session)"
+    fi
 }
 
 device_scroll() {
-    local dir="${1:-forward}" target="$2"
-    local payload
-    if [ -n "$target" ]; then
-        payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1],'text':sys.argv[2]}))" "$dir" "$target")
-    else
-        payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1]}))" "$dir")
+    local dir="forward" target="" gesture=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --gesture|-g) gesture=1 ;;
+            fwd|forward) dir="forward" ;;
+            back|backward|back) dir="backward" ;;
+            *) target="$1" ;;
+        esac
+        shift
+    done
+    if [ "$gesture" = "0" ]; then
+        local payload resp ok
+        if [ -n "$target" ]; then
+            payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1],'text':sys.argv[2]}))" "$dir" "$target")
+        else
+            payload=$(python3 -c "import json,sys; print(json.dumps({'direction':sys.argv[1]}))" "$dir")
+        fi
+        resp=$(api_post_json "/accessibility/scroll" "$payload")
+        ok=$(printf '%s' "$resp" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('success'))
+except: print('None')" 2>/dev/null)
+        if [ "$ok" = "True" ]; then
+            echo "✔ scroll $dir (accessibility)"
+            return
+        fi
     fi
-    api_post_json "/accessibility/scroll" "$payload" >/dev/null
-    echo "sent"
+    # Fallback / explicitní gesto: terminál (canvas) nemá 'scrollable' node, takže
+    # a11y ACTION_SCROLL_FORWARD vrací false. Roluje se swipe gestem přes plátno.
+    # Souřadnice z bounds root hierarchie (canvas View).
+    local b l t r bo cx y1 y2
+    b=$(api_get "/accessibility/hierarchy" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin); b=d.get('bounds') or {}
+    print(b.get('left',0), b.get('top',0), b.get('right',1080), b.get('bottom',1920))
+except: print(0,0,1080,1920)
+")
+    set -- $b; l=$1; t=$2; r=$3; bo=$4
+    cx=$(( (l + r) / 2 ))
+    if [ "$dir" = "backward" ]; then
+        y1=$(( t + (bo - t) / 4 )); y2=$(( t + 3 * (bo - t) / 4 ))
+    else
+        y1=$(( t + 3 * (bo - t) / 4 )); y2=$(( t + (bo - t) / 4 ))
+    fi
+    api_post_json "/accessibility/swipe" "{\"x1\":$cx,\"y1\":$y1,\"x2\":$cx,\"y2\":$y2,\"duration_ms\":250}" >/dev/null
+    echo "✔ scroll $dir (swipe gesture $cx,$y1 -> $cx,$y2)"
 }
 
 device_global() {

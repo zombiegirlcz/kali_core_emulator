@@ -6,11 +6,12 @@
 |---|---|---|---|
 | `nh device accessibility` | `GET /accessibility/hierarchy` | `Accessibility hierarchy dump EXECUTED (N B)` | ok, N>0 |
 | `nh device tap X Y` | `POST /accessibility/tap` | `Accessibility tap(X,Y) EXECUTED ok=true` | ok=true (souřadnice na obrazovce) |
-| `nh device click 'text'` | `POST /accessibility/click` | `Accessibility click EXECUTED ok=true` | ok=false → text není na scéně |
-| `nh device longclick 'text'` | `POST /accessibility/longclick` | `Accessibility longclick EXECUTED ok=…` | totéž co click |
+| `nh device click 'text'` | `POST /accessibility/click` | `Accessibility click EXECUTED ok=true` | ok=false → text není na scéně (cíl z hierarchie) |
+| `nh device longclick 'text'` | `POST /accessibility/longclick` | `Accessibility longclick EXECUTED ok=…` | text: ok=false na Button bez longClickable; souřadnice: gesto 600 ms → ok=true |
+| `nh device longclick X Y` | `POST /accessibility/longclick` | `Accessibility longclick EXECUTED ok=true` | gesto na souřadnice, vždy projde |
 | `nh device swipe x1 y1 x2 y2 ms` | `POST /accessibility/swipe` | `Accessibility swipe EXECUTED ok=true` | ok=true |
-| `nh device text 't'` | `POST /accessibility/text` | `Accessibility text-input EXECUTED ok=…` | ok=false bez fokusu/textarea |
-| `nh device scroll fwd` | `POST /accessibility/scroll` | `Accessibility scroll EXECUTED ok=…` | ok=false, není-li co scrollovat |
+| `nh device text 't'` | `POST /accessibility/text` → fallback `POST /terminal/input` | `Accessibility text-input EXECUTED ok=false` + `Terminal input EXECUTED ok=true` | do terminálu (canvas) jde přes session; ok=false na a11y je normální, fallback uspěje |
+| `nh device scroll fwd` | `POST /accessibility/scroll` → fallback `POST /accessibility/swipe` | `Accessibility scroll EXECUTED ok=false` + `Accessibility swipe EXECUTED ok=true` | terminál nemá scrollable node; roluje se swipe gestem |
 | `nh device global recents` | `POST /accessibility/global` | `Accessibility global(recents) EXECUTED ok=true` | ok=true |
 | `nh device admin status` | `GET /device/admin` | `DeviceAdmin status EXECUTED active=true` | active=true = ADMIN aktivní |
 | `nh device battery-optimize status` | `GET /battery/optimize` | `Battery-optimize READ EXECUTED ignored=true` | ignored=true = optimalizace vypnutá |
@@ -26,11 +27,10 @@
 ## Interpretace ok=true / ok=false
 
 - **ok=true** = akce proběhla na hostiteli (real tap, real swipe, real toast…).
-- **ok=false** = požadavek dorazil (Request je v logu), ale akce selhala:
-  - `click/longclick` — hledaný text není v accessibility hierarchii (použij text z `nh device accessibility`).
-  - `text` — není aktivní textové pole.
-  - `scroll` — nic scrollovatelného.
-- To je **korektní chování**, ne bug. Očekáváný-fail se nezaměňuje za chybu testu.
+- **ok=false** = požadavek dorazil (Request je v logu), ale a11y akce selhala:
+  - `click/longclick <text>` — hledaný text není v hierarchii, nebo Button není `longClickable` (použij souřadnice z `nh device accessibility`).
+  - `text`/`scroll` — Termux terminál je canvas: nemá `editable` ani `scrollable` node. `nh device text`/`scroll` mají fallback (`/terminal/input`, swipe gesto), takže **ok=false na a11y + úspěšný fallback = korektní**.
+- Skutečná chyba je jen když selže i fallback (žádná aktivní session / chybí swipe).
 
 ## Souhrnná čísla (jak číst)
 
@@ -47,6 +47,7 @@
 
 ## Poznámky
 
-- `nh system clipboard read` píše „Usage" (get|set) — test ho používá záměrně jako CLI-syntax check; žádný Request je očekáván.
+- `nh system clipboard read` píše „Usage" (get|set) — test používá `clipboard get` (read-only), který má korelaci `Clipboard READ EXECUTED`.
+- `nh network map` spouští interaktivní TUI — v testu se přeskočí (blokuje); kontroluje se jen `GET /map`.
 - SELinux `avc: granted/denied` řádky v logu jsou normální (exec z app data dir), nejsou to app chyby.
 - Soubor `tools/nh_test.sh` je jediný zdroj pravdy pro dávku příkazů — skill jen čte stejný proces.

@@ -1212,16 +1212,18 @@ object ProotManager {
                         appendLine("    fi")
                         appendLine("done")
                         appendLine("")
-                        appendLine("if [ -z \"\$LDR\" ] || [ ! -f \"/data/data/com.linux_core/files/terminalmap\" ]; then")
+                        appendLine("BIN=\"/usr/local/bin/terminalmap.bin\"")
+                        appendLine("[ ! -f \"\$BIN\" ] && BIN=\"/usr/bin/terminalmap\"")
+                        appendLine("if [ -z \"\$LDR\" ] || [ ! -f \"\$BIN\" ]; then")
                         appendLine("    echo \"[-] terminalmap: binary or dynamic linker not found\" >&2")
                         appendLine("    exit 1")
                         appendLine("fi")
                         appendLine("")
-                        appendLine("# LD_LIBRARY_PATH: host filesDir + rootfs lib (terminalmap je dynamicky)")
+                        appendLine("# LD_LIBRARY_PATH: rootfs lib (terminalmap je glibc dynamicky)")
                         appendLine(
-                            "export LD_LIBRARY_PATH=\"/data/data/com.linux_core/files:/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"",
+                            "export LD_LIBRARY_PATH=\"/lib:/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/aarch64-linux-gnu\"",
                         )
-                        appendLine("exec \"\$LDR\" \"/data/data/com.linux_core/files/terminalmap\" \"\$@\"")
+                        appendLine("exec \"\$LDR\" \"\$BIN\" \"\$@\"")
                     },
                 "dcheck" to
                     StringBuilder().apply {
@@ -1343,7 +1345,11 @@ object ProotManager {
         val assetsToDeploy =
             listOf(
                 "nethunter_agent.py" to "nethunter_agent.py",
-                "usr/bin/terminalmap" to "terminalmap",
+                // terminalmap: ELF se nasazuje jako .bin; wrapper skript
+                // /usr/local/bin/terminalmap ho spouští přes rootfs ld-linux.
+                // (Dřív obojí na 'terminalmap' → binárka přepsala wrapper a
+                //  glibc ELF pod bionic bez ld-linux spadl.)
+                "usr/bin/terminalmap" to "terminalmap.bin",
                 "usr/bin/ifconfig" to "ifconfig",
                 "scripts/ai-agent.py" to "ai-agent.py",
                 "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",

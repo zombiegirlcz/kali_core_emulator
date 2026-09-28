@@ -439,7 +439,7 @@ object LocalApiServer {
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/usb/",
-                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/cpu/apps")
+                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/cpu/apps", "/terminal/input")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -560,6 +560,7 @@ object LocalApiServer {
                 // Otevře plnohodnotný terminál (TerminalActivity) — používá X11 launcher
                 // (kali_GUI) pro přepnutí zpět do terminálu. Loopback = bez tokenu.
                 path == "/terminal/open" && method == "POST" -> handleTerminalOpen(context, out)
+                path == "/terminal/input" && method == "POST" -> handleTerminalInput(body, out)
                 path == "/rootfs/backup" && method == "POST" -> handleRootfsBackup(context, out)
                 path == "/rootfs/restore" && method == "POST" -> handleRootfsRestore(context, body, out)
                 path == "/map" && method == "GET" -> handleMap(context, out)
@@ -1448,6 +1449,34 @@ object LocalApiServer {
         }
     }
 
+    /**
+     * POST /terminal/input — pošle text do AKTIVNÍ terminálové session.
+     *
+     * Termux terminál je canvas bez 'editable' a11y node, takže
+     * /accessibility/text na něm vždy vrací ok=false. Tohle je přímá cesta:
+     * zapíše text do běžící TerminalSession (emulátorová paste() → bracketed
+     * paste, sanitizace ESC/C1; fallback raw write). Používá `nh device text`
+     * jako fallback, když a11y selže.
+     *
+     * Body: {"text":"..."}. Volitelně "session_id".
+     */
+    private fun handleTerminalInput(body: String, out: OutputStream) {
+        try {
+            val j = JSONObject(body)
+            val text = if (j.has("text")) j.getString("text") else ""
+            if (text.isEmpty()) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"text field is required\"}")
+                return
+            }
+            val sessionId = if (j.has("session_id")) j.getString("session_id") else null
+            val ok = TerminalService.writeToActiveSession(text, sessionId)
+            Log.i(TAG, "Terminal input EXECUTED ok=$ok (${text.length} chars)")
+            sendResponse(out, 200, "OK", JSONObject().put("success", ok).toString())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "Internal Error", "{\"error\":\"${e.message}\"}")
+        }
+    }
+
     private fun handleTerminalFloat(context: Context, body: String, out: OutputStream) {
         val ctx = appContext ?: run {
             sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
@@ -2173,11 +2202,13 @@ object LocalApiServer {
                 cmd.equals("on", ignoreCase = true) || cmd.equals("true", ignoreCase = true) -> {
                     @Suppress("DEPRECATION")
                     val success = wifiManager.setWifiEnabled(true)
+                    Log.i(TAG, "Wifi control EXECUTED: on (success=$success)")
                     sendResponse(out, 200, "OK", "{\"enabled\":true,\"success\":$success}")
                 }
                 cmd.equals("off", ignoreCase = true) || cmd.equals("false", ignoreCase = true) -> {
                     @Suppress("DEPRECATION")
                     val success = wifiManager.setWifiEnabled(false)
+                    Log.i(TAG, "Wifi control EXECUTED: off (success=$success)")
                     sendResponse(out, 200, "OK", "{\"enabled\":false,\"success\":$success}")
                 }
                 cmd.equals("status", ignoreCase = true) -> {
@@ -2230,6 +2261,7 @@ object LocalApiServer {
                         }
                         put("networks", arr)
                     }.toString()
+                    Log.i(TAG, "Wifi control EXECUTED: scan (${results.size} results)")
                     sendResponse(out, 200, "OK", json)
                 }
                 cmd.startsWith("connect:", ignoreCase = true) -> {
@@ -2253,6 +2285,7 @@ object LocalApiServer {
                     @Suppress("DEPRECATION")
                     val netId = wifiManager.addNetwork(conf)
                     if (netId == -1) {
+                        Log.w(TAG, "Wifi control EXECUTED: connect failed (addNetwork=-1)")
                         sendResponse(out, 500, "Internal Error", "{\"error\":\"Failed to add network\"}")
                         return
                     }
@@ -2262,6 +2295,7 @@ object LocalApiServer {
                     wifiManager.enableNetwork(netId, true)
                     @Suppress("DEPRECATION")
                     wifiManager.reconnect()
+                    Log.i(TAG, "Wifi control EXECUTED: connect (ssid=\"$ssid\")")
                     sendResponse(out, 200, "OK", "{\"connected\":true,\"ssid\":\"$ssid\"}")
                 }
                 else -> {
@@ -2269,6 +2303,7 @@ object LocalApiServer {
                     val enable = cmd.toBooleanStrictOrNull() ?: false
                     @Suppress("DEPRECATION")
                     val success = wifiManager.setWifiEnabled(enable)
+                    Log.i(TAG, "Wifi control EXECUTED: legacy boolean=$enable (success=$success)")
                     sendResponse(out, 200, "OK", "{\"enabled\":$enable,\"success\":$success}")
                 }
             }

@@ -96,9 +96,11 @@ run device accessibility
 run device tap 500 1000
 run device click 'CTRL'
 run device longclick 'CTRL'
+run device longclick 452 1390
 run device swipe 500 1500 500 500 300
 run device text 'nhtest'
 run device scroll fwd
+run device scroll back --gesture
 run device global recents
 
 section "system"
