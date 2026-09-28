@@ -531,7 +531,8 @@ klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1
 `0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
 execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
 uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell) + leading `-v`/`--verbose`
-(nebo env `ASHELL_DEBUG=1`) → `ashell -c` napíše na stderr, kterou cestou šel: `via PTY (…13340…)` vs.
+(nebo env `ASHELL_DEBUG=1`; slepený getopt cluster `-vc`/`-ve` = `-v` + `-c`/`-e`, opačné `-cv` NE — `-c` bere
+argument) → `ashell -c` napíše na stderr, kterou cestou šel: `via PTY (…13340…)` vs.
 `via HTTP fallback (/shell)` — diagnostika, že `ashell_pty` daemon žije (marker jde na stderr, stdout je čistý). Nízko-frekventní
 větve (`adb start/stop`, `-e` editor, otevření PTY okna) klidně používají `system()`/`execvp` — nejsou
 hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known ploché tvary odpovědí

@@ -1018,13 +1018,25 @@ int main(int argc, char **argv) {
     const char *dbg_env = getenv("ASHELL_DEBUG");
     if (dbg_env && *dbg_env && strcmp(dbg_env, "0") != 0) g_verbose = 1;
 
-    /* Volitelná leading vlajka `-v`/`--verbose` (před podpříkazem) — posune
-     * argv o jedna, takže zbytek dispatch zůstává 1:1. */
+    /* Volitelná leading vlajka verbose (před podpříkazem):
+     *   `-v` / `--verbose`  — samostatně: posune argv o jedna (dispatch 1:1).
+     *   `-vc` / `-ve`       — getopt-styl cluster: `-v` zapne verbose a zbytek
+     *                         se přemapuje na `-c`/`-e`. `-c` bere argument
+     *                         (příkaz), takže opačné pořadí `-cv` by bylo
+     *                         dvojznačné a záměrně se NEpodporuje. */
     if (argc >= 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--verbose") == 0)) {
         g_verbose = 1;
         argv[1] = argv[0];
         argv++;
         argc--;
+    } else if (argc >= 2 && argv[1][0] == '-' && argv[1][1] == 'v' && argv[1][2] != '\0') {
+        /* nalepený cluster `-v<rest>` → verbose + `-<rest>` (např. `-vc` → `-c`) */
+        g_verbose = 1;
+        static char remapped[64];
+        remapped[0] = '-';
+        strncpy(remapped + 1, argv[1] + 2, sizeof(remapped) - 2);
+        remapped[sizeof(remapped) - 1] = '\0';
+        argv[1] = remapped;
     }
 
     if (argc >= 2 && strcmp(argv[1], "adb") == 0) {
