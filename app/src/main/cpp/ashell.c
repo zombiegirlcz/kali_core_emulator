@@ -1047,6 +1047,37 @@ static int cmd_open_host_shell(int use_tmux) {
     return 0;
 }
 
+/* `ashell -t` — interaktivní host shell PŘÍMO v tomhle terminálu přes ashell_pty
+ * (13340), bez nového Android okna a bez `cmd activity` (ta na některých ROM padá
+ * na binder "Failed transaction"). Server forkne `sh -i` v reálném PTY, klient
+ * tuneluje raw stdin/stdout. Fallback na okno, když daemon neběží. */
+static int cmd_host_shell_inline(void) {
+    const char *rootfs_env = getenv("PROOT_L2S_DIR");
+    char rootfs_host[4096] = "";
+    if (rootfs_env && *rootfs_env) {
+        strncpy(rootfs_host, rootfs_env, sizeof(rootfs_host) - 1);
+        size_t l = strlen(rootfs_host);
+        const char *suffix = "/.l2s";
+        size_t sl = strlen(suffix);
+        if (l >= sl && strcmp(rootfs_host + l - sl, suffix) == 0)
+            rootfs_host[l - sl] = '\0';
+    }
+    char cwd[4096] = "";
+    if (!getcwd(cwd, sizeof(cwd))) cwd[0] = '\0';
+    const char *term = getenv("TERM");
+    if (!term || !*term) term = "xterm-256color";
+
+    /* Interaktivní host shell; aplikuj ashell.conf env (`.ashell_env`), když existuje
+     * — stejná parita jako okenní host shell (viz startAshellSession). */
+    const char *shcmd =
+        "[ -f \"$HOME/.ashell_env\" ] && export ENV=\"$HOME/.ashell_env\"; exec sh -i";
+    int rc = run_via_ashell_pty(shcmd, cwd, rootfs_host, term, 1 /* want_pty */);
+    if (rc != PTY_UNAVAILABLE) return rc;
+
+    fprintf(stderr, "[!] ashell_pty (13340) nedostupny — otevírám host shell v novém okně...\n");
+    return cmd_open_host_shell(0);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
@@ -1070,21 +1101,23 @@ int main(int argc, char **argv) {
         }
         argv[1] = argv[0]; argv++; argc--;   /* spotřebuj vlajku, posuň argv */
     }
-    /* Slepený short cluster booleanů (+ volitelný terminální selektor na konci). */
+    /* Slepený short cluster: libovolné POŘADÍ v/t + nejvýš jednoho selektoru c/e.
+     * V našem modelu c/e NEbere inline argument (příkaz je samostatný argv token),
+     * takže na pozici selektoru ve clusteru nezáleží: -vct == -vtc == -tvc == -ct. */
     if (argc >= 2 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0') {
         const char *cl = argv[1] + 1;   /* přeskoč '-' */
-        int all_known = 1;
+        int all_known = 1, nsel = 0;
         for (const char *p = cl; *p; p++) {
             if (*p == 'v' || *p == 't') continue;
-            if ((*p == 'c' || *p == 'e') && p[1] == '\0') continue;   /* selektor, jen poslední */
+            if (*p == 'c' || *p == 'e') { nsel++; continue; }
             all_known = 0; break;
         }
-        if (all_known) {
+        if (all_known && nsel <= 1) {
             char sel = '\0';
             for (const char *p = cl; *p; p++) {
                 if (*p == 'v') g_verbose = 1;
                 else if (*p == 't') g_force_pty = 1;
-                else sel = *p;   /* 'c' nebo 'e' */
+                else sel = *p;   /* 'c' nebo 'e', kdekoliv v clusteru */
             }
             if (sel) {
                 static char remapped[3] = { '-', '\0', '\0' };
@@ -1133,5 +1166,8 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tmux") == 0 || strcmp(argv[i], "-tx") == 0) use_tmux = 1;
     }
+    /* `ashell -t` (force PTY, žádný -c) → interaktivní host shell PŘÍMO tady přes
+     * ashell_pty, bez nového okna. tmux má přednost (chce vlastní okno). */
+    if (g_force_pty && !use_tmux) return cmd_host_shell_inline();
     return cmd_open_host_shell(use_tmux);
 }

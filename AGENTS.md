@@ -532,13 +532,18 @@ klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1
 execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
 uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell) + vedoucí boolean vlajky
 `-v`/`--verbose` (debug marker, nebo env `ASHELL_DEBUG=1`) a `-t`/`--tty` (vynuť serverový PTY). Oddělené
-i slepené getopt clustery (`-vtc`, `-tc`, `-vc`, `-ve`); terminální `-c`/`-e` berou argument → ve slepeném
-clusteru MUSÍ být poslední, opačné pořadí (`-cv`) NE. `-v` → `ashell -c` napíše na stderr, kterou cestou šel:
+i slepené clustery v LIBOVOLNÉM pořadí (`-vtc`==`-vct`==`-tvc`==`-ct`…): kombinace `v`/`t` + nejvýš jeden
+selektor `c`/`e` kdekoliv (v našem modelu `c`/`e` NEbere inline argument — příkaz je samostatný token —
+takže na pozici selektoru nezáleží). `-v` → `ashell -c` napíše na stderr, kterou cestou šel:
 `via PTY (…13340…)` vs. `via HTTP fallback (/shell)` (marker na stderr, stdout čistý).
 **`ashell -c` default = PIPE režim (ssh model, `interactive=0` v HELLO)**, ne PTY — levnější (žádná
 kernelová tty line-discipline, čistý výstup, žádný per-loop traced ioctl pod prootem). PTY se vyžádá jen
 `-t` (`ashell -tc htop`) — interaktivní TUI bez `-t` spadnou na „not a terminal". **Nevracet zpět na
-`interactive = isatty(stdin)`** (over-selektovalo PTY pro každý příkaz z terminálu). Relay smyčka v
+`interactive = isatty(stdin)`** (over-selektovalo PTY pro každý příkaz z terminálu).
+**`ashell -t` (bez `-c`) = interaktivní host shell PŘÍMO v tomhle terminálu** (`cmd_host_shell_inline`,
+`exec sh -i` přes ashell_pty), bez nového Android okna a bez `cmd activity` (ta na některých ROM padá na
+binder „Failed transaction"). Fallback na okno (`cmd_open_host_shell`), když daemon neběží. Holé `ashell`
+(bez `-t`) i `--tmux`/`-tx` dál otevírají okenní host shell. Relay smyčka v
 `run_via_ashell_pty` je **event-driven**: blokující `select` bez timeoutu + `SIGWINCH` handler (bez
 `SA_RESTART` → EINTR přepošle velikost okna) — žádný 200ms polling ani per-loop `TIOCGWINSZ`, takže když
 příkaz tiše běží, klient (pod prootem) nedělá žádné trasované syscally. Nízko-frekventní
