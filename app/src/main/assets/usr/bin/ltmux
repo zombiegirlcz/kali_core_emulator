@@ -1,0 +1,35 @@
+#!/system/bin/sh
+# ltmux: Parrot tmux pod elf_loaderem, shell = bionic zsh.
+# Pouziti: ltmux [tmux argumenty]   (bez argumentu = nova session)
+#
+# Resi dva zname problemy tmuxu pod elf_loaderem:
+#   1) "no suitable socket path" -> tmux potrebuje kratkou, zapisovatelnou
+#      a existujici socket dir; default /tmp/tmux-UID na device neexistuje.
+#      => nastavime TMUX_TMPDIR na $D/tmp (a vytvorime ho).
+#   2) chybejici SHELL -> tmux vzal /usr/sbin/nologin a session umirala.
+#      => default SHELL = bionic zsh, lze prebit LTMUX_SHELL.
+#
+# Nasazeni: assets/usr/bin/ltmux -> ProotManager.deployDir() ho pri startu
+# zkopiruje do files/usr/bin/ltmux (deployIfChanged, jen kdyz se zmeni hash).
+
+D=/data/user/0/com.linux_core/files
+R=$D/nh/distro/parrot
+
+# socket dir pro tmux server (musi existovat a byt zapisovatelny)
+TMUX_TMPDIR=${TMUX_TMPDIR:-$D/tmp}
+export TMUX_TMPDIR
+mkdir -p "$TMUX_TMPDIR" 2>/dev/null
+
+# locale pro guest glibc (tmux potrebuje UTF-8)
+export LOCPATH=$R/usr/lib/locale LC_ALL=C.UTF-8
+
+# terminfo z rootfs (guest tmux jinak hlasi "missing or unsuitable terminal")
+export TERMINFO_DIRS=$R/usr/share/terminfo:$R/etc/terminfo
+[ -n "$TERMINFO" ] || export TERMINFO=$R/usr/share/terminfo
+
+# shell, ktery tmux spousti v panech (bionic, ne glibc nologin)
+export SHELL=${LTMUX_SHELL:-$D/usr/bin/zsh}
+
+[ -n "$TERM" ] || export TERM=xterm-256color
+
+exec $D/usr/bin/elf_loader --ownall $R/usr/bin/tmux "$@"
