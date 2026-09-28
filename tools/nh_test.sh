@@ -1,13 +1,19 @@
 #!/bin/sh
-# nh_test.sh — NetHunter nh-vs-logcat correlation test (one pass).
+# nh_test.sh — NetHunter nh-vs-logcat correlation test (one pass, full CLI coverage).
 #
-# Spusti davku `nh` prikazu a paralelne zachyti logcat kliceovany na app UID.
-# Primarne pres `adb logcat --uid=<appUID>`; kdyz adb nema zarizeni, fallback
-# na host-endpoint GET http://127.0.0.1:1337/app/logs?limit=N (app musi bezet).
-# Vsechno se zapise do ~/kali_core_emulator/test.log.
+# Spusti davku `nh` prikazu NAPRIC vsemi kategoriemi a paralelne zachyti logcat
+# klicovany na app UID. Primarne `adb logcat --uid=<appUID>`; kdyz adb nema
+# zarizeni, fallback na host-endpoint GET http://127.0.0.1:1337/app/logs?limit=N
+# (app musi bezet, root neni potreba). Vsechno se zapise do ~/kali_core_emulator/test.log.
+#
+# Bezpecnost: pouzivaji se READ-ONLY / stavove prikazy. Destruktivni se vynechavaji:
+#   distro kill/remove/backup/restore, fix auto/pkg/permission/git, usb claim/release/
+#   permission/send/bulk/control/bridge/gadget, cpu on/off/pin/app, vpn on/off/start/stop,
+#   zkill, float*, ashell (bez arg otevira okno), agent start/stop, api share on/off,
+#   log set lvl (meni nastaveni), torch off (nechava se na uzivateli).
 #
 # Pouziti:  cd /root/kali_core_emulator && zsh tools/nh_test.sh
-# Exit: 0 = batch probehl a log byl zapsan; 1 = host endpoint nedostupny.
+# Exit: 0 = batch probehl a log byl zapsan; 1 = host endpoint nedostupny a zaroven adb bez zarizeni.
 
 set -u
 
@@ -29,7 +35,6 @@ fi
 if [ -z "$APP_UID" ] && command -v cmd >/dev/null 2>&1; then
     APP_UID=$(cmd package list packages -U "$PKG" 2>/dev/null | sed -n 's/.*uid:\([0-9][0-9]*\).*/\1/p' | head -n1)
 fi
-# fallback z id: u0_a323 -> 10323
 if [ -z "$APP_UID" ]; then
     APP_UID=$(id 2>/dev/null | sed -n 's/.*u0_a\([0-9][0-9]*\).*/1\1/p' | head -n1)
     [ -n "$APP_UID" ] && APP_UID=$((10000 + APP_UID))
@@ -81,24 +86,70 @@ run() {
     echo >> "$LOG"
 }
 
+# ── device (automatizace UI) ──────────────────────────────
+section() { echo >> "$LOG"; echo "########## $* ##########" >> "$LOG"; }
+
+section "device"
+run device admin status
+run device battery-optimize status
 run device accessibility
 run device tap 500 1000
-run device click 'NetHunter'
-run device longclick 'NetHunter'
+run device click 'CTRL'
+run device longclick 'CTRL'
 run device swipe 500 1500 500 500 300
 run device text 'nhtest'
 run device scroll fwd
 run device global recents
-run device admin status
-run device battery-optimize status
+
+section "system"
 run system battery
 run system volume
 run system torch on
 run system vibrate 100
 run system toast 'nhtest'
-run system clipboard read
+run system clipboard get
 run system notification 'nhtest'
 run system speech 'nhtest'
+
+section "network"
+run network wifi
+run network cell
+run network location
+run network map
+run network ifconfig
+
+section "vpn"
+run vpn status
+run vpn mitm status
+run vpn mitm ca
+run vpn logs
+run vpn ai
+run vpn sni-fallback
+
+section "log"
+run log -n 5
+
+section "api"
+run api share status
+
+section "desktop"
+run desktop status
+
+section "apps"
+run apps usage
+
+section "usb"
+run usb list
+
+section "distro"
+run distro list
+run distro ps
+
+section "cpu"
+run cpu status
+
+section "docs"
+run docs
 
 # ── zastavit/vybrat logcat ────────────────────────────────
 sleep 1
@@ -106,7 +157,7 @@ if [ -n "$LOGCAT_PID" ]; then
     kill "$LOGCAT_PID" 2>/dev/null
     wait "$LOGCAT_PID" 2>/dev/null
 else
-    curl -s -m 5 "$API/app/logs?limit=500" > "$RAW" 2>/dev/null
+    curl -s -m 5 "$API/app/logs?limit=1000" > "$RAW" 2>/dev/null
 fi
 
 # ── korelace ──────────────────────────────────────────────
