@@ -8,23 +8,24 @@
 [1;33m     Parrot OS Security[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
-[1;32m   📡  RYCHLÉ PŘÍKAZY (nh)[0m
+[1;32m   📡  RYCHLÉ PŘÍKAZY:  nh <kategorie> <akce>[0m
 [1;36m─────────────────────────────────────────────────────────[0m
-[0;32m     nh system   baterie, hlasitost, svítilna, vibrace, toast, schránka, notifikace, řeč[0m
-[0;32m     nh network  Wi-Fi, mobilní síť, GPS poloha, mapa, ifconfig[0m
-[0;32m     nh vpn      sledování provozu, TLS MITM, AI verdikty, bypass, ignorování relací[0m
-[0;32m     nh device   Device Admin, dotyková gesta (tap/swipe/text), accessibility[0m
-[0;32m     nh distro   PRoot kontejnery (list, ps, kill, remove, backup, restore, login)[0m
-[0;32m     nh cpu      pin proot na rychlé jádro (on/off/pin), all, bench, boost[0m
-[0;32m     nh usb      USB Host (list, claim, bulk, control), USB gadget[0m
-[0;32m     nh agent    LLM agent: nastavení (provider, klíč, model), ask, chat[0m
-[0;32m     nh log      logcat (-n počet řádků, -g vzor)[0m
-[0;32m     nh fix      oprava balíčků a práv: pkg <balíček> | auto | permission <cesta> | git [cesta][0m
-[0;32m     nh desktop  Xvfb/X11 desktop (start, stop, status)[0m
-[0;32m     nh apps     využití aplikací v popředí za 24 h[0m
-[0;32m     nh api      sdílení LocalApiServeru (share on|off|status)[0m
-[0;32m     nh float    plovoucí terminálové okno (here, close)[0m
-[0;32m     nh zkill    úklid osiřelých zombie procesů[0m
+[0;32m     nh system   battery, volume, torch, vibrate, toast, clipboard, notification, speech[0m
+[0;32m     nh network  wifi (scan/connect), cell, location, map, ifconfig[0m
+[0;32m     nh vpn      status/start/stop, mitm, ai, bypass <příkaz>, ignore, sni-fallback[0m
+[0;32m     nh device   admin, tap/click/swipe/text/scroll/global, accessibility[0m
+[0;32m     nh distro   list, ps, kill, remove, backup, restore, login[0m
+[0;32m     nh cpu      status, on|off, pin, core, all, run, bench, trace, boost, apps[0m
+[0;32m     nh usb      list, permission, claim, release, send, bulk, control, bridge, gadget[0m
+[0;32m     nh agent    config, start|stop|status, ask, chat (LLM agent)[0m
+[0;32m     nh log      logcat: -n počet, -g vzor, -K; set lvl 1-5[0m
+[0;32m     nh fix      pkg <balíček>, auto (dpkg/apt), permission <cesta>, git [cesta][0m
+[0;32m     nh desktop  start|stop|status (Xvfb/X11)[0m
+[0;32m     nh apps     usage (aplikace v popředí za 24 h)[0m
+[0;32m     nh api      share on|off|status (LocalApiServer 0.0.0.0 / 127.0.0.1)[0m
+[0;32m     nh float    plovoucí terminál: bez argumentu nový, here, close[0m
+[0;32m     nh zkill    úklid osiřelých zombie procesů (--root: restart su_daemon)[0m
+[0;32m     aliasy: sys, net, dev, ai, logs, vnc  ·  zkratky: nh ps, nh stat, nh ls[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
 [1;35m   🐚  HOST SHELL (mimo PRoot, Android)[0m
@@ -43,6 +44,6 @@
 
 [1;36m─────────────────────────────────────────────────────────[0m
 [0;90m     📖 nh list  → seznam všech příkazů[0m
-[0;90m     📖 nh help [kategorie]  → nápověda[0m
+[0;90m     📖 nh help <kategorie>  → nápověda (nebo nh <kategorie> -h)[0m
 [0;90m     📖 nh docs  → plná dokumentace (nethunter_docs.md)[0m
 [1;36m─────────────────────────────────────────────────────────[0m

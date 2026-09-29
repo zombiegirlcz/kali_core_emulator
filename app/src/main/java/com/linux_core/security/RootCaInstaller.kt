@@ -4,8 +4,10 @@ import android.content.Context
 import android.util.Log
 import com.linux_core.BuildConfig
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.PrivateKey
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicReference
@@ -29,6 +31,7 @@ import javax.net.ssl.SSLContext
 class RootCaInstaller(private val context: Context) {
 
     private val caCert = AtomicReference<X509Certificate?>(null)
+    private val caKey = AtomicReference<PrivateKey?>(null)
     private val trustStore: KeyStore by lazy {
         KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
     }
@@ -73,7 +76,12 @@ class RootCaInstaller(private val context: Context) {
      * `KeyChain` MUST be guarded by the caller with a `BuildConfig.DEBUG` check so
      * production builds never write to the system trust store.
      */
-    fun caBytes(): ByteArray? = readAssetBytes(ASSET_CA_FILE)
+    fun caBytes(): ByteArray? = try {
+        ensureMaterial()?.first?.encoded ?: readAssetBytes(ASSET_CA_FILE)
+    } catch (e: Exception) {
+        Log.w(TAG, "caBytes failed: ${e.message}")
+        readAssetBytes(ASSET_CA_FILE)
+    }
 
     /**
      * Produce a forged leaf certificate signed by the MITM CA. Used by
@@ -147,38 +155,90 @@ class RootCaInstaller(private val context: Context) {
         }
     }
 
-    private fun loadCa(): X509Certificate? {
-        caCert.get()?.let { return it }
-        val bytes = readAssetBytes(ASSET_CA_FILE) ?: return null
+    private fun loadCa(): X509Certificate? = ensureMaterial()?.first
+
+    private fun loadCaPrivateKey(): PrivateKey? = ensureMaterial()?.second
+
+    /**
+     * Resolve the MITM CA cert+key pair, in priority order:
+     *   1. in-memory cache
+     *   2. generated keystore at filesDir/certs/mitm-ca.p12 (survives app updates)
+     *   3. bundled asset keystore certs/mitm-ca.p12 (back-compat; uses the cert inside it)
+     *   4. generate a fresh self-signed CA and persist it as (2)
+     *
+     * The device-local CA replaces the historical bundled dev key, which was gitignored
+     * (`assets/certs/mitm-ca.p12` / `mitm-ca.key`) and therefore absent from every build —
+     * so every full MITM session fell back to passthrough. The cert is served to the user
+     * via `GET /vpn/mitm/ca` (`vpn-cli mitm ca`) for installation into the trust store.
+     *
+     * Both the cert and key are always generated together, so the cert the user installs
+     * always matches the key used to forge leaf certs. Release builds without a keystore
+     * password do not generate (returns null → passthrough), preserving the production
+     * stance of never signing on-device.
+     */
+    private fun ensureMaterial(): Pair<X509Certificate, PrivateKey>? {
+        caCert.get()?.let { c -> caKey.get()?.let { k -> return c to k } }
+        synchronized(materialLock) {
+            caCert.get()?.let { c -> caKey.get()?.let { k -> return c to k } }
+            val pwd = resolvePassword()
+            loadFromP12Stream(generatedP12File().takeIf { it.exists() }?.inputStream(), pwd)
+                ?.let { return cacheMaterial(it) }
+            loadFromP12Stream(readAssetBytes(ASSET_CA_KEY_FILE)?.let { ByteArrayInputStream(it) }, pwd)
+                ?.let { return cacheMaterial(it) }
+            return generateAndPersist()?.let { cacheMaterial(it) }
+        }
+    }
+
+    private fun cacheMaterial(pair: Pair<X509Certificate, PrivateKey>): Pair<X509Certificate, PrivateKey> {
+        caCert.set(pair.first)
+        caKey.set(pair.second)
+        return pair
+    }
+
+    private fun loadFromP12Stream(stream: java.io.InputStream?, pwd: String?): Pair<X509Certificate, PrivateKey>? {
+        if (stream == null || pwd == null) return null
         return try {
-            val cf = CertificateFactory.getInstance("X.509")
-            val cert = cf.generateCertificate(ByteArrayInputStream(bytes)) as X509Certificate
-            caCert.set(cert)
-            cert
+            stream.use {
+                val ks = KeyStore.getInstance("PKCS12")
+                ks.load(it, pwd.toCharArray())
+                val key = ks.getKey(ALIAS, pwd.toCharArray()) as? PrivateKey ?: return null
+                val cert = ks.getCertificate(ALIAS) as? X509Certificate ?: return null
+                cert to key
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse MITM CA: ${e.message}")
+            Log.w(TAG, "PKCS12 load failed: ${e.message}")
             null
         }
     }
 
-    private fun loadCaPrivateKey(): java.security.PrivateKey? {
-        // The CA private key is bundled in `assets/certs/mitm-ca.p12` for development.
-        // In production we never sign server certs from the device.
-        val bytes = readAssetBytes(ASSET_CA_KEY_FILE) ?: return null
+    private fun generateAndPersist(): Pair<X509Certificate, PrivateKey>? {
         val pwd = resolvePassword()
         if (pwd == null) {
-            Log.e(TAG, "MITM CA private key password not configured - set KEYSTORE_PASSWORD env var")
+            Log.e(TAG, "Cannot generate MITM CA: no keystore password (release build without KEYSTORE_PASSWORD)")
             return null
         }
         return try {
+            val kpg = KeyPairGenerator.getInstance("RSA")
+            kpg.initialize(2048)
+            val kp = kpg.generateKeyPair()
+            val cert = MitmCertSigner.createSelfSignedCa(kp, CA_CN, validityDays = 3650)
+
             val ks = KeyStore.getInstance("PKCS12")
-            ks.load(ByteArrayInputStream(bytes), pwd.toCharArray())
-            ks.getKey(ALIAS, pwd.toCharArray()) as? java.security.PrivateKey
+            ks.load(null, null)
+            ks.setKeyEntry(ALIAS, kp.private, pwd.toCharArray(), arrayOf<java.security.cert.Certificate>(cert))
+            val dir = File(context.filesDir, "certs").apply { mkdirs() }
+            File(dir, "mitm-ca.p12").outputStream().use { ks.store(it, pwd.toCharArray()) }
+            // Also drop a DER copy for debugging / manual export; the API serves cert.encoded directly.
+            try { File(dir, "mitm-ca.crt").writeBytes(cert.encoded) } catch (_: Exception) {}
+            Log.i(TAG, "Generated self-signed MITM CA (CA:true) at filesDir/certs/mitm-ca.p12 — install via GET /vpn/mitm/ca")
+            cert to kp.private
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load MITM CA private key: ${e.message}")
+            Log.e(TAG, "generateAndPersist MITM CA failed: ${e.message}", e)
             null
         }
     }
+
+    private fun generatedP12File(): File = File(File(context.filesDir, "certs"), "mitm-ca.p12")
 
     private fun resolvePassword(): String? {
         // Priority: env var > gradle properties > null (fail in release)
@@ -218,6 +278,9 @@ class RootCaInstaller(private val context: Context) {
         const val ASSET_CA_FILE = "certs/mitm-ca.crt"
         const val ASSET_CA_KEY_FILE = "certs/mitm-ca.p12"
         const val ALIAS = "nethunter_mitm_ca"
+        private const val CA_CN = "NetHunter MITM CA"
+        // Class-level lock so concurrent instances don't generate/persist the CA twice.
+        private val materialLock = Any()
         // P12_PASSWORD removed - now resolved dynamically via resolvePassword()
     }
 }

@@ -126,4 +126,50 @@ internal object MitmCertSigner {
             .setProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
             .getCertificate(holder)
     }
+
+    /**
+     * Generate a self-signed X.509v3 CA certificate for [keyPair]
+     * (basicConstraints CA:true, pathlen 0; keyUsage keyCertSign|cRLSign;
+     * subjectKeyIdentifier). Used by [RootCaInstaller] to mint a device-local MITM
+     * root when no CA keystore is bundled — the historical bundled dev key was
+     * gitignored and therefore absent from every build.
+     */
+    fun createSelfSignedCa(
+        keyPair: java.security.KeyPair,
+        cn: String,
+        validityDays: Long = 3650
+    ): X509Certificate {
+        val name = X500Name("CN=$cn, O=NetHunter-Dev, C=CZ")
+        val now = Date()
+        val oneDay = 1000L * 60 * 60 * 24
+        val notBefore = Date(now.time - oneDay)
+        val notAfter = Date(now.time + oneDay * validityDays)
+        val serial = BigInteger.valueOf(now.time)
+
+        val builder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
+            name, serial, notBefore, notAfter, name, keyPair.public
+        )
+        val extUtils = org.bouncycastle.cert.jcajce.JcaX509ExtensionUtils()
+        builder.addExtension(
+            org.bouncycastle.asn1.x509.Extension.basicConstraints, true,
+            org.bouncycastle.asn1.x509.BasicConstraints(0)
+        )
+        builder.addExtension(
+            org.bouncycastle.asn1.x509.Extension.keyUsage, true,
+            org.bouncycastle.asn1.x509.KeyUsage(
+                org.bouncycastle.asn1.x509.KeyUsage.keyCertSign or org.bouncycastle.asn1.x509.KeyUsage.cRLSign
+            )
+        )
+        builder.addExtension(
+            org.bouncycastle.asn1.x509.Extension.subjectKeyIdentifier, false,
+            extUtils.createSubjectKeyIdentifier(keyPair.public)
+        )
+        val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder(SIGNER_ALGO)
+            .setProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            .build(keyPair.private)
+        val holder = builder.build(signer)
+        return org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
+            .setProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
+            .getCertificate(holder)
+    }
 }

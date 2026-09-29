@@ -13,6 +13,7 @@ Barvy odpovídají welcome scriptu v ProotManager.kt:
   oddělovače:  1;36 (cyan)
   sekce 📡:     nadpis 1;32, příkazy 0;32
   ostatní:      nadpis 1;33, příkazy 0;33
+  host shell 🐚: nadpis 1;35, příkazy 0;35
   patička 📖:   0;90 (šedá)
 """
 import re
@@ -29,6 +30,8 @@ C_HDR_OTHER = ESC + "[1;33m"
 C_CMD_HELP = ESC + "[0;32m"
 C_CMD_OTHER = ESC + "[0;33m"
 C_FOOT = ESC + "[0;90m"
+C_HDR_SHELL = ESC + "[1;35m"
+C_CMD_SHELL = ESC + "[0;35m"
 
 # Všechny ANSI CSI sekvence (ESC [ ... písmeno) — použijeme na strip.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -76,11 +79,17 @@ def colorize(path: Path) -> None:
             section = "OTHER"
             out.append(C_HDR_OTHER + l + RST)
             continue
+        if stripped.startswith("\U0001F41A"):  # 🐚 host shell
+            section = "SHELL"
+            out.append(C_HDR_SHELL + l + RST)
+            continue
         if stripped.startswith("\U0001F4D6"):  # 📖
             out.append(C_FOOT + l + RST)
             continue
         if section == "HELP":
             out.append(C_CMD_HELP + l + RST)
+        elif section == "SHELL":
+            out.append(C_CMD_SHELL + l + RST)
         else:
             out.append(C_CMD_OTHER + l + RST)
 
