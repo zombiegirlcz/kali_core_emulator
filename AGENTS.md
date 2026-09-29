@@ -550,8 +550,10 @@ kernelová tty line-discipline, čistý výstup, žádný per-loop traced ioctl 
 `interactive = isatty(stdin)`** (over-selektovalo PTY pro každý příkaz z terminálu).
 **`ashell -t` (bez `-c`) = interaktivní host shell PŘÍMO v tomhle terminálu** (`cmd_host_shell_inline`,
 `exec sh -i` přes ashell_pty), bez nového Android okna a bez `cmd activity` (ta na některých ROM padá na
-binder „Failed transaction"). Fallback na okno (`cmd_open_host_shell`), když daemon neběží. Holé `ashell`
-(bez `-t`) i `--tmux`/`-tx` dál otevírají okenní host shell. Relay smyčka v
+binder „Failed transaction"). Fallback na okno (`cmd_open_host_shell`), když daemon neběží. Od 2026-09-29
+běží **holé `ashell` i `--tmux`/`-tx` také inline** (`cmd_host_shell_inline(use_tmux)`, bez `-t`); nové okno
+jen jako fallback. `--tmux` spouští `ltmux` (glibc tmux z rootfs přes bionic `elf_loader`, `assets/usr/bin/`),
+pak host `tmux`, pak `sh -i`. Relay smyčka v
 `run_via_ashell_pty` je **event-driven**: blokující `select` bez timeoutu + `SIGWINCH` handler (bez
 `SA_RESTART` → EINTR přepošle velikost okna) — žádný 200ms polling ani per-loop `TIOCGWINSZ`, takže když
 příkaz tiše běží, klient (pod prootem) nedělá žádné trasované syscally. Nízko-frekventní

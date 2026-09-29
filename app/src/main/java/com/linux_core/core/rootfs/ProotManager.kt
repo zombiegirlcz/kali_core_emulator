@@ -489,8 +489,10 @@ object ProotManager {
      * Rozbalí `assets/zsh.tgz` (bionic zsh 5.9, ncurses, terminfo, pluginy; cesty v archivu
      * jsou `data/user/0/com.linux_core/files/...`) do filesDir a nasadí `~/.zshrc`
      * z `assets/zshrc.host`. Marker `usr/.zsh_host` drží md5 archivu; když chybí `usr/bin/zsh`
-     * (např. wipe z deployDir), rozbalí se znovu.
+     * (např. wipe z deployDir), rozbalí se znovu. @Synchronized: setupProotEnvironment
+     * běží souběžně z více vláken; bez zámku se dvě extrakce prali o tytéž symlinky.
      */
+    @Synchronized
     private fun deployZshHost(
         context: Context,
         rootDir: File,

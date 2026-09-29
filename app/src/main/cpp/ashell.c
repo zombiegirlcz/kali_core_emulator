@@ -17,8 +17,9 @@
  * namespace, jen ptrace syscall translation).
  *
  * Zachovava CLI grammar puvodniho /bin/sh skriptu (assets/ashell):
- *   ashell                          otevre host shell (cmd activity / HTTP)
- *   ashell --tmux|-tx               otevre host shell rovnou v tmuxu
+ *   ashell                          host shell PRIMO v tomto terminalu (ashell_pty);
+ *                                   okno (cmd activity / HTTP) jen jako fallback
+ *   ashell --tmux|-tx               totez rovnou v tmuxu (ltmux → host tmux → sh)
  *   ashell -c|--cmd '<prikaz>'      spusti prikaz na hostiteli
  *   ashell adb start|stop|status    shell_daemon (uid 2000) lifecycle
  *   ashell adb shell [<cmd>]        interaktivni PTY / jednorazovy prikaz
@@ -1051,7 +1052,7 @@ static int cmd_open_host_shell(int use_tmux) {
  * (13340), bez nového Android okna a bez `cmd activity` (ta na některých ROM padá
  * na binder "Failed transaction"). Server forkne `sh -i` v reálném PTY, klient
  * tuneluje raw stdin/stdout. Fallback na okno, když daemon neběží. */
-static int cmd_host_shell_inline(void) {
+static int cmd_host_shell_inline(int use_tmux) {
     const char *rootfs_env = getenv("PROOT_L2S_DIR");
     char rootfs_host[4096] = "";
     if (rootfs_env && *rootfs_env) {
@@ -1069,13 +1070,25 @@ static int cmd_host_shell_inline(void) {
 
     /* Interaktivní host shell; aplikuj ashell.conf env (`.ashell_env`), když existuje
      * — stejná parita jako okenní host shell (viz startAshellSession). */
-    const char *shcmd =
+    const char *shcmd_plain =
         "[ -f \"$HOME/.ashell_env\" ] && export ENV=\"$HOME/.ashell_env\"; exec sh -i";
-    int rc = run_via_ashell_pty(shcmd, cwd, rootfs_host, term, 1 /* want_pty */);
+    /* --tmux/-tx: tmux session 'ashell' přímo v tomhle terminálu. Preferuje `ltmux`
+     * (glibc tmux z rootfs přes elf_loader), pak host tmux, pak čistý sh. ENV skript
+     * sourcujeme stejně jako startAshellSession, aby tmux server dostal stejné env. */
+    const char *shcmd_tmux =
+        "[ -f \"$HOME/.ashell_env\" ] && . \"$HOME/.ashell_env\" 2>/dev/null; "
+        "if command -v ltmux >/dev/null 2>&1 && ltmux -V >/dev/null 2>&1; then "
+        "exec ltmux -u new-session -A -s ashell; "
+        "elif command -v tmux >/dev/null 2>&1; then "
+        "TMUX_TMPDIR=\"$HOME\" exec tmux -u new-session -A -s ashell; "
+        "else echo '[ashell] tmux nenalezen (ltmux ani host tmux); spoustim cisty shell.'; "
+        "exec sh -i; fi";
+    int rc = run_via_ashell_pty(use_tmux ? shcmd_tmux : shcmd_plain, cwd, rootfs_host, term,
+                                1 /* want_pty */);
     if (rc != PTY_UNAVAILABLE) return rc;
 
     fprintf(stderr, "[!] ashell_pty (13340) nedostupny — otevírám host shell v novém okně...\n");
-    return cmd_open_host_shell(0);
+    return cmd_open_host_shell(use_tmux);
 }
 
 /* ── main ─────────────────────────────────────────────────────────────── */
@@ -1166,8 +1179,8 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tmux") == 0 || strcmp(argv[i], "-tx") == 0) use_tmux = 1;
     }
-    /* `ashell -t` (force PTY, žádný -c) → interaktivní host shell PŘÍMO tady přes
-     * ashell_pty, bez nového okna. tmux má přednost (chce vlastní okno). */
-    if (g_force_pty && !use_tmux) return cmd_host_shell_inline();
-    return cmd_open_host_shell(use_tmux);
+    /* Host shell (holý, `-t` i `--tmux`) běží VŽDY PŘÍMO v tomhle terminálu přes
+     * ashell_pty, bez nového okna. Okno (cmd_open_host_shell) je jen fallback,
+     * když ashell_pty neběží. */
+    return cmd_host_shell_inline(use_tmux);
 }
