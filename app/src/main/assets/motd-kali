@@ -11,36 +11,42 @@
 [1;34m##                                              ##[0m
 [1;34m####  ############# NetHunter ####################[0m
 
+[1;36m─────────────────────────────────────────────────────────[0m
+[1;32m   📡  RYCHLÉ PŘÍKAZY (nh)[0m
+[1;36m─────────────────────────────────────────────────────────[0m
+[0;32m     nh system   baterie, hlasitost, svítilna, vibrace, toast, schránka, notifikace, řeč[0m
+[0;32m     nh network  Wi-Fi, mobilní síť, GPS poloha, mapa, ifconfig[0m
+[0;32m     nh vpn      sledování provozu, TLS MITM, AI verdikty, bypass, ignorování relací[0m
+[0;32m     nh device   Device Admin, dotyková gesta (tap/swipe/text), accessibility[0m
+[0;32m     nh distro   PRoot kontejnery (list, ps, kill, remove, backup, restore, login)[0m
+[0;32m     nh cpu      pin proot na rychlé jádro (on/off/pin), all, bench, boost[0m
+[0;32m     nh usb      USB Host (list, claim, bulk, control), USB gadget[0m
+[0;32m     nh agent    LLM agent: nastavení (provider, klíč, model), ask, chat[0m
+[0;32m     nh log      logcat (-n počet řádků, -g vzor)[0m
+[0;32m     nh fix      oprava balíčků a práv: pkg <balíček> | auto | permission <cesta> | git [cesta][0m
+[0;32m     nh desktop  Xvfb/X11 desktop (start, stop, status)[0m
+[0;32m     nh apps     využití aplikací v popředí za 24 h[0m
+[0;32m     nh api      sdílení LocalApiServeru (share on|off|status)[0m
+[0;32m     nh float    plovoucí terminálové okno (here, close)[0m
+[0;32m     nh zkill    úklid osiřelých zombie procesů[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
-[1;32m   📡  RYCHLÉ PŘÍKAZY / QUICK HELP[0m
+[1;35m   🐚  HOST SHELL (mimo PRoot, Android)[0m
 [1;36m─────────────────────────────────────────────────────────[0m
-[0;32m     nh system   baterie, hlasitost, svítilna, vibrace, toast, schránka, notifikace[0m
-[0;32m     nh network  Wi-Fi, mobilní síť, GPS, mapa, ifconfig[0m
-[0;32m     nh vpn      provoz, TLS MITM, verdikty, bypass, ignore[0m
-[0;32m     nh device   Device Admin, gesta (tap/swipe), accessibility UI[0m
-[0;32m     nh distro   PRoot kontejnery (list, ps, kill, backup, login)[0m
-[0;32m     nh cpu      pin proot na jádro, cpuctl, správa CPU[0m
-[0;32m     nh usb      USB Host (list, bulk, control), gadget[0m
-[0;32m     nh agent    LLM konfig (provider, key, model), chat[0m
-[0;32m     nh log      logcat viewer a filtrování (-n, -g)[0m
-[0;32m     nh fix      dpkg locky, vlastnictví souborů, PRoot git[0m
-[0;32m     nh desktop  Xvfb/X11 GUI (start, stop, status)[0m
-[0;32m     nh apps     statistiky využití aplikací (24h)[0m
-[0;32m     nh api      LocalApiServer binding (0.0.0.0 vs 127.0.0.1)[0m
-[0;32m     nh float    plovoucí terminálové okno (here, close, new)[0m
-[0;32m     nh ashell   únik z PRoot do Android hostu (adb, -c)[0m
-[0;32m     nh zkill    úklid osiřelých zombie procesů[0m
+[0;35m     ashell                shell hostitele přímo v tomto terminálu[0m
+[0;35m     ashell --tmux         totéž v tmuxu (session ashell)[0m
+[0;35m     ashell -c "příkaz"    jednorázový příkaz na hostiteli[0m
+[0;35m     ashell adb …          shell s právy adb shell (uid 2000)[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
 [1;33m   🔑  ROOT BRIDGE (host Magisk su)[0m
 [1;36m─────────────────────────────────────────────────────────[0m
 [0;33m     sudo id                      root na hostiteli (uid=0)[0m
-[0;33m     su -c 'prikaz'               spustit příkaz jako root[0m
+[0;33m     su -c "příkaz"               spustit příkaz jako root[0m
 [0;33m     su                           hostitelský root shell[0m
 
 [1;36m─────────────────────────────────────────────────────────[0m
 [0;90m     📖 nh list  → seznam všech příkazů[0m
-[0;90m     📖 nh help  → nápověda[0m
-[0;90m     📖 cat nethunter_docs.md  → plná dokumentace[0m
+[0;90m     📖 nh help [kategorie]  → nápověda[0m
+[0;90m     📖 nh docs  → plná dokumentace (nethunter_docs.md)[0m
 [1;36m─────────────────────────────────────────────────────────[0m

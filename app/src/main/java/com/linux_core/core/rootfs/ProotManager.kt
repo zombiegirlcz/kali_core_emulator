@@ -590,7 +590,11 @@ object ProotManager {
             }
             val target = File(targetDir, name)
             try {
-                deployIfChanged(context, "$assetDir/$name", target, executable)
+                if (name == "elf_loader") {
+                    deployDevOverridable(context, "$assetDir/$name", target, executable)
+                } else {
+                    deployIfChanged(context, "$assetDir/$name", target, executable)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to deploy host tool $assetDir/$name: ${e.message}")
             }
@@ -634,6 +638,31 @@ object ProotManager {
      * podpisem, žádný sidecar `<target>.md5` se neukládá. Případný legacy
      * sidecar z dřívějška se při deployi uklidí.
      */
+    /**
+     * Nasazení pro binárky, které uživatel při vývoji ručně nahrazuje (elf_loader):
+     * `deployIfChanged` by testovací verzi při každém startu přepsal assetem. Tady si
+     * pamatujeme md5 naposledy nasazeného assetu (`.<jméno>.md5` vedle binárky) a
+     * přepíšeme jen když APK přinese JINÝ asset (nebo binárka či marker chybí).
+     * Ručně nakopírovaná verze tak přežije restarty i reinstalaci APK se stejným assetem.
+     */
+    private fun deployDevOverridable(
+        context: Context,
+        assetPath: String,
+        target: File,
+        executable: Boolean,
+    ) {
+        val assetHash = assetMd5(context, assetPath)
+        val marker = File(target.parentFile, ".${target.name}.md5")
+        val deployed = if (marker.exists()) marker.readText().trim() else ""
+        if (target.exists() && target.length() > 0L && deployed == assetHash) {
+            if (executable) target.setExecutable(true, false)
+            Log.i(TAG, "Keep $target (asset beze změny, případná ruční verze zůstává)")
+            return
+        }
+        deployIfChanged(context, assetPath, target, executable)
+        marker.writeText(assetHash)
+    }
+
     private fun deployIfChanged(
         context: Context,
         assetPath: String,
