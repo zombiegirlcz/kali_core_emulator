@@ -1,0 +1,41 @@
+#!/system/bin/sh
+# ltmux: glibc tmux z rootfs (Parrot/Kali) spuštěný přes bionic elf_loader.
+# Použití: ltmux [tmux argumenty]   (bez argumentu = nová session)
+# Env: ROOTFS=<dir> (přebije autodetekci), LTMUX_SHELL=<shell v panech>.
+#
+#  1) tmux potřebuje krátký zapisovatelný socket dir → TMUX_TMPDIR=$D/tmp
+#     (default /tmp/tmux-UID na Androidu neexistuje).
+#  2) bez SHELL by tmux vzal /usr/sbin/nologin → default bionic zsh, jinak /system/bin/sh.
+
+D=${LTMUX_HOME:-/data/user/0/com.linux_core/files}
+L=$D/usr/bin/elf_loader
+
+# rootfs: explicitní ROOTFS, jinak první distro, které má usr/bin/tmux
+if [ -z "$ROOTFS" ]; then
+    for r in parrot kali; do
+        [ -x "$D/nh/distro/$r/usr/bin/tmux" ] && { ROOTFS=$D/nh/distro/$r; break; }
+    done
+fi
+[ -x "$L" ] || { echo "ltmux: chybí $L" >&2; exit 127; }
+[ -n "$ROOTFS" ] && [ -x "$ROOTFS/usr/bin/tmux" ] || { echo "ltmux: v rootfs není usr/bin/tmux (apt install tmux)" >&2; exit 127; }
+R=$ROOTFS
+export ROOTFS
+
+# guest glibc nesmí zdědit host LD_* (SIGBUS lekce, viz AGENTS.md)
+unset LD_LIBRARY_PATH LD_PRELOAD
+
+TMUX_TMPDIR=${TMUX_TMPDIR:-$D/tmp}
+export TMUX_TMPDIR
+mkdir -p "$TMUX_TMPDIR" 2>/dev/null
+
+export LOCPATH=$R/usr/lib/locale LC_ALL=C.UTF-8
+export TERMINFO_DIRS=$R/usr/share/terminfo:$R/etc/terminfo
+[ -n "$TERMINFO" ] || export TERMINFO=$R/usr/share/terminfo
+
+if [ -n "$LTMUX_SHELL" ]; then SHELL=$LTMUX_SHELL
+elif [ -x "$D/usr/bin/zsh" ]; then SHELL=$D/usr/bin/zsh
+else SHELL=/system/bin/sh; fi
+export SHELL
+[ -n "$TERM" ] || export TERM=xterm-256color
+
+exec "$L" --ownall "$R/usr/bin/tmux" "$@"

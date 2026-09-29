@@ -1370,10 +1370,10 @@ class TerminalActivity : ComponentActivity() {
 
     private fun startAshellSession() {
         // ashellTmux (z `ashell --tmux`/`-tx` nebo /ashell {"tmux":true}) otevře
-        // host session rovnou v tmuxu místo holého sh. tmux běží mimo proot pod
-        // uid appky nad reálným host PTY (Termux emulátor), takže proot pitfally
-        // ("not a terminal", viz AGENTS.md) se ho netýkají — jediná podmínka je
-        // host (bionic) tmux binárka v PATH.
+        // host session rovnou v tmuxu místo holého sh. Bionic tmux nepotřebujeme:
+        // `ltmux` spustí glibc tmux z rootfs přes bionic elf_loader (uid appky,
+        // reálný host PTY → proot pitfally "not a terminal" se netýkají).
+        // Fallback: host tmux v PATH, jinak čistý sh.
         val useTmux = intent.getBooleanExtra("ashellTmux", false)
         Log.i(TAG, "startAshellSession: escape proot → host app shell (tmux=$useTmux)")
         val cwd = filesDir
@@ -1400,17 +1400,18 @@ class TerminalActivity : ComponentActivity() {
 
         val cmd =
             if (useTmux) {
-                // Otevři session přímo v tmuxu. tmux hledáme v PATH ($PREFIX/bin,
-                // /system/bin). Socket dáme do $HOME (filesDir) přes TMUX_TMPDIR —
-                // default /tmp na Android hostu nemusí být zapisovatelný. ENV skript
-                // (ashell.conf) sourcujeme i tady, aby tmux server dostal stejné
-                // prostředí (hlavně unset LD_LIBRARY_PATH — viz SIGBUS lekce níže).
-                // Když host tmux není nasazený, čistě spadneme na `sh -i`.
+                // Preferuj ltmux (glibc tmux z rootfs přes elf_loader), pak host tmux.
+                // ltmux si sám nastaví TMUX_TMPDIR ($HOME/tmp), SHELL, locale, terminfo;
+                // pro host tmux dáme socket do $HOME. ENV skript (ashell.conf) sourcujeme
+                // i tady, aby tmux server dostal stejné prostředí.
                 val launch =
                     "[ -n \"\$ENV\" ] && [ -r \"\$ENV\" ] && . \"\$ENV\" 2>/dev/null; " +
-                        "if command -v tmux >/dev/null 2>&1; then " +
+                        "if [ -x \"\$PREFIX/bin/ltmux\" ] && [ -x \"\$PREFIX/bin/elf_loader\" ] " +
+                        "&& \"\$PREFIX/bin/ltmux\" -V >/dev/null 2>&1; then " +
+                        "exec \"\$PREFIX/bin/ltmux\" -u new-session -A -s ashell; " +
+                        "elif command -v tmux >/dev/null 2>&1; then " +
                         "TMUX_TMPDIR=\"\$HOME\" exec tmux -u new-session -A -s ashell; " +
-                        "else echo \"[ashell] tmux nenalezen v PATH — nasad host (bionic) tmux do \$PREFIX/bin; spoustim cisty shell.\"; " +
+                        "else echo \"[ashell] tmux nenalezen (ltmux ani host tmux); spoustim cisty shell.\"; " +
                         "exec /system/bin/sh -i; fi"
                 arrayOf("/system/bin/sh", "-c", launch)
             } else {

@@ -1,0 +1,370 @@
+# ~/.zshrc pro bionic zsh na Android hostu (com.linux_core, uid aplikace).
+# Cíl: pohodlné testování elf_loaderu nad Parrot rootfs.
+# Nápověda:  help  (help vse = všechno s příklady)
+
+# ───────────────────────── cesty ─────────────────────────
+export D=/data/user/0/com.linux_core/files          # app files (= $HOME)
+export R=$D/nh/distro/parrot                         # Parrot rootfs
+export ROOTFS=$R                                     # čte ho elf_loader
+export L=$D/usr/bin/elf_loader                       # loader
+export LX_LOG=$HOME/.cache/lx                        # logy testů
+export LOCPATH=$R/usr/lib/locale                     # locale pro guest glibc
+export TMUX_TMPDIR=$D/tmp                            # tmux socket dir (/tmp na Androidu neni)
+export TERMINFO_DIRS=$R/usr/share/terminfo:$R/etc/terminfo  # terminfo pro guest ncurses
+[[ -d $TMUX_TMPDIR ]] || mkdir -p $TMUX_TMPDIR
+[[ -x $SHELL ]] || export SHELL=$D/usr/bin/zsh       # tmux jinak vezme nologin z passwd
+export EDITOR=nano
+[[ -n $TERM ]] || export TERM=xterm-256color
+mkdir -p $HOME/.cache $LX_LOG 2>/dev/null
+
+# Parrot PATH pro hledání guest binárek (pořadí jako v guestu, + node z nvm)
+typeset -ga LX_PATH=(
+  $R/usr/local/sbin $R/usr/local/bin $R/usr/sbin $R/usr/bin $R/sbin $R/bin
+  $R/root/.nvm/versions/node/*/bin(N/On) $R/root/.local/bin
+)
+
+# ───────────────────────── volby a historie ─────────────────────────
+setopt autocd interactivecomments magicequalsubst nonomatch notify
+setopt numericglobsort promptsubst
+setopt share_history hist_ignore_all_dups hist_ignore_space extended_history
+HISTFILE=$HOME/.zsh_history
+HISTSIZE=20000
+SAVEHIST=20000
+WORDCHARS='_-'
+PROMPT_EOL_MARK=""
+
+# ───────────────────────── klávesy ─────────────────────────
+bindkey -e
+bindkey ' ' magic-space
+bindkey '^U' backward-kill-line
+bindkey '^[[3;5~' kill-word
+bindkey '^[[3~' delete-char
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+bindkey '^[[5~' beginning-of-buffer-or-history
+bindkey '^[[6~' end-of-buffer-or-history
+bindkey '^[[H' beginning-of-line
+bindkey '^[[F' end-of-line
+bindkey '^[[Z' undo
+
+# ───────────────────────── doplňování ─────────────────────────
+zmodload zsh/complist 2>/dev/null
+[[ -d $D/usr/share/zsh-completions ]] && fpath=($D/usr/share/zsh-completions $fpath)
+autoload -Uz compinit
+compinit -u -d $HOME/.cache/zcompdump   # -u: bez compaudit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+zstyle ':completion:*' group-name ''
+zstyle ':completion:*' format '%F{8}── %d ──%f'
+zstyle ':completion:*' rehash true
+zstyle ':completion:*' list-colors 'di=1;34:ln=36:ex=32'
+
+# ───────────────────────── prompt ─────────────────────────
+# Ukazuje: dobu běhu (>2 s), exit kód se jménem signálu (139 → SEGV)
+# a větev repa elf_loaderu.
+zmodload zsh/datetime 2>/dev/null
+typeset -g _lx_t0=0 _lx_took="" _lx_status=""
+_lx_preexec() { _lx_t0=$EPOCHREALTIME }
+_lx_precmd() {
+  local st=$?
+  _lx_took=""
+  if (( _lx_t0 > 0 )); then
+    local dt=$(( EPOCHREALTIME - _lx_t0 ))
+    (( dt >= 2 )) && _lx_took="%F{8}$(printf '%.1f' $dt)s%f "
+    _lx_t0=0
+  fi
+  _lx_status=""
+  if (( st > 128 && st < 128 + ${#signals} )); then
+    _lx_status="%F{red}✗$st SIG${signals[st-128+1]}%f "
+  elif (( st != 0 )); then
+    _lx_status="%F{red}✗$st%f "
+  fi
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook preexec _lx_preexec
+add-zsh-hook precmd _lx_precmd
+_lx_branch() {
+  local h=$R/root/elf_loader/.git/HEAD
+  [[ $PWD == $R/root/elf_loader* && -r $h ]] || return
+  local b=$(<$h); print -n "%F{magenta}(${b##*/})%f "
+}
+PROMPT='%F{cyan}host%f %F{blue}%~%f $(_lx_branch)${_lx_took}${_lx_status}
+%F{yellow}%#%f '
+
+# ───────────────────────── elf_loader pomocníci ─────────────────────────
+# lxwhich <jméno|cesta>  → plná cesta guest binárky v Parrot rootfs
+lxwhich() {
+  local c=$1 d
+  if [[ $c == */* ]]; then
+    [[ $c == /* && $c != $R/* && $c != $D/* ]] && c=$R$c
+    [[ -e $c ]] && { print -r -- $c; return 0 }
+    return 1
+  fi
+  for d in $LX_PATH; do
+    [[ -x $d/$c && ! -d $d/$c ]] && { print -r -- $d/$c; return 0 }
+  done
+  return 1
+}
+
+# lx <příkaz> [args]  → spustí Parrot binárku pod loaderem (--ownall)
+# Proměnné: LX_SHELL (SHELL pro guest), LX_ENV="A=1 B=2" (extra env)
+lx() {
+  (( $# )) || { print -u2 "použití: lx <příkaz> [args]"; return 2 }
+  local bin
+  bin=$(lxwhich $1) || { print -u2 "lx: '$1' není v Parrot rootfs"; return 127 }
+  shift
+  env LC_ALL=${LC_ALL:-C.UTF-8} SHELL=${LX_SHELL:-$R/bin/bash} ${=LX_ENV} \
+      $L --ownall $bin "$@"
+}
+
+# lxq → jako lx, bez [MMAP] šumu ve stderr (jen neinteraktivně)
+lxq() { lx "$@" 2> >(grep -v '^\[MMAP\]' >&2) }
+
+# lxdbg VAR=1 <příkaz> → běh s ladicí proměnnou loaderu
+lxdbg() { local e=$1; shift; LX_ENV="$LX_ENV $e" lx "$@" }
+
+# lxhelper <cesta.so> <příkaz> → běh s vlastní glibc helper knihovnou
+lxhelper() { local h=$1; shift; LX_ENV="$LX_ENV ELF_LOADER_HELPER=$h" lx "$@" }
+
+# lxlog <příkaz> → výstup do logu, na konci shrnutí
+lxlog() {
+  local f=$LX_LOG/${1:t}-$(date +%H%M%S).log
+  lx "$@" > $f 2>&1
+  local st=$?
+  grep -v '^\[MMAP\]' $f | tail -20
+  print -P "%F{8}── exit=$st  log: $f%f"
+  return $st
+}
+
+# lxdiag [-c] → diag.txt loaderu (SIGSYS/INIT stopy), -c smaže
+lxdiag() {
+  local f=$D/usr/diag.txt
+  [[ $1 == -c ]] && { : > $f; print "diag.txt vyčištěn"; return }
+  [[ -s $f ]] && tail -40 $f || print "diag.txt je prázdný"
+}
+
+# lxinfo → verze a stav loaderu
+lxinfo() {
+  print "loader : $L"
+  [[ -x $L ]] && ls -l $L | awk '{print "         " $5 " B, " $6 " " $7}' || print "         CHYBÍ"
+  print "rootfs : $R"
+  local h=$R/root/elf_loader/.git/HEAD
+  [[ -r $h ]] && print "repo   : $(<$h)"
+  print "locale : LOCPATH=$LOCPATH"
+}
+
+# lxfault <příkaz> → jen řádky s pádem
+lxfault() {
+  lx "$@" 2>&1 | grep -E 'FAULT#|pc in:|SIGSYS|panic|Segmentation|Aborted|\[-\]' | head -20
+}
+
+# lxtest → regresní sada (PASS / FLAKY / FAIL / SKIP), logy v $LX_LOG/test
+lxtest() {
+  local dir=$LX_LOG/test; mkdir -p $dir
+  local claude=$R/root/claudetest/claude.exe
+  local -a names cmds expect needs
+  local n22=$R/root/.nvm/versions/node/v22.11.0/bin/node
+  names=(true echo bash-42 exec-chain python3 node22 node-latest bun-claude tmux-V tmux-session)
+  cmds=(
+    'lx true'
+    'lx echo lx_ok'
+    'lx bash -c "echo \$((6*7))"'
+    "lx env $R/bin/bash -c 'echo chain_ok'"
+    'lx python3 -c "print(6*7)" </dev/null'
+    "lx $n22 -e 'console.log(6*7)'"
+    "lx node -e 'console.log(6*7)'"
+    "env LC_ALL=C.UTF-8 $L --ownall $claude --version"
+    'lx tmux -V'
+    '_lxtest_tmux'
+  )
+  expect=('' lx_ok 42 chain_ok 42 42 42 'Claude Code' 'tmux 3' AHOJ_42)
+  needs=(true echo bash bash python3 $n22 node $claude tmux tmux)
+  local i st out t0 dt try sig first pass=0 fail=0 flaky=0 skip=0 res
+  [[ -x $L ]] || { print -u2 "loader $L chybí"; return 1 }
+  print -P "%F{8}loader: $L ($(ls -l $L | awk '{print $5" B "$6" "$7}'))%f"
+  for i in {1..$#names}; do
+    if ! lxwhich ${needs[i]} >/dev/null; then
+      print -P "%F{8}SKIP %f  ${(r:14:)names[i]} chybí ${needs[i]:t}"; (( skip++ )); continue
+    fi
+    res=FAIL
+    for try in 1 2; do
+      t0=$EPOCHREALTIME
+      timeout 90 zsh -c "$(typeset -p LX_PATH); $(functions lx lxwhich _lxtest_tmux); ${cmds[i]}" > $dir/${names[i]}.$try.log 2>&1
+      st=$?
+      dt=$(printf '%.1f' $(( EPOCHREALTIME - t0 )))
+      # bez [MMAP] šumu a bez výpisu fault handleru (hex adresy dávají falešné shody)
+      out=$(grep -vE '^\[MMAP\]|^FAULT#|^  |^[0-9a-f]+-[0-9a-f]+ ' $dir/${names[i]}.$try.log)
+      sig=""
+      (( st > 128 && st < 128 + ${#signals} )) && sig=" SIG${signals[st-128+1]}"
+      # pád na SEGV/BUS/ILL/FPE/SYS je vždy FAIL; ABRT (teardown node) je povolený
+      if (( st == 139 || st == 135 || st == 132 || st == 136 || st == 159 )); then
+        :
+      elif [[ -z ${expect[i]} && $st == 0 ]] || [[ -n ${expect[i]} && $out == *${expect[i]}* ]]; then
+        (( try == 1 )) && res=PASS || res=FLAKY
+        break
+      fi
+      (( try == 1 )) && first="exit=$st$sig"
+    done
+    case $res in
+      PASS)  print -P "%F{green}PASS %f  ${(r:14:)names[i]} exit=$st$sig  ${dt}s"; (( pass++ )) ;;
+      FLAKY) print -P "%F{yellow}FLAKY%f  ${(r:14:)names[i]} 1. pokus $first, 2. prošel  → $dir/${names[i]}.1.log"; (( flaky++ )) ;;
+      FAIL)  print -P "%F{red}FAIL %f  ${(r:14:)names[i]} exit=$st$sig  ${dt}s  → $dir/${names[i]}.2.log"; (( fail++ )) ;;
+    esac
+  done
+  print -P "── %F{green}$pass PASS%f  %F{yellow}$flaky FLAKY%f  %F{red}$fail FAIL%f  %F{8}$skip SKIP%f"
+}
+_lxtest_tmux() {
+  local s=$R/tmp/lxtest.sock; rm -f $s
+  LX_SHELL=$R/bin/bash lx tmux -S $s new-session -d -s t -x 80 -y 24
+  sleep 3
+  lx tmux -S $s send-keys -t t 'echo AHOJ_$((6*7))' Enter; sleep 2
+  lx tmux -S $s capture-pane -p -t t
+  lx tmux -S $s kill-server; rm -f $s
+}
+
+# Neznámý příkaz → zkusí ho najít v Parrot rootfs a spustit přes loader.
+command_not_found_handler() {
+  local bin
+  if bin=$(lxwhich $1 2>/dev/null); then
+    print -u2 -P "%F{8}[lx] $1 → ${bin#$R}%f"
+    lx "$@"
+    return $?
+  fi
+  print -u2 "zsh: příkaz nenalezen: $1"
+  return 127
+}
+
+# help [téma] → česká nápověda s příklady
+help() {
+  local c=$'\e[36m' y=$'\e[33m' g=$'\e[90m' b=$'\e[1m' r=$'\e[0m'
+  local t=${1:-prehled}
+  _h_title() { print "\n${b}${c}── $1 ──${r}" }
+  _h_cmd()   { printf "  ${y}%-22s${r} %s\n" "$1" "$2" }
+  _h_ex()    { print "    ${g}\$${r} $1" }
+
+  if [[ $t == prehled || $t == vse ]]; then
+    print "${b}Nápověda k shellu pro testování elf_loaderu${r}"
+    print "Proměnné: ${y}\$D${r} = app files (HOME), ${y}\$R${r} = Parrot rootfs, ${y}\$L${r} = loader"
+    print "Podrobnosti: ${y}help lx${r} | ${y}help test${r} | ${y}help debug${r} | ${y}help helper${r} | ${y}help tmux${r} | ${y}help prompt${r} | ${y}help klavesy${r} | ${y}help vse${r}"
+  fi
+
+  if [[ $t == lx || $t == vse || $t == prehled ]]; then
+    _h_title "Spouštění Parrot programů přes loader"
+    _h_cmd "lx <příkaz> [arg]" "spustí Parrot binárku pod loaderem (hledá v Parrot PATH)"
+    _h_cmd "lxq <příkaz> [arg]" "totéž, ale bez šumu [MMAP] (jen pro neinteraktivní běh)"
+    _h_cmd "lxwhich <příkaz>" "ukáže, kde binárka v Parrot rootfs leží"
+    _h_cmd "<neznámý příkaz>" "zkusí se automaticky najít v Parrotu a spustit přes loader"
+    if [[ $t != prehled ]]; then
+      print "  Příklady:"
+      _h_ex "lx bash -c 'echo \$((6*7))'        ${g}# Parrot bash, vypíše 42${r}"
+      _h_ex "lx python3 -c 'import sys; print(sys.version)'"
+      _h_ex "git --version                     ${g}# není na hostu → spustí se Parrot git${r}"
+      _h_ex "lxwhich node                      ${g}# node z nvm v rootfs${r}"
+      _h_ex "lxq ls -la /etc | head            ${g}# bez [MMAP] řádků${r}"
+      _h_ex "LX_ENV='FOO=1 BAR=2' lx env | grep -E 'FOO|BAR'   ${g}# extra proměnné pro guest${r}"
+    fi
+  fi
+
+  if [[ $t == test || $t == vse || $t == prehled ]]; then
+    _h_title "Testy"
+    _h_cmd "lxtest" "regresní sada: echo, bash, exec, python, node22, nejnovější node, bun, tmux"
+    _h_cmd "lxlog <příkaz>" "běh s výstupem do logu, ukáže konec a exit kód"
+    _h_cmd "lxinfo" "velikost a datum loaderu, rootfs, větev repa"
+    if [[ $t != prehled ]]; then
+      print "  Výsledky: ${g}PASS${r} prošel, ${y}FLAKY${r} prošel až napodruhé, FAIL selhal dvakrát,"
+      print "  SKIP binárka v rootfs chybí. Logy jsou v ${y}\$LX_LOG/test${r} (~/.cache/lx/test)."
+      print "  Příklady:"
+      _h_ex "lxtest"
+      _h_ex "L=\$D/usr/bin/jiny_loader lxtest   ${g}# stejná sada s jiným loaderem (A/B)${r}"
+      _h_ex "lxlog node -e 'console.log(1)'"
+      _h_ex "for i in {1..50}; do lxq echo x >/dev/null || print pád \$?; done   ${g}# četnost náhodných pádů${r}"
+    fi
+  fi
+
+  if [[ $t == debug || $t == vse || $t == prehled ]]; then
+    _h_title "Ladění pádů"
+    _h_cmd "lxfault <příkaz>" "vypíše jen řádky s pádem (FAULT, pc in, SIGSYS, panic)"
+    _h_cmd "lxdbg VAR=1 <příkaz>" "spustí s ladicí proměnnou loaderu"
+    _h_cmd "lxdiag [-c]" "diag.txt loaderu se stopami SIGSYS a startu, -c ho smaže"
+    if [[ $t != prehled ]]; then
+      print "  Užitečné proměnné: ${y}ELF_DEBUG=1${r} (průběh načítání), ${y}ELF_LOADER_SIGTRACE=1${r},"
+      print "  ${y}ELF_LOADER_VMTRACE=1${r} (všechna mmap), ${y}ELF_LOADER_DUMP_MAPS=1${r} (mapa paměti)."
+      print "  Příklady:"
+      _h_ex "lxfault node --version"
+      _h_ex "lxdiag -c; lx bash -i; lxdiag      ${g}# co zachytil SIGSYS handler během běhu bashe${r}"
+      _h_ex "lxdbg ELF_LOADER_SIGTRACE=1 bash -c true"
+    fi
+  fi
+
+  if [[ $t == helper || $t == vse || $t == prehled ]]; then
+    _h_title "Helper knihovny (ELF_LOADER_HELPER)"
+    _h_cmd "lxhelper <.so> <příkaz>" "spustí příkaz s vlastní glibc knihovnou před libc"
+    if [[ $t != prehled ]]; then
+      print "  Knihovna se kompiluje v Parrotu obyčejným gcc a přebije libc funkce volané přes PLT."
+      print "  Realnou funkci najde přes dlsym(RTLD_NEXT). Funkce, které přebíjí loader sám"
+      print "  (open, stat, exec...), mají přednost. Víc knihoven: cesty oddělené dvojtečkou."
+      print "  Příklady:"
+      _h_ex "lxhelper \$R/root/elf_loader/helper/lxhelper_test.so uname -r   ${g}# release končí +lxhelper${r}"
+      _h_ex "LX_ENV='LXHELPER_VERBOSE=1' lxhelper \$R/root/elf_loader/helper/lxhelper_test.so true"
+    fi
+  fi
+
+  if [[ $t == tmux || $t == vse ]]; then
+    _h_title "tmux"
+    _h_cmd "ltmux [arg]" "Parrot tmux přes loader, shell = bionic zsh"
+    print "  Příklady:"
+    _h_ex "ltmux                             ${g}# nová session${r}"
+    _h_ex "ltmux attach                      ${g}# připojit se k běžící session${r}"
+    _h_ex "LTMUX_SHELL=\$R/bin/bash ltmux     ${g}# Parrot bash místo zsh${r}"
+  fi
+
+  if [[ $t == prompt || $t == vse ]]; then
+    _h_title "Prompt"
+    print "  ${c}host${r} ${b}~/cesta${r} ${g}(dev)${r} ${g}3.2s${r} \e[31m✗139 SIGSEGV${r}"
+    print "  Větev se ukáže jen v repu loaderu, doba jen nad 2 s, exit kód jen při chybě."
+  fi
+
+  if [[ $t == klavesy || $t == vse ]]; then
+    _h_title "Klávesy a pluginy"
+    _h_cmd "šipka nahoru/dolů" "hledá v historii podle napsaného textu"
+    _h_cmd "šipka vpravo / End" "přijme šedý návrh z historie"
+    _h_cmd "Tab" "doplňování s menu, bez ohledu na velikost písmen"
+    _h_cmd "Ctrl+U" "smaže řádek před kurzorem"
+    _h_cmd "Ctrl+šipky" "skok po slovech"
+    _h_cmd "Shift+Tab" "vrátí poslední úpravu"
+  fi
+
+  if [[ $t == prehled ]]; then
+    _h_title "Ostatní"
+    _h_cmd "cdl / cdr" "přejde do repa loaderu / do Parrot rootfs"
+    _h_cmd "reload" "znovu načte ~/.zshrc"
+  fi
+  unfunction _h_title _h_cmd _h_ex
+  [[ $t == (prehled|vse|lx|test|debug|helper|tmux|prompt|klavesy) ]] || { print -u2 "neznámé téma: $t"; return 1 }
+}
+alias lxhelp=help
+
+# ───────────────────────── aliasy ─────────────────────────
+alias ll='ls -la'
+alias cdr="cd $R"
+alias cdl="cd $R/root/elf_loader"
+alias rg="rg --color=always --colors 'path:fg:green' --colors 'line:fg:red' --colors 'match:fg:yellow'"
+alias reload='source $HOME/.zshrc'
+
+[[ -f ~/.env ]] && source ~/.env
+
+# ───────────────────────── pluginy (bionic zsh, prefix files/usr) ─────────────────────────
+# Načítá je zsh-plugins.zshrc z balíku zsh (musí být na konci kvůli syntax-highlightingu).
+if [[ -f $D/usr/etc/zsh-plugins.zshrc ]]; then
+  source $D/usr/etc/zsh-plugins.zshrc
+  ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+  if (( ${+ZSH_HIGHLIGHT_STYLES} )); then
+    ZSH_HIGHLIGHT_STYLES[unknown-token]=fg=red,underline
+    ZSH_HIGHLIGHT_STYLES[command]=fg=green
+    ZSH_HIGHLIGHT_STYLES[function]=fg=cyan,bold
+    ZSH_HIGHLIGHT_STYLES[alias]=fg=green,bold
+    ZSH_HIGHLIGHT_STYLES[path]=fg=blue,bold
+    ZSH_HIGHLIGHT_STYLES[comment]=fg=8
+  fi
+fi
+alias tmux=ltmux                                    # tmux pod loaderem, shell = bionic zsh

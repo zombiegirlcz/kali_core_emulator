@@ -5,8 +5,12 @@ import android.os.Process
 import android.util.Log
 import com.linux_core.core.UsbFdExporter
 import com.linux_core.core.terminal.ShellDaemonClient
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import java.io.BufferedInputStream
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.security.MessageDigest
 
 class ProotConfig(
@@ -32,7 +36,8 @@ object ProotManager {
     // Bumpnout při změně binárek v assets: staré verze se pak smažou a
     // nasadí znovu. 2026-08-11: přechod glibc → Bionic (rseq/SIGSYS fix).
     // 2026-08-14: layout-20260814-2 — redeploy celého toolchainu vč. proot/loader + zkill.
-    private const val USR_TOOLS_VERSION = "layout-20260815-1"
+    // 2026-09-29: + elf_loader + ltmux (glibc tmux z rootfs pro `ashell --tmux`).
+    private const val USR_TOOLS_VERSION = "layout-20260929-1"
 
     /**
      * Načte `/.nh/manifest` docker image (KEY=VALUE po řádcích, `#` komentáře).
@@ -86,6 +91,9 @@ object ProotManager {
         hostPrefixLibDir.mkdirs()
         deployDir(context, "usr/bin", File(rootDir, "usr/bin"), executable = true, version = USR_TOOLS_VERSION)
         deployDir(context, "usr/lib", File(rootDir, "usr/lib"), executable = false, version = USR_TOOLS_VERSION)
+        // Bionic zsh (+ ncurses, terminfo, pluginy) a ~/.zshrc pro host shell. Musí běžet
+        // PO deployDir: version gate tam usr/bin i usr/lib maže, zsh se pak nasadí znovu.
+        deployZshHost(context, rootDir)
 
         // Static proot/loader do usr/bin (kanonické jméno pro boot skript Fáze 2)
         val suffix = detectArchSuffix()
@@ -475,6 +483,70 @@ object ProotManager {
             prootPath = prootBin.absolutePath,
             rootfsDir = rootfsDir.absolutePath,
         )
+    }
+
+    /**
+     * Rozbalí `assets/zsh.tgz` (bionic zsh 5.9, ncurses, terminfo, pluginy; cesty v archivu
+     * jsou `data/user/0/com.linux_core/files/...`) do filesDir a nasadí `~/.zshrc`
+     * z `assets/zshrc.host`. Marker `usr/.zsh_host` drží md5 archivu; když chybí `usr/bin/zsh`
+     * (např. wipe z deployDir), rozbalí se znovu.
+     */
+    private fun deployZshHost(
+        context: Context,
+        rootDir: File,
+    ) {
+        try {
+            val hash = assetMd5(context, "zsh.tgz")
+            val marker = File(rootDir, "usr/.zsh_host")
+            val zsh = File(rootDir, "usr/bin/zsh")
+            val upToDate = zsh.exists() && marker.exists() && marker.readText().trim() == hash
+            if (!upToDate) {
+                val prefix = "data/user/0/com.linux_core/files/"
+                val rootCanon = rootDir.canonicalPath + File.separator
+                var files = 0
+                TarArchiveInputStream(
+                    GzipCompressorInputStream(BufferedInputStream(context.assets.open("zsh.tgz"))),
+                ).use { tar ->
+                    while (true) {
+                        val e = tar.nextEntry ?: break
+                        val name = e.name.removePrefix("./")
+                        if (!name.startsWith(prefix)) continue
+                        val rel = name.removePrefix(prefix).trimEnd('/')
+                        if (rel.isEmpty()) continue
+                        val target = File(rootDir, rel)
+                        if (!target.absoluteFile.normalize().path.startsWith(rootCanon)) continue
+                        when {
+                            e.isDirectory -> target.mkdirs()
+                            e.isSymbolicLink -> {
+                                target.parentFile?.mkdirs()
+                                Files.deleteIfExists(target.toPath())
+                                Files.createSymbolicLink(target.toPath(), Paths.get(e.linkName))
+                            }
+                            e.isLink -> {
+                                val src = File(rootDir, e.linkName.removePrefix("./").removePrefix(prefix))
+                                if (src.isFile) {
+                                    target.parentFile?.mkdirs()
+                                    Files.copy(src.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                                }
+                            }
+                            else -> {
+                                target.parentFile?.mkdirs()
+                                Files.deleteIfExists(target.toPath())
+                                target.outputStream().use { tar.copyTo(it) }
+                                target.setReadable(true, false)
+                                target.setExecutable((e.mode and 0b001_001_001) != 0, false)
+                                files++
+                            }
+                        }
+                    }
+                }
+                marker.writeText(hash)
+                Log.i(TAG, "deployZshHost: rozbaleno $files souborů (zsh.tgz $hash)")
+            }
+            deployIfChanged(context, "zshrc.host", File(rootDir, ".zshrc"))
+        } catch (e: Exception) {
+            Log.e(TAG, "deployZshHost failed: ${e.message}")
+        }
     }
 
     private fun deployDir(
