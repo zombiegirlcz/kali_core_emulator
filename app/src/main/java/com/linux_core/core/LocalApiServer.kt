@@ -140,18 +140,24 @@ object LocalApiServer {
      */
     private fun startAshellPty(context: Context) {
         try {
-            val target = File(context.filesDir, "ashell_pty")
+            // Binárka patří do usr/bin (host toolchain), ne do rootu filesDir.
+            // Deploy je self-healing (nezávislý na pořadí vůči deployUsrTools),
+            // ale míří na stejnou cestu, kterou spravuje i version-gated balík.
+            val target = File(context.filesDir, "usr/bin/ashell_pty")
+            target.parentFile?.mkdirs()
+            // Migrace: ukliď starou binárku z rootu filesDir.
+            File(context.filesDir, "ashell_pty").takeIf { it.exists() }?.delete()
             var deploy = !target.exists() || target.length() == 0L
             if (!deploy) {
                 try {
-                    val assetSize = context.assets.open("ashell_pty").use { it.available().toLong() }
+                    val assetSize = context.assets.open("usr/bin/ashell_pty").use { it.available().toLong() }
                     if (target.length() != assetSize) deploy = true
                 } catch (e: Exception) {
                     deploy = true
                 }
             }
             if (deploy) {
-                context.assets.open("ashell_pty").use { input ->
+                context.assets.open("usr/bin/ashell_pty").use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
                 target.setExecutable(true, false)

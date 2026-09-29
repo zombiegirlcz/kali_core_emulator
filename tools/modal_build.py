@@ -357,7 +357,8 @@ def _build_native_bin(src_dir):
     print("─" * 60)
     print("[native-bin] Building su_daemon...")
     daemon_src = os.path.join(cpp_dir, "su_daemon.c")
-    daemon_bin_path = os.path.join(assets_dir, "su_daemon")
+    daemon_bin_path = os.path.join(assets_dir, "usr", "bin", "su_daemon")
+    os.makedirs(os.path.dirname(daemon_bin_path), exist_ok=True)
     if not os.path.exists(daemon_src):
         print(f"[native-bin] {daemon_src} chybí — su_daemon PŘESKOČEN")
     else:
@@ -381,7 +382,8 @@ def _build_native_bin(src_dir):
     print("─" * 60)
     print("[native-bin] Building ashell_pty...")
     pty_src = os.path.join(cpp_dir, "ashell_pty.c")
-    pty_bin_path = os.path.join(assets_dir, "ashell_pty")
+    pty_bin_path = os.path.join(assets_dir, "usr", "bin", "ashell_pty")
+    os.makedirs(os.path.dirname(pty_bin_path), exist_ok=True)
     if not os.path.exists(pty_src):
         print(f"[native-bin] {pty_src} chybí — ashell_pty PŘESKOČEN")
     else:
@@ -1262,9 +1264,9 @@ _NATIVE_COMPONENTS = {
                      "app/src/main/cpp/cpuctl.c"],
         "outputs": ["app/src/main/assets/usb_bridge",
                      "app/src/main/jniLibs/arm64-v8a/libshelldaemon.so",
-                     "app/src/main/assets/su_daemon",
+                     "app/src/main/assets/usr/bin/su_daemon",
                      "app/src/main/assets/su_wrapper",
-                     "app/src/main/assets/ashell_pty",
+                     "app/src/main/assets/usr/bin/ashell_pty",
                      "app/src/main/assets/ashell",
                      "magisk-modules/nh_cpuctl/system/bin/cpuctl"],
         "fn": build_native_bin,

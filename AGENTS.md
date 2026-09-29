@@ -110,10 +110,18 @@ Ostatní ABI (`x86`, `x86_64`, `armeabi-v7a`) obsahují jen PRoot.
 Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modalu a **musí být vždy v APK**:
 
 1. **Přidej kompilační krok** do `build_native()` (resp. `_build_native_bin`/`_build_native_lib`/
-   `_build_usrtools`) v `tools/modal_build.py` — NDK cross-compile → `assets/` (např. `su_daemon`,
-   `su_wrapper`, `usb_bridge`) nebo `jniLibs/arm64-v8a/` (`*.so`).
+   `_build_usrtools`) v `tools/modal_build.py` — NDK cross-compile → `assets/` (např.
+   `su_wrapper`, `usb_bridge`), `assets/usr/bin/` (host binárky — `su_daemon`, `ashell_pty`; patří
+   do host toolchainu, ne do rootu `filesDir`) nebo `jniLibs/arm64-v8a/` (`*.so`).
 2. **Spusť `zsh mbuild native`** (nebo `all`) + `pull_full_assets()` → artefakty do lokálního repa.
-3. **Commitni a pushni binárky** (`assets/su_daemon`, `su_wrapper`, `usb_bridge`, `usr/bin/*`, `usr/lib/*`).
+3. **Commitni a pushni binárky** (`assets/su_wrapper`, `usb_bridge`, `usr/bin/*` — vč. `su_daemon`,
+   `ashell_pty` — a `usr/lib/*`). **Host binárky `su_daemon`/`ashell_pty` jsou v `assets/usr/bin/`**
+   (přesun 2026-09-29 z rootu): nasazují se do `filesDir/usr/bin` jako součást version-gated host
+   toolchainu (`deployDir("usr/bin")` — pozor, ten při bumpu `USR_TOOLS_VERSION` **wipne celý usr/bin**,
+   proto binárky MUSÍ být v `assets/usr/bin`, jinak po bumpu zmizí). Deploy je i self-healing z
+   `LocalApiServer.startAshellPty` / `ProotManager` / `RootBridgeTab` (mkdirs + migrace: mažou starou
+   binárku z rootu `filesDir`). `pkill -x su_daemon` matchuje comm, ne cestu — přesun ho neovlivní.
+   **Nevracet zpět do rootu `filesDir`.**
    `.gitignore` má pro ně explicitní `!` výjimky a sync klonuje z GitHubu — necommitnutá binárka
    v APK nebude. (Přesně tak se 2026-08-23 ztratily bionic usrtools; obnova:
    `modal run tools/rebuild_usrtools_recovery.py::rebuild`.)

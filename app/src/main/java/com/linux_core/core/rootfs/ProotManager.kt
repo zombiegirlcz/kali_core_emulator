@@ -1511,11 +1511,14 @@ object ProotManager {
             }
         }
 
-        // 3. Deploy su_daemon to host filesDir
+        // 3. Deploy su_daemon do usr/bin (host toolchain), ne do rootu filesDir.
         try {
-            val daemonTarget = File(context.filesDir, "su_daemon")
+            val daemonTarget = File(context.filesDir, "usr/bin/su_daemon")
+            daemonTarget.parentFile?.mkdirs()
+            // Migrace: ukliď starou binárku z rootu filesDir.
+            File(context.filesDir, "su_daemon").takeIf { it.exists() }?.delete()
             // Hash-gated deploy (asset MD5 vs. deployed MD5) — see su_wrapper above.
-            val daemonNewHash = assetMd5(context, "su_daemon")
+            val daemonNewHash = assetMd5(context, "usr/bin/su_daemon")
             val daemonCurHash =
                 if (daemonTarget.exists() && daemonTarget.length() > 0L) {
                     fileMd5(daemonTarget)
@@ -1524,7 +1527,7 @@ object ProotManager {
                 }
             val shouldDeploy = daemonCurHash != daemonNewHash
             if (shouldDeploy) {
-                context.assets.open("su_daemon").use { input ->
+                context.assets.open("usr/bin/su_daemon").use { input ->
                     daemonTarget.outputStream().use { output -> input.copyTo(output) }
                 }
                 daemonTarget.setExecutable(true, false)

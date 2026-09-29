@@ -184,10 +184,14 @@ object RootBridgeManager {
                 val ipcDir = File(context.filesDir, "ipc")
                 if (!ipcDir.exists()) ipcDir.mkdirs()
 
-                val daemonBin = File(context.filesDir, "su_daemon")
+                // Binárka v usr/bin (host toolchain), ne v rootu filesDir.
+                val daemonBin = File(context.filesDir, "usr/bin/su_daemon")
+                daemonBin.parentFile?.mkdirs()
+                // Migrace: ukliď starou binárku z rootu filesDir.
+                File(context.filesDir, "su_daemon").takeIf { it.exists() }?.delete()
                 if (!daemonBin.exists()) {
                     // Try to deploy from assets
-                    context.assets.open("su_daemon").use { input ->
+                    context.assets.open("usr/bin/su_daemon").use { input ->
                         daemonBin.outputStream().use { output -> input.copyTo(output) }
                     }
                     daemonBin.setExecutable(true, false)
