@@ -282,8 +282,14 @@ TLS MITM (Man-in-the-Middle) umožňuje plně dešifrovat HTTPS a další TLS pr
 
 ### Konfigurace MITM v runtime
 
-- MITM CA cert: `assets/certs/mitm-ca.crt`
-- MITM CA privátní klíč: `assets/certs/mitm-ca.p12`
+- MITM CA cert + privátní klíč: **generuje se na zařízení při prvním použití MITM** do
+  `filesDir/certs/mitm-ca.p12` (self-signed CA:true, RSA-2048, alias `nethunter_mitm_ca`,
+  heslo z `KEYSTORE_PASSWORD`, v debugu fallback `nethunter-dev`). Přežije aktualizace appky,
+  smaže se jen s daty appky. Privátní klíč **nikdy není v gitu ani v APK** (bundled dev p12
+  byl historicky v `.gitignore` → chyběl → MITM vždy padal do passthrough).
+- Aktuální CA cert k instalaci: `GET /vpn/mitm/ca` (`vpn-cli mitm ca`) — vrací `cert.encoded`
+  vygenerované CA, ne statický asset.
+- Back-compat: pokud v assetech `certs/mitm-ca.p12` existuje, použije se místo generace.
 - Alias v PKCS12: `nethunter_mitm_ca`
 
 ### 🔐 Instalace Root CA certifikátu

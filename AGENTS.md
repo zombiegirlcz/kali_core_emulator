@@ -570,5 +570,9 @@ Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiáln�
 1. MITM je historicky nestabilní (padá do passthrough na `SSLException` v unwrapu) — vždy ověř na zařízení.
 2. Widget zakomentován v manifestu („pro later").
 3. DNS tab prakticky prázdný (moderní Android jede DoH/TCP, ne UDP/53).
-4. `app/src/main/assets/certs/mitm-ca.p12` chybí (je jen `.crt`) — build projde díky debug fallbacku.
+4. ~~`app/src/main/assets/certs/mitm-ca.p12` chybí (je jen `.crt`)~~ **VYŘEŠENO (2026-09-29):**
+   bundled dev p12 byl v `.gitignore` → v žádném buildu → MITM vždy passthrough. `RootCaInstaller`
+   teď CA **generuje na zařízení** (`MitmCertSigner.createSelfSignedCa`, RSA-2048, CA:true) do
+   `filesDir/certs/mitm-ca.p12` (heslo přes `resolvePassword()`), self-healing, klíč nikdy v gitu/APK.
+   Cert k instalaci vydává `GET /vpn/mitm/ca`. Asset p12 (pokud existuje) má přednost (back-compat).
 5. Cert piny expirují 2027-12-31 → pak obnovit SHA-256 v `network_security_config.xml`.

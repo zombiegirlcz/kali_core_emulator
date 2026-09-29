@@ -8,7 +8,6 @@ import java.io.File
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
-import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.KeyManagerFactory
