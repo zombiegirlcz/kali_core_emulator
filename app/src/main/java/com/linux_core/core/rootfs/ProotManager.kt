@@ -338,7 +338,7 @@ object ProotManager {
 
         if (appIntegration) {
             createMasterScript(homeDir, distroId, hasRoot)
-            createEntrypointScript(homeDir)
+            createEntrypointScript(context, homeDir)
         }
         deployVpnHelpDocument(context, homeDir)
         if (appIntegration) deployWelcomeProfile(context, rootfsDir, distroId)
@@ -1101,78 +1101,27 @@ object ProotManager {
         masterFile.setExecutable(true, false)
     }
 
-    private fun createEntrypointScript(homeDir: File) {
+    /**
+     * Nasadí entrypoint.sh z assetu (`assets/entrypoint.sh`) do rootfs `homeDir`.
+     * Skript je statický — locale fix, password fix i DNS (`printf`, ne `echo -e`) jsou
+     * inlinované přímo v assetu, aby ProotManager nedržel stovky řádků shellu v Kotlinu.
+     * (Ekvivalent `buildLocaleFix()`/`buildPasswordFix(null)`, které dál používá jen
+     * `createMasterScript`.)
+     */
+    private fun createEntrypointScript(
+        context: Context,
+        homeDir: File,
+    ) {
         val entryFile = File(homeDir, "entrypoint.sh")
-        val script =
-            StringBuilder().apply {
-                append("#!/bin/bash").append(NL)
-                append("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").append(NL)
-                append("export TMPDIR=/tmp").append(NL)
-                append("unset LD_PRELOAD").append(NL)
-                append(buildLocaleFix()).append(NL)
-                append(buildPasswordFix(null)).append(NL)
-                append("echo -e \"nameserver 8.8.8.8\\nnameserver 8.8.4.4\" > /etc/resolv.conf 2>/dev/null || true").append(NL)
-                append("rm -f /var/lib/dpkg/lock* 2>/dev/null || true").append(NL)
-
-                append("# Restore passwd if it was previously diverted by mistake").append(NL)
-                append("for prefix in /usr/sbin /sbin /usr/bin /bin; do").append(NL)
-                append("  path=\"\$prefix/passwd\"").append(NL)
-                append("  if [ -L \"\$path\" ] && [ -f \"\$path.distrib\" ]; then").append(NL)
-                append("    rm -f \"\$path\"").append(NL)
-                append("    dpkg-divert --remove --local --rename \"\$path\" 2>/dev/null || true").append(NL)
-                append("  fi").append(NL)
-                append("done").append(NL)
-
-                append("setup_user_zsh() {").append(NL)
-                append("    local target_home=\"\$1\"").append(NL)
-                append("    local user_name=\"\$2\"").append(NL)
-                append("    local zrc=\"\$target_home/.zshrc\"").append(NL)
-                append("    [ ! -d \"\$target_home\" ] && return").append(NL)
-                append("    # Zkopiruje se optimalizovany zshrc pouze pokud neexistuje").append(NL)
-                append("    if [ ! -f \"\$zrc\" ]; then").append(NL)
-                append("        if [ -f /etc/skel/.zshrc.nethunter ]; then").append(NL)
-                append("            cp /etc/skel/.zshrc.nethunter \"\$zrc\"").append(NL)
-                append("        elif [ -f /etc/skel/.zshrc ]; then").append(NL)
-                append("            cp /etc/skel/.zshrc \"\$zrc\"").append(NL)
-                append("        fi").append(NL)
-                append("    fi").append(NL)
-                append("    # Clean old fragments").append(NL)
-                append(
-                    "    grep -v -e 'NetHunter AI Operator' -e 'FORCE_ZSH_' -e 'source /etc/nethunter.zshrc' \"\$zrc\" > /tmp/.nh_zrc 2>/dev/null || true",
-                ).append(NL)
-                append("    cat /tmp/.nh_zrc > \"\$zrc\" 2>/dev/null || true").append(NL)
-                append("    rm -f /tmp/.nh_zrc 2>/dev/null || true").append(NL)
-                append("    [ -n \"\$user_name\" ] && chown \"\$user_name:\$user_name\" \"\$zrc\" 2>/dev/null || true").append(NL)
-                append("}").append(NL)
-
-                append("setup_user_zsh /root root").append(NL)
-                append("[ -d /home/parrot ] && setup_user_zsh /home/parrot parrot").append(NL)
-                append("[ -d /home/kali ] && setup_user_zsh /home/kali kali").append(NL)
-
-                append("chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true").append(NL)
-                append("# Dropbear SSH server (fix for OpenSSH seccomp crash on Android kernel)").append(NL)
-                append("if command -v dropbear >/dev/null 2>&1; then").append(NL)
-                append("  if ! pidof dropbear >/dev/null 2>&1; then").append(NL)
-                append("    mkdir -p /etc/dropbear").append(NL)
-                append("    for keytype in rsa ecdsa ed25519; do").append(NL)
-                append("      KEYFILE=\"/etc/dropbear/dropbear_\${keytype}_host_key\"").append(NL)
-                append("      [ -f \"\$KEYFILE\" ] || dropbearkey -t \"\$keytype\" -f \"\$KEYFILE\" 2>&1 | tail -1").append(NL)
-                append("    done").append(NL)
-                append("    # Use port 2222 (non-privileged — PRoot can't bind to port 22)").append(NL)
-                append("    dropbear -p 2222 2>/dev/null && echo '[*] dropbear SSH server started on port 2222'").append(NL)
-                append("  fi").append(NL)
-                append("fi").append(NL)
-                append("[ -f /etc/motd ] && cat /etc/motd").append(NL)
-                append("echo '[*] Starting session...'").append(NL)
-                append("ENTRY_SHELL=\$(command -v zsh || echo /bin/bash)").append(NL)
-                append("if [ \$# -gt 0 ]; then").append(NL)
-                append("    exec \"\$ENTRY_SHELL\" -c \"\$*\"").append(NL)
-                append("else").append(NL)
-                append("    exec \"\$ENTRY_SHELL\" --login").append(NL)
-                append("fi").append(NL)
-            }.toString()
-        entryFile.writeText(script)
-        entryFile.setExecutable(true, false)
+        try {
+            context.assets.open("entrypoint.sh").use { input ->
+                entryFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            entryFile.setExecutable(true, false)
+            entryFile.setReadable(true, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to deploy entrypoint.sh from asset: ${e.message}")
+        }
     }
 
     private fun fixLdLinuxSymlinks(
