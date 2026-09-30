@@ -527,9 +527,29 @@ class VpnNatEngine(
             Log.d(TAG, "Received FIN from client on port $srcPort")
             session.clientSeqNum = tcpHeader.seqNum + 1
             sendTcpAck(session)
-            // Přechod do stavu FIN_WAIT a čekání na potvrzení od serveru
             session.state = TcpState.FIN_WAIT
-            closeTcpSession(srcPort, sendRst = false)
+            when {
+                // MITM owns the upstream channel; tear the whole session down (its close() RSTs the client).
+                session.isTlsMitm -> closeTcpSession(srcPort, sendRst = false)
+                // Half-close: signal EOF upstream but keep the session so server->client data still
+                // flows. When the server closes (WAN read == -1) handleReadableKey sends FIN to the
+                // client — a proper 4-way close instead of leaving the client stuck in FIN_WAIT_2.
+                session.socketChannel?.isConnected == true && session.sendQueue.isEmpty() -> {
+                    try {
+                        session.socketChannel?.socket()?.shutdownOutput()
+                        Log.v(TAG, "Half-closed WAN output for port $srcPort (client FIN, FIN_WAIT)")
+                    } catch (e: Exception) {
+                        Log.v(TAG, "shutdownOutput failed for port $srcPort (${e.message}) — full close")
+                        sendTcpFin(session)
+                        closeTcpSession(srcPort, sendRst = false)
+                    }
+                }
+                // WAN not connected yet, or unflushed queued data — FIN the client and tear down.
+                else -> {
+                    sendTcpFin(session)
+                    closeTcpSession(srcPort, sendRst = false)
+                }
+            }
             return
         }
 
@@ -1109,6 +1129,11 @@ class VpnNatEngine(
                 closeTcpSessionWithRetry(port)
                 tcpClosed++
             } else if (session.state == TcpState.ESTABLISHED && now - session.lastActiveTime > 120000) {
+                closeTcpSessionWithRetry(port)
+                tcpClosed++
+            } else if (session.state == TcpState.FIN_WAIT && now - session.lastActiveTime > 60000) {
+                // Half-closed (client FIN) but the server never closed — reap so it doesn't leak.
+                Log.d(TAG, "FIN_WAIT session $port idle ${now - session.lastActiveTime}ms — closing")
                 closeTcpSessionWithRetry(port)
                 tcpClosed++
             }

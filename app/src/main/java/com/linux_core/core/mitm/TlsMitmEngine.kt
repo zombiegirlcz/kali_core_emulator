@@ -342,7 +342,7 @@ class TlsMitmSession(
             val clientNetOut = ByteBuffer.allocate(32768)
             val clientAppOut = ByteBuffer.allocate(16384)
             clientNetIn.put(initialClientHello)
-            clientNetIn.flip()
+            // Leave clientNetIn in WRITE (accumulation) mode — runEngineHandshake flips internally.
 
             val clientDone = runEngineHandshake(
                 engine = clientEngine!!,
@@ -430,7 +430,7 @@ class TlsMitmSession(
         val clientNetOut = ByteBuffer.allocate(32768)
         val clientAppOut = ByteBuffer.allocate(16384)
         clientNetIn.put(initialClientHello)
-        clientNetIn.flip()
+        // Leave clientNetIn in WRITE (accumulation) mode — runEngineHandshake flips internally.
 
         val clientDone = runEngineHandshake(
             engine = clientEngine!!,
@@ -802,6 +802,12 @@ class TlsMitmSession(
         var iterations = 0
         var underflowStreak = 0
         val maxUnderflowStreak = 200
+        // netIn is a WRITE-mode accumulation buffer (may already hold the initial ClientHello).
+        // We flip→unwrap→compact around each unwrap so ciphertext fragmented across multiple
+        // transport reads is reassembled instead of overwritten — the historical bug where each
+        // read replaced the previous one made large/fragmented server flights (certificate chains)
+        // fail the handshake and fall back to passthrough.
+        var acc = netIn
         while (iterations < maxIterations) {
             iterations++
             when (engine.handshakeStatus) {
@@ -829,37 +835,49 @@ class TlsMitmSession(
                     underflowStreak = 0
                 }
                 SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> {
-                    val peerData = readFromTransport()
-                    if (peerData != null) {
-                        netIn.clear()
-                        netIn.put(peerData)
-                        netIn.flip()
+                    // Drain every complete record currently buffered (one read may carry several
+                    // records or a partial one) before asking the transport for more bytes.
+                    var needData = false
+                    while (true) {
+                        val bufferedBefore = acc.position()
+                        acc.flip()
                         appOut.clear()
-                        val result = engine.unwrap(netIn, appOut)
-                        if (result.bytesProduced() > 0 && appOut.position() > 0) {
-                            appOut.flip()
-                            Log.d(TAG, "Handshake produced ${appOut.remaining()} app bytes")
-                            appOut.clear()
-                        }
+                        val result = engine.unwrap(acc, appOut)
+                        acc.compact()   // keep unconsumed ciphertext for the next read (fragmentation fix)
                         when (result.status) {
+                            SSLEngineResult.Status.OK -> {
+                                underflowStreak = 0
+                                val consumedSomething = acc.position() < bufferedBefore
+                                // Stop if no progress (guards the inner loop, which doesn't tick
+                                // iterations), the handshake advanced past unwrap, or nothing is left.
+                                if (!consumedSomething ||
+                                    engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NEED_UNWRAP ||
+                                    acc.position() == 0) break
+                            }
+                            SSLEngineResult.Status.BUFFER_UNDERFLOW -> { needData = true; break }
                             SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                                 Log.w(TAG, "Handshake unwrap BUFFER_OVERFLOW")
+                                break
                             }
                             SSLEngineResult.Status.CLOSED -> {
                                 Log.w(TAG, "Handshake transport closed")
                                 return false
                             }
-                            SSLEngineResult.Status.OK -> underflowStreak = 0
-                            else -> {}
                         }
-                        underflowStreak = 0
-                    } else {
-                        underflowStreak++
-                        if (underflowStreak > maxUnderflowStreak) {
-                            Log.w(TAG, "Handshake stuck on NEED_UNWRAP for ${underflowStreak * 5}ms, aborting")
-                            return false
+                    }
+                    if (needData && engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NEED_UNWRAP) {
+                        val peerData = readFromTransport()
+                        if (peerData != null) {
+                            acc = appendCiphertext(acc, peerData)
+                            underflowStreak = 0
+                        } else {
+                            underflowStreak++
+                            if (underflowStreak > maxUnderflowStreak) {
+                                Log.w(TAG, "Handshake stuck on NEED_UNWRAP for ${underflowStreak * 5}ms, aborting")
+                                return false
+                            }
+                            Thread.sleep(5)
                         }
-                        Thread.sleep(5)
                     }
                 }
                 SSLEngineResult.HandshakeStatus.NEED_TASK -> {
@@ -875,6 +893,19 @@ class TlsMitmSession(
         Log.w(TAG, "Handshake iteration limit reached ($maxIterations) status=${engine.handshakeStatus}")
         return engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING &&
                engine.session.cipherSuite != "SSL_NULL_WITH_NULL_NULL"
+    }
+
+    /** Append [data] to a WRITE-mode buffer, growing it if the incoming ciphertext doesn't fit. */
+    private fun appendCiphertext(buf: ByteBuffer, data: ByteArray): ByteBuffer {
+        if (buf.remaining() >= data.size) {
+            buf.put(data)
+            return buf
+        }
+        val bigger = ByteBuffer.allocate(maxOf(buf.capacity() * 2, buf.position() + data.size))
+        buf.flip()
+        bigger.put(buf)
+        bigger.put(data)
+        return bigger
     }
 
     private fun runDelegatedTasks(engine: SSLEngine) {
