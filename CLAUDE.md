@@ -79,7 +79,7 @@ Layers to know:
   its **native little-endian** protocol — never `DataOutputStream.writeInt`), `su_daemon`/`su_wrapper` (fake-root re-entry
   into PRoot), `ashell` (native host-shell client, HTTP + `ashell_pty` PTY protocol).
 
-Optional root add-on: Magisk modules in `magisk-modules/` (`nh_cpuctl` for CPU control, `audit_flood_fix`, `anti_phantom`).
+Optional root add-on: Magisk modules in `magisk-modules/` (`nh_cpuctl` for CPU control, `nh_freeze_guard` for audit-flood mitigation + UDP freeze telemetry, `anti_phantom`).
 
 ## Repository
 

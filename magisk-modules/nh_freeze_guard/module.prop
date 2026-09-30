@@ -1,0 +1,7 @@
+id=nh_freeze_guard
+name=NetHunter Freeze Guard
+version=v1.1
+versionCode=2
+author=NetHunter Operator
+description=Freeze mitigation + telemetrie. Vrstva 1 (vzdy): auditctl -r 1000 pro zmirneni SELinux audit floodu z PRoot spawnu (default 5/s je hluboko pod potrebou). Vrstva 2 (vzdy): dontaudit na setattr denials od proot na /dev/__properties__ (84 procent denials, hlavni zdroj). Vrstva 3 (volitelna): UDP telemetrie z /proc (PSI cpu/io, loadavg, MemAvailable, diskstats inflight+ioticks, stav audit fronty) na server pro diagnostiku fatalnich zamrznuti, kdy zarizeni ztrati pristup k ulozisti a lokalni logy (logcat, /data/anr, dmesg) hard reboot smaze. Telemetrie se spousti jen pokud existuje /data/adb/nh_probe.conf (HOST, PORT). Bezi mimo proot, aby sam negeneroval SELinux audit provoz. Historicka jmena: audit_flood_fix + nh_freeze_probe (2026-09-30 slouceno).
+minMagisk=20400

@@ -617,3 +617,71 @@ Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiáln�
    `filesDir/certs/mitm-ca.p12` (heslo přes `resolvePassword()`), self-healing, klíč nikdy v gitu/APK.
    Cert k instalaci vydává `GET /vpn/mitm/ca`. Asset p12 (pokud existuje) má přednost (back-compat).
 5. Cert piny expirují 2027-12-31 → pak obnovit SHA-256 v `network_security_config.xml`.
+
+## 13. Fatal freeze root cause (2026-09-30) — UFS resume failure, **ne appka**
+
+**Symptom.** Zařízení tvrdě zamrzlo (bez odezvy na tlačítka, bez charging indikace), následoval hard
+watchdog reboot v `06:07:54 CEST`. `com.linux_core` běžel; předchozí session měla `uptime ≈ 42 h 55 m`.
+Lokální `logcat`/`dmesg` byly ztraceny (RAM ringbuffer neuloží při I/O výpadku).
+
+**Zdroj pravdy.** `/sys/fs/pstore/console-ramoops-0` — kernel ring buffer z předchozího bootu, přežije
+přes reboot v rezervovaném regionu RAM (ramoops driver). Plus `/data/anr/anr_2026-09-30-06-08-42-736`
+(App Scout Exception, com.linux_core, `libdebuggerd_client: timeout expired`).
+
+**Časová osa (uptime = sekundy od předchozího bootu):**
+
+```
+[154498.98] ufshcd-qcom 1d84000.ufshc: ufshcd_eh_host_reset_handler: reset in progress - 2
+[154499.18] ufshcd-qcom 1d84000.ufshc: ufshcd_resume: UFS resume error
+[154499.68 → 154502.68] 7× "pwr ctrl cmd 0x18 with mode 0x0 completion timeout" (à 500 ms)
+[154502.68] Host self-block=1, hibern8_exit_cnt=40796, outstanding_reqs=0 outstanding_tasks=1
+[154502.69] ICE (Inline Crypto Engine) registers dump
+[154508 → 154539] kernel žije, userspace visí — poslední řádek je fuel-gauge tik
+~30 s po incidentu → hardware watchdog reset
+```
+
+**Diagnóza.** UFS host controller (`ufshcd-qcom @1d84000`) selhal při resume z power-managementu. PA
+power control (`0x18`) neodpovídal → dm-crypt/fscrypt I/O visí → `/data` nedostupná. Vysoká frekvence
+hibern8 tranzicí (`40796 / 43 h ≈ 15/min`) je známý bug source pro UFS resume failures na Qualcomm
+(mainline commity `scsi: ufs-qcom: Fix …` z 2021+).
+
+**ANR waiting channels potvrzují sekundární rolu appky:** 0 běžících threadů, všechny na
+`binder_ioctl_write_read` / `futex_wait_queue_me` / `epoll_wait` / `pipe_read` / `do_sys_poll`. Appka
+nedělala nic, jen čekala na filesystem, který nikdy neodpověděl. `libdebuggerd_client: timeout` = i
+debuggerd neuměl otevřít `/data/anr/`.
+
+**Co to NENÍ (vyvráceno v ramoops):**
+
+- ❌ **PRoot SELinux audit flood** — v ramoops **nula** `audit`/`avc` řádků, `audit_lost=0`. Byla to
+  hypotéza z pádů 09-26/09-27, ne z tohoto. `nh_freeze_guard` modul (vrstva 1+2: `setattr` dontaudit +
+  `auditctl -r 1000`) zůstává správný jako **prevence** (menší I/O burst z proot spawnu = menší
+  pravděpodobnost, že sami dotlačíme UFS přes hranu), ale **není fix na tento pád**.
+- ❌ **`elf_loader` Go seccomp filter** (hypotéza z `MAX_OVERRIDES 64→256` změny + `gh auth login`).
+  Ramoops nemá stopu po `SECCOMP_RET_TRAP` enforcement; `com.linux_core` waiting channels neobsahují
+  žádný seccomp handler frame. Hypotéza definitivně **vyvrácena**.
+- ❌ **Phantom Process Killer** — appka měla `settings_enable_monitor_phantom_procs=true` (vrácené
+  po incidentu ze 09-27, viz `magisk-modules/anti_phantom`).
+
+**Co příště zachytit — `nh_freeze_guard` vrstva 3 (UDP telemetrie).** Modul je hotový, telemetrii
+aktivuje jen pokud existuje `/data/adb/nh_probe.conf` (`HOST`, `PORT`). Klíčová pole pro UFS-freeze
+diagnostiku: `psi_io_full` (prudce k 100), `dsk_inflight` (roste a neklesá), `dsk_ioticks` (roste)
+v posledních vzorcích před tichem. Bez sondy nemáme jiný způsob, jak zachytit stav několik sekund
+před UFS resume failure — ramoops zachytí až driver dump, což je už při umírání.
+
+**Nevracet zpět (pitfalls z této analýzy):**
+
+1. **`__wrap_chmod` skip pro `/dev`** (v `tools/modal_build.py` `_SELINUX_FIX_C`) — nevracet zpět;
+   84 % denials z proot spawnu bylo `setattr` na `/dev/__properties__/*`.
+2. **`nh_freeze_guard` probe.sh běží mimo proot na hostu** — nedávat dovnitř. Každý proot start
+   sám generuje stovky SELinux denials; monitor uvnitř by zhoršoval, co má měřit.
+3. **Nekonstantně analyzovat časové okno logcatu bez ověření `uptime`** — pád 09-30 mě
+   předtím zavedl na okno `06:44–06:52`, což bylo 36+ minut PO bootu, tj. zdravý běh, ne recovery
+   z pádu. `uptime` v sekundách × převod na absolutní čas boot momentu je první krok každé freeze
+   analýzy.
+4. **`App Scout Exception`** v ANR = MIUI/Xiaomi FW_SCOUT_HANG watchdog, ne standardní AMS ANR.
+   Jméno tě přímo směřuje k tomu, kdo tě zabil — nezaměňovat s běžným "Input dispatching timed out".
+
+**Volitelný mitigation experiment** (paliativní, ne fix): `setprop persist.vendor.ufs.hibern8_on_idle_enable 0`
+by mohl prodloužit interval mezi UFS resume failures za cenu baterie. Reverznout, pokud drain výrazně
+vzroste. Skutečný fix je jen na úrovni kernel driveru — mimo dosah appky.
+

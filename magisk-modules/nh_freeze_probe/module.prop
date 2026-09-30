@@ -1,7 +1,0 @@
-id=nh_freeze_probe
-name=NetHunter Freeze Probe
-version=v1.0
-versionCode=1
-author=NetHunter Operator
-description=Posila kazdou sekundu telemetrii (PSI cpu/io, loadavg, MemAvailable, diskstats inflight, stav audit fronty) pres UDP na zadany server. Urceno pro diagnostiku fatalnich zamrznuti, pri kterych zarizeni ztrati pristup k ulozisti a zadny lokalni log (logcat, /data/anr, dmesg) hard reboot neprezije. Bezi na hostu mimo proot, aby sam negeneroval SELinux audit provoz. Nastaveni v /data/adb/nh_probe.conf (HOST, PORT, INTERVAL) - bez nej se nespousti.
-minMagisk=20400

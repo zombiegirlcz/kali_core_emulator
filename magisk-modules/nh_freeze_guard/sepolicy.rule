@@ -1,16 +1,6 @@
-# --- NetHunter: audit flood fix ---
+# --- NetHunter Freeze Guard: SELinux audit flood mitigation ---
 #
-# POZOR - korekce puvodni verze (2026-09-30):
-# Puvodne tu bylo `dontaudit untrusted_app_27 app_data_file:file execute`.
-# To NEFUNGOVALO a bylo zalozene na spatnem predpokladu: `dontaudit` potlacuje
-# audit jen u ZAMITNUTYCH (denied) akci. Zaznamy "avc: granted" generuje
-# `auditallow` pravidlo v platform policy a `dontaudit` ho nezrusi. Overeno
-# merenim: s nainstalovanym modulem bylo v dmesg porad 2061 "avc: granted
-# { execute }" presne s touto scontext/tcontext dvojici. Pravidlo bylo proto
-# odstraneno - granted flood nejde resit ze sepolicy, jen snizenim poctu exec
-# volani, nebo zvednutim audit_backlog_limit.
-#
-# Skutecny hlavni zdroj (mereni 2026-09-30, okno 5,4 min):
+# Merena data (2026-09-30, okno 5,4 min):
 #   avc: denied  celkem                          4514
 #     z toho setattr od comm="proot" na property 3778  (84 % denials)
 #   avc: granted celkem                          2061
@@ -29,8 +19,13 @@
 # i pripadne zbyle chmod cesty. Nemeni zadne opravneni (akce byla stejne vzdy
 # zamitnuta), jen prestane zahlcovat audit frontu.
 #
-# Pozn.: id modulu zustava `nh_audit_execute_dontaudit`, aby Magisk pri
-# preinstalaci nahradil uz nainstalovanou verzi misto vytvoreni druhe kopie.
-dontaudit untrusted_app_27 property_type:file setattr
-dontaudit untrusted_app_27 property_info:file setattr
-dontaudit untrusted_app_27 properties_serial:file setattr
+# HISTORICKA POZNAMKA: puvodni v1.0 pravidlo
+#   dontaudit untrusted_app_27 app_data_file:file execute
+# NEFUNGOVALO - `dontaudit` potlacuje audit jen u ZAMITNUTYCH akci. "avc: granted"
+# generuje `auditallow` pravidlo v platform policy a `dontaudit` ho nezrusi.
+# Overeno: s v1.0 nainstalovanym bylo v dmesg porad 2061 "avc: granted { execute }".
+# Granted flood nejde resit ze sepolicy, jen snizenim poctu exec volani nebo
+# zvednutim audit_backlog_limit (obojim resi __wrap_chmod + nativni ashell).
+dontaudit untrusted_app_27 property_type file { setattr }
+dontaudit untrusted_app_27 property_info file { setattr }
+dontaudit untrusted_app_27 properties_serial file { setattr }
