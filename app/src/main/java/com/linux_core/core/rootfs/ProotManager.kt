@@ -487,8 +487,10 @@ object ProotManager {
 
     /**
      * Rozbalí `assets/zsh.tgz` (bionic zsh 5.9, ncurses, terminfo, pluginy; cesty v archivu
-     * jsou `data/user/0/com.linux_core/files/...`) do filesDir a nasadí `~/.zshrc`
-     * z `assets/zshrc.host`. Marker `usr/.zsh_host` drží md5 archivu; když chybí `usr/bin/zsh`
+     * jsou `data/user/0/com.linux_core/files/...`) do filesDir a nasadí náš host zshrc
+     * z `assets/zshrc.host`. **Uživatelův `~/.zshrc` se NEPŘEPISUJE** — náš obsah jde vedle
+     * do `~/.zshrc.temp` a při každé reálné změně přibude řádek do `~/changelog.zshrc`.
+     * Marker `usr/.zsh_host` drží md5 archivu; když chybí `usr/bin/zsh`
      * (např. wipe z deployDir), rozbalí se znovu. @Synchronized: setupProotEnvironment
      * běží souběžně z více vláken; bez zámku se dvě extrakce prali o tytéž symlinky.
      */
@@ -545,10 +547,40 @@ object ProotManager {
                 marker.writeText(hash)
                 Log.i(TAG, "deployZshHost: rozbaleno $files souborů (zsh.tgz $hash)")
             }
-            deployIfChanged(context, "zshrc.host", File(rootDir, ".zshrc"))
+            deployHostZshrcTemp(context, rootDir)
         } catch (e: Exception) {
             Log.e(TAG, "deployZshHost failed: ${e.message}")
         }
+    }
+
+    /**
+     * Nasadí náš host zshrc (`assets/zshrc.host`) **vedle** uživatelova rc jako `~/.zshrc.temp`,
+     * takže se uživatelův `~/.zshrc` nikdy nepřepíše (uživatel si `.zshrc.temp` může sám
+     * sourcovat nebo mergnout). Jen když se obsah reálně změní (md5), přepíše se `.zshrc.temp`
+     * a přibude řádek do `~/changelog.zshrc` (append-only, komentářové řádky — neškodné i kdyby
+     * je něco sourcnulo).
+     */
+    private fun deployHostZshrcTemp(
+        context: Context,
+        rootDir: File,
+    ) {
+        val tempRc = File(rootDir, ".zshrc.temp")
+        val newHash = assetMd5(context, "zshrc.host")
+        val curHash = if (tempRc.exists() && tempRc.length() > 0L) fileMd5(tempRc) else ""
+        if (curHash == newHash) {
+            Log.i(TAG, "deployHostZshrcTemp: .zshrc.temp beze změny (md5=$newHash)")
+            return
+        }
+        tempRc.delete()
+        context.assets.open("zshrc.host").use { input ->
+            tempRc.outputStream().use { output -> input.copyTo(output) }
+        }
+        tempRc.setReadable(true, false)
+        val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        File(rootDir, "changelog.zshrc").appendText(
+            "# $ts  nasazen ~/.zshrc.temp (md5=$newHash, ${tempRc.length()} B) — uzivateluv ~/.zshrc nedotcen\n",
+        )
+        Log.i(TAG, "deployHostZshrcTemp: .zshrc.temp aktualizován (md5=$newHash), changelog.zshrc doplněn")
     }
 
     private fun deployDir(
