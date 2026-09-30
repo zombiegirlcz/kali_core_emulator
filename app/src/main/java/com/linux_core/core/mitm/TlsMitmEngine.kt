@@ -511,7 +511,7 @@ class TlsMitmSession(
 
     private fun proxyLoop() {
         val clientAppDataOut = ByteBuffer.allocate(16384)
-        val clientAppDataIn = ByteBuffer.allocate(16384)
+        val clientAppDataIn = ByteBuffer.allocate(32768)   // must hold a full max-size TLS record (~16.6 KB ciphertext)
         val clientNetDataOut = ByteBuffer.allocate(32768)
         val serverAppDataOut = ByteBuffer.allocate(16384)
         val serverNetDataOut = ByteBuffer.allocate(32768)
@@ -594,7 +594,8 @@ class TlsMitmSession(
                         }
                     }
                 } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                    clientAppIn.position(clientAppIn.limit())
+                    // Incomplete record — leave the unconsumed bytes; compact() below keeps them
+                    // for the next client chunk instead of discarding a split record.
                     break
                 } else {
                     Log.w(TAG, "Client unwrap (app) status: ${result.status}")
@@ -605,22 +606,23 @@ class TlsMitmSession(
             clientAppIn.compact()
         }
 
+        // serverNetIn is kept in WRITE (accumulation) mode across calls so a server TLS record
+        // split across multiple non-blocking reads is reassembled, instead of being wiped by a
+        // per-iteration clear() (which corrupted mid-stream decryption). NOTE: this buffer is
+        // shared with driveServerHandshake for the renegotiation path (effectively unused in TLS 1.3).
         val sc = serverChannel
-        var readBytes = 0
         if (sc != null && sc.isConnected) {
-            serverNetIn.clear()
             val read = try { sc.read(serverNetIn) } catch (e: Exception) { -1 }
             if (read == -1) {
                 running = false
                 return false
             }
             if (read > 0) {
-                readBytes = read
                 lastActivityTime = System.currentTimeMillis()
                 worked = true
             }
         }
-        if (readBytes > 0) {
+        if (serverNetIn.position() > 0) {
             serverNetIn.flip()
             while (serverNetIn.hasRemaining()) {
                 serverAppOut.clear()
@@ -644,13 +646,14 @@ class TlsMitmSession(
                         }
                     }
                 } else if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                    serverNetIn.position(serverNetIn.limit())
+                    // Incomplete record — keep the unconsumed bytes for the next read.
                     break
                 } else {
                     Log.w(TAG, "Server unwrap (app) status: ${result.status}")
                     break
                 }
             }
+            serverNetIn.compact()   // preserve leftover ciphertext, return to WRITE mode
         }
         return worked
     }

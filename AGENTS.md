@@ -207,6 +207,14 @@ Kompletní proxy pro dešifrování HTTPS v VPN tunelu. Zapnuto/vypnuto přes `e
   QUIC blokovat jen když MITM aktivně dešifruje (`shouldBlockQuic()`); `extractSni`/`isTlsClientHello`
   čtou sessionIdLen ze stejného offsetu (43); `RootCaInstaller` debug fallback heslo `"nethunter-dev"`
   (P12 v assetech); forged cert musí mít **vlastní RSA keypair** (ne CA private key).
+- **`runEngineHandshake` akumulace `netIn` (2026-09-30) — nevracet na `netIn.clear()`:** handshake
+  buffer je **WRITE-mode akumulační** (`var acc`, flip→unwrap→compact); volající předává netIn ve
+  write módu (ClientHello se `put`-ne, **neflipuje**). Původní `clear()+put()` na každé čtení přepsal
+  předchozí data → fragmentovaný server flight (certifikát chain > 1 TCP segment) nikdy nesložen →
+  handshake fail → passthrough. Vnitřní smyčka drénuje všechny kompletní recordy (guard na progres,
+  netiká `iterations`), `appendCiphertext` roste buffer. Half-close TCP: klientský FIN dělá
+  `shutdownOutput()` na WAN (ne teardown) + `FIN_WAIT` reaping v `cleanIdleSessions` (60 s) — jinak
+  guest visí ve `FIN_WAIT_2`.
 - Capture-only režim: `startCaptureOnly()`/`captureLoop()` (dešifruje lokálně, timeout 10 s),
   `VpnSettings.isMitmCaptureOnly()`.
 - **Postup při selhání:** `vpn-cli mitm status` → `nethunter-log -g "TlsMitm"` (hledej `SNI=null`,
@@ -567,7 +575,13 @@ Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiáln�
 
 ## 12. Známé technické dluhy
 
-1. MITM je historicky nestabilní (padá do passthrough na `SSLException` v unwrapu) — vždy ověř na zařízení.
+1. MITM historicky padal do passthrough / korumpoval stream — **hlavní příčiny opraveny 2026-09-30:**
+   (a) chybějící CA privátní klíč (nyní runtime-generovaný, viz bod 4), (b) neakumulovaný `netIn` v
+   `runEngineHandshake` (fragmentované server certy → passthrough), (c) `handleAppData` v `proxyLoop`
+   zahazoval partial recordy + `serverNetIn.clear()` každou iteraci (mid-stream korupce) — teď
+   `serverNetIn` WRITE-mode akumulace + compact, `clientAppDataIn` zvětšen na 32 kB. Zbývá ověřit na
+   zařízení; jediná neopravená cesta je renego `driveServerHandshake`/`driveClientHandshake`
+   `netIn.clear()` (v TLS 1.3 se renego nepoužívá).
 2. Widget zakomentován v manifestu („pro later").
 3. DNS tab prakticky prázdný (moderní Android jede DoH/TCP, ne UDP/53).
 4. ~~`app/src/main/assets/certs/mitm-ca.p12` chybí (je jen `.crt`)~~ **VYŘEŠENO (2026-09-29):**
