@@ -391,6 +391,33 @@ sesterského `anti_phantom` modulu. **Modul samotný ale nikdy nebyl nainstalova
 do `/data/adb/modules/`** (jen v repu) — proto se freeze zopakoval; při
 podobném incidentu nejdřív zkontrolovat `ls /data/adb/modules/audit_flood_fix`.
 
+**NAVAZUJÍCÍ (2026-09-30, třetí freeze — modul UŽ nainstalovaný, `-r 1000` aktivní):**
+`auditctl -r 1000` prokazatelně funguje (`audit: audit_lost=403 audit_rate_limit=1000`
+vs. dřívějších 21095), **ale úzké hrdlo se tím jen přesunulo z rate limiteru na
+backlog frontu**: `audit: audit_backlog=65 > audit_backlog_limit=64` (8× v jediném
+1,1 ms burstu). To je horší stav než zahazování — při plném backlogu `audit_log_start()`
+volající úlohu **blokuje**. `audit_backlog_limit` zdejším auditctl zvednout nelze
+(`Usage: /system/bin/auditctl [-r rate]` — žádné `-b`, žádné `-s`); jde jen přes
+kernel cmdline `audit_backlog_limit=N`. **Jediná zbylá páka je snížit počet záznamů.**
+
+Měření (okno 5,4 min — `dmesg` ring buffer víc nepojme, tak je zahlcený): 6575 avc
+záznamů ≈ **20/s**. Rozpad: **`setattr` denials od `comm="proot"` na
+`/dev/__properties__` = 3778 ze 4514 denials (84 %)**, `granted execute` 2061.
+Proot při startu chmodne `property_info`, `properties_serial`, `*_prop`; SELinux to
+vždy zamítne → audit záznam. Každý `sudo`/guest příkaz = nová proot instance = další
+várka stovek. **`--wrap=chmod` tohle nechytal — přeskakoval jen `/proc` a `/sys`.**
+Fix: do skip listu přidáno `/dev` (`tools/modal_build.py::_SELINUX_FIX_C`) → nutný
+`zsh mbuild native` + commit binárek (§4), jinak se do APK nedostane.
+`sepolicy.rule` přepsán z (neúčinného) `execute` na
+`dontaudit untrusted_app_27 {property_type,property_info,properties_serial}:file setattr`
+— tohle účinné je, protože jde o DENIALS.
+
+**Past při čtení ANR po freezu:** soubor v `/data/anr/` je typicky až z doby ~40 s
+**po** rebootu (30. 9.: boot 06:08:01, ANR 06:08:42), tedy artefakt rozjezdu, ne
+příčina; `libdebuggerd_client: timeout expired` + hlavní vlákno `wchan=0` = hladovění
+po CPU, ne deadlock. Kernel časy z `dmesg` mapovat na reálný čas přes
+`/proc/uptime` (boot = teď − uptime), jinak se burst snadno přiřadí ke špatné události.
+
 **Boot módy D/I/M + fake sys:** `NH_ISOLATED` a `NH_MINIMAL` jsou **nezávislé** flagy
 (`D=0/0`, `I=1/0`, `M=1/1`) — `I` **není** minimal, i když starší `docs/proot-cmd-mod.md`
 tvrdil opak. Fake `/proc` + `/sys` overlay (sysdata, `sys_empty:/sys/fs/selinux`,

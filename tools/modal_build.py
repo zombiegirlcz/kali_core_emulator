@@ -1007,14 +1007,19 @@ def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,
     _SELINUX_FIX_C = """\
 /* selinux_android_fix.c: --wrap=chmod SELinux fix for proot on Android.
  * All 4 chmod@plt calls in proot binary are redirected to __wrap_chmod.
- * Skips chmod on /proc and /sys to prevent comm="proot" setattr proc:dir AVC. */
+ * Skips chmod on /proc, /sys and /dev to prevent comm="proot" setattr AVC.
+ * /dev je nutny kvuli /dev/__properties__/* (property_info, properties_serial,
+ * *_prop): proot je pri startu chmodne, SELinux to VZDY zamitne a kazde
+ * zamitnuti je audit zaznam. Merenim 2026-09-30 to delalo 3778 z 4514 denials
+ * (84 %) za 5,4 min = hlavni zdroj preteceni audit_backlog_limit=64. */
 #include <sys/stat.h>
 #include <string.h>
 extern int __real_chmod(const char *path, mode_t mode);
 int __wrap_chmod(const char *path, mode_t mode) {
     if (path &&
         ((strncmp(path,"/proc",5)==0 && (!path[5]||path[5]=='/')) ||
-         (strncmp(path,"/sys", 4)==0 && (!path[4]||path[4]=='/')))) {
+         (strncmp(path,"/sys", 4)==0 && (!path[4]||path[4]=='/')) ||
+         (strncmp(path,"/dev", 4)==0 && (!path[4]||path[4]=='/')))) {
         return 0;
     }
     return __real_chmod(path, mode);

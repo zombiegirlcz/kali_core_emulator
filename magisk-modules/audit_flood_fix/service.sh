@@ -7,22 +7,25 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
 done
 sleep 3
 
-# POZOR (overeno na zarizeni 2026-09-27): tohle NENI hlavni fix.
-# `dontaudit` potlaci logovani ZAMITNUTYCH pristupu, ale execve() v PRootu
-# je uz ALLOW - jeho logovani rizeny samostatnym `auditallow` v MIUI vendor
-# policy (nesouvisi s zadnym nasim modulem), ktery `dontaudit` neprebiji.
-# Zustava tu jen pro puvodni "setattr proc:dir" DENIED storm (viz
-# fix-proot-selinux-storm), pro execute storm je bezucinny.
-/data/adb/magisk/magiskpolicy --live \
-  "dontaudit untrusted_app_27 app_data_file file { execute execute_no_trans }" \
-  2>/dev/null || true
-
-# Skutecny fix execute-storm: default audit_rate_limit=5 msg/s je pro PRoot
-# workload (kazdy shell prikaz = retez execve() = spousta granted-audit
-# zaznamu kvuli auditallow vyse) hluboko pod potrebou -> audit_lost stoupal
-# o stovky/s, "rate limit exceeded" kazdou sekundu, backlog fronta
-# (audit_log_start(), sync kernelova cesta sdilena VSEMI procesy) dokazala
-# zaseknout system_server. Overeno: po `auditctl -r 1000` zadny dalsi
-# audit_lost i pod zataezi (40x exec v proot). Android auditctl na tomto
-# zarizeni podporuje jen `-r rate` (ne `-b backlog`).
+# --- Vrstva 1: audit_rate_limit (overeno 2026-09-27) ---
+# Default audit_rate_limit=5 msg/s je pro PRoot workload hluboko pod potrebou.
+# Po `auditctl -r 1000` klesl audit_lost z 21095 na 403 za boot.
+# Android auditctl na tomto zarizeni podporuje JEN `-r rate` (ne `-b backlog`,
+# ne `-s`) - overeno 2026-09-30: "Usage: /system/bin/auditctl [-r rate]".
 /system/bin/auditctl -r 1000 2>/dev/null || true
+
+# --- Vrstva 2: dontaudit na setattr DENIALS (2026-09-30) ---
+# POZOR: puvodni `dontaudit ... app_data_file:file { execute execute_no_trans }`
+# je BEZUCINNY a byl odstranen - `dontaudit` plati jen na ZAMITNUTE pristupy,
+# kdezto `execute` je ALLOW a jeho logovani rizi samostatny `auditallow`
+# v MIUI vendor policy, ktery `dontaudit` neprebije (overeno print-rules
+# 27. 9. i merenim 30. 9.: 2061 granted zaznamu s nainstalovanym modulem).
+#
+# Tohle naopak funguje, protoze jde o DENIALS: proot pri startu chmodne
+# Android property soubory v /dev/__properties__ a SELinux to vzdy zamitne.
+# Merenim 30. 9. to bylo 3778 z 4514 denials (84 %) = nejvetsi jediny zdroj.
+/data/adb/magisk/magiskpolicy --live \
+  "dontaudit untrusted_app_27 property_type:file setattr" \
+  "dontaudit untrusted_app_27 property_info:file setattr" \
+  "dontaudit untrusted_app_27 properties_serial:file setattr" \
+  2>/dev/null || true
