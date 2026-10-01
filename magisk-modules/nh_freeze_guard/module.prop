@@ -1,7 +1,7 @@
 id=nh_freeze_guard
 name=NetHunter Freeze Guard
-version=v1.2
-versionCode=3
+version=v1.3
+versionCode=4
 author=NetHunter Operator
-description=Freeze mitigation + vcasna detekce I/O stallu. Vrstva 1: auditctl -r 1000. Vrstva 2: dontaudit na setattr denials proot na /dev/__properties__. Vrstva 3: sonda meri okamzity PSI io/memory stall a procs_blocked; pri prekroceni prahu sama prepne do burstu (vzorky po 200 ms, D-state ulohy s wchan, kernel stacky f2fs vlaken, dmesg). Zapisuje do /dev/nh_probe/probe.log (RAM, prezije zotaveny stall) a /dev/pmsg0 (pstore, prezije watchdog reboot - cist /sys/fs/pstore/pmsg-ramoops-0). Volitelne UDP (HOST v /data/adb/nh_probe.conf).
+description=Freeze mitigation + vcasna detekce I/O stallu. Vrstva 1: auditctl -r 1000. Vrstva 2: dontaudit na setattr denials proot na /dev/__properties__. Vrstva 3: sonda (staticky busybox v RAM) meri okamzity PSI io/memory stall a procs_blocked; pri prekroceni prahu sama prepne do burstu (vzorky po 200 ms, D-state ulohy s wchan, kernel stacky f2fs vlaken, dmesg). Zapisuje do /dev/nh_probe/probe.log (RAM, prezije zotaveny stall) a /dev/pmsg0 (pstore, prezije watchdog reboot - cist /sys/fs/pstore/pmsg-ramoops-0). Volitelne UDP (HOST v /data/adb/nh_probe.conf).
 minMagisk=20400

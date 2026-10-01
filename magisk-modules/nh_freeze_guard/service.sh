@@ -39,6 +39,17 @@ MODDIR=${0%/*}
 # --- Vrstva 3: sonda ---
 # Bezi vzdy; site se dotkne jen s HOST= v /data/adb/nh_probe.conf.
 # Vypnuti: PROBE=0 v konfiguraci.
+# Interpret i skript se kopiruji do tmpfs: staticky busybox v RAM nema
+# zadne file-backed stranky na UFS, takze ho stall nezasekne page faultem
+# (mksh z /system pri incidentu 10-01 09:16 vypadl na 29,5 s).
 if ! grep -q '^PROBE=0' /data/adb/nh_probe.conf 2>/dev/null; then
-    /system/bin/sh "$MODDIR/probe.sh" >/dev/null 2>&1 &
+    BIN=/dev/nh_probe
+    mkdir -p "$BIN"
+    if cp -f /data/adb/magisk/busybox "$BIN/busybox" 2>/dev/null &&
+       chmod 755 "$BIN/busybox" &&
+       cp -f "$MODDIR/probe.sh" "$BIN/probe.sh"; then
+        ASH_STANDALONE=1 setsid "$BIN/busybox" sh "$BIN/probe.sh" >/dev/null 2>&1 < /dev/null &
+    else
+        /system/bin/sh "$MODDIR/probe.sh" >/dev/null 2>&1 &
+    fi
 fi

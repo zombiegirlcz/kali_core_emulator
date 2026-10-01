@@ -14,14 +14,21 @@
 #                      po bootu cist /sys/fs/pstore/pmsg-ramoops-0
 #   UDP $HOST:$PORT    volitelne, jen kdyz je HOST nastaveny
 #
+# Interpret: STATICKY Magisk busybox (ash) zkopirovany spolu s timhle
+# skriptem do tmpfs ($RUNDIR) a spusteny s ASH_STANDALONE=1 (service.sh).
+# 10-01 09:16 sonda pod mksh vypadla na 29,5 s: mksh + bionic libc jsou
+# file-backed stranky z /system na UFS -> page fault pri stallu = zaseknuti.
+# Staticka binarka v RAM zadnou stranku z UFS nepotrebuje a applety
+# (date, dmesg, mkfifo, nc ...) bezi bez exec z /system.
+#
 # Pravidla pro hot path (aby sonda bezela i behem stallu):
 #   - zadny exec: cas z /proc/uptime, sleep = `read -t` na FIFO v tmpfs,
-#     vystup pres `print` (Android mksh nema `printf` jako builtin!)
-#   - zadne here-docy (mksh je zapisuje do docasneho souboru na disk)
-#   - mksh na Androidu ma 32bit aritmetiku -> kumulativni citace se orezavaji
-#     na poslednich 9 cislic a delta se pocita modulo 1e9
-#   - cela smycka je jeden slozeny prikaz -> shell ze skriptu na /data uz
-#     po startu nic necte
+#     vystup pres builtin `printf`
+#   - zadne here-docy (shell je muze zapisovat do docasneho souboru)
+#   - ash ma 64bit aritmetiku, ale uvodni 0 = osmickova soustava ->
+#     desetinne casti se prevadi trikem `1$f - 100`
+#   - cela smycka je jeden slozeny prikaz -> shell po startu ze skriptu
+#     nic necte
 #
 # Konfigurace (volitelna): /data/adb/nh_probe.conf
 #   HOST=                 UDP cil (prazdne = jen lokalne)
@@ -53,7 +60,7 @@ exec 7<>"$RUNDIR/tick"
 exec 4>>"$LOG"
 LINES=0
 
-# Pozn.: selhani presmerovani u `exec` (special builtin) ukonci mksh,
+# Pozn.: selhani presmerovani u `exec` (special builtin) ukonci shell,
 # proto se zapisovatelnost overuje predem.
 PMSG_ON=0
 if [ "$PMSG" = 1 ] && [ -w /dev/pmsg0 ]; then exec 6>/dev/pmsg0; PMSG_ON=1; fi
@@ -73,11 +80,10 @@ net_start() {
 [ -n "$HOST" ] && net_start
 
 emit() {
-    # `print` je builtin mksh; `printf` na Androidu NENI (exec toyboxu)
-    print -ru4 -- "$1"
+    printf '%s\n' "$1" >&4
     LINES=$((LINES + 1))
-    [ "$PMSG_NOW" = 1 ] && [ "$PMSG_ON" = 1 ] && print -ru6 -- "$1"
-    if [ "$NET_ON" = 1 ] && ! print -ru5 -- "$1" 2>/dev/null; then
+    [ "$PMSG_NOW" = 1 ] && [ "$PMSG_ON" = 1 ] && printf '%s\n' "$1" >&6
+    if [ "$NET_ON" = 1 ] && ! printf '%s\n' "$1" >&5 2>/dev/null; then
         NET_ON=0
     fi
 }
@@ -105,10 +111,6 @@ nap() {
     done
 }
 
-# posledni 9 cislic -> vejde se do 32bit; delta modulo 1e9
-t9() { R=$1; [ ${#R} -gt 9 ] && R=${R#"${R%?????????}"}; }
-d9() { R=$(( ($1 - $2 + 1000000000) % 1000000000 )); }
-
 UP=0; UPCS=0
 read_up() {
     read -r UP _ < /proc/uptime
@@ -117,22 +119,20 @@ read_up() {
 
 clock() { emit "$TAG clock up=$UP wall=$(date +%Y-%m-%dT%H:%M:%S%z)"; }
 
-# PSI total= (us) -> globalni vars <prefix>_some / <prefix>_full (orezane)
+# PSI total= (us) -> globalni vars <prefix>_some / <prefix>_full
 psi() {
     { read -r _ _ _ _ a; read -r _ _ _ _ b; } < "/proc/pressure/$1"
-    t9 "${a#total=}"; eval "${1}_some=\$R"
-    t9 "${b#total=}"; eval "${1}_full=\$R"
+    eval "${1}_some=\${a#total=}; ${1}_full=\${b#total=}"
 }
 
-# /proc/stat: iowait jiffies (orezane), pocet online CPU, procs_blocked.
-# Celkove jiffies za interval = DCS * NCPU (USER_HZ=100 = setiny sekundy),
-# takze se nemusi scitat pole, ktera by v 32bit pretekla.
+# /proc/stat: iowait jiffies, pocet online CPU, procs_blocked.
+# Celkove jiffies za interval = DCS * NCPU (USER_HZ=100 = setiny sekundy).
 STAT_IOW=0; NCPU=1; BLOCKED=0
 read_stat() {
     nc_=0
     while read -r k a _ _ _ w _; do
         case "$k" in
-            cpu) t9 "$w"; STAT_IOW=$R ;;
+            cpu) STAT_IOW=$w ;;
             cpu[0-9]*) nc_=$((nc_ + 1)) ;;
             procs_blocked) BLOCKED=$a; break ;;
         esac
@@ -207,11 +207,30 @@ read_mem() {
     done < /proc/meminfo
 }
 
+# Nastaveni UFS linku (experiment hibern8/clkgate, viz AGENTS.md §13) -
+# zapisuje se, aby slo kazdy incident sparovat s tim, co prave platilo.
+# Cteni sysfs ovladace muze pri stallu cekat na zamek hosta -> volat jen
+# v podprocesu na pozadi (krome startu).
+UFS=/sys/devices/platform/soc/1d84000.ufshc
+ufs_state() {
+    o=""
+    for kv in h8_en:hibern8_on_idle_enable h8_ms:hibern8_on_idle_delay_ms \
+              cg_pwr:clkgate_delay_ms_pwr_save cg_perf:clkgate_delay_ms_perf \
+              hpb_rd_dis:ufshpb_lu0/hpb_read_disable tw:ufstw_lu0/tw_enable; do
+        v=?; read -r v 2>/dev/null < "$UFS/${kv#*:}"
+        v=${v##* }
+        o="$o ${kv%%:*}=$v"
+    done
+    emit "$TAG ufs up=$UP$o"
+}
+
 # ---------------------------------------------------------------- start
 
 find_f2fs
 read_up; clock
-emit "$TAG start pid=$$ host=${HOST:-none} trig_pct=$TRIG_PCT trig_n=$TRIG_N f2fs=$F2FS_PIDS pmsg=$PMSG_ON"
+SHN=?; read -r SHN < /proc/$$/comm
+emit "$TAG start pid=$$ sh=$SHN host=${HOST:-none} trig_pct=$TRIG_PCT trig_n=$TRIG_N f2fs=$F2FS_PIDS pmsg=$PMSG_ON"
+ufs_state
 
 read_up; psi io; psi memory; psi cpu; read_stat
 P_UPCS=$UPCS; P_IOF=$io_full; P_IOS=$io_some; P_MEMF=$memory_full
@@ -227,11 +246,11 @@ while :; do
 
     # PSI total je v us, DCS v setinach s -> % = dus / (DCS * 100)
     DCS=$((UPCS - P_UPCS)); [ $DCS -le 0 ] && DCS=1
-    d9 "$io_full" "$P_IOF";      IOF=$((R / (DCS * 100)))
-    d9 "$io_some" "$P_IOS";      IOS=$((R / (DCS * 100)))
-    d9 "$memory_full" "$P_MEMF"; MEMF=$((R / (DCS * 100)))
-    d9 "$cpu_some" "$P_CPUS";    CPUS=$((R / (DCS * 100)))
-    d9 "$STAT_IOW" "$P_IOW";     IOW=$((R * 100 / (DCS * NCPU)))
+    R=$((io_full - P_IOF)); IOF=$((R / (DCS * 100)))
+    R=$((io_some - P_IOS)); IOS=$((R / (DCS * 100)))
+    R=$((memory_full - P_MEMF)); MEMF=$((R / (DCS * 100)))
+    R=$((cpu_some - P_CPUS)); CPUS=$((R / (DCS * 100)))
+    R=$((STAT_IOW - P_IOW)); IOW=$((R * 100 / (DCS * NCPU)))
     P_UPCS=$UPCS; P_IOF=$io_full; P_IOS=$io_some; P_MEMF=$memory_full
     P_CPUS=$cpu_some; P_IOW=$STAT_IOW
     # PSI agreguje se zpozdenim -> delta muze presahnout interval
@@ -249,9 +268,9 @@ while :; do
         BURST_UNTIL=$((UPCS + BURST_SECS * 100))
         emit "$TAG TRIGGER up=$UP io_full=$IOF mem_full=$MEMF iowait=$IOW blocked=$BLOCKED"
         dstate; stacks
-        # date/dmesg jsou exec z /system (tez na UFS) - jen v pozadi,
-        # aby pripadne zaseknuti nezastavilo sondu
-        ( clock; kmsg 300 ) &
+        # dmesg/date a sysfs UFS ovladace jen v pozadi, aby pripadne
+        # zaseknuti nezastavilo sondu
+        ( clock; kmsg 300; ufs_state ) &
     elif [ $BURST = 1 ] && [ $HI -ge 1 ]; then
         BURST_UNTIL=$((UPCS + BURST_SECS * 100))
     fi
@@ -268,12 +287,12 @@ while :; do
         if [ $UPCS -ge $BURST_UNTIL ]; then
             emit "$TAG END up=$UP"
             dstate; stacks
-            ( kmsg 300; clock ) &
+            ( kmsg 300; clock; ufs_state ) &
             BURST=0; PMSG_NOW=0; I=0
         fi
         nap $BINT_CS
     else
-        if [ $((I % 600)) = 0 ]; then ( clock ) & fi
+        if [ $((I % 600)) = 0 ]; then ( clock; ufs_state ) & fi
         nap $INT_CS
     fi
 

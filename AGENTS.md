@@ -678,6 +678,39 @@ zotavený stall) a `/dev/pmsg0` (**pstore, přežije i watchdog reboot** → po 
 `/sys/fs/pstore/pmsg-ramoops-0`). UDP jen volitelně (`HOST=`). Po incidentu:
 `sudo grep -E 'TRIGGER|END|dstate|stack' /dev/nh_probe/probe.log`. Detaily v README modulu.
 
+**Třetí incident 2026-10-01 09:16 — PRVNÍ zachycený sondou, mechanismus potvrzen z jádra.**
+Živý `dmesg` už byl přepsaný; přežil jen díky `kmsg` dumpu sondy v `/dev/nh_probe/probe.log`.
+
+```
+21424.449  5× Read(16) + 1× Write(10) odeslány na sda → UFS NEODPOVÍ
+21425-437  sonda: io_full 30→60 %, io_some ~70 %, blocked 6→12, iowait ~50 %
+21428.18   TRIGGER (uživatel ve stejné vteřině mačká power)
+21454.90   SCSI timeout 30 s → ufshcd_abort všech tagů → failed with err -5
+21455.44   LU reset tm cmd timed-out (-110) → ufshcd_eh_host_reset_handler: reset in progress - 2
+21455.64   gear 1 → gear 3, ufshpb reset, ufstw (TurboWrite) reset → ZOTAVENO
+21466.19   f2fs slow fsync 41 709 ms (charge_logger) — dočištění fronty
+```
+
+- **Stejná sekvence jako fatální pád 30. 9.** — tam host reset proběhl taky, ale po něm
+  `ufshcd_resume` selhal (`pwr ctrl cmd 0x18 timeout`) → watchdog. Jde o **jeden mechanismus
+  s dvěma konci**: UFS firmware přestane odpovídat → 30 s timeout → reset → (ne)zotaví se.
+- **Nástup je skokový, ne pozvolný**: 25 s před tím úplně čisto, pak během 1 s 0 → 31 % full.
+  Precursor „desítky sekund rostoucího tlaku“ (z incidentu 07:23) byl ve skutečnosti už běžící
+  stall v 28s okně. Předpovědět předem to nejde; jde to zachytit do ~3 s od začátku.
+- **Zaseknutá čtení byla HPB** (Host Performance Booster 2.0): `Read(16)` s nesmyslnou „LBA“
+  (`00 03 8e 18 01 6b 00 67`) = HPB entry v CDB. Stav: `hpb_read_disable=0`,
+  `hibern8_on_idle_delay_ms=1` (link usíná po 1 ms → ~15 probuzení/min), `rpm_lvl=3`
+  (SLEEP+HIBERN8), TurboWrite zapnutý. Health: EOL 0x01, opotřebení 30–40 % / 10–20 % → **ne**
+  konec životnosti. Ovládání: `/sys/devices/platform/soc/1d84000.ufshc/{ufshpb_lu0/hpb_read_disable,
+  hibern8_on_idle_delay_ms,ufstw_lu0/tw_enable}` (runtime, reboot vrací).
+- **Sonda sama vypadla na 29,5 s** (21436.9 → 21466.5): hlavní smyčka nedělá I/O, takže ji
+  zablokoval page fault na file-backed stránce (text mksh/libc z UFS) nebo `pmsg_lock`. Oprava
+  (**v1.3**): `service.sh` kopíruje statický `/data/adb/magisk/busybox` + `probe.sh` do
+  `/dev/nh_probe/` a spouští `ASH_STANDALONE=1 busybox sh` (kopie se musí jmenovat `busybox`,
+  jinak „applet not found“). Sonda navíc loguje `nh ufs …` (hibern8/clkgate/HPB/TW) při startu,
+  à 10 min, při TRIGGER a END. Režie ~1,35 % jednoho jádra. Kdyby i busybox sonda vypadávala,
+  zbývá jen `pmsg_lock` → zkusit `PMSG=0`.
+
 **Pasti při psaní host shell skriptů (mksh) — ověřeno 2026-10-01:**
 
 - **`printf` není v Android mksh builtin** (`type printf` → `/system/bin/printf` = exec toyboxu).
