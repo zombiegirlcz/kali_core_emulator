@@ -7,8 +7,8 @@
 #   2) Vrstva 1: auditctl -r 1000 (audit_rate_limit, PRIMARNI ucinek)
 #   3) Vrstva 2: dontaudit fallback pres magiskpolicy --live (zaloha
 #      pro sepolicy.rule, kdyby modul byl aktivovan bez rebootu)
-#   4) Vrstva 3 (volitelna): probe.sh - UDP telemetrie, jen pokud
-#      existuje /data/adb/nh_probe.conf s HOST=
+#   4) Vrstva 3: probe.sh - vcasna detekce I/O stallu, burst zaznam do
+#      /dev/nh_probe (RAM) + /dev/pmsg0 (pstore), volitelne UDP
 
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 2
@@ -36,9 +36,9 @@ MODDIR=${0%/*}
   "dontaudit untrusted_app_27 properties_serial file { setattr }" \
   2>/dev/null || true
 
-# --- Vrstva 3: UDP telemetrie (volitelna) ---
-# Bez /data/adb/nh_probe.conf se sonda nespousti (aby modul nikomu neposilal
-# data omylem). Format konfigurace viz README.md.
-if [ -f /data/adb/nh_probe.conf ] && [ -x "$MODDIR/probe.sh" ]; then
-    "$MODDIR/probe.sh" >/dev/null 2>&1 &
+# --- Vrstva 3: sonda ---
+# Bezi vzdy; site se dotkne jen s HOST= v /data/adb/nh_probe.conf.
+# Vypnuti: PROBE=0 v konfiguraci.
+if ! grep -q '^PROBE=0' /data/adb/nh_probe.conf 2>/dev/null; then
+    /system/bin/sh "$MODDIR/probe.sh" >/dev/null 2>&1 &
 fi

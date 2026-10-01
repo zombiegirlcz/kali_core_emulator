@@ -662,11 +662,36 @@ debuggerd neuměl otevřít `/data/anr/`.
 - ❌ **Phantom Process Killer** — appka měla `settings_enable_monitor_phantom_procs=true` (vrácené
   po incidentu ze 09-27, viz `magisk-modules/anti_phantom`).
 
-**Co příště zachytit — `nh_freeze_guard` vrstva 3 (UDP telemetrie).** Modul je hotový, telemetrii
-aktivuje jen pokud existuje `/data/adb/nh_probe.conf` (`HOST`, `PORT`). Klíčová pole pro UFS-freeze
-diagnostiku: `psi_io_full` (prudce k 100), `dsk_inflight` (roste a neklesá), `dsk_ioticks` (roste)
-v posledních vzorcích před tichem. Bez sondy nemáme jiný způsob, jak zachytit stav několik sekund
-před UFS resume failure — ramoops zachytí až driver dump, což je už při umírání.
+**Druhý incident 2026-10-01 07:23 — zotavený stall bez rebootu (stejná třída).** ANR bouře 8 s
+(`system_server` 2×, `systemui`, `Input dispatching timed out`, pokemonunite), `system_server` ANR
+trval 23,4 s, logcat úplně ztichl 07:23:49 → 07:24:10. Power tlačítko stiskl uživatel **jako reakci**
+na zamrzlý displej, není to spouštěč. ActivityManager CPU dump za 28 s před ANR:
+`70% iowait`, `kworker/u16:12` 56 % kernel, `f2fs_ckpt-253:4` zablokovaný (0 % CPU). `ramoops`
+nic nemá (žádný reboot), `dmesg` okno mezitím přeteklo → jediný zdroj byl logcat + `/data/anr`.
+**Precursor:** I/O tlak roste **desítky sekund** před prvním viditelným symptomem.
+
+**`nh_freeze_guard` v1.2 — sonda s vlastním spouštěčem (běží vždy, bez konfigurace).** Měří
+*okamžitý* stall z PSI `total=` (ne `avg10`, ten má ~10s zpoždění) + `procs_blocked`; po 3 s
+`io_full ≥ 50 %` (nebo ≥ 8 D-úloh) přepne na burst: vzorky po 200 ms, D-state úlohy s `wchan`,
+kernel stacky f2fs vláken, filtrovaný `dmesg`. Výstup: `/dev/nh_probe/probe.log` (tmpfs, přežije
+zotavený stall) a `/dev/pmsg0` (**pstore, přežije i watchdog reboot** → po bootu
+`/sys/fs/pstore/pmsg-ramoops-0`). UDP jen volitelně (`HOST=`). Po incidentu:
+`sudo grep -E 'TRIGGER|END|dstate|stack' /dev/nh_probe/probe.log`. Detaily v README modulu.
+
+**Pasti při psaní host shell skriptů (mksh) — ověřeno 2026-10-01:**
+
+- **`printf` není v Android mksh builtin** (`type printf` → `/system/bin/printf` = exec toyboxu).
+  Pro výstup bez exec použít `print -ru<fd> -- "$x"`. Stejně `sleep`, `date`, `cat` = exec.
+- **mksh má 32bit aritmetiku** (`$((2147483647+1))` = záporné). Kumulativní čítače (PSI `total`
+  v µs, jiffies) ořezat na posledních 9 číslic a delty počítat modulo 1e9.
+- **`sudo sh -c '…'` testuje guest dash, ne hostový mksh** (chybový formát `/bin/sh: 1:`) a běží
+  pod PRootem (každé čtení `/proc` ~10× dražší). Host root bez PRootu: `ashell -c 'su -c "…"'`
+  (kontext `u:r:magisk:s0`); jen parse kontrola: `ashell -c '/system/bin/sh -n <soubor>'`.
+- **`A && B &` pošle na pozadí celý seznam** → fork v každé iteraci; `SIGCHLD` pak přeruší
+  `read -t` spánek → smyčka se roztočí (naměřeno 34 % CPU). Spánek dospávat do deadlinu.
+- **PSI `full` na nečinném telefonu klame**: když nic jiného neběží, jediný `fsync` = 100 % full.
+  Běžné zápisové špičky (i `magisk --install-module` 10 kB modulu → 59 %) trvají 1–2 s → práh
+  musí být časový (≥ 3 s v řadě), ne jen výška.
 
 **Nevracet zpět (pitfalls z této analýzy):**
 
