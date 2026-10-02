@@ -207,18 +207,18 @@ read_mem() {
     done < /proc/meminfo
 }
 
-# Nastaveni UFS linku (experiment hibern8/clkgate, viz AGENTS.md §13) -
-# zapisuje se, aby slo kazdy incident sparovat s tim, co prave platilo.
-# Cteni sysfs ovladace muze pri stallu cekat na zamek hosta -> volat jen
-# v podprocesu na pozadi (krome startu).
+# Nastaveni UFS linku (experiment hibern8/clkgate, viz AGENTS.md §13).
+# JEN atributy, ktere ovladac vraci z promennych v RAM hosta. NIKDY
+# nedavat sem ufstw_*/ufshpb_* ani nic, co posila dotaz (query) do
+# zarizeni: 2026-10-02 cteni ufstw_lu0/tw_enable behem host resetu
+# skoncilo `Synchronous External Abort` v ufshcd_exec_dev_cmd -> kernel
+# panic. Proto se taky NEvola pri TRIGGER/END, jen pri startu a v baseline.
 UFS=/sys/devices/platform/soc/1d84000.ufshc
 ufs_state() {
     o=""
     for kv in h8_en:hibern8_on_idle_enable h8_ms:hibern8_on_idle_delay_ms \
-              cg_pwr:clkgate_delay_ms_pwr_save cg_perf:clkgate_delay_ms_perf \
-              hpb_rd_dis:ufshpb_lu0/hpb_read_disable tw:ufstw_lu0/tw_enable; do
+              cg_pwr:clkgate_delay_ms_pwr_save cg_perf:clkgate_delay_ms_perf; do
         v=?; read -r v 2>/dev/null < "$UFS/${kv#*:}"
-        v=${v##* }
         o="$o ${kv%%:*}=$v"
     done
     emit "$TAG ufs up=$UP$o"
@@ -268,9 +268,9 @@ while :; do
         BURST_UNTIL=$((UPCS + BURST_SECS * 100))
         emit "$TAG TRIGGER up=$UP io_full=$IOF mem_full=$MEMF iowait=$IOW blocked=$BLOCKED"
         dstate; stacks
-        # dmesg/date a sysfs UFS ovladace jen v pozadi, aby pripadne
-        # zaseknuti nezastavilo sondu
-        ( clock; kmsg 300; ufs_state ) &
+        # dmesg/date jen v pozadi, aby pripadne zaseknuti nezastavilo sondu.
+        # Sysfs UFS ovladace se behem stallu NECTE (viz ufs_state).
+        ( clock; kmsg 300 ) &
     elif [ $BURST = 1 ] && [ $HI -ge 1 ]; then
         BURST_UNTIL=$((UPCS + BURST_SECS * 100))
     fi
@@ -287,7 +287,7 @@ while :; do
         if [ $UPCS -ge $BURST_UNTIL ]; then
             emit "$TAG END up=$UP"
             dstate; stacks
-            ( kmsg 300; clock; ufs_state ) &
+            ( kmsg 300; clock ) &
             BURST=0; PMSG_NOW=0; I=0
         fi
         nap $BINT_CS

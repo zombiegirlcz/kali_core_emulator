@@ -711,6 +711,29 @@ zotavený stall) a `/dev/pmsg0` (**pstore, přežije i watchdog reboot** → po 
   à 10 min, při TRIGGER a END. Režie ~1,35 % jednoho jádra. Kdyby i busybox sonda vypadávala,
   zbývá jen `pmsg_lock` → zkusit `PMSG=0`.
 
+**Čtvrtý incident 2026-10-02 23:44 — kernel panic ZPŮSOBENÝ SONDOU v1.3** (`ro.boot.bootreason=
+kernel_panic,fatal_exception`, uptime 159931 s, varianta B celou dobu aktivní):
+
+```
+159900.02  Read(10) 128 bloků odeslán → UFS NEODPOVÍ
+159904.63  sonda TRIGGER → podproces ( clock; kmsg; ufs_state ) čte ufstw_lu0/tw_enable
+159931.07  SCSI timeout → ufshcd_abort failed err 15 → LU reset -110 → host reset
+159931.60  Synchronous External Abort v ufshcd_exec_dev_cmd  (Comm: busybox = sonda)
+           ← ufsf_query_flag ← ufstw_sysfs_show_tw_enable ← sysfs read → Kernel panic
+```
+
+- `tw_enable` (a obecně `ufstw_*`/`ufshpb_*` atributy) **není proměnná hosta, ale query do
+  zařízení**. Čtení čekalo ve frontě dev_cmd a probudilo se uprostřed host resetu, kdy jsou
+  registry řadiče bez hodin → přístup = external abort → panic. Bez sondy by stall
+  pravděpodobně skončil zotavením jako 10-01 09:16.
+- Stejná situace už 2026-10-02 ~20:07 (uptime 146885): sondin podproces visel v
+  `ufshcd_exec_dev_cmd` (vidět v `dstate`), tehdy reset prošel bez paniky (`tw=` prázdné).
+- **Fix v1.4:** `ufs_state` čte jen `hibern8_on_idle_*` a `clkgate_delay_ms_*` (hodnoty z RAM
+  hosta), volá se jen při startu a v baseline, nikdy při TRIGGER/END. **Nikdy z host nástrojů
+  nečíst ufstw/ufshpb/query sysfs atributy, zvlášť ne během stallu.**
+- **Varianta B nepomohla:** během ní 2 stally s abortem (146912 zotaven, 159931) + TRIGGER
+  v 141317 a 88721 → hibern8/clkgate delay není spouštěč. Po rebootu je zpět default (1/10/50).
+
 **Pasti při psaní host shell skriptů (mksh) — ověřeno 2026-10-01:**
 
 - **`printf` není v Android mksh builtin** (`type printf` → `/system/bin/printf` = exec toyboxu).
