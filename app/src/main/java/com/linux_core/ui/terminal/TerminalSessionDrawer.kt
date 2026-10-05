@@ -123,8 +123,7 @@ internal fun TerminalActivity.updateSessionDrawerImpl() {
 
             val isActive = (session == currentSession)
             val isIgnored = TerminalService.isSessionVpnIgnored(session)
-            val isParrot = distro.contains("parrot")
-            val distroBadge = if (isParrot) "🦜" else "🐉"
+            val (distroBadge, _, _) = sessionDistroInfo(distro)
             val memBytes =
                 com.linux_core.core.vpn.ProcessResolver
                     .getSessionMemoryUsage(session)
@@ -315,6 +314,23 @@ internal fun TerminalActivity.updateSessionDrawerImpl() {
     }
 }
 
+/**
+ * Klasifikuje session distro string (TerminalService.getSessionDistro) na
+ * (emoji, popisek, barva). "(host)"/"(adb-shell)" jsou ashell escape cesty
+ * (žádný proot, viz startAshellSession/startAdbShellSession v TerminalActivity),
+ * docker image má rootfsDirName "nh/distro/docker/<image>". Bez tohohle
+ * rozlišení padalo vše mimo "parrot" na KALI label (viz AGENTS.md).
+ */
+internal fun sessionDistroInfo(distro: String): Triple<String, String, String> =
+    when {
+        distro == "(host)" -> Triple("🖥️", "APP HOST", "#00E5FF")
+        distro == "(adb-shell)" -> Triple("🤖", "ADB SHELL", "#00E5FF")
+        distro.startsWith("nh/distro/docker/") || distro.startsWith("docker-") || distro.startsWith("oci-") ->
+            Triple("🐳", "DOCKER: ${distro.substringAfterLast("/")}", "#00E5FF")
+        distro.contains("parrot") -> Triple("🦜", "PARROT OS", "#00E5FF")
+        else -> Triple("🐉", "KALI NetHunter", "#00FF41")
+    }
+
 internal fun TerminalActivity.createRoundedDrawable(
     backgroundColor: Int,
     cornerRadiusDp: Float,
@@ -369,10 +385,9 @@ internal fun TerminalActivity.updateTopbarTitle() {
         val session = currentSession
         if (session != null) {
             val distro = TerminalService.getSessionDistro(session)
-            val isParrot = distro.contains("parrot")
-            val distroBadge = if (isParrot) "🦜 PARROT OS" else "🐉 KALI NetHunter"
-            statusTitle.text = "$distroBadge [$activeViewMode]"
-            statusTitle.setTextColor(if (isParrot) Color.parseColor("#00E5FF") else Color.parseColor("#00FF41"))
+            val (emoji, label, colorHex) = sessionDistroInfo(distro)
+            statusTitle.text = "$emoji $label [$activeViewMode]"
+            statusTitle.setTextColor(Color.parseColor(colorHex))
         } else {
             statusTitle.text = "🐉 NETHUNTER OPERATOR"
             statusTitle.setTextColor(Color.parseColor("#00FF41"))
