@@ -39,7 +39,8 @@ zsh mbuild clean    # wipe src + gradle-cache on the Volume
 - APK lands at `~/Download/kali_core.apk`. **Rule: `sync` is always run separately; `build` never calls `sync`.**
 - After a native build, `pull_full_assets()` overwrites local `app/src/main/assets/` from the Volume — you must
   then **commit + push the produced binaries** (`assets/su_wrapper`, `usb_bridge`, `usr/bin/*`, `usr/lib/*`, `jniLibs/*.so`),
-  or the next `rsync --delete` erases them and they won't be in the APK. See AGENTS.md §4 for the exact rule.
+  or the next `sync` (git-based: `git reset --hard origin/dev` on the Volume, not rsync) drops them and they won't be
+  in the APK. See AGENTS.md §4 for the exact rule.
 - On-device logs without ADB: `nethunter-log [-n N] [-g PATTERN]` (also `nh log`; HTTP `GET /app/logs?limit=N`).
 
 ### Native C modules → assets pipeline (AGENTS.md §4)

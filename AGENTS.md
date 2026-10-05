@@ -125,7 +125,9 @@ Nativní C moduly (`app/src/main/cpp/*.c`) se kompilují na Modalu a **musí bý
    `.gitignore` má pro ně explicitní `!` výjimky a sync klonuje z GitHubu — necommitnutá binárka
    v APK nebude. (Přesně tak se 2026-08-23 ztratily bionic usrtools; obnova:
    `modal run tools/rebuild_usrtools_recovery.py::rebuild`.)
-4. Nikdy nenechávej artefakt jen na Volume — další `rsync --delete` ho smaže.
+4. Nikdy nenechávej artefakt jen na Volume — `sync` je git-based (`git reset --hard
+   origin/dev`), takže necommitnutý/nepushnutý artefakt na dalším `sync` zmizí ze
+   stromu na Volume (ne rsync --delete, jak to tvrdila starší verze tohoto bodu).
 
 ## 5. Závislosti a konvence
 
