@@ -123,7 +123,7 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
             if (idx > 0) pb.environment()[kv.substring(0, idx)] = kv.substring(idx + 1)
         }
         pb.redirectErrorStream(false)
-        val process = pb.start()
+        val process: java.lang.Process = pb.start()
         return RemoteProcessImpl(process)
     }
 
@@ -226,7 +226,7 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
 }
 
 /** IRemoteProcess impl — surové FD z `java.lang.Process` streamů přes reflexi na `fd` pole. */
-private class RemoteProcessImpl(private val process: Process) : IRemoteProcess.Stub() {
+private class RemoteProcessImpl(private val process: java.lang.Process) : IRemoteProcess.Stub() {
 
     private fun extractFd(stream: Any): FileDescriptor? = try {
         val f = stream.javaClass.getDeclaredField("fd")
