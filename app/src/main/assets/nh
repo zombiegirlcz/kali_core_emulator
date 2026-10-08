@@ -919,15 +919,17 @@ agent_dispatch() {
         ask|open)
             shift
             local q="$*" esc
-            # single-quote escape pro host shell (am start běží přes ashell)
+            # `am start` z uid appky padá (callingPackage com.android.shell ≠ uid)
+            # → jen přes shell_daemon (uid 2000). Single-quote escape pro sh -c.
             esc=$(printf '%s' "$q" | sed "s/'/'\\\\''/g")
-            if command -v ashell >/dev/null 2>&1; then
-                ashell -c "am start -a android.intent.action.ASSIST -p com.kali.aiassistant --es query '$esc'" >/dev/null \
-                    && echo "[+] Předáno Kali AI Assistant" \
-                    || { echo "[-] Kali AI Assistant se nepodařilo spustit (je nainstalovaný?)" >&2; exit 1; }
-            else
-                echo "[-] ashell není k dispozici — otevři Kali AI Assistant ručně." >&2; exit 1
+            if ! adb_shelldaemon_alive; then
+                echo "[-] shell_daemon neběží (nh adb start) — otevři Kali AI Assistant ručně." >&2; exit 1
             fi
+            if adb_daemon_exec "am start -a android.intent.action.ASSIST -p com.kali.aiassistant --es query '$esc'" 2>&1 \
+                | grep -q 'Error\|Exception'; then
+                echo "[-] Kali AI Assistant se nepodařilo spustit (je nainstalovaný?)" >&2; exit 1
+            fi
+            echo "[+] Předáno Kali AI Assistant"
             ;;
         *) echo "[-] 'nh agent $1' už neexistuje: python agent byl nahrazen appkou Kali AI Assistant." >&2
            echo "    Použij: nh agent ask <dotaz>" >&2; exit 1 ;;
@@ -1094,6 +1096,21 @@ adb_status() {
     fi
 }
 
+# Interaktivní uid-2000 shell PŘÍMO v tomhle terminálu: ashell -t (PTY přes
+# ashell_pty, uid appky) spustí attach klienta z nativeLibraryDir; shell běží
+# v shell_daemonu pod uid 2000. Token jde ze souboru (ne v argv); `pm path`
+# pod ashell PTY padá na binder → cesta k binárce z /shelldaemon/info.
+# stty raw -echo: jinak echuje i lokální PTY (dvojité znaky, cooked editace).
+adb_shell_inline() {
+    command -v ashell >/dev/null 2>&1 || return 1
+    local path
+    path=$(api_get "/shelldaemon/info" | fmt 'import sys,json;print(json.load(sys.stdin).get("path",""))')
+    [ -n "$path" ] || return 1
+    case "$path" in *\'*) return 1 ;; esac
+    ashell -tc "stty raw -echo 2>/dev/null; '$path' --attach --port=13341 --token-file=/data/user/0/com.linux_core/files/shell_daemon.token; rc=\$?; stty sane 2>/dev/null; exit \$rc"
+    return 0
+}
+
 adb_shell_open_window() {
     if command -v ashell >/dev/null 2>&1 && ashell -c \
         'cmd activity start-activity -n com.linux_core/com.linux_core.ui.terminal.TerminalActivity --es rootfsDirName ashell-adb --ez mountStorage false' \
@@ -1126,6 +1143,11 @@ adb_dispatch() {
         shell)
             if [ $# -gt 0 ]; then
                 adb_daemon_exec "$*"
+            elif ! adb_shelldaemon_alive; then
+                echo "[-] shell_daemon neběží. Spusť: nh adb start" >&2
+                return 1
+            elif [ -t 0 ] && [ -t 1 ]; then
+                adb_shell_inline || adb_shell_open_window
             else
                 adb_shell_open_window
             fi
@@ -1203,24 +1225,24 @@ Grant/revoke je čistě CLI, žádná potvrzovací notifikace v appce.
 EOF
 }
 
-shizuku_pid() {
-    local resp
-    resp=$(api_get "/shizuku/info") || return 1
-    [ -z "$resp" ] && return 1
-    echo "$resp" | fmt '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    p = d.get("pid")
-    print(p if p else "0", "1" if d.get("running") else "0")
-except Exception:
-    print("0 0")
-'
+# PID běžícího shizuku_server. Appka (uid 10323) /proc procesů uid 2000 nevidí
+# (hidepid) → "running" z /shizuku/info je vždy false; ptáme se proto pod
+# uid 2000 (shell_daemon, jinak adb). pidof místo pidfile (může být starý).
+shizuku_find_pid() {
+    local out=""
+    if adb_shelldaemon_alive 2>/dev/null; then
+        out=$(adb_daemon_exec "pidof shizuku_server" 2>/dev/null)
+    elif command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q 'device$'; then
+        out=$(adb shell "pidof shizuku_server" 2>/dev/null)
+    else
+        return 2
+    fi
+    out=$(echo "$out" | tr -d '\r' | awk '{print $1}')
+    [ -n "$out" ] && echo "$out"
 }
 
 shizuku_alive() {
-    local st; st=$(shizuku_pid) || return 1
-    [ "${st##* }" = "1" ]
+    shizuku_find_pid >/dev/null
 }
 
 shizuku_start() {
@@ -1245,7 +1267,9 @@ shizuku_start() {
         return 1
     fi
     echo "[*] Startuji Shizuku-compat server pod shell UID (non-root)..."
-    adb shell "nohup sh -c \"CLASSPATH='$apk' app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token\" >/dev/null 2>&1 &" >/dev/null 2>&1
+    # exec: bez něj zůstane obalový `sh -c` s tokenem v /proc/<pid>/cmdline
+    # (app_process si vlastní argv přepíše na --nice-name, sh ne).
+    adb shell "nohup sh -c \"CLASSPATH='$apk' exec app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token\" >/dev/null 2>&1 &" >/dev/null 2>&1
     sleep 2
     if shizuku_alive; then
         echo "[+] shizuku server běží."
@@ -1256,22 +1280,32 @@ shizuku_start() {
 }
 
 shizuku_stop() {
-    local st pid
-    st=$(shizuku_pid)
-    pid="${st%% *}"
-    if [ -n "$pid" ] && [ "$pid" != "0" ]; then
-        adb shell "kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null || true" >/dev/null 2>&1
+    # Podle jména (pidfile může být starý a ukazovat na cizí uid-2000 proces).
+    # comm je "main" (app_process), --nice-name je jen v argv[0] → pidof, ne pkill -x.
+    local cmd='p=$(pidof shizuku_server); [ -n "$p" ] && kill $p; sleep 1; p=$(pidof shizuku_server); [ -n "$p" ] && kill -9 $p; rm -f /data/local/tmp/shizuku_server.pid; true'
+    if adb_shelldaemon_alive 2>/dev/null; then
+        adb_daemon_exec "$cmd" >/dev/null 2>&1
+    elif command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q 'device$'; then
+        adb shell "$cmd" >/dev/null 2>&1
+    else
+        echo "[-] Nelze zastavit: neběží shell_daemon ani adb." >&2
+        return 1
     fi
-    adb shell "rm -f /data/local/tmp/shizuku_server.pid 2>/dev/null || true" >/dev/null 2>&1
+    if shizuku_alive; then
+        echo "[-] shizuku server stále běží." >&2
+        return 1
+    fi
     echo "[+] shizuku server stopped"
 }
 
 shizuku_status() {
-    local st pid running
-    st=$(shizuku_pid) || { echo "[-] LocalApiServer neodpovídá na /shizuku/info" >&2; return 1; }
-    pid="${st%% *}"; running="${st##* }"
-    if [ "$running" = "1" ]; then
+    local pid rc
+    pid=$(shizuku_find_pid); rc=$?
+    if [ -n "$pid" ]; then
         echo "[+] shizuku server běží (pid=$pid)"
+    elif [ "$rc" = "2" ]; then
+        echo "[?] stav nelze ověřit: neběží shell_daemon ani adb (nh adb start)" >&2
+        return 1
     else
         echo "[-] shizuku server neběží"
     fi
@@ -1313,6 +1347,8 @@ import sys, json
 d = json.load(sys.stdin)
 print("[+] %s: %s" % (d.get("package",""), "granted" if d.get("granted") else "denied"))
 '
+    [ "$granted" = "1" ] && echo "    Server pošle binder do ~5 s, pokud appka běží (jinak při jejím startu)."
+    [ "$granted" = "1" ] || echo "    Už předaný binder appka drží dál — volání ale server odmítne (bez grantu)."
 }
 
 shizuku_dispatch() {
@@ -2359,37 +2395,6 @@ help_api() {
     echo "  ${GREEN}share off${RST}              Omezit přístup k API pouze na localhost (bind na 127.0.0.1)"
     echo "  ${GREEN}share status${RST}           Zobrazit aktuální stav sdílení LocalApiServeru"
     echo ""
-}
-
-# ─── ASHELL (escape proot → host app user shell) ─────────
-
-ashell() {
-    # Spustí interaktivní shell v kontextu Android aplikace (mimo PRoot).
-    # Použití: ashell
-    # Běžně: ashell  → otevře novou TerminalActivity s /system/bin/sh
-    #                        a HOME = /data/data/com.linux_core/files
-    banner
-    printf "${CYAN}${BOLD}  ⬡  ASHELL  –  ESCAPE TO HOST APP SHELL${RST}\n"
-    printf "${DIM}  ─────────────────────────────────────────────────${RST}\n"
-    printf "${WHITE}   Přepne tě z PRootu (root@kali) do kontextu${RST}\n"
-    printf "${WHITE}   aplikace (uid=%s, HOME=%s)${RST}\n" \
-        "$(id -u 2>/dev/null || echo '?')" \
-        "/data/data/com.linux_core/files"
-    printf "${DIM}  ─────────────────────────────────────────────────${RST}\n"
-    api_post "/ashell" "open" | fmt "
-import sys, json
-G,R,Y,N,C=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m',chr(27)+'[96m'
-try:
-    d=json.load(sys.stdin)
-    if 'error' in d:
-        print(f'{R}✘  ashell failed: {d[\"error\"]}{N}')
-        sys.exit(1)
-    print(f'{C}⬡  uid={d.get(\"uid\",\"?\")}  pwd={d.get(\"pwd\",\"?\")}{N}')
-    print(f'{G}✔  Host shell otevřen v novém okně.{N}')
-    print(f'{G}   Návrat zpět do prootu: zavři okno nebo exit.{N}')
-except Exception as e:
-    print(f'{R}✘  ashell parse error: {e}{N}')
-"
 }
 
 # ─── COMPAT DISPATCH (for symlinked old names) ────────────

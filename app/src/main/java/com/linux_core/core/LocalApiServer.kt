@@ -519,7 +519,12 @@ object LocalApiServer {
             // Remote (share_local_api) navíc vyžaduje attestation.
             val isSensitive = sensitiveEndpoints.any { path.startsWith(it) }
             if (isSensitive && (!isLocalConnection || !isTrustedLoopbackPeer(context, socket))) {
-                if (!isAuthenticated(headers)) {
+                // Shizuku server (uid 2000) zná jen svůj startovací token, ne api.token —
+                // smí jím jen ČÍST grant stav (POST grant/revoke zůstává na api.token).
+                val shizukuRead = isLocalConnection && method == "GET" &&
+                    (path.startsWith("/shizuku/permission") || path.startsWith("/shizuku/resolve")) &&
+                    isShizukuServerToken(context, headers)
+                if (!shizukuRead && !isAuthenticated(headers)) {
                     sendResponse(out, 401, "Unauthorized",
                         "{\"error\":\"Authentication required\"}")
                     return
@@ -1435,6 +1440,16 @@ object LocalApiServer {
             put("pid", pid ?: JSONObject.NULL)
             put("running", running)
         }.toString())
+    }
+
+    private fun isShizukuServerToken(context: Context, headers: Map<String, String>): Boolean {
+        val h = headers["Authorization"] ?: headers["authorization"] ?: return false
+        if (!h.startsWith("Bearer ")) return false
+        val provided = h.substringAfter(" ").trim()
+        val expected = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
+            .getString(SHIZUKU_TOKEN_KEY, null)
+        if (provided.isEmpty() || expected.isNullOrEmpty()) return false
+        return MessageDigest.isEqual(provided.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
     }
 
     private fun readShizukuPid(): Int? = try {

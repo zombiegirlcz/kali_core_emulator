@@ -1,5 +1,6 @@
 package com.linux_core.shizuku
 
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
@@ -127,7 +128,16 @@ object HiddenApis {
         arg: String?,
         extras: Bundle?
     ): Bundle? {
-        val attempts = listOf(
+        val attempts = mutableListOf<Array<Any?>>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // API 31+: call(AttributionSource, authority, method, arg, extras);
+            // balíček musí patřit volajícímu uid (pod uid 2000 = com.android.shell).
+            val source = android.content.AttributionSource.Builder(android.os.Process.myUid())
+                .setPackageName(callingPkg)
+                .build()
+            attempts += arrayOf<Any?>(source, authority, method, arg, extras)
+        }
+        attempts += listOf(
             arrayOf<Any?>(callingPkg, null, authority, method, arg, extras), // API 29/30 s featureId
             arrayOf<Any?>(callingPkg, authority, method, arg, extras),       // API 29
             arrayOf<Any?>(callingPkg, method, arg, extras)                  // API 28

@@ -365,6 +365,29 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
   **Platí obecně pro jakýkoli soubor co importuje `android.os.Process` a zároveň pracuje
   s `java.lang.Process`.**
 
+**Opravy 2026-10-08 (nevracet zpět):**
+
+- **Doručení binderu klientům** dělá `BinderDistributor` v `ShizukuServerMain.kt`: každé 2 s čte
+  `/proc/*/cmdline` (uid 2000 má readproc) a hlavnímu procesu každého balíčku s grantem pošle binder
+  (znovu při novém PID). Dřív šel binder jen do `com.linux_core` → klienti hlásili „Shizuku není
+  nainstalováno“. Doručuje se jen běžícím procesům (`getContentProviderExternal` by appku spustil).
+- **`IContentProvider.call` na API 31+** bere `AttributionSource` (balíček `com.android.shell`, uid 2000)
+  — `HiddenApis.contentProviderCall` ho zkouší první.
+- **`callerPackage()`**: výstup `cmd package list packages --uid` je `package:<pkg> uid:<N>` → jen první token.
+- **Token serveru** smí v `LocalApiServer` jen GET `/shizuku/permission*` a `/shizuku/resolve`
+  (`isShizukuServerToken`); grant/revoke dál jen `api.token`.
+- `newProcess`/`setSystemProperty` vyžadují grant volajícího (`enforceGranted`).
+- **Stav serveru nezjišťovat z appky** — uid appky `/proc` procesů uid 2000 nevidí (hidepid), takže
+  `running` v `/shizuku/info` je vždy false. `nh shizuku status/start/stop` se ptá pod uid 2000
+  (`pidof shizuku_server` přes shell_daemon/adb). `comm` serveru je `main` → `pkill -x` nefunguje.
+  Start přes `exec app_process`, jinak drží obalový `sh -c` token v cmdline.
+- **`nh` nesmí definovat funkci `ashell()`** — zakrývá binárku `ashell` (všechna `ashell -c …` v `nh`
+  pak otevírala host shell okno pod uid appky; tak vznikl bug „`nh adb shell` běží pod 10323“).
+  `nh adb shell` v terminálu běží inline: `ashell -tc` + `libshelldaemon.so --attach --token-file=…`
+  (+ `stty raw -echo`). Pod `ashell -t` (PTY) padá `pm path` na binder „Failed transaction“ — cestu
+  k binárce brát z `/shelldaemon/info`. `am start`/`cmd activity` z uid appky padá na SecurityException
+  → `nh agent ask` jde přes shell_daemon.
+
 **Záměrně nedokončeno (dokumentovaný gap, ne bug):**
 
 - Raw transact-relay (`BINDER_TRANSACTION_transact = 1`, proxy arbitrárních systémových binder

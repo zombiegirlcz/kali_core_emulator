@@ -2,9 +2,11 @@ package com.linux_core.shizuku
 
 import android.os.Binder
 import android.os.Bundle
+import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import moe.shizuku.server.IRemoteProcess
 import moe.shizuku.server.IShizukuApplication
@@ -68,21 +70,95 @@ object ShizukuServerMain {
         val service = ShizukuServiceImpl()
         Log.i(TAG, "Shizuku-compat server startuje (uid=${Process.myUid()}, pid=${Process.myPid()})")
 
-        // Odešli binder manažerskému balíčku appky samotné (com.linux_core) —
-        // odsud appka může binder přeposlat dál (status/diagnostika), a je
-        // to i ověření, že BinderDelivery mechanismus vůbec funguje.
-        try {
-            BinderDelivery.sendBinderToPackage(
-                callingPkg = "com.linux_core",
-                targetPackage = "com.linux_core",
-                binder = service.asBinder(),
-                token = token
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "sendBinderToPackage(self) failed: ${t.message}")
-        }
+        BinderDistributor(service.asBinder()).start()
 
         Looper.loop()
+    }
+}
+
+/**
+ * Originální Shizuku doručuje binder klientům sám (při startu a při startu
+ * procesu klienta). Bez toho klient nikdy nedostane binder a `pingBinder()`
+ * je false. Tady: každé 2 s projdi /proc (uid 2000 má readproc), a když
+ * hlavní proces povoleného balíčku běží s novým PID, pošli mu binder přes
+ * jeho `<pkg>.shizuku` provider. Doručujeme jen BĚŽÍCÍM procesům —
+ * getContentProviderExternal by jinak appku sám spustil.
+ */
+private class BinderDistributor(private val binder: IBinder) : Thread("shizuku-binder-dist") {
+    private val delivered = HashMap<String, Int>()
+    private var granted: Set<String> = emptySet()
+    private var lastGrantRefresh = 0L
+
+    init { isDaemon = true }
+
+    override fun run() {
+        while (true) {
+            try {
+                tick()
+            } catch (t: Throwable) {
+                Log.w(TAG, "tick selhal: ${t.message}")
+            }
+            try {
+                sleep(TICK_MS)
+            } catch (_: InterruptedException) {
+                return
+            }
+        }
+    }
+
+    private fun tick() {
+        val now = SystemClock.elapsedRealtime()
+        if (lastGrantRefresh == 0L || now - lastGrantRefresh >= GRANT_REFRESH_MS) {
+            ShizukuHttpClient.grantedPackages()?.let { granted = it }
+            lastGrantRefresh = now
+        }
+        delivered.keys.retainAll(granted)
+        if (granted.isEmpty()) return
+        val running = mainProcesses(granted)
+        for (pkg in granted) {
+            val pid = running[pkg]
+            if (pid == null) {
+                delivered.remove(pkg)
+                continue
+            }
+            if (delivered[pkg] == pid) continue
+            // Zapamatuj si PID i při selhání (appka bez provideru by jinak
+            // dostávala pokus každé 2 s); nový start appky = nový pokus.
+            delivered[pkg] = pid
+            val ok = try {
+                BinderDelivery.sendBinderToPackage(CALLING_PKG, pkg, binder)
+            } catch (t: Throwable) {
+                Log.w(TAG, "doručení do $pkg selhalo: ${t.message}")
+                false
+            }
+            Log.i(TAG, "binder → $pkg (pid=$pid): ${if (ok) "OK" else "selhalo"}")
+        }
+    }
+
+    /** balíček → PID hlavního procesu (argv0 == balíček, bez `:sub` procesů). */
+    private fun mainProcesses(wanted: Set<String>): Map<String, Int> {
+        val out = HashMap<String, Int>()
+        val dirs = File("/proc").list() ?: return out
+        for (d in dirs) {
+            val pid = d.toIntOrNull() ?: continue
+            val name = try {
+                val b = File("/proc/$pid/cmdline").readBytes()
+                val end = b.indexOf(0.toByte()).let { if (it < 0) b.size else it }
+                String(b, 0, end)
+            } catch (_: Throwable) {
+                continue
+            }
+            if (name in wanted) out[name] = pid
+        }
+        return out
+    }
+
+    companion object {
+        private const val TAG = "ShizukuBinderDist"
+        private const val TICK_MS = 2000L
+        private const val GRANT_REFRESH_MS = 5000L
+        // AttributionSource balíček musí patřit volajícímu uid (2000).
+        private const val CALLING_PKG = "com.android.shell"
     }
 }
 
@@ -91,17 +167,35 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
     /** uid → IShizukuApplication (pro budoucí dispatch, dnes nevoláno bez UI toku). */
     private val attachedApps = ConcurrentHashMap<Int, IShizukuApplication>()
     private val flagsStore = ConcurrentHashMap<Int, Int>()
+    private val uidToPackage = ConcurrentHashMap<Int, String>()
 
+    /** Výstup je `package:<balíček> uid:<N>` → bereme jen první token. */
     private fun callerPackage(): String {
         val uid = Binder.getCallingUid()
+        uidToPackage[uid]?.let { return it }
         return try {
-            val p = ProcessBuilder("sh", "-c", "cmd package list packages --uid $uid | head -1")
+            val p = ProcessBuilder("cmd", "package", "list", "packages", "--uid", uid.toString())
                 .redirectErrorStream(true).start()
             val line = p.inputStream.bufferedReader().readLine() ?: ""
             p.waitFor()
-            line.removePrefix("package:").trim().ifEmpty { "uid:$uid" }
+            val pkg = line.trim().removePrefix("package:").substringBefore(' ').trim()
+            if (pkg.isEmpty()) {
+                "uid:$uid"
+            } else {
+                uidToPackage[uid] = pkg
+                pkg
+            }
         } catch (t: Throwable) {
             "uid:$uid"
+        }
+    }
+
+    /** Každé privilegované volání: binder se může dostat i k appce bez grantu. */
+    private fun enforceGranted(op: String) {
+        val pkg = callerPackage()
+        if (!ShizukuHttpClient.isGranted(pkg)) {
+            Log.w(TAG_SVC, "$op zamítnuto: $pkg nemá grant")
+            throw SecurityException("Shizuku: $pkg nemá oprávnění (nh shizuku grant $pkg)")
         }
     }
 
@@ -115,6 +209,7 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
     }
 
     override fun newProcess(cmd: Array<out String>?, env: Array<out String>?, dir: String?): IRemoteProcess {
+        enforceGranted("newProcess")
         val command = (cmd ?: arrayOf("sh")).toList()
         val pb = ProcessBuilder(command)
         if (!dir.isNullOrEmpty()) pb.directory(File(dir))
@@ -137,6 +232,7 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
         HiddenApis.getSystemProperty(name ?: "", defaultValue ?: "")
 
     override fun setSystemProperty(name: String?, value: String?) {
+        enforceGranted("setSystemProperty")
         if (name != null && value != null) HiddenApis.setSystemProperty(name, value)
     }
 

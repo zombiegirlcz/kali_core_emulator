@@ -1,6 +1,7 @@
 package com.linux_core.shizuku
 
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -20,7 +21,10 @@ object ShizukuHttpClient {
 
     @Volatile var token: String? = null
 
-    private fun request(method: String, path: String, body: String? = null): JSONObject? {
+    private fun request(method: String, path: String, body: String? = null): JSONObject? =
+        requestText(method, path, body)?.let { JSONObject(it) }
+
+    private fun requestText(method: String, path: String, body: String? = null): String? {
         return try {
             val url = URL("$BASE$path")
             val conn = url.openConnection() as HttpURLConnection
@@ -43,7 +47,7 @@ object ShizukuHttpClient {
                 Log.w(TAG, "$method $path -> HTTP $code: $text")
                 return null
             }
-            JSONObject(text)
+            text
         } catch (t: Throwable) {
             Log.e(TAG, "$method $path failed", t)
             null
@@ -54,4 +58,20 @@ object ShizukuHttpClient {
         request("GET", "/shizuku/permission?pkg=$pkg")?.optBoolean("granted", false) ?: false
 
     fun resolvePackage(pkg: String): JSONObject? = request("GET", "/shizuku/resolve?pkg=$pkg")
+
+    /** Balíčky s grant=true; null = LocalApiServer nedostupný (ponech poslední známý stav). */
+    fun grantedPackages(): Set<String>? {
+        val text = requestText("GET", "/shizuku/permission/list") ?: return null
+        return try {
+            val arr = JSONArray(text)
+            (0 until arr.length()).map { arr.getJSONObject(it) }
+                .filter { it.optBoolean("granted", false) }
+                .map { it.optString("package") }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        } catch (t: Throwable) {
+            Log.w(TAG, "permission/list: neplatná odpověď: ${t.message}")
+            null
+        }
+    }
 }
