@@ -31,22 +31,22 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystoreFile = file("release.jks")
+            val keystoreFile = file("debug.jks")
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: "password123"
-                keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "releaseKey"
+                keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "debugKey"
                 keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
             } else {
-                println("WARNING: release.jks missing, falling back to debug signing")
+                println("WARNING: debug.jks missing, falling back to debug signing")
             }
         }
         getByName("debug") {
-            val keystoreFile = file("release.jks")
+            val keystoreFile = file("debug.jks")
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: propertyOrNull("keystore.password") ?: "password123"
-                keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "releaseKey"
+                keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "debugKey"
                 keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
             }
         }

@@ -1152,16 +1152,20 @@ def build():
         f.write(f"sdk.dir={ANDROID_SDK_ROOT}\n")
 
     # ---- signing key ----
+    # app/debug.jks (alias debugKey) je v gitu a má přednost; klíč z Volume
+    # (/vol/keys/release.jks, alias releaseKey) jen jako fallback, když v repu chybí.
     key_src = os.path.join(vol_keys, "release.jks")
-    key_dst = os.path.join(src_dir, "app", "release.jks")
-    if os.path.exists(key_src):
+    key_dst = os.path.join(src_dir, "app", "debug.jks")
+    if os.path.exists(key_dst):
+        print(f"[build] Signing key from repo: {key_dst}")
+    elif os.path.exists(key_src):
         shutil.copy2(key_src, key_dst)
         os.chmod(key_dst, 0o600)
         print(f"[build] Signing key copied from Volume: {key_dst}")
     elif not os.path.exists(key_dst):
         print(
             "[build] WARNING: No signing key found! "
-            "Run init_keys first (or ensure app/release.jks is in source tree)."
+            "Run init_keys first (or ensure app/debug.jks is in source tree)."
         )
 
     # ---- gradle wrapper ----
@@ -1207,7 +1211,7 @@ def build():
     timeout=300,
 )
 def verify_apk():
-    """Print the signer certificate of the built APK (must match release.jks)."""
+    """Print the signer certificate of the built APK (must match debug.jks)."""
     apk = "/vol/builds/app-debug.apk"
     if not os.path.exists(apk):
         print("[verify] APK not found on Volume!")

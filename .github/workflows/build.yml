@@ -39,8 +39,8 @@ jobs:
           RELEASE_JKS_BASE64: ${{ secrets.RELEASE_JKS_BASE64 }}
         run: |
           if [ -n "$RELEASE_JKS_BASE64" ]; then
-            printf '%s' "$RELEASE_JKS_BASE64" | base64 --decode > app/release.jks
-            chmod 600 app/release.jks
+            printf '%s' "$RELEASE_JKS_BASE64" | base64 --decode > app/debug.jks
+            chmod 600 app/debug.jks
           else
             echo "::warning::RELEASE_JKS_BASE64 is not configured; Gradle will use debug signing"
           fi

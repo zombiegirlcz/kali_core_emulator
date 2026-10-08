@@ -6,8 +6,8 @@ The app is configured for **seamless updates** with the same signing key across 
 
 ### Keystore Details
 
-- **File:** `app/release.jks` (2.7KB)
-- **Key Alias:** `releaseKey`
+- **File:** `app/debug.jks` (2.7KB)
+- **Key Alias:** `debugKey`
 - **Password:** `password123`
 - **Both debug & release** use the same keystore
 
@@ -89,15 +89,15 @@ Both debug and release builds use the same keystore:
 // app/build.gradle.kts
 signingConfigs {
     create("release") {
-        storeFile = file("release.jks")
+        storeFile = file("debug.jks")
         storePassword = "password123"
-        keyAlias = "releaseKey"
+        keyAlias = "debugKey"
         keyPassword = "password123"
     }
     getByName("debug") {
-        storeFile = file("release.jks")      // SAME FILE
+        storeFile = file("debug.jks")      // SAME FILE
         storePassword = "password123"
-        keyAlias = "releaseKey"
+        keyAlias = "debugKey"
         keyPassword = "password123"
     }
 }
@@ -130,13 +130,13 @@ grep versionCode app/build.gradle.kts
 ```bash
 # Verify keystore path in build.gradle.kts:
 grep "storeFile = file" app/build.gradle.kts
-# Should show: storeFile = file("release.jks")
+# Should show: storeFile = file("debug.jks")
 ```
 
 **Lost keystore** → App can't be updated with same signature
 ```bash
-# Prevention: Always backup app/release.jks
-cp app/release.jks app/release.jks.backup
+# Prevention: Always backup app/debug.jks
+cp app/debug.jks app/debug.jks.backup
 ```
 
 ## Security Notes

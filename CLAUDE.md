@@ -59,7 +59,7 @@ in the Modal env — never locally). Key suites: `security/` (attestation, MITM 
 
 - Package **`com.linux_core`**; sources under `app/src/main/java/com/linux_core/`.
 - `versionCode = 20`, `versionName = "4.5-MULTI-ROOTFS"` (`app/build.gradle.kts`); minSdk/targetSdk **28/28**; JVM 17.
-- Same keystore (`app/release.jks`) for debug & release. **Bump `versionCode` before each distributed build.**
+- Same keystore (`app/debug.jks`, alias `debugKey`) for debug & release. **Bump `versionCode` before each distributed build.**
 
 ## Architecture (big picture — full class table in AGENTS.md §3)
 

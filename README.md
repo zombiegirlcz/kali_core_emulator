@@ -766,7 +766,7 @@ Tento update zpřesňuje spouštěcí režimy kontejneru, doplňuje chybějící
 - Obnova přejmenuje stávající rootfs na `.bak` a při chybě se vrátí zpět.
 
 ### 6. CI podepisování
-- GitHub Actions staví debug APK **stejným** klíčem `app/release.jks` (alias `releaseKey`) → `adb install -r` funguje napříč sestaveními.
+- GitHub Actions staví debug APK **stejným** klíčem `app/debug.jks` (alias `debugKey`) → `adb install -r` funguje napříč sestaveními.
 - Hesla z GitHub secrets (`KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`); validace certifikátu je měkká (warning místo pádu buildu).
 
 ---

@@ -49,8 +49,8 @@ zsh mbuild clean    # smaže src + gradle-cache na Volume
 | minSdk / targetSdk | 28 / 28 (ne 33/36 — `copilot-instructions.md` je zastaralé) |
 | Java/Kotlin | JVM 17 (`sourceCompatibility = JavaVersion.VERSION_17`), Kotlin `official` styl |
 | BuildConfig | `ENABLE_MITM=false`, `ENABLE_ATTESTATION=true` (default v `app/build.gradle.kts`) |
-| Podpis | `app/release.jks` — debug i release **stejný** keystore → `adb install -r` bez odinstalace |
-| Alias/heslo | `releaseKey` / `password123` (env: `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) |
+| Podpis | `app/debug.jks` — debug i release **stejný** keystore (veřejný, jen pro vývoj — není to tajný release klíč) → `adb install -r` bez odinstalace |
+| Alias/heslo | `debugKey` / `password123` (env: `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) |
 
 Před každou distribuovanou verzí navyš `versionCode`.
 
