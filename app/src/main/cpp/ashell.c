@@ -395,38 +395,6 @@ static int print_exec_response(const char *json) {
     return (int)rc;
 }
 
-/* ── shelldaemon (uid 2000) přes /shelldaemon endpointy na appce ─────── */
-
-static int shelldaemon_status(int *running, long *pid) {
-    char *resp = http_request("GET", "/shelldaemon/status", NULL, NULL, NULL, NULL);
-    if (!resp) return -1;
-    int r = json_get_bool(resp, "running", 0);
-    long p = json_get_int(resp, "pid", 0);
-    free(resp);
-    if (running) *running = r;
-    if (pid) *pid = p;
-    return 0;
-}
-
-static int shelldaemon_alive(void) {
-    int running = 0;
-    if (shelldaemon_status(&running, NULL) < 0) return 0;
-    return running;
-}
-
-/* spustí <cmd> pod uid 2000 přes /shelldaemon/exec, vytiskne stdout/stderr,
- * vrátí exit kód. Jediné síto pro ashell adb <cmd>/shell <cmd>/-c <cmd>. */
-static int daemon_exec(const char *cmd) {
-    if (!shelldaemon_alive()) {
-        fprintf(stderr, "[-] shell_daemon nebezi. Spust: ashell adb start\n");
-        return 1;
-    }
-    char *resp = http_request("POST", "/shelldaemon/exec", cmd, NULL, "text/plain", NULL);
-    if (!resp) { print_no_response("/shelldaemon/exec"); return 1; }
-    int rc = print_exec_response(resp);
-    free(resp);
-    return rc;
-}
 
 /* ── ashell -c '<prikaz>' — primárně přes raw ashell_pty (13340) ────── */
 
@@ -708,246 +676,25 @@ static int run_cmd_argv(char *const argv[]) {
     return 1;
 }
 
-static void adb_help(void) {
-    printf(
-"ashell adb — adb-like rozhrani, vse pres shell_daemon (uid 2000)\n\n"
-"  ashell adb start            spusti shell_daemon (jednorazove, pres adb shell)\n"
-"  ashell adb stop             zastavi shell_daemon\n"
-"  ashell adb status           stav shell_daemonu (TCP probe)\n"
-"  ashell adb shell            otevre interaktivni terminal pod uid 2000\n"
-"  ashell adb shell <cmd>      spusti <cmd> pod uid 2000\n"
-"  ashell adb <cmd>            totez co \"adb shell <cmd>\" (prefix shell se zahodi)\n"
-"  ashell adb install [-r] <apk>  legacy install: cp do /data/local/tmp + pm install\n"
-"  ashell adb uninstall <pkg>     cmd package uninstall (jako adb)\n"
-"  ashell adb push <L> <R>        cp -r L R (uid 2000)\n"
-"  ashell adb pull <R> <L>        cp -r R L (uid 2000)\n"
-"  ashell adb devices             nas shell_daemon jako jedine \"zarizeni\"\n"
-"  ashell adb -c '<cmd>'          totez co \"ashell adb <cmd>\" (uid 2000, pres daemona)\n\n"
-"Pozn.: daemon bezi jako Android shell (uid 2000), takze vidi /system/bin\n"
-"nastroje (pm, am, logcat, settings, ...). `adb` binarka se nepouziva.\n");
-}
-
+/* "ashell adb" je jen launcher — CLI logika (start/stop/shell/install/...) žije
+ * v `nh adb` (assets/nh). PRoot ptrace zprůhledňuje execvp("nh",...) na guest
+ * rootfs view, takže tohle funguje jen uvnitř guest terminálové session. */
 static int cmd_adb(int argc, char **argv) {
-    const char *sub = argc > 0 ? argv[0] : "status";
-
-    if (strcmp(sub, "start") == 0) {
-        if (system("command -v adb >/dev/null 2>&1") != 0) {
-            fprintf(stderr, "[-] adb neni v guestu k dispozici.\n");
-            return 1;
-        }
-        if (system("adb devices 2>/dev/null | grep -q device$") != 0) {
-            fprintf(stderr, "[-] adb neni pripojeny. Nejdřív spáruj:\n");
-            fprintf(stderr, "      adb pair <host>:<port> <pairing-code>\n");
-            fprintf(stderr, "      adb connect <host>:<port>\n");
-            return 1;
-        }
-        char *pathresp = http_request("GET", "/shelldaemon/info", NULL, NULL, NULL, NULL);
-        char *daemon_path = pathresp ? json_get_string(pathresp, "path") : NULL;
-        char *token = pathresp ? json_get_string(pathresp, "token") : NULL;
-        free(pathresp);
-        const char *token_override = getenv("SHELLDAEMON_TOKEN");
-        if (token_override && *token_override) {
-            free(token);
-            token = strdup(token_override);
-        }
-        if (!daemon_path || !*daemon_path) {
-            fprintf(stderr, "[-] Neznám cestu k libshelldaemon.so.\n");
-            fprintf(stderr, "    Ověř, že appka běží: curl -s http://127.0.0.1:1337/shelldaemon/info\n");
-            free(daemon_path); free(token);
-            return 1;
-        }
-        if (!token || !*token) {
-            fprintf(stderr, "[-] Nepodařilo se získat token daemona.\n");
-            free(daemon_path); free(token);
-            return 1;
-        }
-        if (!shelldaemon_alive()) {
-            printf("[*] Startuji libshelldaemon.so pod shell UID (non-root) ...\n");
-            char launch[8192];
-            snprintf(launch, sizeof(launch),
-                     "adb shell \"nohup %s --port=13341 --token=%s >/dev/null 2>&1 &\" >/dev/null 2>&1",
-                     daemon_path, token);
-            system(launch);
-            struct timespec ts = { 2, 0 };
-            nanosleep(&ts, NULL);
-        }
-        long pid = 0; int running = 0;
-        shelldaemon_status(&running, &pid);
-        if (running) {
-            char uidcmd[512], uidout[256] = "";
-            snprintf(uidcmd, sizeof(uidcmd),
-                     "adb shell \"cat /proc/%ld/status 2>/dev/null | grep '^Uid:' | awk '{print \\$2}'\"",
-                     pid);
-            FILE *pf = popen(uidcmd, "r");
-            if (pf) { if (fgets(uidout, sizeof(uidout), pf)) { size_t l = strlen(uidout); while (l && (uidout[l-1]=='\n'||uidout[l-1]=='\r')) uidout[--l]='\0'; } pclose(pf); }
-            printf("[+] shell_daemon běží (pid=%ld, uid=%s, non-root)\n", pid, uidout[0] ? uidout : "?");
-            printf("    Příkazy: ashell adb <cmd>   (napr. ashell adb id, ashell adb pm list packages)\n");
-            free(daemon_path); free(token);
-            return 0;
-        }
-        fprintf(stderr, "[-] shell_daemon nenabehl.\n");
-        free(daemon_path); free(token);
-        return 1;
-    }
-
-    if (strcmp(sub, "stop") == 0) {
-        char *resp = http_request("POST", "/shelldaemon/stop", NULL, NULL, NULL, NULL);
-        int stopped_via_api = resp && !shelldaemon_alive();
-        free(resp);
-        if (!stopped_via_api) {
-            if (system("command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q device$") == 0) {
-                /* PID čteme přímo přes command substitution (žádný předvídatelný /tmp soubor)
-                 * a do kill ho pustíme jen když je čistě číselný. */
-                system("_p=$(adb shell \"cat /data/local/tmp/shelldaemon.pid 2>/dev/null\" 2>/dev/null | tr -d '\\r\\n'); "
-                       "case \"$_p\" in ''|*[!0-9]*) ;; *) adb shell \"kill $_p 2>/dev/null; sleep 1; kill -9 $_p 2>/dev/null || true\" >/dev/null 2>&1 ;; esac");
-                system("adb shell \"pkill -f libshelldaemon 2>/dev/null || true\" >/dev/null 2>&1");
-                system("adb shell \"rm -f /data/local/tmp/shelldaemon.pid 2>/dev/null || true\" >/dev/null 2>&1");
-                struct timespec ts = { 1, 0 };
-                nanosleep(&ts, NULL);
-            }
-        }
-        if (shelldaemon_alive()) {
-            fprintf(stderr, "[!] shell_daemon stale bezi (stop se nezdaril).\n");
-            return 1;
-        }
-        printf("[+] shell_daemon stopped\n");
-        return 0;
-    }
-
-    if (strcmp(sub, "status") == 0) {
-        int running = 0; long pid = 0;
-        if (shelldaemon_status(&running, &pid) < 0) {
-            fprintf(stderr, "[-] LocalApiServer neodpovídá na http://127.0.0.1:1337/shelldaemon/status\n");
-            return 1;
-        }
-        if (running) printf("[+] shell_daemon běží (pid=%ld, port=13341)\n", pid);
-        else printf("[-] shell_daemon neběží\n");
-        return 0;
-    }
-
-    if (strcmp(sub, "help") == 0 || strcmp(sub, "--help") == 0 || strcmp(sub, "-h") == 0) {
-        adb_help();
-        return 0;
-    }
-
-    if (strcmp(sub, "devices") == 0) {
-        int running = 0; long pid = 0;
-        shelldaemon_status(&running, &pid);
-        printf("List of devices attached\n");
-        if (running) printf("127.0.0.1:13341\tdevice (shell_daemon uid 2000, pid %ld)\n", pid);
-        return 0;
-    }
-
-    if (strcmp(sub, "shell") == 0) {
-        if (argc > 1) {
-            strbuf joined; sb_init(&joined);
-            for (int i = 1; i < argc; i++) { if (i > 1) sb_append(&joined, " ", 1); sb_appends(&joined, argv[i]); }
-            int rc = daemon_exec(joined.buf);
-            sb_free(&joined);
-            return rc;
-        }
-        printf("[*] Otevírám nové terminálové okno pod uid 2000 (shell_daemon)...\n");
-        char *cmdargv[] = {
-            "cmd", "activity", "start-activity", "-n",
-            "com.linux_core/com.linux_core.ui.terminal.TerminalActivity",
-            "--es", "rootfsDirName", "ashell-adb",
-            "--ez", "mountStorage", "false", NULL
-        };
-        if (run_cmd_argv(cmdargv) == 0) {
-            printf("[+] ADB shell opened (via cmd activity)\n");
-            return 0;
-        }
-        char *resp = http_request("POST", "/ashell", "{\"mode\":\"adb-shell\"}", NULL, "application/json", NULL);
-        if (!resp) { print_no_response("/ashell"); return 1; }
-        printf("[+] ADB shell opened (via API)\n");
-        free(resp);
-        return 0;
-    }
-
-    if (strcmp(sub, "install") == 0) {
-        if (argc < 2) { fprintf(stderr, "[-] Usage: ashell adb install [-r] [-g] <apk>\n"); return 1; }
-        const char *apk = NULL;
-        strbuf opts; sb_init(&opts);
-        strbuf qopts; sb_init(&qopts);
-        for (int i = 1; i < argc; i++) {
-            if (argv[i][0] == '-') {
-                sb_appends(&opts, " "); sb_appends(&opts, argv[i]);           /* API: "-r -g" */
-                sb_appends(&qopts, " "); sb_append_shquoted(&qopts, argv[i]); /* fallback sh */
-            }
-            else apk = argv[i];
-        }
-        if (!apk) { fprintf(stderr, "[-] Usage: ashell adb install [-r] [-g] <apk>\n"); sb_free(&opts); sb_free(&qopts); return 1; }
-        strbuf body; sb_init(&body);
-        sb_appends(&body, "{\"apk\":"); sb_append_json_escaped(&body, apk);
-        sb_appends(&body, ",\"args\":"); sb_append_json_escaped(&body, opts.buf ? opts.buf : "");
-        sb_appends(&body, "}");
-        char *resp = http_request("POST", "/shelldaemon/install", body.buf, NULL, "application/json", NULL);
-        sb_free(&body);
-        if (resp && !json_has_key(resp, "error")) {
-            int rc = print_exec_response(resp);
-            free(resp); sb_free(&opts); sb_free(&qopts);
-            return rc;
-        }
-        free(resp);
-        const char *base = strrchr(apk, '/');
-        base = base ? base + 1 : apk;
-        /* apk/base/opts jsou kvotované (sb_append_shquoted) — apostrof v cestě nerozbije příkaz. */
-        strbuf dst; sb_init(&dst);
-        sb_appends(&dst, "/data/local/tmp/"); sb_appends(&dst, base);
-        strbuf cmd; sb_init(&cmd);
-        sb_appends(&cmd, "cp "); sb_append_shquoted(&cmd, apk); sb_appends(&cmd, " "); sb_append_shquoted(&cmd, dst.buf);
-        sb_appends(&cmd, " && pm install"); sb_appends(&cmd, qopts.buf ? qopts.buf : "");
-        sb_appends(&cmd, " "); sb_append_shquoted(&cmd, dst.buf);
-        sb_free(&dst);
-        int rc = daemon_exec(cmd.buf);
-        sb_free(&cmd); sb_free(&opts); sb_free(&qopts);
-        return rc;
-    }
-
-    if (strcmp(sub, "uninstall") == 0) {
-        strbuf cmd; sb_init(&cmd);
-        sb_appends(&cmd, "cmd package uninstall");
-        for (int i = 1; i < argc; i++) { sb_append(&cmd, " ", 1); sb_appends(&cmd, argv[i]); }
-        sb_appends(&cmd, " 2>/dev/null || pm uninstall");
-        for (int i = 1; i < argc; i++) { sb_append(&cmd, " ", 1); sb_appends(&cmd, argv[i]); }
-        int rc = daemon_exec(cmd.buf);
-        sb_free(&cmd);
-        return rc;
-    }
-
-    if (strcmp(sub, "push") == 0 || strcmp(sub, "pull") == 0) {
-        if (argc < 3) { fprintf(stderr, "[-] Usage: ashell adb %s <src> <dst>\n", sub); return 1; }
-        strbuf cmd; sb_init(&cmd);
-        sb_appends(&cmd, "cp -r '"); sb_appends(&cmd, argv[1]); sb_appends(&cmd, "' '");
-        for (int i = 2; i < argc; i++) { if (i > 2) sb_append(&cmd, " ", 1); sb_appends(&cmd, argv[i]); }
-        sb_appends(&cmd, "'");
-        int rc = daemon_exec(cmd.buf);
-        sb_free(&cmd);
-        return rc;
-    }
-
-    if (strcmp(sub, "-c") == 0 || strcmp(sub, "--cmd") == 0) {
-        if (argc < 2) {
-            fprintf(stderr, "[-] Usage: ashell adb -c '<prikaz>' (app UID)\n");
-            fprintf(stderr, "    Pro uid 2000: ashell adb <prikaz>\n");
-            return 1;
-        }
-        strbuf joined; sb_init(&joined);
-        for (int i = 1; i < argc; i++) { if (i > 1) sb_append(&joined, " ", 1); sb_appends(&joined, argv[i]); }
-        char *resp = http_request("POST", "/shelldaemon/exec", joined.buf, NULL, "text/plain", NULL);
-        sb_free(&joined);
-        if (!resp) { print_no_response("/shelldaemon/exec"); return 1; }
-        int rc = print_exec_response(resp);
-        free(resp);
-        return rc;
-    }
-
-    /* default: "ashell adb <cokoli>" = "adb shell <cokoli>" přes daemon_exec */
-    strbuf joined; sb_init(&joined);
-    for (int i = 0; i < argc; i++) { if (i) sb_append(&joined, " ", 1); sb_appends(&joined, argv[i]); }
-    int rc = daemon_exec(joined.buf);
-    sb_free(&joined);
-    return rc;
+    char **nh_argv = malloc(sizeof(char *) * (size_t)(argc + 3));
+    if (!nh_argv) { fprintf(stderr, "[-] malloc failed\n"); return 1; }
+    nh_argv[0] = (char *)"nh";
+    nh_argv[1] = (char *)"adb";
+    for (int i = 0; i < argc; i++) nh_argv[2 + i] = argv[i];
+    nh_argv[2 + argc] = NULL;
+    execvp("nh", nh_argv);
+    fprintf(stderr,
+        "[-] 'nh' nenalezen v PATH — 'ashell adb' je jen launcher pro 'nh adb'.\n"
+        "    Spusť 'ashell adb %s%s' z terminálu uvnitř Kali/Parrot session,\n"
+        "    nebo tam volej přímo 'nh adb %s%s'.\n",
+        argc > 0 ? argv[0] : "", argc > 0 ? " ..." : "",
+        argc > 0 ? argv[0] : "", argc > 0 ? " ..." : "");
+    free(nh_argv);
+    return 127;
 }
 
 /* ── --add/--remove/--list/-e/--edit (blocklist + config) ────────────── */

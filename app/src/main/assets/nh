@@ -934,6 +934,255 @@ agent_dispatch() {
     esac
 }
 
+# ─── ADB (shell_daemon, uid 2000) ───────────────────────────
+# Celá CLI logika přesunuta z ashell.c (2026-10-08) — ashell `adb` subcommand
+# je teď jen `execvp("nh", ...)`. Tady žije jediná implementace; nic z tohoto
+# nejde přes reálnou `adb` binárku KROMĚ bootstrapu v adb_start (ten potřebuje
+# "adb shell" přes wireless debugging, abychom dostali uid 2000 — stejný trik
+# jako dřív v ashell.c, AGENTS.md §9b).
+
+# Vytiskne {stdout,stderr,exit_code} nebo {error[,exit_code]} a vrátí exit kód
+# — shell ekvivalent ashell.c's print_exec_response().
+adb_print_exec() {
+    fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+out, err = d.get("stdout", ""), d.get("stderr", "")
+if "error" in d and "exit_code" not in d:
+    if out: sys.stdout.write(out)
+    if err: sys.stderr.write(err)
+    if not out and not err and d.get("error"):
+        print(d["error"], file=sys.stderr)
+    sys.exit(1)
+if out: sys.stdout.write(out)
+if err: sys.stderr.write(err)
+rc = d.get("exit_code", 0)
+sys.exit(rc if 0 <= rc <= 255 else (1 if rc else 0))
+'
+}
+
+adb_shelldaemon_status() {
+    # echo "$running $pid" na stdout; 1 když LocalApiServer neodpoví.
+    local resp
+    resp=$(api_get "/shelldaemon/status") || return 1
+    [ -z "$resp" ] && return 1
+    echo "$resp" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    running = d.get("running")
+    pid = d.get("pid", 0)
+    print("1" if running else "0", pid)
+except Exception:
+    print("0 0")
+'
+}
+
+adb_shelldaemon_alive() {
+    local st; st=$(adb_shelldaemon_status) || return 1
+    [ "${st%% *}" = "1" ]
+}
+
+# spustí <cmd> pod uid 2000 přes /shelldaemon/exec; jediné síto pro
+# `adb <cmd>` / `adb shell <cmd>` / `adb -c <cmd>`.
+adb_daemon_exec() {
+    if ! adb_shelldaemon_alive; then
+        echo "[-] shell_daemon neběží. Spusť: nh adb start" >&2
+        return 1
+    fi
+    api_post "/shelldaemon/exec" "$1" | adb_print_exec
+}
+
+adb_help() {
+    echo "nh adb — adb-like rozhraní, vše přes shell_daemon (uid 2000)"
+    echo ""
+    echo "  nh adb start               spustí shell_daemon (jednorázově, přes adb shell)"
+    echo "  nh adb stop                zastaví shell_daemon"
+    echo "  nh adb status              stav shell_daemonu (HTTP probe)"
+    echo "  nh adb shell               otevře interaktivní terminál pod uid 2000"
+    echo "  nh adb shell <cmd>         spustí <cmd> pod uid 2000"
+    echo "  nh adb <cmd>               totéž co \"adb shell <cmd>\" (prefix shell se zahodí)"
+    echo "  nh adb install [-r] <apk>  cp do /data/local/tmp + pm install"
+    echo "  nh adb uninstall <pkg>     cmd package uninstall (jako adb)"
+    echo "  nh adb push <L> <R>        cp -r L R (uid 2000)"
+    echo "  nh adb pull <R> <L>        cp -r R L (uid 2000)"
+    echo "  nh adb devices             náš shell_daemon jako jediné \"zařízení\""
+    echo "  nh adb -c '<cmd>'          totéž co \"nh adb <cmd>\" (uid 2000, přes daemona)"
+    echo ""
+    echo "Pozn.: daemon běží jako Android shell (uid 2000), takže vidí /system/bin"
+    echo "nástroje (pm, am, logcat, settings, ...). Reálná \`adb\` binárka se používá"
+    echo "jen ve \`start\` (bootstrap přes wireless debugging)."
+}
+
+adb_start() {
+    if ! command -v adb >/dev/null 2>&1; then
+        echo "[-] adb není v guestu k dispozici (apt install android-tools-adb)." >&2
+        return 1
+    fi
+    if ! adb devices 2>/dev/null | grep -q 'device$'; then
+        echo "[-] adb není připojen. Nejdřív spáruj:" >&2
+        echo "      adb pair <host>:<port> <pairing-code>" >&2
+        echo "      adb connect <host>:<port>" >&2
+        return 1
+    fi
+    local info path tok
+    info=$(api_get "/shelldaemon/info")
+    path=$(echo "$info" | fmt 'import sys,json;print(json.load(sys.stdin).get("path",""))')
+    tok=$(echo "$info" | fmt 'import sys,json;print(json.load(sys.stdin).get("token",""))')
+    [ -n "${SHELLDAEMON_TOKEN:-}" ] && tok="$SHELLDAEMON_TOKEN"
+    if [ -z "$path" ]; then
+        echo "[-] Neznám cestu k libshelldaemon.so." >&2
+        echo "    Ověř, že appka běží: curl -s http://127.0.0.1:1337/shelldaemon/info" >&2
+        return 1
+    fi
+    if [ -z "$tok" ]; then
+        echo "[-] Nepodařilo se získat token daemona." >&2
+        return 1
+    fi
+    if ! adb_shelldaemon_alive; then
+        echo "[*] Startuji libshelldaemon.so pod shell UID (non-root) ..."
+        adb shell "nohup $path --port=13341 --token=$tok >/dev/null 2>&1 &" >/dev/null 2>&1
+        sleep 2
+    fi
+    local st pid uid
+    st=$(adb_shelldaemon_status)
+    pid="${st##* }"
+    if [ "${st%% *}" = "1" ]; then
+        uid=$(adb shell "cat /proc/$pid/status 2>/dev/null | grep '^Uid:' | awk '{print \$2}'" 2>/dev/null | tr -d '\r\n')
+        echo "[+] shell_daemon běží (pid=$pid, uid=${uid:-?}, non-root)"
+        echo "    Příkazy: nh adb <cmd>   (např. nh adb id, nh adb pm list packages)"
+        return 0
+    fi
+    echo "[-] shell_daemon nenaběhl." >&2
+    return 1
+}
+
+adb_stop() {
+    local stopped_via_api=0
+    if api_post "/shelldaemon/stop" "" >/dev/null 2>&1 && ! adb_shelldaemon_alive; then
+        stopped_via_api=1
+    fi
+    if [ "$stopped_via_api" != "1" ] && command -v adb >/dev/null 2>&1 \
+        && adb devices 2>/dev/null | grep -q 'device$'; then
+        local p
+        p=$(adb shell "cat /data/local/tmp/shelldaemon.pid 2>/dev/null" 2>/dev/null | tr -d '\r\n')
+        case "$p" in
+            ''|*[!0-9]*) ;;
+            *) adb shell "kill $p 2>/dev/null; sleep 1; kill -9 $p 2>/dev/null || true" >/dev/null 2>&1 ;;
+        esac
+        adb shell "pkill -f libshelldaemon 2>/dev/null || true" >/dev/null 2>&1
+        adb shell "rm -f /data/local/tmp/shelldaemon.pid 2>/dev/null || true" >/dev/null 2>&1
+        sleep 1
+    fi
+    if adb_shelldaemon_alive; then
+        echo "[!] shell_daemon stale běží (stop se nezdařil)." >&2
+        return 1
+    fi
+    echo "[+] shell_daemon stopped"
+}
+
+adb_status() {
+    local st
+    st=$(adb_shelldaemon_status) || { echo "[-] LocalApiServer neodpovídá na /shelldaemon/status" >&2; return 1; }
+    if [ "${st%% *}" = "1" ]; then
+        echo "[+] shell_daemon běží (pid=${st##* }, port=13341)"
+    else
+        echo "[-] shell_daemon neběží"
+    fi
+}
+
+adb_shell_open_window() {
+    if command -v ashell >/dev/null 2>&1 && ashell -c \
+        'cmd activity start-activity -n com.linux_core/com.linux_core.ui.terminal.TerminalActivity --es rootfsDirName ashell-adb --ez mountStorage false' \
+        >/dev/null 2>&1; then
+        echo "[+] ADB shell opened (via cmd activity)"
+        return 0
+    fi
+    if api_post_json "/ashell" '{"mode":"adb-shell"}' >/dev/null 2>&1; then
+        echo "[+] ADB shell opened (via API)"
+        return 0
+    fi
+    echo "[-] Nepodařilo se otevřít ADB shell okno." >&2
+    return 1
+}
+
+adb_dispatch() {
+    local sub="${1:-status}"
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        start) adb_start ;;
+        stop) adb_stop ;;
+        status) adb_status ;;
+        help|-h|--help) adb_help ;;
+        devices)
+            local st
+            st=$(adb_shelldaemon_status)
+            echo "List of devices attached"
+            [ "${st%% *}" = "1" ] && echo "127.0.0.1:13341	device (shell_daemon uid 2000, pid ${st##* })"
+            ;;
+        shell)
+            if [ $# -gt 0 ]; then
+                adb_daemon_exec "$*"
+            else
+                adb_shell_open_window
+            fi
+            ;;
+        install)
+            [ $# -lt 1 ] && { echo "[-] Usage: nh adb install [-r] [-g] <apk>" >&2; return 1; }
+            local apk="" opts="" a
+            for a in "$@"; do
+                case "$a" in
+                    -*) opts="$opts $a" ;;
+                    *) apk="$a" ;;
+                esac
+            done
+            [ -z "$apk" ] && { echo "[-] Usage: nh adb install [-r] [-g] <apk>" >&2; return 1; }
+            local body resp
+            body=$(ADB_APK="$apk" ADB_OPTS="$opts" fmt '
+import json, os
+print(json.dumps({"apk": os.environ["ADB_APK"], "args": os.environ["ADB_OPTS"]}))
+')
+            resp=$(api_post_json "/shelldaemon/install" "$body")
+            if [ -n "$resp" ] && ! echo "$resp" | fmt '
+import sys, json
+sys.exit(0 if "error" in json.load(sys.stdin) else 1)
+'; then
+                echo "$resp" | adb_print_exec
+                return $?
+            fi
+            # fallback: cp do /data/local/tmp + pm install (přes daemona)
+            local base dst cmd
+            base=$(basename "$apk")
+            dst="/data/local/tmp/$base"
+            cmd=$(ADB_APK="$apk" ADB_DST="$dst" ADB_OPTS="$opts" fmt '
+import os, shlex
+apk, dst, opts = os.environ["ADB_APK"], os.environ["ADB_DST"], os.environ["ADB_OPTS"]
+print("cp %s %s && pm install%s %s" % (shlex.quote(apk), shlex.quote(dst), opts, shlex.quote(dst)))
+')
+            adb_daemon_exec "$cmd"
+            ;;
+        uninstall)
+            [ $# -lt 1 ] && { echo "[-] Usage: nh adb uninstall <pkg>" >&2; return 1; }
+            adb_daemon_exec "cmd package uninstall $* 2>/dev/null || pm uninstall $*"
+            ;;
+        push|pull)
+            [ $# -lt 2 ] && { echo "[-] Usage: nh adb $sub <src> <dst>" >&2; return 1; }
+            adb_daemon_exec "cp -r '$1' '$2'"
+            ;;
+        -c|--cmd)
+            [ $# -lt 1 ] && { echo "[-] Usage: nh adb -c '<prikaz>' (uid 2000)" >&2; return 1; }
+            adb_daemon_exec "$*"
+            ;;
+        *)
+            # "nh adb <cokoli>" = "adb shell <cokoli>" přes daemona (sub je první slovo příkazu)
+            adb_daemon_exec "$sub $*"
+            ;;
+    esac
+}
+
 # ─── LOG ───────────────────────────────────────────────────
 
 log_dispatch() {
@@ -1660,6 +1909,7 @@ help_dispatch() {
         network|net)             help_network ;;
         vpn)                      help_vpn ;;
         agent|ai)                 help_agent ;;
+        adb)                      adb_help ;;
         log|logs)                 help_log ;;
         device|dev)               help_device ;;
         api)                      help_api ;;
@@ -3658,6 +3908,7 @@ case "$CMD" in
     network|net)            network_dispatch "$@" ;;
     vpn)                    vpn_dispatch "$@" ;;
     agent|ai)               agent_dispatch "$@" ;;
+    adb)                    adb_dispatch "$@" ;;
     log|logs)               log_dispatch "$@" ;;
     device|dev)             device_dispatch "$@" ;;
     api)                    api_dispatch "$@" ;;
