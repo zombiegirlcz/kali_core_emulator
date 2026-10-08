@@ -999,25 +999,33 @@ adb_daemon_exec() {
 }
 
 adb_help() {
-    echo "nh adb — adb-like rozhraní, vše přes shell_daemon (uid 2000)"
+    banner
     echo ""
-    echo "  nh adb start               spustí shell_daemon (jednorázově, přes adb shell)"
-    echo "  nh adb stop                zastaví shell_daemon"
-    echo "  nh adb status              stav shell_daemonu (HTTP probe)"
-    echo "  nh adb shell               interaktivní shell uid 2000 PŘÍMO v tomto terminálu"
-    echo "                             (okno jen jako fallback; vyžaduje běžící shell_daemon)"
-    echo "  nh adb shell <cmd>         spustí <cmd> pod uid 2000"
-    echo "  nh adb <cmd>               totéž co \"adb shell <cmd>\" (prefix shell se zahodí)"
-    echo "  nh adb install [-r] <apk>  cp do /data/local/tmp + pm install"
-    echo "  nh adb uninstall <pkg>     cmd package uninstall (jako adb)"
-    echo "  nh adb push <L> <R>        cp -r L R (uid 2000)"
-    echo "  nh adb pull <R> <L>        cp -r R L (uid 2000)"
-    echo "  nh adb devices             náš shell_daemon jako jediné \"zařízení\""
-    echo "  nh adb -c '<cmd>'          totéž co \"nh adb <cmd>\" (uid 2000, přes daemona)"
+    echo "  ${WHITE}${BOLD}ADB${RST} ${DIM}– adb-like rozhraní pod uid 2000 přes shell_daemon (bez rootu)${RST}"
+    separator
+    echo "  ${GREEN}start${RST}                      Spustí shell_daemon (jednorázově, přes adb shell)"
+    echo "  ${GREEN}stop${RST}                       Zastaví shell_daemon"
+    echo "  ${GREEN}status${RST}                     Stav shell_daemonu (HTTP probe)"
+    echo "  ${GREEN}shell${RST}                      Interaktivní shell uid 2000 PŘÍMO v tomto terminálu"
+    echo "                             ${DIM}(okno jen jako fallback; vyžaduje běžící shell_daemon)${RST}"
+    echo "  ${GREEN}shell <cmd>${RST}                Spustí <cmd> pod uid 2000"
+    echo "  ${GREEN}<cmd>${RST}                      Totéž co \"adb shell <cmd>\" (prefix shell se zahodí)"
+    echo "  ${GREEN}install [-r] <apk>${RST}         cp do /data/local/tmp + pm install"
+    echo "  ${GREEN}uninstall <pkg>${RST}            cmd package uninstall (jako adb)"
+    echo "  ${GREEN}push <L> <R>${RST}               cp -r L R (uid 2000)"
+    echo "  ${GREEN}pull <R> <L>${RST}               cp -r R L (uid 2000)"
+    echo "  ${GREEN}devices${RST}                    Náš shell_daemon jako jediné \"zařízení\""
+    echo "  ${GREEN}-c '<cmd>'${RST}                 Totéž co \"nh adb <cmd>\" (uid 2000, přes daemona)"
     echo ""
-    echo "Pozn.: daemon běží jako Android shell (uid 2000), takže vidí /system/bin"
-    echo "nástroje (pm, am, logcat, settings, ...). Reálná \`adb\` binárka se používá"
-    echo "jen ve \`start\` (bootstrap přes wireless debugging)."
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh adb start"
+    echo "    nh adb shell"
+    echo "    nh adb pm list packages -3"
+    echo "    nh adb install app.apk"
+    echo ""
+    echo "  ${DIM}Daemon běží jako Android shell (uid 2000) → vidí pm, am, logcat, settings, dumpsys.${RST}"
+    echo "  ${DIM}Reálná adb binárka se použije jen ve 'start' (bootstrap přes wireless debugging).${RST}"
+    echo ""
 }
 
 adb_start() {
@@ -1209,24 +1217,28 @@ print("cp %s %s && pm install%s %s" % (shlex.quote(apk), shlex.quote(dst), opts,
 # ─── SHIZUKU (Shizuku-protokol-kompatibilní server, uid 2000) ────────
 
 shizuku_help() {
-    cat <<'EOF'
-nh shizuku — Shizuku-kompatibilní privilegovaný server (uid 2000, app_process)
-
-  nh shizuku start              spustí server (jednorázově, přes adb shell)
-  nh shizuku stop                zastaví server
-  nh shizuku restart             stop + start
-  nh shizuku status              stav serveru (pidof pod uid 2000; vyžaduje adb/shell_daemon)
-  nh shizuku list                seznam balíčků s uloženým grant stavem
-  nh shizuku grant <balíček>     povolí balíčku Shizuku přístup (persistentní, CLI)
-  nh shizuku revoke <balíček>    zakáže balíčku Shizuku přístup
-
-Pozn.: appky používající `rikka.shizuku:api` knihovnu fungují beze změny —
-server mluví stejný binární protokol (AIDL vendorováno 1:1 z originálu).
-Grant/revoke je čistě CLI, žádná potvrzovací notifikace v appce. Po `grant`
-server pošle binder běžící appce do ~5 s (jinak při jejím příštím startu) —
-stačí appku otevřít/restartovat, žádná originální Shizuku appka není potřeba.
-Nepodporováno: UserService (addUserService) → appky jako Hail/Canta nefungují.
-EOF
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}SHIZUKU${RST} ${DIM}– Shizuku-kompatibilní server pod uid 2000 (app_process)${RST}"
+    separator
+    echo "  ${GREEN}start${RST}                      Spustí server (jednorázově, přes adb shell)"
+    echo "  ${GREEN}stop${RST}                       Zastaví server"
+    echo "  ${GREEN}restart${RST}                    stop + start"
+    echo "  ${GREEN}status${RST}                     Stav serveru (pidof pod uid 2000; vyžaduje adb/shell_daemon)"
+    echo "  ${GREEN}list${RST}                       Seznam balíčků s uloženým grant stavem"
+    echo "  ${GREEN}grant <balíček>${RST}            Povolí balíčku Shizuku přístup (persistentní, CLI)"
+    echo "  ${GREEN}revoke <balíček>${RST}           Zakáže balíčku Shizuku přístup"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh shizuku start"
+    echo "    nh shizuku grant in.sunilpaulmathew.ashell"
+    echo "    nh shizuku list"
+    echo ""
+    echo "  ${DIM}Appky s 'rikka.shizuku:api' fungují beze změny (AIDL 1:1, stejný binder protokol).${RST}"
+    echo "  ${DIM}Grant/revoke je čistě CLI, bez potvrzovací notifikace. Po grantu server pošle binder${RST}"
+    echo "  ${DIM}běžící appce do ~5 s (jinak při příštím startu) — žádná originální Shizuku appka netřeba.${RST}"
+    echo "  ${DIM}Nepodporováno: UserService (addUserService) → appky jako Hail/Canta nefungují.${RST}"
+    echo ""
 }
 
 # PID běžícího shizuku_server. Appka (uid 10323) /proc procesů uid 2000 nevidí
@@ -2098,7 +2110,7 @@ help_dispatch() {
         vpn)                      help_vpn ;;
         agent|ai)                 help_agent ;;
         adb)                      adb_help ;;
-        shizuku)                  shizuku_help ;;
+        shizuku|shi)              shizuku_help ;;
         log|logs)                 help_log ;;
         device|dev)               help_device ;;
         api)                      help_api ;;
@@ -2129,6 +2141,8 @@ help_dispatch() {
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "distro" "" "Správa PRoot kontejnerů (kali, parrot): list, ps, kill, backup, restore, login"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "cpu" "" "CPU pin proot na jedno rychlé jádro (on/off/status), příkaz na všech jádrech (all)"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "usb" "" "USB Host (list, claim, bulk, control), raw USB bridge ioctl, USB gadget g2"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "adb" "" "adb-like příkazy pod uid 2000 přes shell_daemon (shell, install, pm, dumpsys)"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "shizuku" "(shi)" "Shizuku-kompatibilní server (uid 2000): grant/revoke/list, start/stop/status"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Předání dotazu appce Kali AI Assistant"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "fix" "" "Oprava dpkg locků, zaseklých balíčků, vlastnictví souborů a PRoot git .l2s linků"
@@ -3090,9 +3104,10 @@ list_cmds() {
         "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
+        "adb start" "adb stop" "adb status" "adb shell [cmd]" "adb <cmd>" "adb install [-r] <apk>" "adb uninstall <pkg>" "adb push <L> <R>" "adb pull <R> <L>" "adb devices" \
+        "shizuku start" "shizuku stop" "shizuku restart" "shizuku status" "shizuku list" "shizuku grant <pkg>" "shizuku revoke <pkg>" \
         "distro list" "distro ps" "distro kill" "distro remove" "distro backup" "distro restore" "distro login" \
         "cpu status" "cpu on|off [distro]" "cpu pin [N]" "cpu unpin" "cpu all <cmd>" "cpu run <N> <cmd>" "cpu bench [--quick]" "cpu trace [SEC]" "cpu isolate" "cpu boost on|off [N]" \
-        "shi start --root|--shell|--none" "shi stop" "shi status" "shi exec <cmd>" \
         "docs" "zkill" "zkill --root" "float" "float here" "float close" "ashell"; do
         printf "  ${GREEN}%-42s${RST}\n" "nh ${cmd}"
     done
@@ -4067,7 +4082,7 @@ case "$CMD" in
     vpn)                    vpn_dispatch "$@" ;;
     agent|ai)               agent_dispatch "$@" ;;
     adb)                    adb_dispatch "$@" ;;
-    shizuku)                shizuku_dispatch "$@" ;;
+    shizuku|shi)            shizuku_dispatch "$@" ;;
     log|logs)               log_dispatch "$@" ;;
     device|dev)             device_dispatch "$@" ;;
     api)                    api_dispatch "$@" ;;
