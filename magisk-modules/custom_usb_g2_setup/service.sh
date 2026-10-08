@@ -8,10 +8,10 @@
 # Záměrně NEBINDUJE g2 na UDC — to zůstává na explicitním `usbtool g2`.
 
 MODDIR="/data/adb/modules/custom_usb_g2_setup"
-LOG_DIR="/data/local/tmp"
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
 LOG="$LOG_DIR/usb_g2_setup.log"
 
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 # Pokud už g2 má nakonfigurované funkce z post-fs-data, nic nedělej.
 if [ -L "/config/usb_gadget/g2/configs/c.1/hid.usb0" ]; then

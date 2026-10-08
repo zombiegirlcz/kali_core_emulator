@@ -37,7 +37,7 @@
 /* Verze binárky = verze modulu (magisk-modules/nh_cpuctl/module.prop).
  * `cpuctl version` ji vypíše; nh/usage-cpu.sh podle ní poznají starou
  * binárku (v1.0 neznala apps/app-pin ani version → exit 1). */
-#define CPUCTL_VERSION  "1.1"
+#define CPUCTL_VERSION  "1.2"
 #define FILES_DIR       "/data/user/0/com.linux_core/files"
 #define CPU_DIR         FILES_DIR "/nh/cpu"
 #define LOG_DIR         "/data/adb/cpuctl"
@@ -91,8 +91,10 @@ static int read_file(const char *path, char *buf, int sz) {
     return n;
 }
 
+/* O_NOFOLLOW: CPU_DIR leží v app-writable filesDir — root démon nesmí
+ * následovat symlink podstrčený appkou/guestem (zápis mimo strom). */
 static int write_file(const char *path, const char *str) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) return -1;
     int len = (int)strlen(str);
     int r = (int)write(fd, str, len);
@@ -101,7 +103,7 @@ static int write_file(const char *path, const char *str) {
 }
 
 static int append_file(const char *path, const char *str) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) return -1;
     int len = (int)strlen(str);
     int r = (int)write(fd, str, len);
@@ -110,7 +112,7 @@ static int append_file(const char *path, const char *str) {
 }
 
 static void chown_app(const char *path) {
-    if (g_app_uid > 0) chown(path, g_app_uid, g_app_uid);
+    if (g_app_uid > 0) lchown(path, g_app_uid, g_app_uid);   /* nenásledovat symlink */
 }
 
 static int pid_alive(pid_t p) {
@@ -396,6 +398,19 @@ static int get_cpu_all(pid_t pid, char *out, int sz) {
     return -1;
 }
 
+/* Bezpečné připojení slova + mezery; při nedostatku místa zbytek zahodí
+ * (dříve strncat s `sizeof - strlen - 2` podtekl na SIZE_MAX → overflow). */
+static void append_word(char *dst, size_t cap, const char *w) {
+    size_t used = strlen(dst);
+    if (used + 1 >= cap) return;
+    size_t room = cap - used - 1;           /* bez NUL */
+    size_t wl = strlen(w);
+    if (wl + 1 > room) return;              /* slovo + mezera se nevejde */
+    memcpy(dst + used, w, wl);
+    dst[used + wl] = ' ';
+    dst[used + wl + 1] = '\0';
+}
+
 static int parse_words(const char *val, const char *rootfs,
                        char words[][WORD_LEN], int maxw) {
     int nw = 0;
@@ -432,8 +447,7 @@ static int parse_words(const char *val, const char *rootfs,
                 if (read_file(full, fb, sizeof fb) > 0) {
                     for (char *fp = fb; *fp; fp++)
                         if (*fp == ',' || *fp == ';' || *fp == '\n') *fp = ' ';
-                    strncat(expanded, fb, sizeof(expanded) - strlen(expanded) - 2);
-                    strcat(expanded, " ");
+                    append_word(expanded, sizeof expanded, fb);
                 }
                 src = e + 1;
                 continue;
@@ -457,12 +471,10 @@ static int parse_words(const char *val, const char *rootfs,
             if (read_file(full, fb, sizeof fb) > 0) {
                 for (char *fp = fb; *fp; fp++)
                     if (*fp == ',' || *fp == ';' || *fp == '\n') *fp = ' ';
-                strncat(expanded, fb, sizeof(expanded) - strlen(expanded) - 2);
-                strcat(expanded, " ");
+                append_word(expanded, sizeof expanded, fb);
             }
         } else {
-            strncat(expanded, word, sizeof(expanded) - strlen(expanded) - 2);
-            strcat(expanded, " ");
+            append_word(expanded, sizeof expanded, word);
         }
         src = end;
     }

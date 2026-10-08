@@ -11,9 +11,9 @@
 #   výchozí: /sys/bus/usb/devices/1-1
 
 DEV="${1:-/sys/bus/usb/devices/1-1}"
-LOG_DIR="/data/local/tmp"
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
 LOG="$LOG_DIR/usb_g2_brom_crash.log"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 {
     echo "[$(date)] trigger_brom_crash: cíl=$DEV"

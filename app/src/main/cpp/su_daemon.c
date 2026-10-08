@@ -193,36 +193,97 @@ static void strip_shell_quotes(char *t) {
     while (n > 0 && (t[n-1] == '\'' || t[n-1] == '"')) { t[--n] = '\0'; }
 }
 
-/* Tokenize-scan a shell "-c" payload for classic whole-root destructive ops. */
+/* Cíle, na které se rekurzivní chmod/chown/rm nesmí nikdy pustit: kořen a
+ * host-mapované stromy (v módu D / Root Bridge jsou to skutečné hostitelské
+ * cesty — `chmod -R` na /system nebo /data = bootloop, viz AGENTS.md §0).
+ * Normalizuje koncové lomítko a hvězdičku (/system/ i /system/ + * == /system). */
+static int is_protected_target(const char *t) {
+    static const char *prot[] = {
+        "", "/system", "/vendor", "/product", "/apex", "/data", "/dev", "/proc",
+        "/sys", "/storage", "/sdcard", "/mnt", "/odm", "/metadata", NULL
+    };
+    if (t == NULL) return 0;
+    char n[PATH_MAX];
+    snprintf(n, sizeof(n), "%s", t);
+    strip_shell_quotes(n);
+    size_t l = strlen(n);
+    if (l == 0) return 0;
+    if (n[0] != '/') return 0;
+    for (;;) {                                  /* ořež koncové "/" a "/" + "*" */
+        if (l >= 2 && n[l-1] == '*' && n[l-2] == '/') { n[--l] = '\0'; continue; }
+        if (l >= 1 && n[l-1] == '/') { n[--l] = '\0'; continue; }
+        break;
+    }
+    for (int i = 0; prot[i]; i++)
+        if (strcmp(n, prot[i]) == 0) return 1;
+    return 0;
+}
+
+/* Tokenize-scan a shell "-c" payload for destructive recursive ops on protected
+ * targets. Skenuje CELÝ payload (dříve stop po 64 tokenech → zbytek prošel). */
 static int deny_shell_payload(const char *s) {
     if (!s) return 0;
     char buf[BUFFER_SIZE];
     strncpy(buf, s, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-    char *tokens[64];
-    int nt = 0;
-    char *save = NULL;
-    for (char *tok = strtok_r(buf, " \t\n;|&", &save); tok && nt < 64; tok = strtok_r(NULL, " \t\n;|&", &save)) {
-        strip_shell_quotes(tok);
-        tokens[nt++] = tok;
-    }
     int has_danger = 0, has_rec = 0, hits_root = 0;
-    for (int i = 0; i < nt; i++) {
-        const char *b = cmd_basename(tokens[i]);
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, " \t\n;|&(){}`", &save); tok;
+         tok = strtok_r(NULL, " \t\n;|&(){}`", &save)) {
+        strip_shell_quotes(tok);
+        const char *b = cmd_basename(tok);
         if (strcmp(b, "chmod") == 0 || strcmp(b, "chown") == 0 || strcmp(b, "chgrp") == 0 ||
             strcmp(b, "rm") == 0 || strcmp(b, "rmdir") == 0)
             has_danger = 1;
-        if (tokens[i][0] == '-' && (strchr(tokens[i], 'r') || strchr(tokens[i], 'R')))
+        if (tok[0] == '-' && (strchr(tok, 'r') || strchr(tok, 'R')))
             has_rec = 1;
-        if (strcmp(tokens[i], "/") == 0 || strcmp(tokens[i], "/*") == 0)
+        if (tok[0] == '/' && is_protected_target(tok))
             hits_root = 1;
     }
     return (has_danger && has_rec && hits_root) ? 1 : 0;
 }
 
+/* Přeskočí obalové příkazy (env/timeout/nice/…), aby `env rm -rf /` nebo
+ * `busybox chmod -R …` nebyly posouzeny podle wrapperu. Vrací index skutečného
+ * příkazu v argv (nebo -1). Volby wrapperu a jejich hodnoty se přeskočí
+ * heuristicky: env přeskočí i VAR=val, timeout/nice/… první číselný operand. */
+static int real_cmd_index(char **argv) {
+    static const char *wrappers[] = {
+        "env", "timeout", "nice", "ionice", "nohup", "stdbuf", "taskset", "chrt",
+        "xargs", "busybox", "toybox", "time", "command", "exec", "setsid", "unbuffer",
+        "doas", "sudo", "su_wrapper", NULL
+    };
+    int i = 0;
+    for (int guard = 0; argv[i] && guard < 16; guard++) {
+        const char *b = cmd_basename(argv[i]);
+        int w = 0;
+        for (int k = 0; wrappers[k]; k++)
+            if (strcmp(b, wrappers[k]) == 0) { w = 1; break; }
+        if (!w) return i;
+        i++;
+        /* volby wrapperu, VAR=val a čísla (timeout 5, nice -n 10, taskset 0x1) */
+        while (argv[i] && (argv[i][0] == '-' || strchr(argv[i], '=') ||
+                           (argv[i][0] >= '0' && argv[i][0] <= '9')))
+            i++;
+    }
+    return argv[i] ? i : -1;
+}
+
 /* Deny a command: returns 1 when it must be blocked (exit code 126 to caller). */
-static int deny_command(char **argv) {
-    if (argv[0] == NULL) return 0;
+static int deny_command(char **argv_in) {
+    if (argv_in[0] == NULL) return 0;
+
+    /* Shell "-c" payloads (su -c / sh -c forms) — scan for classic root-wipe.
+     * Kontroluje se nad celým argv (i za wrappery). */
+    for (int i = 1; argv_in[i]; i++) {
+        if (strcmp(argv_in[i], "-c") == 0 && argv_in[i + 1] != NULL) {
+            if (deny_shell_payload(argv_in[i + 1])) return 1;
+        }
+    }
+
+    int ri = real_cmd_index(argv_in);
+    if (ri < 0) return 0;
+    char **argv = argv_in + ri;
     const char *base = cmd_basename(argv[0]);
 
     /* 1) Raw host-global / block-device / power-control binaries — always deny. */
@@ -240,35 +301,45 @@ static int deny_command(char **argv) {
         if (strcmp(base, banned[i]) == 0) return 1;
     if (strncmp(base, "mkfs.", 5) == 0) return 1;
 
-    /* Shell "-c" payloads (su -c / sh -c forms) — scan for classic root-wipe. */
-    for (int i = 1; argv[i]; i++) {
-        if (strcmp(argv[i], "-c") == 0 && argv[i + 1] != NULL) {
-            if (deny_shell_payload(argv[i + 1])) return 1;
-        }
+    if (ri > 0) {                               /* sh -c za wrapperem */
+        for (int i = 1; argv[i]; i++)
+            if (strcmp(argv[i], "-c") == 0 && argv[i + 1] && deny_shell_payload(argv[i + 1]))
+                return 1;
     }
 
     int recursive = cmd_has_recursive_flag(argv);
 
-    /* 2) Recursive chmod/chown/chgrp touching the root — deny. */
+    /* 2) Recursive chmod/chown/chgrp touching root / host-mapped tree — deny.
+     *    Kontroluje KAŽDÝ operand (dříve jen poslední a jen přesné "/"). */
     if (strcmp(base, "chmod") == 0 || strcmp(base, "chown") == 0 || strcmp(base, "chgrp") == 0) {
-        const char *target = NULL;
+        int nops = 0;
         for (int i = 1; argv[i]; i++) {
-            if (argv[i][0] == '-' && argv[i][1] != '\0' && argv[i][1] != '-') continue;
             if (argv[i][0] == '-') continue;
-            target = argv[i]; /* last non-option = first file operand */
+            nops++;
+            if (recursive && is_protected_target(argv[i])) return 1;
         }
-        if (recursive && (target == NULL || strcmp(target, "/") == 0)) return 1;
+        if (recursive && nops == 0) return 1;
         return 0;
     }
 
-    /* 3) rm/rmdir on "/" or broad wildcard at root — deny. */
+    /* 3) rm/rmdir on "/" / protected tree / broad wildcard — deny. */
     if (strcmp(base, "rm") == 0 || strcmp(base, "rmdir") == 0) {
         for (int i = 1; argv[i]; i++) {
             if (argv[i][0] == '-') continue;
             if (strcmp(argv[i], "/") == 0) return 1;
-            if (recursive && (strcmp(argv[i], "*") == 0 || strcmp(argv[i], "/*") == 0)) return 1;
+            if (recursive && (strcmp(argv[i], "*") == 0 || is_protected_target(argv[i]))) return 1;
         }
         return 0;
+    }
+
+    /* 4) find <protected> … -delete — deny. */
+    if (strcmp(base, "find") == 0) {
+        int prot = 0, del = 0;
+        for (int i = 1; argv[i]; i++) {
+            if (is_protected_target(argv[i]) && argv[i][0] == '/') prot = 1;
+            if (strcmp(argv[i], "-delete") == 0) del = 1;
+        }
+        if (prot && del) return 1;
     }
 
     return 0;
@@ -297,34 +368,48 @@ static int is_bind_dir(const char *base) {
     return 0;
 }
 
-static int fix_walk(const char *path, int depth) {
-    /* Top-level bind / host-mapped dirs: skip the whole subtree entirely
-     * (don't even chown the dir — that would hit the host dir target). */
-    if (fix_skip_top && depth == 1) {
-        const char *base = strrchr(path, '/');
-        base = base ? base + 1 : path;
-        if (is_bind_dir(base)) return 0;
-    }
-    struct stat st;
-    if (lstat(path, &st) != 0) return 0; /* missing/ENOENT/EACCES — keep going */
-    if (st.st_uid != fix_uid || st.st_gid != fix_gid) {
-        /* lchown: nikdy nenásleduje symlink mimo scope. */
-        lchown(path, fix_uid, fix_gid);
-    }
-    /* Rekurze jen do skutečných adresářů. Symlinky nejsou S_ISDIR -> nikdy
-     * se nenásledují => žádný escape ani symlink-loop. */
-    if (!S_ISDIR(st.st_mode)) return 0;
-    DIR *d = opendir(path);
-    if (!d) return 0; /* nečitelný adresář — přeskoč tiše */
+/* fd-based průchod (openat + O_NOFOLLOW + fchownat AT_SYMLINK_NOFOLLOW).
+ * Dříve lstat→lchown→opendir přes řetězcové cesty: mezi kroky mohl guest root
+ * vyměnit komponentu za symlink a host-root chown/opendir by zasáhl hosta
+ * (TOCTOU). Teď se každá úroveň otevírá relativně k už otevřenému dirfd a
+ * symlink na libovolné úrovni se nikdy nenásleduje. */
+static void fix_walk_fd(int dirfd, int depth) {
+    if (depth > 256) { close(dirfd); return; }
+    DIR *d = fdopendir(dirfd);
+    if (!d) { close(dirfd); return; }
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        char child[PATH_MAX];
-        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
-        if (n < 0 || (size_t)n >= sizeof(child)) continue; /* moc smugl — preskoc */
-        fix_walk(child, depth + 1);
+        const char *name = ent->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        /* Top-level bind / host-mapped dirs: skip the whole subtree entirely
+         * (don't even chown the dir — that would hit the host dir target). */
+        if (fix_skip_top && depth == 0 && is_bind_dir(name)) continue;
+        struct stat st;
+        if (fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        if (st.st_uid != fix_uid || st.st_gid != fix_gid)
+            fchownat(dirfd, name, fix_uid, fix_gid, AT_SYMLINK_NOFOLLOW);
+        if (!S_ISDIR(st.st_mode)) continue;
+        int cfd = openat(dirfd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (cfd < 0) continue;                  /* mezitím symlink / nečitelné */
+        fix_walk_fd(cfd, depth + 1);
     }
-    closedir(d);
+    closedir(d);                                /* zavře i dirfd */
+}
+
+static int fix_walk(const char *path, int depth) {
+    (void)depth;
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        if (S_ISREG(st.st_mode) && (st.st_uid != fix_uid || st.st_gid != fix_gid))
+            lchown(path, fix_uid, fix_gid);
+        return 0;
+    }
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct stat fst;
+    if (fstat(fd, &fst) == 0 && (fst.st_uid != fix_uid || fst.st_gid != fix_gid))
+        fchown(fd, fix_uid, fix_gid);
+    fix_walk_fd(fd, 0);
     return 0;
 }
 

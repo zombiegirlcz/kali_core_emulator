@@ -287,6 +287,40 @@ object LocalApiServer {
         }
     }
 
+    /** UID klienta loopback spojení z /proc/net/tcp{,6}; null = nezjištěno. */
+    private fun loopbackPeerUid(socket: Socket): Int? {
+        val clientPortHex = String.format("%04X", socket.port)
+        val serverPortHex = String.format("%04X", socket.localPort)
+        for (f in listOf("/proc/net/tcp6", "/proc/net/tcp")) {
+            try {
+                for (line in java.io.File(f).readLines()) {
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size >= 8 &&
+                        parts[1].substringAfterLast(':').equals(clientPortHex, true) &&
+                        parts[2].substringAfterLast(':').equals(serverPortHex, true)) {
+                        parts[7].toIntOrNull()?.let { return it }
+                    }
+                }
+            } catch (_: Exception) { }
+        }
+        return null
+    }
+
+    private fun isTrustedLoopbackPeer(context: Context, socket: Socket): Boolean {
+        val uid = loopbackPeerUid(socket) ?: run {
+            Log.w(TAG, "Loopback peer UID nezjištěn (port ${socket.port}) — povoleno (fallback)")
+            return true
+        }
+        val myUid = context.applicationInfo.uid
+        if (uid == myUid || uid == 0 || uid == 2000) return true
+        val sameSig = try {
+            context.packageManager.checkSignatures(myUid, uid) ==
+                android.content.pm.PackageManager.SIGNATURE_MATCH
+        } catch (_: Exception) { false }
+        if (!sameSig) Log.w(TAG, "Loopback požadavek z cizího UID $uid na citlivý endpoint — vyžadován token")
+        return sameSig
+    }
+
     private fun isAuthenticated(headers: Map<String, String>): Boolean {
         val token = headers["Authorization"] ?: headers["authorization"] ?: return false
         if (!token.startsWith("Bearer ") && !token.startsWith("Token ")) return false
@@ -383,7 +417,7 @@ object LocalApiServer {
                         remoteAddr == "127.0.0.1" || remoteAddr == "::1" || remoteAddr == localAddr
                     } catch (e: Exception) { false }
 
-                    if (!isLocalConnection) {
+                    if (!isLocalConnection || !isTrustedLoopbackPeer(context, socket)) {
                         if (!isAuthenticated(rawHeaders)) {
                             sendResponse(out, 401, "Unauthorized",
                                 "{\"error\":\"Authentication required\"}")
@@ -452,7 +486,13 @@ object LocalApiServer {
                 remoteAddr == "127.0.0.1" || remoteAddr == "::1" || remoteAddr == localAddr
             } catch (e: Exception) { false }
 
-            if (!isLocalConnection && sensitiveEndpoints.any { path.startsWith(it) }) {
+            // Loopback ≠ důvěryhodný: na 127.0.0.1:1337 se dostane KAŽDÁ appka v
+            // zařízení. Bez tokenu pustit jen vlastní UID (guest/proot), root (su_daemon)
+            // a shell uid 2000 (shell_daemon) + appky se stejným podpisem (kali_GUI).
+            // Když UID z /proc/net nejde určit, zůstává původní chování (kompatibilita).
+            val isSensitive = sensitiveEndpoints.any { path.startsWith(it) }
+            val trustedLocal = isLocalConnection && (!isSensitive || isTrustedLoopbackPeer(context, socket))
+            if ((!isLocalConnection || !trustedLocal) && isSensitive) {
                 if (!isAuthenticated(headers)) {
                     sendResponse(out, 401, "Unauthorized",
                         "{\"error\":\"Authentication required\"}")
@@ -2618,7 +2658,17 @@ object LocalApiServer {
             }
             
             val downloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            // Jen holé jméno souboru v Downloads — žádné "../" ani absolutní cesty.
+            if (fileName.contains('/') || fileName.contains('\\') || fileName == "." || fileName == ".." ||
+                fileName.contains('\u0000')) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"file must be a plain file name in Downloads\"}")
+                return
+            }
             val backupFile = java.io.File(downloads, fileName)
+            if (!backupFile.canonicalPath.startsWith(downloads.canonicalPath + java.io.File.separator)) {
+                sendResponse(out, 400, "Bad Request", "{\"error\":\"file outside Downloads\"}")
+                return
+            }
             if (!backupFile.exists()) {
                 sendResponse(out, 404, "Not Found", "{\"error\":\"Backup file not found in Downloads: $fileName\"}")
                 return

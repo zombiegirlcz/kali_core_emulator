@@ -12,7 +12,7 @@ MODDIR="/data/adb/modules/custom_usb_g2_setup"
 SCRIPTS="$MODDIR/scripts"
 GADGET_ROOT="/config/usb_gadget"
 SSUSB_MODE="/sys/devices/platform/soc/a600000.ssusb/mode"
-LOG_DIR="/data/local/tmp"
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
 
 usage() {
     cat <<'EOF'
@@ -30,7 +30,7 @@ KONFIGURACE G2
   usbtool normal          Nastaví režim g2 na "normal"  a spustí setup
   usbtool brom            Nastaví režim g2 na "brom"    a spustí setup
   usbtool preloader       Nastaví režim g2 na "preloader" a spustí setup
-                          (režim se jen poznamená do /data/local/tmp/usb_g2_mode)
+                          (režim se jen poznamená do /data/adb/usb_g2/usb_g2_mode)
 
 USB HOST REŽIM
   usbtool host            Přepne port do USB host režimu (OTG)
@@ -44,7 +44,7 @@ USB HOST REŽIM
 OSTATNÍ
   usbtool brom-crash [cesta]  Experimentální placeholder pro BROM crash cíle
                               (výchozí cesta /sys/bus/usb/devices/1-1)
-  usbtool logs            Vypíše logy z /data/local/tmp/usb_g2_*.log
+  usbtool logs            Vypíše logy z /data/adb/usb_g2/usb_g2_*.log
   usbtool help            Tato nápověda
 
 Příklady:

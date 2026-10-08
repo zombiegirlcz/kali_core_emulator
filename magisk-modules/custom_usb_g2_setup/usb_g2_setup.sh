@@ -8,12 +8,12 @@
 set -e
 
 MODDIR="/data/adb/modules/custom_usb_g2_setup"
-LOG_DIR="/data/local/tmp"
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
 LOG="$LOG_DIR/usb_g2_setup.log"
 GADGET_ROOT="/config/usb_gadget"
 G2="$GADGET_ROOT/g2"
 
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 # Try both common configfs mount points
 for c in /config /sys/kernel/config; do

@@ -11,8 +11,8 @@
 #   2. připojit cílové zařízení
 #   3. usbtool detect       (ověřit VID:PID 0e8d:0003 = BROM)
 
-LOG_DIR="/data/local/tmp"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 echo "brom" > "$LOG_DIR/usb_g2_mode"
 echo "[$(date)] g2 režim = brom" >> "$LOG_DIR/usb_g2_setup.log"

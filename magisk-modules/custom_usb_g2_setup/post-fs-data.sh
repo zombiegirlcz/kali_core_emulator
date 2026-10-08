@@ -10,10 +10,10 @@
 # funguje. Pokud ne, setup se tiše přeskočí a zkusí se později z service.sh.
 
 MODDIR="/data/adb/modules/custom_usb_g2_setup"
-LOG_DIR="/data/local/tmp"
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
 LOG="$LOG_DIR/usb_g2_setup.log"
 
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 # configfs musí být vidět, jinak nemá smysl pokračovat
 if [ ! -d /config/usb_gadget ] && [ ! -d /sys/kernel/config/usb_gadget ]; then

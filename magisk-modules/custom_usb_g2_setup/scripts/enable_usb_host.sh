@@ -11,8 +11,8 @@
 set -e
 
 SSUSB_MODE="/sys/devices/platform/soc/a600000.ssusb/mode"
-LOG_DIR="/data/local/tmp"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
+LOG_DIR="/data/adb/usb_g2"  # root-only (dříve /data/local/tmp = zapisovatelné uid 2000 → symlink útok na root zápisy)
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR" 2>/dev/null || true
 
 if [ ! -f "$SSUSB_MODE" ]; then
     echo "CHYBA: $SSUSB_MODE neexistuje — neznámý SoC?" >&2

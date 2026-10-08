@@ -320,12 +320,18 @@ object MagiskModuleManager {
         }
     }
 
-    /** su -c wrapper capturing stdout+stderr; returns (exitCode, output). */
+    /** Shell single-quote: bezpečné vložení libovolného řetězce do `su -c`. */
+    fun shellQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+    /** su -c wrapper capturing stdout+stderr; returns (exitCode, output).
+     *  `cmd` se předává su přímo jako jeden argv prvek (žádná vnější `sh -c '…'`
+     *  vrstva, ve které by apostrof v názvu souboru ukončil quoting). Proměnné
+     *  části v `cmd` musí volající kvotovat přes [shellQuote]. */
     fun suExec(cmd: String): Pair<Int, String> {
         val (suOk, suPath) = RootBridgeManager.checkSuAvailable()
         val suBin = if (suOk && suPath != null) suPath else "su"
         return try {
-            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", "$suBin -c '$cmd' 2>&1"))
+            val proc = ProcessBuilder(suBin, "-c", cmd).redirectErrorStream(true).start()
             val out = proc.inputStream.bufferedReader().readText()
             val rc = proc.waitFor()
             rc to out.trim()
@@ -357,7 +363,7 @@ object MagiskModuleManager {
         }
         return ids.mapNotNull { id ->
                 // module.prop is root-readable only — read via su
-                val (_, prop) = suExec("cat /data/adb/modules/$id/module.prop")
+                val (_, prop) = suExec("cat " + shellQuote("/data/adb/modules/$id/module.prop"))
                 var name = id
                 var version = ""
                 prop.lineSequence().forEach { line ->
@@ -409,7 +415,7 @@ object MagiskModuleManager {
                 android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(false, "magisk CLI not found") }
                 return@Thread
             }
-            val (rc, out) = suExec("$magisk --install-module \"$zipPath\"")
+            val (rc, out) = suExec("$magisk --install-module " + shellQuote(zipPath))
             android.os.Handler(android.os.Looper.getMainLooper()).post { onResult(rc == 0, out) }
         }.start()
     }
