@@ -547,49 +547,48 @@ Všechny nástroje výše používají pod kapotou HTTP volání na localhost. M
 * **USB zařízení:** `curl -s http://127.0.0.1:1337/usb/devices`
 * **USB poslat data:** `curl -s -X POST -H "Content-Type: application/json" -d '{"device_name":"/dev/bus/usb/001/002","data_base64":"$(base64 -w0 exploit.bin)"}' http://127.0.0.1:1337/usb/send`
 
-## ⚡ Shizuku Integration — Privilege Escalation
+## ⚡ Privilegia bez rootu — `nh adb` a `nh shizuku` (uid 2000)
 
-Shizuku umožňuje spouštět příkazy s vyššími právy (root/shell UID) přímo z PRoot terminálu, bez nutnosti rootovat zařízení.
+Dva perzistentní servery pod **shell UID (2000)** — stejná práva jako `adb shell`
+(`pm`, `settings`, `cmd`, `dumpsys`, `logcat`, `am`), bez roota. Oba se jednou
+nastartují přes wireless debugging (`adb pair` + `adb connect`) a pak běží do
+rebootu — **přežijí i vypnutí wireless debugging** (`setsid` démonizace).
 
-### Services Panel v Terminálu
-
-V horní liště terminálu (vedle `🐉 KALI`) je tlačítko `▼`, které rozbalí ovládací panel služeb:
-
-| Služba | Status | Akce |
-|---|---|---|
-| `⚡ SHIZU` | `●` běží / `○` zastaven | START / STOP / SETUP |
-| `[code] CODE` | `●` běží / `○` zastaven | START / STOP / OPEN :8443 |
-
-### CLI příkaz `shizuku`
-
-Automaticky nasazen do `/usr/local/bin/shizuku`:
+### `nh adb` — shell_daemon
 
 ```bash
-# Spuštění příkazu s vyššími právy
-shizuku -c "pm list packages"
-shizuku -c "settings put global airplane_mode 1"
-shizuku -c "appops set com.twitter POST_NOTIFICATIONS deny"
-shizuku -c "svc wifi disable"
-shizuku -c "dumpsys battery set level 15"
-
-# Interaktivní shell
-shizuku
+adb connect <ip>:<port>      # jednou (Wireless debugging)
+nh adb start                 # spustí libshelldaemon.so pod uid 2000
+nh adb id                    # příkaz pod uid 2000 (= nh adb shell id)
+nh adb pm list packages -3
+nh adb shell                 # interaktivní shell uid 2000 PŘÍMO v tomhle terminálu
+nh adb install app.apk       # cp do /data/local/tmp + pm install
+nh adb status | stop
 ```
 
-### Spuštění Shizuku serveru
+- `nh adb shell` bez argumentů běží **inline** v aktuálním terminálu (přes
+  `ashell -t` + `libshelldaemon.so --attach --token-file=…`), nové okno jen jako fallback.
+- Komunikace: TCP `127.0.0.1:13341` (binární protokol, native LE), token
+  `filesDir/shell_daemon.token`. HTTP most: `POST /shelldaemon/exec`.
 
-Aplikace automaticky zkouší:
-1. Existující Shizuku server (z nainstalované Shizuku app)
-2. `su -c "libshizuku.so --apk=/path/to/shizuku.apk"` (root)
-3. Raw `su -c` fallback pro příkazy
-4. ADB shell (pokud je dostupný)
+### `nh shizuku` — Shizuku-kompatibilní server
 
-### Status indikátory
+Appky postavené na `rikka.shizuku:api` (aShell, App Ops, …) fungují **bez
+originální Shizuku appky** — server mluví stejný binder protokol (AIDL 1:1).
 
-- `●` zelená — služba běží
-- `○` šedá — služba zastavena
-- `su available` — root přes `su` k dispozici
-- `Shizuku APK ready` — Shizuku app je nainstalována
+```bash
+nh shizuku start                      # app_process pod uid 2000 (potřebuje adb)
+nh shizuku grant in.sunilpaulmathew.ashell
+nh shizuku list | revoke <balíček> | status | stop | restart
+```
+
+- Oprávnění jsou **jen přes CLI** (`grant`/`revoke`), žádný dialog v appce.
+- Server každé 2 s hledá běžící appky s grantem a pošle jim binder přes jejich
+  `<balíček>.shizuku` provider (znovu po restartu appky) — po `grant` stačí appku
+  otevřít / restartovat.
+- `newProcess` a `setSystemProperty` bez grantu → `SecurityException`.
+- Nepodporováno: UserService (`addUserService`) a raw transact-relay — appky,
+  které je vyžadují (Hail, Canta…), zatím nefungují.
 
 ## 📂 Open-with & `~/share`
 

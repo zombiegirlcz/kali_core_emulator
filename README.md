@@ -540,166 +540,48 @@ This release introduces the fully integrated **AI Brain Telemetry & Neural Class
 
 ---
 
-## ⚡ Shizuku Integration — Privilege Escalation Bridge
+## ⚡ Privilegia bez rootu — `nh adb` a `nh shizuku` (uid 2000)
 
-Shizuku umožňuje spouštět příkazy s vyššími právy (root/shell UID) přímo
-z PRoot terminálu, bez nutnosti rootovat zařízení.
+Dva perzistentní servery pod **shell UID (2000)** — stejná práva jako `adb shell`
+(`pm`, `settings`, `cmd`, `dumpsys`, `logcat`, `am`), bez roota. Oba se jednou
+nastartují přes wireless debugging (`adb pair` + `adb connect`) a pak běží do
+rebootu — **přežijí i vypnutí wireless debugging** (`setsid` démonizace).
 
-### Jak to funguje
-
-1. **Shizuku server** běží na pozadí s root/shell UID
-2. **Rish shell** (`/usr/local/bin/shizuku`) uvnitř PRootu se k němu připojuje
-3. Příkazy jdou přes `app_process` → Shizuku Binder → system_server
-
-### Services Panel v Terminálu
-
-V terminálovém topBaru (vedle distro názvu jako `🐉 KALI`) je tlačítko `▼`,
-které rozbalí services panel:
-
-```┌─────────────────────────────────────────────────────────┐
-│ [☰] [🏠]         🐉 KALI ▼       [touch] [🐚CLI|🖥GUI] │
-├─────────────────────────────────────────────────────────┤
-│ ⚡SHIZU ●  [▶ ALL] [↻]  │
-├─────────────────────────────────────────────────────────┤
-```
-
-- **⚡ SHIZU** — Shizuku server status a ovládání
-- **▶ ALL** — spustí všechny služby
-- **↻** — refresh statusů (automaticky každých 5s)
-
-### Status indikátory
-
-| Indikátor | Význam |
-|-----------|--------|
-| `●` zelená | Služba běží |
-| `○` šedá | Služba zastavena |
-| `su available` | Root přes `su` k dispozici |
-| `Shizuku APK ready` | Shizuku app nainstalována v systému |
-
-### Detail panelu
-
-Kliknutím na službu se rozbalí detail s akčními tlačítky:
-
-```
-│ ⚡ SHIZUKU SERVER ●  pid:12345  self                    │
-│                                      [⏹ STOP]          │
-│                    [⏹ STOP]              [🌐 OPEN]      │
-```
-
-### Privilege eskalace z PRootu — `nh shi`
-
-Od v4.5 má unified CLI **`nh shi`** kategorii, která spouští příkazy pod
-vyšším UID. Režim se přepíná jednou a platí pro všechny další `nh shi exec`:
+### `nh adb` — shell_daemon
 
 ```bash
-nh shi start --none      # shell_daemon pod uid 2000 (non-root, perzistentní)
-nh shi start --shell     # su fallback: su 2000 -c per command (jen root zařízení)
-nh shi start --root      # su fallback: su 0 -c per command (jen root zařízení)
-
-nh shi exec "pm list packages | head"
-nh shi exec "settings put global airplane_mode_on 1"
-nh shi exec "appops set com.twitter POST_NOTIFICATIONS deny"
-nh shi exec "svc wifi disable"
-nh shi exec "dumpsys battery set level 15"
-
-nh shi status            # aktivní režim, su, shell_daemon, adb
-nh shi stop              # vypnout eskalaci (mode=none)
+adb connect <ip>:<port>      # jednou (Wireless debugging)
+nh adb start                 # spustí libshelldaemon.so pod uid 2000
+nh adb id                    # příkaz pod uid 2000 (= nh adb shell id)
+nh adb pm list packages -3
+nh adb shell                 # interaktivní shell uid 2000 PŘÍMO v tomhle terminálu
+nh adb install app.apk       # cp do /data/local/tmp + pm install
+nh adb status | stop
 ```
 
-`nh shi exec` jde přes `LocalApiServer`. Pokud běží `shell_daemon`, použije
-`POST /shizuku/daemon/exec` (TCP 127.0.0.1:13341); jinak fallback na
-`POST /shizuku/exec` (su režim). V obou případech se vrací stdout + exit code.
+- `nh adb shell` bez argumentů běží **inline** v aktuálním terminálu (přes
+  `ashell -t` + `libshelldaemon.so --attach --token-file=…`), nové okno jen jako fallback.
+- Komunikace: TCP `127.0.0.1:13341` (binární protokol, native LE), token
+  `filesDir/shell_daemon.token`. HTTP most: `POST /shelldaemon/exec`.
 
-### Tři režimy — kdy který
+### `nh shizuku` — Shizuku-kompatibilní server
 
-| Režim | UID | Jak | Kdy použít |
-|---|---|---|---|
-| `--none` | 2000 | `shell_daemon` (jeden start přes `adb shell`, pak TCP) | Non-root zařízení (wireless debugging) |
-| `--shell` | 2000 | `su 2000 -c <cmd>` per command (Magisk) | Root zařízení, práva jako adb |
-| `--root` | 0 | `su 0 -c <cmd>` per command (Magisk) | Root zařízení, plná práva |
+Appky postavené na `rikka.shizuku:api` (aShell, App Ops, …) fungují **bez
+originální Shizuku appky** — server mluví stejný binder protokol (AIDL 1:1).
 
-> **`--none` = obdoba adb/Shizuku démona.** `shell_daemon` se jednou nahraje
-do `/data/local/tmp` a spustí pod shell UID (2000) přes `adb shell`; pak běží
-do rebootu a všechny další příkazy jdou jen přes TCP loopback — **žádné `su`,
-žádné `adb`, žádná Shizuku appka ani její knihovny**. Je to bratr `su_daemon`
-(ten běží pod rootem), ale cíleně bez rootu.
->
-> Na zařízeních s Magisk `su` umí přepnout na libovolné UID (`su 2000 -c`),
-takže režimy `--shell`/`--root` fungují okamžitě — ale jsou to **fork-per-command**
-procesy, ne perzistentní démon.
-
-### HTTP API (port 1337, Bearer pro non-localhost)
-
-| Endpoint | Metoda | Popis |
-|---|---|---|
-| `/shizuku/status` | GET | `{su, su_path, active_mode, adb_available, shizuku:{...}}` |
-| `/shizuku/start` | POST | tělo `root` \| `shell` \| `none` → nastaví aktivní režim |
-| `/shizuku/stop` | POST | vypne eskalaci (`mode=none`) |
-| `/shizuku/exec` | POST | tělo = příkaz (nebo JSON `{command, mode}`) → `{stdout, exit_code, mode}` |
-| `/shizuku/daemon/status` | GET | `{running, port}` — stav `shell_daemon` |
-| `/shizuku/daemon/start` | POST | spustí `shell_daemon` (jen s `su`; non-root start přes `nh shi start --none`) |
-| `/shizuku/daemon/stop` | POST | `pkill` pod uid 2000 |
-| `/shizuku/daemon/exec` | POST | tělo = příkaz (nebo JSON `{command, cwd}`) → `{stdout, stderr, exit_code}` |
-
-### Architektura
-
-| Komponenta | Cesta v APK | Popis |
-|---|---|---|
-| shell_daemon binárka | `assets/shell_daemon` | Persistentní uid 2000 démon (TCP 13341, token) |
-| shell_daemon token | `<filesDir>/shell_daemon.token` | 128 hex znaků; guest ho vidí na stejné cestě (bind App Data `/data/user/0/com.linux_core`) |
-| Daemon klient | `ShellDaemonClient.kt` | Start (`su 2000`), exec přes TCP, token management |
-| Deploy | `ProotManager.deployShellDaemon()` | Kopíruje binárku + token do filesDir |
-| API | `LocalApiServer.kt` | `/shizuku/daemon/*` endpointy |
-
-> **Legacy Shizuku artefakty** (`assets/usr/lib/shizuku.apk`, `libshizuku.so`,
-> `librish.so`, `rish.sh`) zůstávají v APK pro zpětnou kompatibilitu s
-> `rikka.shizuku` klientem, ale `--none` už je nepoužívá.
-
-#### Klientská část Shizuku (Apache 2.0, RikkaApps/Shizuku-API)
-
-Aby server mohl doručit binder do naší appky, musí být v appce zaregistrovaný
-`ShizukuProvider` (ContentProvider) — server do něj volá
-`ContentProvider.call("sendBinder")`. Bez něj rish v guestu hlásí
-`Server is not running` (server nemá kam binder poslat).
-
-Zdroje (zkopírované z `RikkaApps/Shizuku-API`, `LICENSE` Apache 2.0):
-
-| Soubor | Účel |
-|---|---|
-| `rikka/shizuku/Shizuku.java` | klientská API (binder, permission, listeners) |
-| `rikka/shizuku/ShizukuBinderWrapper.java` | proxy binder přes `transactRemote` |
-| `rikka/shizuku/ShizukuProvider.java` | přijímá binder od serveru |
-| `rikka/shizuku/ShizukuRemoteProcess.java` | `Process` nad `newProcess` |
-| `rikka/shizuku/SystemServiceHelper.java` | reflexe `ServiceManager` |
-| `rikka/shizuku/ShizukuApiConstants.java` | konstanty protokolu |
-| `moe/shizuku/api/BinderContainer.java` | Parcelable wrapper binderu |
-| `rikka/sui/Sui.java` | Sui (Magisk modul) — vypnuto |
-| `app/src/main/aidl/moe/shizuku/server/*.aidl` | AIDL kontrakty serveru |
-
-Registrace v `AndroidManifest.xml`:
-
-```xml
-<provider
-    android:name="com.linux_core.core.LinuxCoreShizukuProvider"
-    android:authorities="com.linux_core.shizuku"
-    android:exported="true"
-    android:multiprocess="false"
-    android:directBootAware="true"
-    android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+```bash
+nh shizuku start                      # app_process pod uid 2000 (potřebuje adb)
+nh shizuku grant in.sunilpaulmathew.ashell
+nh shizuku list | revoke <balíček> | status | stop | restart
 ```
 
-`LinuxCoreShizukuProvider` je tenký wrapper, který v `onCreate()` volá
-`disableAutomaticSuiInitialization()` — automatická Sui inicializace jde přes
-hidden-API reflexi (`ServiceManager.getService`) a na Androidu 9+ by shodila
-inicializaci provideru (NPE v `SystemServiceHelper`). Sui nepoužíváme.
-
-### Podmínky
-
-- **Root zařízení** (Magisk) → `nh shi start --shell` nebo `--root`, funguje hned
-- **Non-root zařízení** → `nh shi start --none` + Shizuku server (adb pairing);
-  vyžaduje Shizuku app nainstalovanou (Play Store / F-Droid) NEBO bundlovaný
-  `shizuku.apk` spuštěný přes `adb`
-- **Bez rootu i bez adb** → eskalace není možná (app UID zůstává)
+- Oprávnění jsou **jen přes CLI** (`grant`/`revoke`), žádný dialog v appce.
+- Server každé 2 s hledá běžící appky s grantem a pošle jim binder přes jejich
+  `<balíček>.shizuku` provider (znovu po restartu appky) — po `grant` stačí appku
+  otevřít / restartovat.
+- `newProcess` a `setSystemProperty` bez grantu → `SecurityException`.
+- Nepodporováno: UserService (`addUserService`) a raw transact-relay — appky,
+  které je vyžadují (Hail, Canta…), zatím nefungují.
 
 ---
 

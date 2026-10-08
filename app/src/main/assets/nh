@@ -1004,7 +1004,8 @@ adb_help() {
     echo "  nh adb start               spustí shell_daemon (jednorázově, přes adb shell)"
     echo "  nh adb stop                zastaví shell_daemon"
     echo "  nh adb status              stav shell_daemonu (HTTP probe)"
-    echo "  nh adb shell               otevře interaktivní terminál pod uid 2000"
+    echo "  nh adb shell               interaktivní shell uid 2000 PŘÍMO v tomto terminálu"
+    echo "                             (okno jen jako fallback; vyžaduje běžící shell_daemon)"
     echo "  nh adb shell <cmd>         spustí <cmd> pod uid 2000"
     echo "  nh adb <cmd>               totéž co \"adb shell <cmd>\" (prefix shell se zahodí)"
     echo "  nh adb install [-r] <apk>  cp do /data/local/tmp + pm install"
@@ -1214,14 +1215,17 @@ nh shizuku — Shizuku-kompatibilní privilegovaný server (uid 2000, app_proces
   nh shizuku start              spustí server (jednorázově, přes adb shell)
   nh shizuku stop                zastaví server
   nh shizuku restart             stop + start
-  nh shizuku status              stav serveru (pidfile + /proc probe)
+  nh shizuku status              stav serveru (pidof pod uid 2000; vyžaduje adb/shell_daemon)
   nh shizuku list                seznam balíčků s uloženým grant stavem
   nh shizuku grant <balíček>     povolí balíčku Shizuku přístup (persistentní, CLI)
   nh shizuku revoke <balíček>    zakáže balíčku Shizuku přístup
 
 Pozn.: appky používající `rikka.shizuku:api` knihovnu fungují beze změny —
 server mluví stejný binární protokol (AIDL vendorováno 1:1 z originálu).
-Grant/revoke je čistě CLI, žádná potvrzovací notifikace v appce.
+Grant/revoke je čistě CLI, žádná potvrzovací notifikace v appce. Po `grant`
+server pošle binder běžící appce do ~5 s (jinak při jejím příštím startu) —
+stačí appku otevřít/restartovat, žádná originální Shizuku appka není potřeba.
+Nepodporováno: UserService (addUserService) → appky jako Hail/Canta nefungují.
 EOF
 }
 
