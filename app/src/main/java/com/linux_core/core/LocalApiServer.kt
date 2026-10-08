@@ -89,6 +89,9 @@ object LocalApiServer {
     private const val MAX_SHELL_CMD_LEN = 8192
     /** filesDir/api.token — plaintext API token pro guest klienty (viz publishGuestToken). */
     const val GUEST_TOKEN_FILE = "api.token"
+
+    /** Application context reference, set during start(). */
+    private var appContext: Context? = null
     private var serverSocket: ServerSocket? = null
     private var ptyProcess: java.lang.Process? = null
     private var isRunning = false
