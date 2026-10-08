@@ -290,6 +290,8 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh usb` | `list`, `permission`, `claim`, `release`, `send`, `bulk`, `control`, `bridge`, `gadget` |
 | `nh cpu` | `status`, `on\|off [distro]`, `pin [N]\|unpin`, `all <cmd>`, `run <N> <cmd>`, `bench`, `boost` |
 | `nh distro` | `list`, `ps`, `kill`, `remove`, `backup`, `restore`, `login <distro> [--bind ...]` |
+| `nh adb` | `start`, `stop`, `status`, `shell [cmd]`, `install`, `uninstall`, `push`, `pull`, `devices`, `-c '<cmd>'` (shell_daemon, uid 2000) |
+| `nh shizuku` | `start`, `stop`, `restart`, `status`, `list`, `grant <pkg>`, `revoke <pkg>` (Shizuku-protokol-kompatibilní server, uid 2000, CLI-only permissions) |
 | `nh shi` | `start --root\|--shell\|--none`, `stop`, `status`, `exec <cmd>` |
 | `nh docs` | otevře `nethunter_docs.md` v pageru (`less -R -F`) |
 

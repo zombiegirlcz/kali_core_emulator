@@ -329,6 +329,55 @@ emulátor v daemonu (tmux model) — dnes `handle_attach` po zavření socketu s
 - Diagnostika: `ashell -c 'curl -s 127.0.0.1:1337/shelldaemon/info'` (nezávislé na adb),
   PID file `/data/local/tmp/shelldaemon.pid`.
 
+### 9c. Shizuku-kompatibilní server (uid 2000, `nh shizuku`)
+
+Druhý privilegovaný server vedle `shell_daemon`, ale protokolově kompatibilní s reálným
+**Shizuku** (`moe.shizuku.server.IShizukuService`) — appky používající `rikka.shizuku:api`
+knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**, žádný vlastní SDK.
+
+- **AIDL vendorováno 1:1** z `RikkaApps/Shizuku-API` do `app/src/main/aidl/moe/shizuku/server/`
+  (`IShizukuService`, `IRemoteProcess`, `IShizukuApplication`, `IShizukuServiceConnection`) —
+  **nepřejmenovávat package ani metody, transakční kódy (`= N`) jsou deterministické z textu
+  a MUSÍ sedět s originálem.** `moe.shizuku.api.BinderContainer`
+  (`app/src/main/java/moe/shizuku/api/BinderContainer.kt`) musí zůstat v přesně tomhle
+  package/jméně třídy — klientská knihovna na něj dělá `Class.forName()` při čtení z Parcelu.
+- **Doručení binderu** (`BinderDelivery.kt`) jde přes `IActivityManager.getContentProviderExternal`
+  + `IContentProvider.call("sendBinder", ...)` na klientovu `<balíček>.shizuku` ContentProvider
+  (ten appky s `rikka.shizuku:api` mají v manifestu automaticky z knihovny). Obě hidden-API třídy
+  (`IActivityManager`, `IContentProvider`) jsou v SDK stub jaru **celé odstraněné** (ne jen `@hide`
+  metody) → `HiddenApis.kt` je čistě reflexní (`Class.forName`+`Method.invoke`), **žádný
+  compile-time typ na ně, i náhodný import rozbije build.**
+- **Server běží jako `app_process` pod uid 2000** (`ShizukuServerMain.main()`), startovaný stejným
+  `adb shell "nohup ... &"` mechanismem jako `shell_daemon` (§9b) — `nh shizuku start` získá
+  `apkPath`+`token` z `GET /shizuku/info` (appka, uid app, čte vlastní `api.token`), pak
+  `CLASSPATH='<apk>' app_process /system/bin --nice-name=shizuku_server
+  com.linux_core.shizuku.ShizukuServerMain --token=<token>`.
+- **Permission grant/revoke je čistě CLI, žádná UI/notifikace** (`nh shizuku grant/revoke/list`) —
+  explicitní požadavek, ne defaultní Shizuku chování. Stav žije v appce
+  (`SharedPreferences "shizuku_permissions"`, `LocalApiServer`), server (uid 2000, nemá přístup
+  k `filesDir`) se dotazuje přes loopback `GET /shizuku/permission?pkg=` (`ShizukuHttpClient.kt`,
+  token z `/shizuku/info`, stejný vzor jako `shell_daemon` token delivery, jen v opačném směru).
+- **`java.lang.Process` vs `android.os.Process` name shadowing** (2026-10-08): import
+  `android.os.Process` (pro `myUid`/`myPid`/`killProcess`) stínil `java.lang.Process` vrácený
+  z `ProcessBuilder.start()` — Kotlin bez explicitní kvalifikace vybral `android.os.Process` a
+  `RemoteProcessImpl` ztratil `outputStream`/`inputStream`/`errorStream`/`waitFor`/`exitValue`/
+  `destroy`/`isAlive`. Fix: `java.lang.Process` fully-qualified na typu pole i v `newProcess()`.
+  **Platí obecně pro jakýkoli soubor co importuje `android.os.Process` a zároveň pracuje
+  s `java.lang.Process`.**
+
+**Záměrně nedokončeno (dokumentovaný gap, ne bug):**
+
+- Raw transact-relay (`BINDER_TRANSACTION_transact = 1`, proxy arbitrárních systémových binder
+  volání přes server) — mechanismus nejde ověřit z dostupných zdrojů, **vědomě vynecháno**.
+- Plné UserService hostování (`addUserService`/`removeUserService`/`attachUserService`) — jen
+  stub vracející selhání. Reálná implementace vyžaduje druhý binder-delivery hop (spawnutý
+  `app_process` → klientova vlastní `<pkg>.shizuku` provider → klientův `ServiceConnection`),
+  který je bez testu na zařízení příliš riskantní zavést napůl funkční. Běžný "spusť příkaz / čti
+  property / zkontroluj permission" use-case (drtivá většina Shizuku-konzumujících appek) funguje.
+- `getContentProviderExternal`/`IContentProvider.call` signatury se liší SDK verzí —
+  `HiddenApis.kt` zkouší víc arit podle běžící verze, ale **nebylo ověřeno na zařízení**,
+  jen že se to zkompiluje a Modal build projde.
+
 ## 10. Diagnostika a CLI
 
 - `nethunter-log [-n N] [-g VZOR]` — barevný logcat (V šedá, D modrá, I zelená, W žlutá, E/F červená;
