@@ -97,6 +97,12 @@ class Http1StreamParser(
                 parseChunkedBody(raw, bodyStart, isRequest, method, path, status, httpVersion, headers)
             }
             contentLength != null -> {
+                // Záporný nebo > Int rozsah Content-Length (toInt() by tiše ořízl a
+                // copyOfRange s length < 0 by shodil celou MITM session) → zprávu zahodit
+                // včetně bufferu; parser se zresynchronizuje na další zprávě.
+                if (contentLength < 0 || contentLength > (Int.MAX_VALUE - bodyStart).toLong()) {
+                    return raw.size
+                }
                 val bodyLen = contentLength.toInt()
                 val totalNeeded = bodyStart + bodyLen
                 if (raw.size < totalNeeded) return null

@@ -242,9 +242,11 @@ static void run_command(const char *cmd, const char *cwd, struct cmd_result *res
     close(out_pipe[1]);
     close(err_pipe[1]);
 
+    /* err má rezervu na hlášku o useknutí výstupu (viz konec funkce). */
     char *out = malloc(OUT_BUF);
-    char *err = malloc(OUT_BUF);
+    char *err = malloc(OUT_BUF + 256);
     size_t out_len = 0, err_len = 0;
+    int out_trunc = 0, err_trunc = 0;
     if (!out || !err) {
         if (out) free(out);
         if (err) free(err);
@@ -289,12 +291,20 @@ static void run_command(const char *cmd, const char *cwd, struct cmd_result *res
             int fd = pfds[i].fd;
             ssize_t n = read(fd, buf, sizeof(buf));
             if (n > 0) {
-                if (fd == ofd && out_len + (size_t)n < OUT_BUF) {
-                    memcpy(out + out_len, buf, (size_t)n);
-                    out_len += (size_t)n;
-                } else if (fd == efd && err_len + (size_t)n < OUT_BUF) {
-                    memcpy(err + err_len, buf, (size_t)n);
-                    err_len += (size_t)n;
+                if (fd == ofd) {
+                    if (out_len + (size_t)n < OUT_BUF) {
+                        memcpy(out + out_len, buf, (size_t)n);
+                        out_len += (size_t)n;
+                    } else {
+                        out_trunc = 1;
+                    }
+                } else if (fd == efd) {
+                    if (err_len + (size_t)n < OUT_BUF) {
+                        memcpy(err + err_len, buf, (size_t)n);
+                        err_len += (size_t)n;
+                    } else {
+                        err_trunc = 1;
+                    }
                 }
             } else if (n == 0) {
                 /* EOF */
@@ -308,6 +318,16 @@ static void run_command(const char *cmd, const char *cwd, struct cmd_result *res
                 if (fd == efd) { efd = -1; open_fds--; }
             }
         }
+    }
+
+    /* Výstup nad OUT_BUF se zahazuje — dej klientovi vědět (na stderr),
+     * místo tichého useknutí. */
+    if (out_trunc || err_trunc) {
+        int m = snprintf(err + err_len, 256,
+                         "\n[shell_daemon] vystup useknut na %d B (%s%s%s)\n", OUT_BUF,
+                         out_trunc ? "stdout" : "", (out_trunc && err_trunc) ? "+" : "",
+                         err_trunc ? "stderr" : "");
+        if (m > 0) err_len += (size_t)(m < 256 ? m : 255);
     }
 
     int status = 0;
@@ -950,42 +970,86 @@ static void handle_install(int client_fd) {
         _exit(127);
     }
 
-    /* parent: posli APK do childova stdin. */
+    /* parent: posílej APK do childova stdin a SOUČASNĚ čti jeho výstup.
+     * Sekvenčně (nejdřív celý zápis, pak čtení) to deadlockne, když child
+     * zapíše víc než kapacitu pipe a zablokuje se na stdout, zatímco my
+     * visíme na write do jeho stdin. */
     close(in_pipe[0]);
     close(out_pipe[1]);
     uint64_t sent = 0;
     char buf[65536];
     int write_err = 0;
-    while (sent < size) {
-        size_t want = sizeof(buf);
-        if (size - sent < want) want = (size_t)(size - sent);
-        ssize_t n = read(client_fd, buf, want);
-        if (n <= 0) { write_err = 1; break; }
-        ssize_t off = 0;
-        while (off < n) {
-            ssize_t w = write(in_pipe[1], buf + off, (size_t)(n - off));
-            if (w <= 0) { write_err = 1; break; }
-            off += w;
-        }
-        if (write_err) break;
-        sent += (uint64_t)n;
-    }
-    close(in_pipe[1]);
-
-    /* cti stdout+stderr childa do bufferu */
     char *out = malloc(OUT_BUF);
     size_t out_len = 0;
-    if (out) {
-        ssize_t n;
-        while ((n = read(out_pipe[0], buf, sizeof(buf))) > 0) {
-            if (out_len + (size_t)n < OUT_BUF - 1) {
-                memcpy(out + out_len, buf, (size_t)n);
+    int in_fd = in_pipe[1], ofd = out_pipe[0];
+    size_t pend_off = 0, pend_len = 0; /* nezapsaný zbytek v buf */
+    set_nonblock(in_fd);
+    if (sent >= size) { close(in_fd); in_fd = -1; }
+    char rbuf[8192];
+
+    while (in_fd >= 0 || ofd >= 0) {
+        struct pollfd pfds[3];
+        int nfds = 0, ci = -1, wi = -1, oi = -1;
+        if (in_fd >= 0) {
+            if (pend_len == 0) {
+                pfds[nfds].fd = client_fd; pfds[nfds].events = POLLIN; pfds[nfds].revents = 0; ci = nfds++;
+            } else {
+                pfds[nfds].fd = in_fd; pfds[nfds].events = POLLOUT; pfds[nfds].revents = 0; wi = nfds++;
+            }
+        }
+        if (ofd >= 0) {
+            pfds[nfds].fd = ofd; pfds[nfds].events = POLLIN; pfds[nfds].revents = 0; oi = nfds++;
+        }
+        int pr = poll(pfds, (nfds_t)nfds, -1);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        if (ci >= 0 && (pfds[ci].revents & (POLLIN | POLLHUP | POLLERR))) {
+            size_t want = sizeof(buf);
+            if (size - sent < want) want = (size_t)(size - sent);
+            ssize_t n = read(client_fd, buf, want);
+            if (n < 0 && errno == EINTR) {
+                /* znovu */
+            } else if (n <= 0) {
+                write_err = 1;
+                close(in_fd); in_fd = -1;
+            } else {
+                pend_off = 0; pend_len = (size_t)n;
+                sent += (uint64_t)n;
+            }
+        }
+        if (wi >= 0 && (pfds[wi].revents & (POLLOUT | POLLHUP | POLLERR))) {
+            ssize_t w = write(in_fd, buf + pend_off, pend_len);
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                /* zkus pozdeji */
+            } else if (w <= 0) {
+                write_err = 1;
+                close(in_fd); in_fd = -1;
+            } else {
+                pend_off += (size_t)w; pend_len -= (size_t)w;
+            }
+        }
+        if (in_fd >= 0 && pend_len == 0 && sent >= size) {
+            close(in_fd); in_fd = -1; /* EOF pro childuv stdin */
+        }
+
+        if (oi >= 0 && (pfds[oi].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(ofd, rbuf, sizeof(rbuf));
+            if (n < 0 && errno == EINTR) {
+                /* znovu */
+            } else if (n <= 0) {
+                close(ofd); ofd = -1;
+            } else if (out && out_len + (size_t)n < OUT_BUF - 1) {
+                memcpy(out + out_len, rbuf, (size_t)n);
                 out_len += (size_t)n;
             }
         }
-        out[out_len] = '\0';
     }
-    close(out_pipe[0]);
+    if (in_fd >= 0) close(in_fd);
+    if (ofd >= 0) close(ofd);
+    if (out) out[out_len] = '\0';
 
     int status = 0;
     waitpid(pid, &status, 0);
@@ -1004,6 +1068,19 @@ static void handle_install(int client_fd) {
     free(args);
 }
 
+/* Porovnání tokenu v konstantním čase (nezávisle na pozici první rozdílné
+ * znaky) — strcmp by únikem časování prozradil prefix tokenu. */
+static int token_equals(const char *a, const char *b) {
+    size_t la = strnlen(a, MAX_TOKEN), lb = strnlen(b, MAX_TOKEN);
+    unsigned char diff = (unsigned char)(la != lb);
+    for (size_t i = 0; i < MAX_TOKEN; i++) {
+        unsigned char ca = i < la ? (unsigned char)a[i] : 0;
+        unsigned char cb = i < lb ? (unsigned char)b[i] : 0;
+        diff |= (unsigned char)(ca ^ cb);
+    }
+    return diff == 0;
+}
+
 /* Rozhodne podle magic+mode; overi token; dispatchne. */
 static void handle_client(int client_fd) {
     uint32_t magic = 0;
@@ -1018,7 +1095,7 @@ static void handle_client(int client_fd) {
     char token[MAX_TOKEN] = {0};
     if (read_blob(client_fd, token, sizeof(token)) < 0) return;
 
-    if (strcmp(token, g_token) != 0) {
+    if (g_token[0] == '\0' || !token_equals(token, g_token)) {
         fprintf(stderr, "[shell_daemon] zamitnuto: neplatny token\n");
         if (mode == SH_MODE_EXEC) {
             int32_t rc = -1;
@@ -1280,6 +1357,9 @@ int main(int argc, char **argv) {
             if (g_port <= 0 || g_port > 65535) g_port = DEFAULT_PORT;
         } else if (strncmp(argv[i], "--token=", 8) == 0) {
             strncpy(g_token, argv[i] + 8, sizeof(g_token) - 1);
+            /* Přepiš token v argv, ať nezůstává v /proc/<pid>/cmdline
+             * (bezpečnější je --token-file, viz nápověda). */
+            memset(argv[i] + 8, 'x', strlen(argv[i] + 8));
         } else if (strncmp(argv[i], "--token-file=", 13) == 0) {
             token_file = argv[i] + 13;
         } else if (strcmp(argv[i], "--no-fork") == 0) {
@@ -1329,7 +1409,9 @@ int main(int argc, char **argv) {
     }
 
     /* ── Socket ── */
-    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /* SOCK_CLOEXEC: listen socket ani klientské spojení nesmí přežít execl
+     * příkazů/shellů (jinak je drží background procesy). */
+    int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (listen_fd < 0) {
         perror("[shell_daemon] socket");
         return 1;
@@ -1427,7 +1509,7 @@ int main(int argc, char **argv) {
     }
 
     while (1) {
-        int client_fd = accept(listen_fd, NULL, NULL);
+        int client_fd = accept4(listen_fd, NULL, NULL, SOCK_CLOEXEC);
         if (client_fd < 0) {
             if (errno == EINTR) continue;
             perror("[shell_daemon] accept");

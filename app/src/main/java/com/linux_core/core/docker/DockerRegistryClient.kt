@@ -14,6 +14,7 @@ import kotlin.concurrent.read
 import kotlin.concurrent.write
 import kotlinx.coroutines.Dispatchers.IO
 import okhttp3.Credentials
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 data class DockerLayer(
     val digest: String,
@@ -67,7 +68,13 @@ class DockerRegistryClient(
      * Stáhne manifest obrazu z Docker Registry.
      * Automaticky řeší OAuth2 token exchange při 401.
      */
-    fun fetchManifest(imageRef: DockerImageRef): DockerManifest {
+    fun fetchManifest(imageRef: DockerImageRef): DockerManifest = fetchManifest(imageRef, 0)
+
+    /** @param depth hloubka zanoření manifest listů (list → list …), max [MAX_MANIFEST_DEPTH]. */
+    private fun fetchManifest(imageRef: DockerImageRef, depth: Int): DockerManifest {
+        if (depth > MAX_MANIFEST_DEPTH) {
+            throw IOException("Manifest list nesting too deep (>$MAX_MANIFEST_DEPTH)")
+        }
         val url = imageRef.manifestUrl("application/vnd.docker.distribution.manifest.v2+json")
         Log.i("DockerRegistry", "Fetching manifest: $url")
 
@@ -86,7 +93,7 @@ class DockerRegistryClient(
             JSONObject(body)
         }
 
-        return parseManifest(imageRef, responseBody)
+        return parseManifest(imageRef, responseBody, depth)
     }
 
     /**
@@ -163,7 +170,8 @@ class DockerRegistryClient(
                 // Token jsme měli, ale je neplatný – zkusit refresh
                 Log.d("DockerRegistry", "Got 401 with cached token, refreshing…")
                 invalidateToken(imageRef.authScope)
-                val newToken = getOrObtainToken(imageRef)!!
+                val newToken = getOrObtainToken(imageRef)
+                    ?: throw IOException("Auth refresh failed")
                 response.close()
                 val retryReq = request.newBuilder()
                     .addHeader("Authorization", "Bearer $newToken")
@@ -235,8 +243,8 @@ class DockerRegistryClient(
 
         val requestBuilder = Request.Builder().url(url)
 
-        // Pokud máme credentials, přidat Basic auth
-        if (username != null && password != null) {
+        // Pokud máme credentials, přidat Basic auth — jen na důvěryhodný realm (https + host registru)
+        if (username != null && password != null && isTrustedRealm(imageRef, realm)) {
             requestBuilder.addHeader("Authorization", Credentials.basic(username, password))
             Log.d("DockerRegistry", "Using basic auth for user=$username")
         }
@@ -259,7 +267,8 @@ class DockerRegistryClient(
                 ?.takeIf { it.isNotEmpty() }
                 ?: throw IOException("No token in auth response: ${json.toString()}")
 
-            Log.d("DockerRegistry", "Token obtained (${token.take(20)}…)")
+            // Token nelogovat (ani jeho část) — logcat čte nethunter-log / /app/logs
+            Log.d("DockerRegistry", "Token obtained (${token.length} chars)")
             return token
         }
     }
@@ -289,7 +298,10 @@ class DockerRegistryClient(
         Log.d("DockerRegistry", "Obtaining token via challenge: $url")
 
         val requestBuilder = Request.Builder().url(url)
-        if (username != null && password != null) {
+        // realm pochází z odpovědi registru → credentials jen na https + host registru /
+        // jeho subdoménu / známý auth host (auth.docker.io pro registry-1.docker.io).
+        // Jinak token request bez credentials (anonymní pull pořád funguje).
+        if (username != null && password != null && isTrustedRealm(imageRef, realm)) {
             requestBuilder.addHeader("Authorization", Credentials.basic(username, password))
         }
 
@@ -304,7 +316,7 @@ class DockerRegistryClient(
 
             val token = json.optString("token")
                 .takeIf { it.isNotEmpty() }
-                ?: json.optString("access_token")
+                ?: json.optString("access_token").takeIf { it.isNotEmpty() }
                 ?: throw IOException("No token in challenge response")
 
             // Uložit do cache
@@ -329,6 +341,21 @@ class DockerRegistryClient(
     // ---------------------------------------------------------------
     // Helpery
     // ---------------------------------------------------------------
+
+    /**
+     * Smí se na tento realm poslat Basic credentials?
+     * Jen https a host shodný s registry hostem, jeho subdoménou, nebo s hostem
+     * výchozího auth realmu daného registru (auth.docker.io, gitlab.com, …).
+     */
+    private fun isTrustedRealm(imageRef: DockerImageRef, realm: String): Boolean {
+        val url = realm.toHttpUrlOrNull() ?: return false
+        if (url.scheme != "https") return false
+        val host = url.host.lowercase()
+        val registry = imageRef.registryHost.substringBefore(':').lowercase()
+        if (host == registry || host.endsWith(".$registry")) return true
+        val knownAuthHost = "https://${imageRef.authRealm}".toHttpUrlOrNull()?.host?.lowercase()
+        return knownAuthHost != null && host == knownAuthHost
+    }
 
     /**
      * Parsuje parametr z Www-Authenticate headeru.
@@ -371,7 +398,8 @@ class DockerRegistryClient(
             Log.d("DockerRegistry", "Got 401 with cached token, refreshing…")
             invalidateToken(imageRef.authScope)
             response.close()
-            val newToken = getOrObtainToken(imageRef)!!
+            val newToken = getOrObtainToken(imageRef)
+                ?: throw IOException("Auth refresh failed")
             val retryReq = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer $newToken")
@@ -395,7 +423,7 @@ class DockerRegistryClient(
      *   - Docker manifest list (application/vnd.docker.distribution.manifest.list.v2+json)
      *   - OCI index (application/vnd.oci.image.index.v1+json)
      */
-    private fun parseManifest(imageRef: DockerImageRef, json: JSONObject): DockerManifest {
+    private fun parseManifest(imageRef: DockerImageRef, json: JSONObject, depth: Int): DockerManifest {
         val mediaType = json.optString("mediaType", "")
         Log.d("DockerRegistry", "Parsing manifest, mediaType=$mediaType")
 
@@ -408,7 +436,7 @@ class DockerRegistryClient(
             // Manifest list nebo OCI index
             mediaType.contains("manifest.list") || mediaType.contains("oci.image.index") ||
             json.has("manifests") -> {
-                resolveManifestList(imageRef, json)
+                resolveManifestList(imageRef, json, depth)
             }
             // Fallback: zkusit jestli náhodou nemá "layers"
             json.has("layers") -> {
@@ -455,7 +483,7 @@ class DockerRegistryClient(
      * Vybere manifest podle architektury zařízení (arm64 > amd64),
      * stáhne ho rekurzivně a vrátí jeho single manifest.
      */
-    private fun resolveManifestList(imageRef: DockerImageRef, json: JSONObject): DockerManifest {
+    private fun resolveManifestList(imageRef: DockerImageRef, json: JSONObject, depth: Int): DockerManifest {
         val manifestsArray = json.getJSONArray("manifests")
         Log.i("DockerRegistry", "Manifest list has ${manifestsArray.length()} entries")
 
@@ -498,7 +526,7 @@ class DockerRegistryClient(
         )
 
         Log.i("DockerRegistry", "Resolving manifest list → fetching single manifest by digest: $digest")
-        return fetchManifest(resolvedRef)
+        return fetchManifest(resolvedRef, depth + 1)
     }
 
     /**
@@ -521,6 +549,8 @@ class DockerRegistryClient(
 
     companion object {
         private const val DEFAULT_BUFFER_SIZE = 256 * 1024 // 256KB
+        /** Max zanoření manifest list → list (index → manifest stačí 1). */
+        private const val MAX_MANIFEST_DEPTH = 2
         private const val CONNECT_TIMEOUT_SEC = 30L
         // Mobilní sítě + velké vrstvy (ubuntu ~40 MB gzip): 60s stačilo jen na
         // rychlém Wi-Fi; pomalé LTE padalo na read timeout uprostřed vrstvy.

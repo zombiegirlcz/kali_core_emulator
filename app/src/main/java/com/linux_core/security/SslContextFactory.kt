@@ -74,7 +74,8 @@ class SslContextFactory(private val context: Context) {
     private fun systemTrustManager(): X509TrustManager {
         val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
         tmf.init(null as KeyStore?)
-        return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+        return tmf.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+            ?: throw IllegalStateException("TrustManagerFactory nevrátil X509TrustManager")
     }
 
     private fun passphrase(): CharArray {

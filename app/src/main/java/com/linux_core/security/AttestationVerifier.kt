@@ -1,6 +1,11 @@
 package com.linux_core.security
 
 import android.util.Log
+import org.bouncycastle.asn1.ASN1Enumerated
+import org.bouncycastle.asn1.ASN1Integer
+import org.bouncycastle.asn1.ASN1OctetString
+import org.bouncycastle.asn1.ASN1Primitive
+import org.bouncycastle.asn1.ASN1Sequence
 import java.security.MessageDigest
 import java.security.Signature
 import java.security.cert.CertPath
@@ -29,6 +34,11 @@ object AttestationVerifier {
 
     private const val TAG = "AttestationVerifier"
     private const val MAX_AGE_MILLIS = 60L * 1000  // 60 s replay window
+    private const val ATTESTATION_OID = "1.3.6.1.4.1.11129.2.1.17"
+
+    internal const val SECURITY_LEVEL_SOFTWARE = 0
+    internal const val SECURITY_LEVEL_TEE = 1
+    internal const val SECURITY_LEVEL_STRONGBOX = 2
 
     private val rootCert: X509Certificate? by lazy { loadRootCert() }
 
@@ -93,79 +103,88 @@ object AttestationVerifier {
     }
 
     private fun verifySecurityLevelTee(leaf: X509Certificate): Boolean {
-        // Parse the attestation security level from the certificate extension
-        // OID 1.3.6.1.4.1.11129.2.1.17 is the attestationRecord extension
+        // OID 1.3.6.1.4.1.11129.2.1.17 = KeyDescription (attestation record)
         return try {
-            val raw = leaf.getExtensionValue("1.3.6.1.4.1.11129.2.1.17") ?: return false
-            val attestationRecord = parseAttestationRecord(raw)
-            if (attestationRecord == null) {
+            val raw = leaf.getExtensionValue(ATTESTATION_OID) ?: return false
+            val desc = parseKeyDescription(raw)
+            if (desc == null) {
                 Log.w(TAG, "Could not parse attestation record")
                 return false
             }
-            
-            // Security levels: SOFTWARE=0, TRUSTED_ENVIRONMENT=1, STRONGBOX=2
-            // We require TEE or StrongBox (not software-backed)
-            when (attestationRecord.securityLevel) {
-                0 -> {
-                    Log.w(TAG, "Rejecting SOFTWARE-backed attestation")
-                    false
-                }
-                1, 2 -> true // TEE or StrongBox
-                else -> {
-                    Log.w(TAG, "Unknown security level: ${attestationRecord.securityLevel}")
-                    false
-                }
-            }
+            isHardwareBacked(desc.attestationSecurityLevel)
         } catch (e: Exception) {
             Log.w(TAG, "verifySecurityLevelTee failed: ${e.message}")
             false
         }
     }
 
-    /**
-     * Minimal ASN.1 parsing to extract attestation security level.
-     * Returns null if parsing fails.
-     */
-    private data class AttestationRecord(val securityLevel: Int)
+    /** SecurityLevel: SOFTWARE=0, TRUSTED_ENVIRONMENT=1, STRONGBOX=2 — vyžadujeme TEE/StrongBox. */
+    internal fun isHardwareBacked(securityLevel: Int): Boolean = when (securityLevel) {
+        SECURITY_LEVEL_SOFTWARE -> {
+            Log.w(TAG, "Rejecting SOFTWARE-backed attestation")
+            false
+        }
+        SECURITY_LEVEL_TEE, SECURITY_LEVEL_STRONGBOX -> true
+        else -> {
+            Log.w(TAG, "Unknown security level: $securityLevel")
+            false
+        }
+    }
 
-    private fun parseAttestationRecord(raw: ByteArray): AttestationRecord? {
+    /**
+     * Položky KeyDescription, které ověřujeme. Strukturované ASN.1 parsování (BouncyCastle),
+     * ne heuristika hledající bajt 0x02 — `attestationSecurityLevel` je ENUMERATED (0x0A)
+     * na pevné pozici 1 v SEQUENCE.
+     */
+    internal class KeyDescription(
+        val attestationVersion: Int,
+        val attestationSecurityLevel: Int,
+        val keymasterSecurityLevel: Int,
+        val attestationChallenge: ByteArray
+    )
+
+    /**
+     * Parsuje hodnotu extension 1.3.6.1.4.1.11129.2.1.17, jak ji vrací
+     * [X509Certificate.getExtensionValue] (tj. DER OCTET STRING obalující KeyDescription):
+     *
+     * ```
+     * KeyDescription ::= SEQUENCE {
+     *   attestationVersion        INTEGER,
+     *   attestationSecurityLevel  SecurityLevel,   -- ENUMERATED
+     *   keymasterVersion          INTEGER,
+     *   keymasterSecurityLevel    SecurityLevel,   -- ENUMERATED
+     *   attestationChallenge      OCTET STRING,
+     *   uniqueId                  OCTET STRING,
+     *   softwareEnforced          AuthorizationList,
+     *   teeEnforced               AuthorizationList }
+     * ```
+     * DER délky (short i long form) řeší BouncyCastle. Vrací null při jakékoli odchylce.
+     */
+    internal fun parseKeyDescription(extensionValue: ByteArray): KeyDescription? {
         return try {
-            val innerOctets = stripOctetStringHeader(raw)
-            // Find attestationSecurityLevel INTEGER in the sequence
-            // Format: SEQUENCE { ... INTEGER securityLevel ... }
-            var pos = 0
-            while (pos < innerOctets.size - 1) {
-                // Look for INTEGER tag (0x02) followed by length and value
-                if (innerOctets[pos] == 0x02.toByte()) {
-                    val len = innerOctets[pos + 1].toInt() and 0xFF
-                    if (pos + 2 + len <= innerOctets.size) {
-                        // This is a simplified heuristic - in production, use proper ASN.1 parsing
-                        // The security level is typically near the start of the attestation record
-                        val value = innerOctets.copyOfRange(pos + 2, pos + 2 + len).firstOrNull()?.toInt()?.and(0xFF) ?: continue
-                        // Security level should be 0, 1, or 2
-                        if (value <= 2) return AttestationRecord(value)
-                    }
-                }
-                pos++
-            }
-            null
+            val octets = ASN1OctetString.getInstance(ASN1Primitive.fromByteArray(extensionValue)).octets
+            val seq = ASN1Sequence.getInstance(ASN1Primitive.fromByteArray(octets))
+            if (seq.size() < 6) return null
+            KeyDescription(
+                attestationVersion = ASN1Integer.getInstance(seq.getObjectAt(0)).intValueExact(),
+                attestationSecurityLevel = ASN1Enumerated.getInstance(seq.getObjectAt(1)).intValueExact(),
+                keymasterSecurityLevel = ASN1Enumerated.getInstance(seq.getObjectAt(3)).intValueExact(),
+                attestationChallenge = ASN1OctetString.getInstance(seq.getObjectAt(4)).octets
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "parseAttestationRecord exception: ${e.message}")
+            Log.w(TAG, "parseKeyDescription failed: ${e.message}")
             null
         }
     }
 
     private fun verifyNonceMatches(leaf: X509Certificate, expected: ByteArray): Boolean {
         return try {
-            val raw = leaf.getExtensionValue("1.3.6.1.4.1.11129.2.1.17") ?: return false
-            // The extension value is an OCTET STRING wrapping an ASN.1 structure; we do a
-            // best-effort comparison by hashing the inner content and comparing to a SHA-256
-            // of the expected nonce. This is intentionally conservative – false positives are
-            // impossible (a collision would be a preimage attack on SHA-256), false negatives
-            // are caught at signature time.
-            val innerOctets = stripOctetStringHeader(raw)
+            val raw = leaf.getExtensionValue(ATTESTATION_OID) ?: return false
+            val challenge = parseKeyDescription(raw)?.attestationChallenge ?: return false
+            // attestationChallenge musí být přesně nonce, nebo jeho SHA-256 (ne jen
+            // "někde v záznamu" jako dřív) — porovnání v konstantním čase.
             val sha = MessageDigest.getInstance("SHA-256").digest(expected)
-            containsSlice(innerOctets, sha) || containsSlice(innerOctets, expected)
+            MessageDigest.isEqual(challenge, expected) || MessageDigest.isEqual(challenge, sha)
         } catch (t: Throwable) {
             Log.w(TAG, "verifyNonceMatches parse failed: ${t.message}")
             false
@@ -186,25 +205,6 @@ object AttestationVerifier {
     } catch (t: Throwable) {
         Log.w(TAG, "verifySignature failed: ${t.message}")
         false
-    }
-
-    private fun stripOctetStringHeader(raw: ByteArray): ByteArray {
-        // ASN.1 OCTET STRING: 0x04 LL <bytes>
-        if (raw.size < 2 || raw[0] != 0x04.toByte()) return raw
-        val len = raw[1].toInt() and 0xFF
-        return if (raw.size >= 2 + len) raw.copyOfRange(2, 2 + len) else raw
-    }
-
-    private fun containsSlice(haystack: ByteArray, needle: ByteArray): Boolean {
-        if (needle.isEmpty()) return true
-        if (needle.size > haystack.size) return false
-        outer@ for (i in 0..(haystack.size - needle.size)) {
-            for (j in needle.indices) {
-                if (haystack[i + j] != needle[j]) continue@outer
-            }
-            return true
-        }
-        return false
     }
 
     private fun loadRootCert(): X509Certificate? = try {

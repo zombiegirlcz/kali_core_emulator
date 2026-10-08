@@ -6,7 +6,16 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.asn1.ASN1EncodableVector
+import org.bouncycastle.asn1.ASN1Enumerated
+import org.bouncycastle.asn1.ASN1Integer
+import org.bouncycastle.asn1.DEROctetString
+import org.bouncycastle.asn1.DERSequence
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -97,5 +106,76 @@ class AttestationVerifierTest {
             ByteArray(64)
         )
         assertFalse(ok)
+    }
+
+    /**
+     * Sestaví hodnotu extension 1.3.6.1.4.1.11129.2.1.17 tak, jak ji vrací
+     * X509Certificate.getExtensionValue(): OCTET STRING { KeyDescription SEQUENCE }.
+     */
+    private fun keyDescriptionExt(
+        attestationVersion: Int,
+        attestationSecurityLevel: Int,
+        keymasterSecurityLevel: Int,
+        challenge: ByteArray,
+        uniqueId: ByteArray = ByteArray(0)
+    ): ByteArray {
+        val v = ASN1EncodableVector()
+        v.add(ASN1Integer(attestationVersion.toLong()))
+        v.add(ASN1Enumerated(attestationSecurityLevel))
+        v.add(ASN1Integer(4))                      // keymasterVersion
+        v.add(ASN1Enumerated(keymasterSecurityLevel))
+        v.add(DEROctetString(challenge))
+        v.add(DEROctetString(uniqueId))
+        v.add(DERSequence())                       // softwareEnforced
+        v.add(DERSequence())                       // teeEnforced
+        return DEROctetString(DERSequence(v).encoded).encoded
+    }
+
+    @Test
+    fun parsesSecurityLevelFromEnumeratedField() {
+        val challenge = ByteArray(32) { it.toByte() }
+        val desc = AttestationVerifier.parseKeyDescription(
+            keyDescriptionExt(3, AttestationVerifier.SECURITY_LEVEL_TEE, AttestationVerifier.SECURITY_LEVEL_TEE, challenge)
+        )
+        assertNotNull(desc)
+        assertEquals(3, desc!!.attestationVersion)
+        assertEquals(AttestationVerifier.SECURITY_LEVEL_TEE, desc.attestationSecurityLevel)
+        assertArrayEquals(challenge, desc.attestationChallenge)
+        assertTrue(AttestationVerifier.isHardwareBacked(desc.attestationSecurityLevel))
+    }
+
+    @Test
+    fun softwareLevelIsRejectedEvenWhenOtherIntegersAreSmall() {
+        // attestationVersion = 1 (INTEGER <= 2) — stará heuristika by ho četla jako
+        // securityLevel=TEE. Strukturovaný parser musí vzít ENUMERATED = SOFTWARE.
+        val desc = AttestationVerifier.parseKeyDescription(
+            keyDescriptionExt(1, AttestationVerifier.SECURITY_LEVEL_SOFTWARE, AttestationVerifier.SECURITY_LEVEL_SOFTWARE, ByteArray(32))
+        )
+        assertNotNull(desc)
+        assertEquals(AttestationVerifier.SECURITY_LEVEL_SOFTWARE, desc!!.attestationSecurityLevel)
+        assertFalse(AttestationVerifier.isHardwareBacked(desc.attestationSecurityLevel))
+    }
+
+    @Test
+    fun parsesLongFormDerLength() {
+        // Záznam > 127 B → vnější OCTET STRING i SEQUENCE mají long-form délku (0x81/0x82).
+        val challenge = ByteArray(64) { 0x5A }
+        val ext = keyDescriptionExt(4, AttestationVerifier.SECURITY_LEVEL_STRONGBOX,
+            AttestationVerifier.SECURITY_LEVEL_STRONGBOX, challenge, uniqueId = ByteArray(300) { 0x11 })
+        assertTrue("test musí pokrýt long-form délku", (ext[1].toInt() and 0x80) != 0)
+        val desc = AttestationVerifier.parseKeyDescription(ext)
+        assertNotNull(desc)
+        assertEquals(AttestationVerifier.SECURITY_LEVEL_STRONGBOX, desc!!.attestationSecurityLevel)
+        assertArrayEquals(challenge, desc.attestationChallenge)
+    }
+
+    @Test
+    fun rejectsMalformedKeyDescription() {
+        assertNull(AttestationVerifier.parseKeyDescription(ByteArray(0)))
+        assertNull(AttestationVerifier.parseKeyDescription(byteArrayOf(0x04, 0x02, 0x02, 0x01)))
+        // securityLevel jako INTEGER místo ENUMERATED → nevalidní struktura
+        val v = ASN1EncodableVector()
+        repeat(6) { v.add(ASN1Integer(1)) }
+        assertNull(AttestationVerifier.parseKeyDescription(DEROctetString(DERSequence(v).encoded).encoded))
     }
 }

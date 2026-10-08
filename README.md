@@ -75,9 +75,8 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh vpn bypass <cmd>` | vpn | Run a command outside VPN tunnel | `nh vpn bypass curl ipinfo.io` |
 | `nh vpn ignore on\|off\|status` | vpn | Toggle VPN bypass for current shell | `nh vpn ignore on` |
 | `nh vpn sni-fallback get\|set\|clear` | vpn | Manage SNI fallback hostname | `nh vpn sni-fallback set example.com` |
-| `nh agent config\|start\|stop\|status` | agent | Manage the AI agent daemon | `nh agent status` |
-| `nh agent ask <question>` | agent | Ask the AI a security question | `nh agent ask "Analyze this pcap"` |
-| `nh agent chat` | agent | Open interactive AI expert console | `nh agent chat` |
+| `nh agent ask <question>` | agent | Hand the question over to the Kali AI Assistant app | `nh agent ask "Analyze this pcap"` |
+| `nh agent open` | agent | Open Kali AI Assistant | `nh agent open` |
 | `nh log [-n N] [-g P]` | log | Colorized logcat viewer (V/D/I/W/E/F) | `nh log -n 50 -g LocalApiServer` |
 | `nh log set <level>` | log | Set log level (1-5) | `nh log set 3` |
 | `nh device admin status\|request\|lock` | device | Manage Device Admin | `nh device admin lock` |
@@ -199,7 +198,7 @@ NetHunter AI Operator features an embedded **AI Inference Engine** (`AIBrain.kt`
 - **Packet Classification:** Every intercepted TCP/UDP session metadata is analyzed in real-time by a locally running lightweight neural network.
 - **Features Tracked:** Classifies flows based on packet size, protocol number, delta-time intervals, source/destination ports, and payload entropy (to detect hidden encrypted tunnels).
 - **Audit Logging:** Categorizes packets into `ALLOWED`, `VERBOSE`, `SUSPICIOUS`, or `CRITICAL` network anomalies.
-- **Hacker Console Interaction:** Users can execute `nh agent chat` to open a local AI Expert console or run `nh agent start` to spawn a background daemon that monitors connection streams and triggers Android toasts/alerts if high-risk intrusions or security anomalies are detected.
+- **AI assistant:** the former local python agent (`nethunter_agent.py`, port 13338) was removed; AI features live in the separate **Kali AI Assistant** app (`com.kali.aiassistant`), `nh agent ask` hands questions over to it.
 
 ---
 
@@ -281,7 +280,7 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | `nh system` | `battery`, `volume`, `torch`, `vibrate`, `toast`, `clipboard`, `notification`, `speech` |
 | `nh network` | `wifi`, `cell`, `location`, `map`, `ifconfig` |
 | `nh vpn` | `start`, `stop`, `status`, `on`, `off`, `logs`, `mitm`, `bypass`, `ignore`, `sni-fallback` |
-| `nh agent` | `config`, `start`, `stop`, `status`, `ask`, `chat` |
+| `nh agent` | `ask`, `open` (→ Kali AI Assistant) |
 | `nh log` | `[-n N] [-g P]`, `set <level>` |
 | `nh device` | `admin`, `battery-optimize`, `accessibility`, `tap`, `click`, `longclick`, `swipe`, `text`, `scroll`, `global` |
 | `nh api` | `share on/off/status` |

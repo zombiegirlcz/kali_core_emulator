@@ -66,6 +66,24 @@ pull_full_assets() {
     fi
 }
 
+# ── Ochrana lokálních změn před pull_full_assets ──
+# `modal volume get --force` přepíše assets/jniLibs/magisk-modules verzí z Volume
+# (= poslední push na GitHub + build artefakty). Necommitnuté lokální úpravy
+# (např. assets/nh, usr/bin/boot) by se tiše ztratily → zastavit PŘED buildem.
+# Přebití: MBUILD_FORCE_PULL=1.
+check_pull_paths_clean() {
+    [ "${MBUILD_FORCE_PULL:-0}" = "1" ] && return 0
+    local dirty
+    dirty="$(git -C "$SRC" status --porcelain --untracked-files=no -- \
+        app/src/main/assets app/src/main/jniLibs magisk-modules 2>/dev/null || true)"
+    if [ -n "$dirty" ]; then
+        echo "  [FATAL] Necommitnuté změny v cestách, které pull_full_assets přepíše:"
+        echo "$dirty" | sed 's/^/      /'
+        echo "  Commitni + pushni (pak sync), nebo spusť s MBUILD_FORCE_PULL=1."
+        exit 1
+    fi
+}
+
 # ── Fail-fast check před buildem ──
 check_native_binaries() {
     echo "  -> Kontrola přítomnosti kritických binárek..."
@@ -81,6 +99,10 @@ check_native_binaries() {
     fi
     echo "    [OK] libshelldaemon.so ($size B)"
 }
+
+case "$CMD" in
+    all|native|smart|pull|proot) check_pull_paths_clean ;;
+esac
 
 case "$CMD" in
     # ── SYNC příkazy ──
@@ -100,22 +122,23 @@ case "$CMD" in
             case "$a" in -f|--force) FORCE="--force";; esac
         done
         echo "=== SMART BUILD (sync + inkrementální proot/native/gradle, branch: ${BRANCH})${FORCE:+ [FORCE]} ==="
-        modal run modal_build.py::sync --branch "$BRANCH" > build.log | cat
+        modal run modal_build.py::sync --branch "$BRANCH" 2>&1 | tee build.log
         if [ -n "$FORCE" ]; then
-            modal run modal_build.py::smart_build --force >> build.log | cat
+            modal run modal_build.py::smart_build --force 2>&1 | tee -a build.log
         else
-            modal run modal_build.py::smart_build >> build.log | cat
+            modal run modal_build.py::smart_build 2>&1 | tee -a build.log
         fi
         echo "  -> pull CELÝ assets"
         pull_full_assets
         echo "  -> APK download"
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 \
+            || echo "    [WARN] stažení APK selhalo (builds/app-debug.apk na Volume?)"
         ;;
 
     native)
         echo "=== NATIVE BUILD ==="
         echo "  -> NDK compile"
-        modal run modal_build.py::build_native > build.log | cat
+        modal run modal_build.py::build_native 2>&1 | tee build.log
         echo "  -> pull CELÝ assets"
         pull_full_assets
         ;;
@@ -123,17 +146,19 @@ case "$CMD" in
         echo "=== APK BUILD ==="
         check_native_binaries
         echo "  -> Gradle build"
-        modal run modal_build.py::build > build.log | cat
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
+        modal run modal_build.py::build 2>&1 | tee build.log
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 \
+            || { echo "    [FATAL] stažení APK selhalo (builds/app-debug.apk na Volume?)"; exit 1; }
         ;;
 
     smart)
         echo "=== SMART BUILD (inkrementální proot/native/gradle) ==="
-        modal run modal_build.py::smart_build > build.log | cat
+        modal run modal_build.py::smart_build 2>&1 | tee build.log
         echo "  -> pull CELÝ assets"
         pull_full_assets
         echo "  -> APK download"
-        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 || true
+        modal volume get --force kali-build-data builds/app-debug.apk ~/Download/kali_core.apk 2>&1 \
+            || echo "    [WARN] stažení APK selhalo (builds/app-debug.apk na Volume?)"
         ;;
      pull)
 	pull_full_assets
@@ -141,7 +166,7 @@ case "$CMD" in
 # usrtools)
     #    echo "=== USRTOOLS BUILD (nano/rsync/sed/rg) ==="
      #   echo "  -> native build (usrtools)"
-      #  modal run modal_build.py::build_native > build.log | cat
+      #  modal run modal_build.py::build_native 2>&1 | tee build.log
        # echo "  -> pull CELÝ assets"
        # pull_full_assets
      #   ;;

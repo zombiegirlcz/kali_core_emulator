@@ -13,6 +13,7 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.util.Base64
 import android.util.Log
+import com.linux_core.core.UsbFdExporter
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -31,6 +32,10 @@ import java.util.concurrent.ConcurrentHashMap
 object UsbHostManager {
     private const val TAG = "UsbHostManager"
     private const val ACTION_USB_PERMISSION = "com.linux_core.USB_PERMISSION"
+    /** Výchozí wLength pro control IN bez zadané délky (deskriptory apod.). */
+    private const val DEFAULT_CONTROL_IN_LEN = 4096
+    /** wLength je 16bit. */
+    private const val MAX_CONTROL_LEN = 65535
 
     private var usbManager: UsbManager? = null
     private var appContext: Context? = null
@@ -110,8 +115,16 @@ object UsbHostManager {
      */
     fun onDeviceDetached(device: android.hardware.usb.UsbDevice) {
         try {
-            permittedDeviceNames.remove(device.deviceName)
-            Log.i(TAG, "Device detached: ${device.deviceName}")
+            val name = device.deviceName
+            permittedDeviceNames.remove(name)
+            // Uklidit zastaralé spojení + claimed rozhraní — jinak by claimInterface vracel
+            // already_claimed nad mrtvým spojením (a jméno uzlu se může recyklovat).
+            claimedInterfaces.keys.filter { it.startsWith("$name:") }.forEach { claimedInterfaces.remove(it) }
+            openConnections.remove(name)?.let { conn ->
+                try { conn.close() } catch (_: Exception) { /* zařízení už je pryč */ }
+            }
+            UsbFdExporter.cancelExports(name)
+            Log.i(TAG, "Device detached: $name")
         } catch (e: Exception) {
             Log.w(TAG, "onDeviceDetached error: ${e.message}")
         }
@@ -255,7 +268,8 @@ object UsbHostManager {
         val device = findDeviceByName(deviceName)
         if (device == null) return errorObj("Device not found: $deviceName")
 
-        if (!mgr.hasPermission(device) && deviceName !in permittedDeviceNames) {
+        // Zdroj pravdy je systém — cache jmen (plněná i z broadcastu) oprávnění nenahrazuje.
+        if (!mgr.hasPermission(device)) {
             return errorObj("Permission not granted for $deviceName. Call requestPermission first.")
         }
 
@@ -326,6 +340,8 @@ object UsbHostManager {
         // Close connection if no interfaces remain claimed for this device
         val hasRemaining = claimedInterfaces.keys.any { it.startsWith("$deviceName:") }
         if (!hasRemaining) {
+            // Čekající exporty fd tohoto zařízení zrušit (exportér drží vlastní dup)
+            UsbFdExporter.cancelExports(deviceName)
             connection.close()
             openConnections.remove(deviceName)
             Log.i(TAG, "Closed USB connection for $deviceName")
@@ -464,16 +480,30 @@ object UsbHostManager {
         value: Int = 0,
         index: Int = 0,
         dataBase64: String = "",
-        timeout: Int = 1000
+        timeout: Int = 1000,
+        length: Int = -1          // IN: požadovaná délka (wLength); -1 = z dat nebo výchozí
     ): String {
         val connection = openConnections[deviceName]
             ?: return errorObj("No open connection for $deviceName. Claim an interface first.").toString()
 
+        val isIn = (requestType and 0x80) != 0
         return try {
-            val data = if (dataBase64.isNotEmpty()) {
+            val payload = if (dataBase64.isNotEmpty()) {
                 Base64.decode(dataBase64, Base64.NO_WRAP)
             } else {
                 ByteArray(0)
+            }
+            // IN (device→host): potřebujeme buffer, do kterého zařízení zapíše odpověď.
+            // Dřív se u IN bez payloadu posílal wLength=0 → data nikdy nepřišla.
+            val data = if (isIn) {
+                val want = when {
+                    length >= 0 -> length
+                    payload.isNotEmpty() -> payload.size
+                    else -> DEFAULT_CONTROL_IN_LEN
+                }.coerceIn(0, MAX_CONTROL_LEN)
+                payload.copyOf(want)
+            } else {
+                payload
             }
 
             val transferred = connection.controlTransfer(requestType, request, value, index, data, data.size, timeout)
@@ -483,10 +513,11 @@ object UsbHostManager {
                 JSONObject().apply {
                     put("success", true)
                     put("transferred", transferred)
-                    if (data.isNotEmpty() && (requestType and 0x80) != 0) {
-                        // Device-to-host direction → include received data
-                        put("data_base64", Base64.encodeToString(data, Base64.NO_WRAP))
-                        put("data_hex", data.joinToString("") { "%02x".format(it) })
+                    if (isIn) {
+                        // Device-to-host direction → include received data (jen přijaté bajty)
+                        val received = data.copyOf(transferred)
+                        put("data_base64", Base64.encodeToString(received, Base64.NO_WRAP))
+                        put("data_hex", received.joinToString("") { "%02x".format(it) })
                     }
                 }.toString()
             }
@@ -498,6 +529,8 @@ object UsbHostManager {
     /**
      * Send a raw data blob to the device (convenience: finds first OUT bulk endpoint
      * on the first claimed interface and sends the data).
+     * Payload jde jen na JEDEN endpoint (nejnižší claimed rozhraní) — dřív se stejná data
+     * posílala na všechny OUT endpointy a success se počítal ze součtu přes ně.
      */
     fun sendRawData(deviceName: String, dataBase64: String, timeout: Int = 1000): String {
         val connection = openConnections[deviceName]
@@ -505,13 +538,14 @@ object UsbHostManager {
 
         // Find first OUT bulk endpoint from all claimed interfaces
         val targetEndpoints = mutableListOf<UsbEndpoint>()
-        for ((key, iface) in claimedInterfaces) {
-            if (key.startsWith("$deviceName:")) {
-                for (j in 0 until iface.endpointCount) {
-                    val ep = iface.getEndpoint(j)
-                    if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_OUT) {
-                        targetEndpoints.add(ep)
-                    }
+        val ifaces = claimedInterfaces.entries
+            .filter { it.key.startsWith("$deviceName:") }
+            .sortedBy { it.key.substringAfterLast(':').toIntOrNull() ?: Int.MAX_VALUE }
+        for ((_, iface) in ifaces) {
+            for (j in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(j)
+                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_OUT) {
+                    targetEndpoints.add(ep)
                 }
             }
         }
@@ -523,37 +557,41 @@ object UsbHostManager {
         val data = Base64.decode(dataBase64, Base64.NO_WRAP)
         val results = JSONArray()
         var totalTransferred = 0
+        val ep = targetEndpoints.first()
 
-        for (ep in targetEndpoints) {
-            try {
-                if (ep.maxPacketSize > 0 && data.size > ep.maxPacketSize) {
-                    // Split into max-packet-size chunks
-                    val chunks = data.size / ep.maxPacketSize + (if (data.size % ep.maxPacketSize != 0) 1 else 0)
-                    for (c in 0 until chunks) {
-                        val start = c * ep.maxPacketSize
-                        val end = minOf(start + ep.maxPacketSize, data.size)
-                        val buf = data.copyOfRange(start, end)
-                        val t = connection.bulkTransfer(ep, buf, buf.size, timeout)
-                        if (t >= 0) totalTransferred += t
-                    }
-                } else {
-                    val t = connection.bulkTransfer(ep, data, data.size, timeout)
-                    if (t >= 0) totalTransferred += t
+        try {
+            val chunkSize = if (ep.maxPacketSize > 0) ep.maxPacketSize else data.size.coerceAtLeast(1)
+            var start = 0
+            var failed: String? = null
+            while (start < data.size) {
+                val end = minOf(start + chunkSize, data.size)
+                val buf = data.copyOfRange(start, end)
+                val t = connection.bulkTransfer(ep, buf, buf.size, timeout)
+                if (t < 0) {
+                    failed = "Bulk OUT failed at offset $start (returned $t)"
+                    break
                 }
-                results.put(JSONObject().apply {
-                    put("endpoint", ep.endpointNumber)
-                    put("transferred", totalTransferred)
-                })
-            } catch (e: Exception) {
-                results.put(JSONObject().apply {
-                    put("endpoint", ep.endpointNumber)
-                    put("error", e.message)
-                })
+                totalTransferred += t
+                if (t < buf.size) {
+                    failed = "Short write at offset $start ($t/${buf.size})"
+                    break
+                }
+                start = end
             }
+            results.put(JSONObject().apply {
+                put("endpoint", ep.endpointNumber)
+                put("transferred", totalTransferred)
+                if (failed != null) put("error", failed)
+            })
+        } catch (e: Exception) {
+            results.put(JSONObject().apply {
+                put("endpoint", ep.endpointNumber)
+                put("error", e.message)
+            })
         }
 
         return JSONObject().apply {
-            put("success", totalTransferred >= data.size)
+            put("success", totalTransferred == data.size)
             put("total_transferred", totalTransferred)
             put("total_requested", data.size)
             put("endpoint_results", results)

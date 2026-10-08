@@ -1,5 +1,44 @@
 # Security Analysis — NetHunter AI Operator (com.linux_core)
 
+## Audit 2026-10-08 (aktuální stav)
+
+Audit 11 oblastí (API, rootfs, VPN, MITM/security, terminál, UI/USB/Docker, manifest/build, C démoni,
+C klienti, skripty, Magisk/tools), 101 ověřených nálezů. Opraveno v commitech `093c37e`, `db47d0b`
+a následujícím „audit fixes" commitu.
+
+### Opraveno
+
+| Oblast | Co |
+|---|---|
+| API 1337 | Citlivé endpointy chtějí Bearer token **i z loopbacku** (UID volajícího na Androidu 10+ zjistit nejde). Token se inicializuje při startu (dřív `authToken==null` → prázdný `Bearer ` prošel). Plaintext pro guest v `filesDir/api.token` (0600). Path traversal v `/rootfs/restore`. `/shelldaemon/exec` má blocklist jako `/shell`. Odstraněn `/agent/query`. |
+| ashell_pty 13340 | Token v 6. poli HELLO (dřív bez autentizace — libovolná appka mohla spustit shell pod UID appky). Robustní accept/write/HELLO parsing. |
+| su_daemon / su_wrapper | Blocklist: wrappery (`env`, `timeout`, `busybox`…), chráněné stromy (`/system`, `/data`, `/dev`…), `find -delete`, celý `-c` payload. Ownership fix fd-based (TOCTOU). Socket 0600 + `SO_PEERCRED`. Sessions v root-only adresáři. Fail-closed exit kódy, žádné tiché useknutí argv. |
+| shell_daemon | CLOEXEC (fd leak), konstantní porovnání tokenu, hlášení useknutého výstupu, install bez deadlocku. |
+| cpuctl (root) | Stack overflow v `parse_words`, zápisy/chown bez následování symlinků (v1.2). |
+| Magisk moduly | `nh_cpuctl` zabíjí jen `comm=cpuctl`; `custom_usb_g2_setup` logy v root-only `/data/adb/usb_g2`. |
+| RootBridgeTab | Shell injection přes název `.zip` (bez vnější `sh -c`, `shellQuote`). |
+| Agent 13338 | `nethunter_agent.py` odstraněn (fail-open auth); AI = appka Kali AI Assistant. |
+| entrypoint/bootstrap | Dropbear se nespouští automaticky; dpkg zámky jen když neběží apt; bootstrap negeneruje `.zshrc`, nemaže sdílený `/tmp`. |
+| boot | `NH_BIND`/`NH_PATH` z manifestu validovány, hodnoty jako argumenty (ne v `-c`), `set -e` u CPU isolate, session evidence sjednocena. |
+| VPN | Únik DNS-cleaner vlákna a UDP kanálů, ohraničený thread pool, LRU cache, validace proxy IP, seq čísla mod 2^32. |
+| Security | `AttestationVerifier` parsuje ASN.1 strukturovaně (BouncyCastle), long-form délky; náhodná sériová čísla leaf certů; drobné parsery. |
+| USB / Docker | `sendRawData` jen na jeden endpoint, úklid při odpojení, IN control transfer vrací data, JNI bounds check, UDS peer check; Docker credentials jen na důvěryhodný realm, limit rekurze manifestů. |
+| Build | `PROOT_TAG` bump se projeví, chybějící aarch64 proot shodí pipeline, token mimo `.git/config`, `mbuild` chrání necommitnuté assets. Podpisový klíč přejmenován na `app/debug.jks`. |
+
+### Záměrně ponecháno (rozhodnutí, ne chyba)
+
+- Uživatelské CA v `network_security_config.xml` — nutné pro TLS MITM.
+- Rootfs katalog / Docker image — ověřují se při přidání do `ROOTFS-for-proot` (validátor + SHA256).
+- `app/debug.jks` s heslem `password123` — veřejný vývojový klíč.
+- `internal.p12` v assetech, `sharedUserId` (změna = reinstall), accessibility čte všechna okna (funkce).
+- SHA256 piny pro NDK/cmdline-tools v `modal_build.py` — zatím ne (vyžaduje ověřené hashe).
+
+---
+
+## Historická zpráva (2026-07-11)
+
+> Následující sekce popisují stav k červenci 2026. CRIT-1 (agent 13338) je vyřešen odstraněním agenta.
+
 **Datum:** 2026-07-11  
 **Verze kódu:** 4.2-MITM-LOG-FIX (versionCode 8)  
 **Analyst:** OpenMythos AI Security Agent  

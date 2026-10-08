@@ -49,7 +49,10 @@ fi
 # printf (ne `echo -e`): entrypoint bezi i pod POSIX sh/dash/busybox, kde echo nezna
 # -e -> do resolv.conf se jinak zapise literalni "-e nameserver ...\n..." a DNS je rozbite.
 printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf 2>/dev/null || true
-rm -f /var/lib/dpkg/lock* 2>/dev/null || true
+# Zámky dpkg mazat jen když neběží apt/dpkg (jiná session) — jinak hrozí poškození dpkg db.
+if ! pgrep -x 'apt|apt-get|dpkg|aptitude' >/dev/null 2>&1; then
+  rm -f /var/lib/dpkg/lock* 2>/dev/null || true
+fi
 # Restore passwd if it was previously diverted by mistake
 for prefix in /usr/sbin /sbin /usr/bin /bin; do
   path="$prefix/passwd"
@@ -81,18 +84,8 @@ setup_user_zsh /root root
 [ -d /home/parrot ] && setup_user_zsh /home/parrot parrot
 [ -d /home/kali ] && setup_user_zsh /home/kali kali
 chmod 4755 /usr/bin/sudo /usr/bin/su /bin/su /bin/sudo 2>/dev/null || true
-# Dropbear SSH server (fix for OpenSSH seccomp crash on Android kernel)
-if command -v dropbear >/dev/null 2>&1; then
-  if ! pidof dropbear >/dev/null 2>&1; then
-    mkdir -p /etc/dropbear
-    for keytype in rsa ecdsa ed25519; do
-      KEYFILE="/etc/dropbear/dropbear_${keytype}_host_key"
-      [ -f "$KEYFILE" ] || dropbearkey -t "$keytype" -f "$KEYFILE" 2>&1 | tail -1
-    done
-    # Use port 2222 (non-privileged — PRoot can't bind to port 22)
-    dropbear -p 2222 2>/dev/null && echo '[*] dropbear SSH server started on port 2222'
-  fi
-fi
+# Dropbear se automaticky NESPOUŠTÍ (naslouchal na všech rozhraních, účty bez hesla).
+# Ručně: dropbear -p 127.0.0.1:2222
 [ -f /etc/motd ] && cat /etc/motd
 echo '[*] Starting session...'
 ENTRY_SHELL=$(command -v zsh || echo /bin/bash)

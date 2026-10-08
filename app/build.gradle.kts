@@ -38,7 +38,7 @@ android {
                 keyAlias = System.getenv("KEY_ALIAS") ?: propertyOrNull("key.alias") ?: "debugKey"
                 keyPassword = System.getenv("KEY_PASSWORD") ?: propertyOrNull("key.password") ?: "password123"
             } else {
-                println("WARNING: debug.jks missing, falling back to debug signing")
+                println("WARNING: app/debug.jks missing — release build will be UNSIGNED (debug build uses the default Android debug keystore)")
             }
         }
         getByName("debug") {

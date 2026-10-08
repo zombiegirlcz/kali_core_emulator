@@ -390,17 +390,18 @@ NetHunter AI Operator obsahuje lokální AI model pro analýzu síťového provo
 
 | Příkaz | Popis |
 | :--- | :--- |
-| `nh agent start` | Spustí na pozadí démona, který monitoruje spojení a upozorňuje na rizika (vyskakovací Toasty při detekci anomálie). |
-| `nh agent chat` | Otevře konzoli lokálního AI experta pro analýzu síťových dat. |
-| `nh agent status` | Zobrazí stav agenta (port 13338). |
-| `nh agent analyze` | Spustí jednorázovou analýzu aktuálního provozu. |
+| `nh agent ask <dotaz>` | Předá dotaz appce **Kali AI Assistant** (`com.kali.aiassistant`). |
+| `nh agent open` | Otevře Kali AI Assistant. |
+
+> Starý python agent (`nethunter_agent.py`, port 13338, `nh agent start/chat/status`) byl odstraněn —
+> nahradila ho samostatná appka Kali AI Assistant.
 
 ## 🎙️ Hlasový Asistent
 
 Aplikace funguje také jako plnohodnotný hlasový asistent integrovaný do systému Android.
 Pro jeho správnou funkci je nutné provést následující kroky:
 
-1. **Nastavení API klíče:** V nastavení aplikace vložte platný API klíč vámi vybraného poskytovatele (OpenAI, Anthropic atd.).
+1. **Kali AI Assistant:** Dotazy z hlasového asistenta se předávají appce Kali AI Assistant (`com.kali.aiassistant`) — musí být nainstalovaná a mít nastaveného poskytovatele/API klíč.
 2. **Výchozí asistent:** V nastavení samotného Androidu (Aplikace -> Výchozí aplikace -> Digitální asistent) nastavte NetHunter AI Operator jako výchozího asistenta.
 3. **Oprávnění mikrofonu:** Ujistěte se, že má aplikace povoleno oprávnění přistupovat k mikrofonu.
 

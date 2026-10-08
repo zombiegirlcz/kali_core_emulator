@@ -7,6 +7,12 @@ import java.util.concurrent.atomic.AtomicReference
 object VpnProxyManager {
     private const val TAG = "VpnProxyManager"
 
+    // Jen IPv4 literál (stejný vzor jako VpnFirewallManager) — split(":") IPv6 stejně nepodporuje
+    // a nevalidní řetězec by se uložil a selhal až při connectu.
+    private val IPV4_REGEX = Regex(
+        "^((25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)$"
+    )
+
     data class ProxyNode(
         val ip: String,
         val port: Int
@@ -31,6 +37,7 @@ object VpnProxyManager {
         val parts = ipPort.trim().split(":")
         if (parts.size != 2) return false
         val ip = parts[0].trim()
+        if (!IPV4_REGEX.matches(ip)) return false
         val port = parts[1].trim().toIntOrNull() ?: return false
         if (port !in 1..65535) return false
         customProxy.set(ProxyNode(ip, port))

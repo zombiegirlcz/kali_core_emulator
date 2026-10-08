@@ -1,5 +1,6 @@
 package com.linux_core.core
 
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.Closeable
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -26,8 +27,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 object UsbFdExporter : Closeable {
     private const val TAG = "UsbFdExporter"
 
-    // Pending exports: pairs of (deviceName, fd) waiting for a PRoot client
-    private data class PendingExport(val deviceName: String, val fd: Int)
+    /** Max pokusů o odeslání jednoho fd — pak se export zahodí (dřív se re-queue točil donekonečna). */
+    private const val MAX_ATTEMPTS = 5
+
+    // Pending exports: (deviceName, fd) waiting for a PRoot client.
+    // fd je VLASTNÍ dup() exportéru — nezávislý na UsbDeviceConnection, takže zavření
+    // spojení (releaseInterface/detach) ho nezneplatní ani nepodstrčí recyklované číslo fd.
+    private data class PendingExport(val deviceName: String, val fd: Int, val attempts: Int = 0)
 
     private val pendingQueue = ConcurrentLinkedQueue<PendingExport>()
     private val running = AtomicBoolean(false)
@@ -122,8 +128,46 @@ object UsbFdExporter : Closeable {
             Log.e(TAG, "Invalid fd for $deviceName: $fd")
             return
         }
-        pendingQueue.offer(PendingExport(deviceName, fd))
-        Log.i(TAG, "Queued fd=$fd ($deviceName) for export. Queue size: ${pendingQueue.size}")
+        // Vlastní kopie fd (dup) — exportér ji zavře po odeslání / zahození / zrušení.
+        val ownFd = try {
+            ParcelFileDescriptor.fromFd(fd).detachFd()
+        } catch (e: Exception) {
+            Log.e(TAG, "dup() failed for $deviceName fd=$fd: ${e.message}")
+            return
+        }
+        pendingQueue.offer(PendingExport(deviceName, ownFd))
+        Log.i(TAG, "Queued fd=$ownFd (dup of $fd, $deviceName) for export. Queue size: ${pendingQueue.size}")
+    }
+
+    /**
+     * Zruší čekající exporty daného zařízení (volá UsbHostManager při zavření spojení
+     * nebo odpojení zařízení) a zavře jejich dup fd.
+     */
+    fun cancelExports(deviceName: String) {
+        val it = pendingQueue.iterator()
+        while (it.hasNext()) {
+            val p = it.next()
+            if (p.deviceName == deviceName) {
+                it.remove()
+                closeOwnFd(p)
+                Log.i(TAG, "Cancelled pending export for $deviceName")
+            }
+        }
+    }
+
+    private fun closeOwnFd(p: PendingExport) {
+        try { ParcelFileDescriptor.adoptFd(p.fd).close() } catch (_: Exception) { /* best-effort */ }
+    }
+
+    /** Re-queue s počítadlem pokusů; po [MAX_ATTEMPTS] export zahodí a zavře fd. */
+    private fun requeueOrDrop(p: PendingExport) {
+        val next = p.copy(attempts = p.attempts + 1)
+        if (next.attempts >= MAX_ATTEMPTS) {
+            Log.e(TAG, "Dropping export for ${p.deviceName} after ${next.attempts} attempts")
+            closeOwnFd(p)
+        } else {
+            pendingQueue.offer(next)
+        }
     }
 
     /**
@@ -149,7 +193,7 @@ object UsbFdExporter : Closeable {
 
             if (serverFd < 0) {
                 Log.e(TAG, "Server fd invalid, re-queuing ${pending.deviceName}")
-                pendingQueue.offer(pending)
+                requeueOrDrop(pending)
                 break
             }
 
@@ -158,15 +202,16 @@ object UsbFdExporter : Closeable {
                 val clientFd = nativeAcceptAndSendFd(serverFd, pending.fd)
                 if (clientFd < 0) {
                     Log.e(TAG, "Failed to send fd for ${pending.deviceName}: errno=${-clientFd}")
-                    // Re-queue the fd for retry
-                    pendingQueue.offer(pending)
+                    // Re-queue the fd for retry (omezený počet pokusů)
+                    requeueOrDrop(pending)
                     Thread.sleep(500)
                     continue
                 }
 
                 Log.i(TAG, "USB fd=${pending.fd} sent to client fd=$clientFd for ${pending.deviceName}")
 
-                // The PRoot client now owns the USB fd and will close it.
+                // SCM_RIGHTS předal klientovi vlastní kopii fd → naši dup zavřít.
+                closeOwnFd(pending)
                 // We keep the client connection open briefly in case the client
                 // wants to send back status, but the bridge binary exits after receiving.
                 // Close the client fd after a brief wait.
@@ -174,10 +219,11 @@ object UsbFdExporter : Closeable {
                 nativeCloseSocket(clientFd)
 
             } catch (e: InterruptedException) {
+                // InterruptedException přijde jen ze sleep — pending je už re-queued nebo zavřený
                 break
             } catch (e: Exception) {
                 Log.e(TAG, "Error in accept loop: ${e.message}")
-                pendingQueue.offer(pending) // retry
+                requeueOrDrop(pending) // retry (omezený počet pokusů)
             }
         }
         Log.i(TAG, "Accept loop exited")
@@ -204,7 +250,10 @@ object UsbFdExporter : Closeable {
             nativeCloseSocket(serverFd)
             serverFd = -1
         }
-        pendingQueue.clear()
+        while (true) {
+            val p = pendingQueue.poll() ?: break
+            closeOwnFd(p)
+        }
         Log.i(TAG, "Shutdown complete")
     }
 

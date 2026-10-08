@@ -44,6 +44,9 @@ object ExecCore {
         return null
     }
 
+    // Povolené ID distra pro guestExec: "<název>" nebo "docker/<slug>".
+    private val DISTRO_ID_RE = Regex("^[a-z0-9_][a-z0-9._-]*(/[a-z0-9_][a-z0-9._-]*)?$")
+
     // Destructive patterns — checked across the entire command string, so they
     // catch attempts like `python3 -c "import os; os.system('rm -rf /')"`.
     val DESTRUCTIVE_PATTERNS = listOf(
@@ -62,6 +65,36 @@ object ExecCore {
         "cat /dev/sda", "cat /dev/sdb", "cat /dev/mem"
     )
 
+    // ── Společná brána pro host příkazy (/shell i /shelldaemon/exec) ─────
+
+    /**
+     * Blocklist gate (ashell.conf, basename prvního tokenu) + DESTRUCTIVE_PATTERNS.
+     * Vrací errJson s důvodem odmítnutí, nebo null = příkaz smí projít.
+     * Sdílí ho hostExec (/shell) i /shelldaemon/exec (uid 2000), aby dvojí
+     * blokace z AGENTS.md platila pro obě cesty.
+     */
+    fun shellGate(ctx: Context, command: String): String? =
+        shellGate(command, loadAshellConfig(ctx))
+
+    private fun shellGate(command: String, cfg: AshellConfig): String? {
+        // ── 1. Blocklist gate (z ashell.conf — editace přes `ashell -e`) ──
+        val cmdName = command
+            .trim()
+            .substringBefore(" ")
+            .substringBefore("\t")
+            .substringAfterLast("/")
+        if (cmdName in cfg.blocked) return errJson("Command '$cmdName' is blocked by ashell.conf")
+
+        // ── 2. Destructive patterns guard ───────────────────────────────
+        val commandLower = command.lowercase()
+        for (pattern in DESTRUCTIVE_PATTERNS) {
+            if (commandLower.contains(pattern.lowercase())) {
+                return errJson("Command blocked for security reasons")
+            }
+        }
+        return null
+    }
+
     // ── Host shell (HTTP /shell i Binder hostShell) ──────────────────────
 
     /**
@@ -79,22 +112,9 @@ object ExecCore {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 1024) return errJson("Command too long (max 1024 chars)")
 
-        // ── 1. Blocklist gate (z ashell.conf — editace přes `ashell -e`) ──
-        val cmdName = command
-            .trim()
-            .substringBefore(" ")
-            .substringBefore("\t")
-            .substringAfterLast("/")
+        // ── 1.+2. Blocklist (ashell.conf) + destructive patterns ─────────
         val cfg = loadAshellConfig(ctx)
-        if (cmdName in cfg.blocked) return errJson("Command '$cmdName' is blocked by ashell.conf")
-
-        // ── 2. Destructive patterns guard ───────────────────────────────
-        val commandLower = command.lowercase()
-        for (pattern in DESTRUCTIVE_PATTERNS) {
-            if (commandLower.contains(pattern.lowercase())) {
-                return errJson("Command blocked for security reasons")
-            }
-        }
+        shellGate(command, cfg)?.let { return it }
 
         // Agent používá čisté defaultní env (žádné elf_loader z ashell.conf
         // uživatele); interaktivní host si nechá uživatelův config.
@@ -130,6 +150,11 @@ object ExecCore {
         if (command.isEmpty()) return errJson("Command cannot be empty")
         if (command.length > 2048) return errJson("Command too long (max 2048 chars)")
         val distroLower = distro.trim().lowercase()
+        // bootSub/bootImage jdou do wrapper skriptu bez quotingu → povolit jen
+        // bezpečné názvy ("kali", "docker/<slug>"); segment nesmí začínat tečkou (".." apod.).
+        if (!DISTRO_ID_RE.matches(distroLower)) {
+            return errJson("Invalid distro '$distro'")
+        }
         val (bootSub, bootImage) = if (distroLower.startsWith("docker/")) {
             "docker" to distroLower.substringAfter("docker/")
         } else {
@@ -174,11 +199,13 @@ object ExecCore {
             // Příkaz i wrapper píšeme do souborů — vyhneme se quoting problému a
             // pod su funguje i příkaz s mezerami/uvozovkami. NH_EXTRA_MOUNTS se
             // předá přes export uvnitř wrapperu (čte ho boot skript).
-            val cmdFile = File(ctx.cacheDir, "aiexec_cmd_${System.currentTimeMillis()}.sh").apply {
+            // createTempFile = atomicky unikátní název (timestamp kolidoval při
+            // souběžném volání HTTP + Binder ve stejné ms → cizí příkaz).
+            val cmdFile = File.createTempFile("aiexec_cmd_", ".sh", ctx.cacheDir).apply {
                 writeText(command)
                 setExecutable(true)
             }
-            val wrapper = File(ctx.cacheDir, "aiexec_wrap_${System.currentTimeMillis()}.sh").apply {
+            val wrapper = File.createTempFile("aiexec_wrap_", ".sh", ctx.cacheDir).apply {
                 writeText(
                     "#!/system/bin/sh\n" +
                     "export NH_EXTRA_MOUNTS='$extraMounts'\n" +

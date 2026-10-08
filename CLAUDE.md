@@ -68,7 +68,7 @@ with an AdGuard C++ VPN, TLS MITM, and an Xvfb X11 server. The desktop GUI is **
 by the *external* `kali_GUI` X11 launcher app (`com.linux_core.xlauncher`).
 
 Host loopback services: **1337** `LocalApiServer` (REST bridge: sensors, `/shell`, `/distro/*`, VPN, MITM),
-**13338** AI agent daemon, **13339** VPN bypass proxy, **6000** Xvfb `:0`, **13340** `ashell_pty`, **13341** `shell_daemon`.
+**13339** VPN bypass proxy, **6000** Xvfb `:0`, **13340** `ashell_pty`, **13341** `shell_daemon`.
 
 Layers to know:
 - **PRoot runtime** — `ProotManager` (arch detection, deploys static `proot-static-*`/`loader-static-*` + the universal

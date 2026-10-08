@@ -1070,7 +1070,8 @@ object RootfsManager {
                                         try {
                                             if (entryFile.exists()) entryFile.delete()
                                             android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
-                                        } catch (_: Exception) {
+                                        } catch (e: Exception) {
+                                            Log.w("RootfsManager", "Restore symlink ${entryFile.path} -> ${tarEntry.linkName}: ${e.message}")
                                         }
                                     }
                                     tarEntry?.isLink == true -> {
@@ -1585,6 +1586,9 @@ object RootfsManager {
                                         entryFile.setExecutable(true, false)
                                     }
                                     entryFile.setReadable(true, false)
+                                    // Jen vlastník (app uid) — konzistentně s ostatními extraktory
+                                    // musí jít soubor přepsat (apt/dpkg upgrade v guestu).
+                                    entryFile.setWritable(true)
                                 }
                             }
                             entry = tarIn.nextEntry
@@ -1997,12 +2001,14 @@ object RootfsManager {
 
                 // Markers
                 try {
+                    // Hodnoty z remote katalogu: odstranit CR/LF, aby nerozbily KEY=VALUE marker.
+                    fun markerValue(v: String) = v.replace(Regex("[\\r\\n]"), "")
                     File(rootfsDir, ".docker_image").writeText(
-                        "image=${script.tarballUrl}\n" +
+                        "image=${markerValue(script.tarballUrl)}\n" +
                             "pulled_at=${System.currentTimeMillis()}\n" +
                             "source=remote-script\n" +
-                            "script=${script.scriptName}\n" +
-                            "commit=${script.commitSha}\n",
+                            "script=${markerValue(script.scriptName)}\n" +
+                            "commit=${markerValue(script.commitSha)}\n",
                     )
                     File(rootfsDir, "etc/hostname").writeText("${script.slug}-docker\n")
                 } catch (e: Exception) {

@@ -8,8 +8,6 @@ object TlsClientHelloParser {
     private val TLS_VERSION_MINORS = listOf<Int>(1, 2, 3, 4)
     private const val EXT_SERVER_NAME = 0x0000
     private const val EXT_ALPN = 0x0010
-    val DOH_ALPN_PROTOCOLS = setOf("h2", "http/1.1")
-    val DOH_INDICATOR = "application/dns-message"
 
     val KNOWN_DOH_DOMAINS = setOf(
         "cloudflare-dns.com", "one.one.one.one",
@@ -142,17 +140,6 @@ object TlsClientHelloParser {
         return emptyList()
     }
 
-    /**
-     * True if the ClientHello advertises DoH (HTTP/2 or HTTP/1.1 + application/dns-message).
-     */
-    fun isDohClientHello(data: ByteArray, offset: Int = 0, len: Int = data.size): Boolean {
-        val alpn = extractAlpn(data, offset, len)
-        if (alpn.isEmpty()) return false
-        val hasHttp = alpn.any { it in DOH_ALPN_PROTOCOLS }
-        if (!hasHttp) return false
-        return alpn.contains(DOH_INDICATOR)
-    }
-
     fun isKnownDohSni(sni: String?): Boolean {
         if (sni == null) return false
         return KNOWN_DOH_DOMAINS.any { sni == it || sni.endsWith(".$it") }
@@ -160,8 +147,14 @@ object TlsClientHelloParser {
 
     fun isKnownDohIp(ip: String): Boolean = ip in KNOWN_DOH_IPS
 
+    /**
+     * DoH detekce jen přes SNI a cílovou IP. ClientHello DoH neprozradí: ALPN je jen
+     * `h2`/`http/1.1` (stejné jako běžné HTTPS), `application/dns-message` je Content-Type
+     * až v dešifrovaném HTTP — dřívější větev `alpn.contains(DOH_INDICATOR)` byla mrtvý kód.
+     * [data]/[offset]/[len] zůstávají kvůli API kompatibilitě volajících.
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun isDohTraffic(data: ByteArray, sni: String?, dstIp: String, offset: Int = 0, len: Int = data.size): Boolean {
-        if (isDohClientHello(data, offset, len)) return true
         if (isKnownDohSni(sni)) return true
         return isKnownDohIp(dstIp)
     }

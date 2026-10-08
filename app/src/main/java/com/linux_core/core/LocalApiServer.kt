@@ -87,6 +87,8 @@ object LocalApiServer {
 
     // shell_daemon / ashell ADB (uid 2000, non-root)
     private const val MAX_SHELL_CMD_LEN = 8192
+    /** filesDir/api.token — plaintext API token pro guest klienty (viz publishGuestToken). */
+    const val GUEST_TOKEN_FILE = "api.token"
     private var serverSocket: ServerSocket? = null
     private var ptyProcess: java.lang.Process? = null
     private var isRunning = false
@@ -100,6 +102,9 @@ object LocalApiServer {
         isRunning = true
         appContext = context.applicationContext
         CertificateManager.init(appContext!!)
+        // Token inicializovat hned (dřív se getAuthToken nikde nevolal → authToken==null
+        // a isAuthenticated porovnával s "") + zpřístupnit ho guest klientům.
+        publishGuestToken(appContext!!, getAuthToken(appContext!!))
         RootfsManager.ensureMigrated(appContext!!)
         UsbHostManager.init(appContext!!)
         // Pre-load USB bridge JNI library (actual UDS is started by ProotManager
@@ -252,6 +257,24 @@ object LocalApiServer {
         return authToken!!
     }
 
+    /**
+     * Plaintext token pro klienty v guestu (`nh`, `ashell`) — `api_security.xml` drží jen
+     * šifrovanou podobu (`enc:…`), kterou guest nerozšifruje. Soubor má práva 0600 pod UID
+     * appky: číst ho může jen appka sama (a tedy její PRoot guest) a root; cizí appky ne.
+     */
+    private fun publishGuestToken(context: Context, token: String) {
+        try {
+            val f = java.io.File(context.filesDir, GUEST_TOKEN_FILE)
+            val tmp = java.io.File(context.filesDir, "$GUEST_TOKEN_FILE.tmp")
+            tmp.writeText(token)
+            tmp.setReadable(false, false); tmp.setReadable(true, true)
+            tmp.setWritable(false, false); tmp.setWritable(true, true)
+            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Nelze zapsat $GUEST_TOKEN_FILE: ${e.message}")
+        }
+    }
+
     fun getToken(context: Context): String {
         return getAuthToken(context)
     }
@@ -307,10 +330,7 @@ object LocalApiServer {
     }
 
     private fun isTrustedLoopbackPeer(context: Context, socket: Socket): Boolean {
-        val uid = loopbackPeerUid(socket) ?: run {
-            Log.w(TAG, "Loopback peer UID nezjištěn (port ${socket.port}) — povoleno (fallback)")
-            return true
-        }
+        val uid = loopbackPeerUid(socket) ?: return false   // nezjištěno → vyžadovat token
         val myUid = context.applicationInfo.uid
         if (uid == myUid || uid == 0 || uid == 2000) return true
         val sameSig = try {
@@ -324,16 +344,18 @@ object LocalApiServer {
     private fun isAuthenticated(headers: Map<String, String>): Boolean {
         val token = headers["Authorization"] ?: headers["authorization"] ?: return false
         if (!token.startsWith("Bearer ") && !token.startsWith("Token ")) return false
-        val providedToken = token.substringAfter(" ")
+        val providedToken = token.substringAfter(" ").trim()
+        val expected = authToken ?: appContext?.let { getAuthToken(it) } ?: return false
+        if (providedToken.isEmpty() || expected.isEmpty()) return false
         // Use constant-time comparison to prevent timing attacks
         return MessageDigest.isEqual(
             providedToken.toByteArray(Charsets.UTF_8),
-            (authToken ?: "").toByteArray(Charsets.UTF_8)
+            expected.toByteArray(Charsets.UTF_8)
         )
     }
 
 /**
-      * Verifies the mandatory X-Attest-* headers sent by callers (e.g. nethunter_agent.py in
+      * Verifies the mandatory X-Attest-* headers sent by callers (e.g. remote clients in
       * the PRoot) when [com.linux_core.BuildConfig.ENABLE_ATTESTATION] is true.
       *
       * If attestation is disabled the function returns `true` immediately. If attestation is 
@@ -477,7 +499,7 @@ object LocalApiServer {
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
-                "/vpn/logs", "/map", "/agent/query", "/wifi", "/torch", "/volume",
+                "/vpn/logs", "/map", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/usb/",
                 "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/cpu/apps", "/terminal/input")
             val isLocalConnection = try {
@@ -487,22 +509,25 @@ object LocalApiServer {
             } catch (e: Exception) { false }
 
             // Loopback ≠ důvěryhodný: na 127.0.0.1:1337 se dostane KAŽDÁ appka v
-            // zařízení. Bez tokenu pustit jen vlastní UID (guest/proot), root (su_daemon)
-            // a shell uid 2000 (shell_daemon) + appky se stejným podpisem (kali_GUI).
-            // Když UID z /proc/net nejde určit, zůstává původní chování (kompatibilita).
+            // zařízení. Citlivé endpointy proto chtějí Bearer token i z loopbacku —
+            // výjimkou je jen ověřené UID (vlastní / root / 2000 / stejný podpis), což
+            // ale vyžaduje čitelný /proc/net/tcp (untrusted_app ho na Androidu 10+ nevidí).
+            // Klienti v guestu (`nh`, `ashell`) token posílají vždy (api_security.xml).
+            // Remote (share_local_api) navíc vyžaduje attestation.
             val isSensitive = sensitiveEndpoints.any { path.startsWith(it) }
-            val trustedLocal = isLocalConnection && (!isSensitive || isTrustedLoopbackPeer(context, socket))
-            if ((!isLocalConnection || !trustedLocal) && isSensitive) {
+            if (isSensitive && (!isLocalConnection || !isTrustedLoopbackPeer(context, socket))) {
                 if (!isAuthenticated(headers)) {
                     sendResponse(out, 401, "Unauthorized",
                         "{\"error\":\"Authentication required\"}")
                     return
                 }
-                val attOk = verifyAttestationHeaders(headers, body)
-                if (!attOk) {
-                    sendResponse(out, 401, "Unauthorized",
-                        "{\"error\":\"Attestation required. Send X-Attest-Nonce (b64), X-Attest-Sig (b64) and X-Attest-Cert (b64 DER) signed with the device key.\"}")
-                    return
+                if (!isLocalConnection) {
+                    val attOk = verifyAttestationHeaders(headers, body)
+                    if (!attOk) {
+                        sendResponse(out, 401, "Unauthorized",
+                            "{\"error\":\"Attestation required. Send X-Attest-Nonce (b64), X-Attest-Sig (b64) and X-Attest-Cert (b64 DER) signed with the device key.\"}")
+                        return
+                    }
                 }
             }
 
@@ -577,7 +602,6 @@ object LocalApiServer {
                 path == "/vpn/start" && method == "POST" -> handleVpnStart(context, out)
                 path.startsWith("/vpn/ignore") && method == "GET" -> handleVpnIgnoreGet(path, out)
                 path.startsWith("/vpn/ignore") && method == "POST" -> handleVpnIgnorePost(path, out)
-                path == "/agent/query" && method == "POST" -> handleAgentQuery(body, out)
                 path == "/api/share" && method == "GET" -> handleApiShareGet(context, out)
                 path == "/api/share" && method == "POST" -> handleApiSharePost(context, body, out)
                 path == "/voice_input" && method == "GET" -> handleVoiceInput(context, out)
@@ -1327,6 +1351,12 @@ object LocalApiServer {
             sendResponse(out, 400, "Bad Request", "{\"error\":\"Command too long\"}")
             return
         }
+        // Stejná brána jako /shell (ashell.conf blocklist + DESTRUCTIVE_PATTERNS)
+        // — shell_daemon.c sám žádný blocklist nemá.
+        ExecCore.shellGate(context, command)?.let { err ->
+            sendResponse(out, statusFor(err), "OK", err)
+            return
+        }
         val json = ShellDaemonClient.exec(context, command, cwd)
         sendResponse(out, statusFor(json), "OK", json)
     }
@@ -1700,165 +1730,6 @@ object LocalApiServer {
         val ignored = ignoredStr.toBoolean()
         TerminalService.setSessionVpnIgnored(sessionId, ignored)
         sendResponse(out, 200, "OK", "{\"session_id\":\"$sessionId\",\"ignored\":$ignored}")
-    }
-
-    /** Volatile status string updated during agent query processing.
-     *  NetHunterAssistantSession reads this for real-time UI updates. */
-    @Volatile
-    @JvmField
-    var currentAgentStatus: String = ""
-
-    private fun callAgentDaemon(prompt: String, context: Context): String? {
-        try {
-            val agentToken = getOrCreateAgentToken(context)
-            val url = java.net.URL("http://127.0.0.1:13338/query")
-            val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.connectTimeout = 2000
-            conn.readTimeout = 0
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("Authorization", "Bearer $agentToken")
-
-            val payload = JSONObject().put("prompt", prompt).toString()
-            conn.outputStream.use { os ->
-                os.write(payload.toByteArray(Charsets.UTF_8))
-            }
-
-            if (conn.responseCode == 200) {
-                return conn.inputStream.bufferedReader().use { it.readText() }
-            } else {
-                val errText = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP ${conn.responseCode}"
-                Log.w(TAG, "Agent daemon returned $conn.responseCode: $errText")
-                return null
-            }
-        } catch (e: java.net.ConnectException) {
-            Log.w(TAG, "Agent daemon not reachable on port 13338")
-            return null
-        } catch (e: java.net.SocketTimeoutException) {
-            Log.w(TAG, "Agent daemon connect timeout")
-            return null
-        } catch (e: Exception) {
-            Log.e(TAG, "Agent daemon call failed: ${e.message}")
-            return null
-        }
-    }
-
-    private fun handleAgentQuery(body: String, out: OutputStream) {
-        val prompt = try {
-            if (body.trim().startsWith("{")) {
-                JSONObject(body).optString("prompt", "")
-            } else {
-                body.trim()
-            }
-        } catch (e: Exception) {
-            body.trim()
-        }
-
-        if (prompt.isEmpty()) {
-            sendResponse(out, 400, "Bad Request", "{\"error\":\"Empty prompt\"}")
-            return
-        }
-
-        currentAgentStatus = "Connecting to agent..."
-        val ctx = appContext ?: run {
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"App context not initialized\"}")
-            return
-        }
-        val bootScript = java.io.File(ctx.filesDir, "usr/bin/boot")
-
-        // Try daemon first (fast path) with auth token
-        currentAgentStatus = "Connecting to agent..."
-        val daemonResponse = callAgentDaemon(prompt, ctx)
-        if (daemonResponse != null) {
-            currentAgentStatus = ""
-            sendResponse(out, 200, "OK", daemonResponse)
-            return
-        }
-
-        // Self-healing: try to start the daemon
-        if (bootScript.exists() && bootScript.canExecute()) {
-            try {
-                currentAgentStatus = "Starting agent daemon..."
-                val pbStart = ProcessBuilder("sh", bootScript.absolutePath, "--", "nethunter-agent-cli", "start")
-                pbStart.directory(ctx.filesDir)
-                val procStart = pbStart.start()
-                procStart.waitFor()
-                Thread.sleep(1500) // Give the daemon 1.5s to bind to the port
-
-                currentAgentStatus = "Connecting to agent..."
-                val retryResponse = callAgentDaemon(prompt, ctx)
-                if (retryResponse != null) {
-                    currentAgentStatus = ""
-                    sendResponse(out, 200, "OK", retryResponse)
-                    return
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Auto-starting agent daemon failed: ${e.message}, falling back to inline PRoot execution")
-            }
-        }
-
-        // Fallback: run agent inline via PRoot + boot script
-        currentAgentStatus = "Starting agent..."
-        try {
-            if (!bootScript.exists() || !bootScript.canExecute()) {
-                currentAgentStatus = ""
-                sendResponse(out, 500, "Internal Error", "{\"error\":\"boot script not found. Please open a terminal session first.\"}")
-                return
-            }
-
-            currentAgentStatus = "Agent is processing..."
-            val pb = ProcessBuilder("sh", bootScript.absolutePath, "--",
-                "python3", "/usr/local/bin/nethunter_agent.py", "run-direct", prompt)
-            pb.directory(appContext?.filesDir)
-            pb.redirectErrorStream(true)
-            val process = pb.start()
-
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            process.waitFor()
-
-            // Parse output: boot script may prepend "[boot]" diagnostic lines
-            // The actual agent response is everything after those lines
-            val lines = output.lines()
-            val agentOutput = lines.dropWhile { it.startsWith("[*]") || it.isBlank() }.joinToString("\n").trim()
-
-            val responseJson = if (agentOutput.isNotEmpty()) {
-                JSONObject().put("response", agentOutput).toString()
-            } else {
-                JSONObject().put("response", "Agent returned no response.").toString()
-            }
-            currentAgentStatus = ""
-            sendResponse(out, 200, "OK", responseJson)
-        } catch (e: Exception) {
-            Log.e(TAG, "Inline PRoot agent execution failed: ${e.message}", e)
-            currentAgentStatus = ""
-            sendResponse(out, 500, "Internal Error", "{\"error\":\"Inline agent execution failed: ${e.message}\"}")
-        }
-    }
-
-    /** Application context reference, set during start(). */
-    private var appContext: Context? = null
-
-    private fun getOrCreateAgentToken(context: Context): String {
-        val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
-        var token = prefs.getString("agent_auth_token", null)
-        if (token == null) {
-            token = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 32)
-            prefs.edit().putString("agent_auth_token", token).apply()
-        }
-        // Write token to guest-accessible path so agent daemon can read it
-        // Use mode 0600 (owner only) for security
-        try {
-            val tokenFile = java.io.File(context.filesDir, "tmp/nethunter_agent_token")
-            tokenFile.parentFile?.mkdirs()
-            tokenFile.writeText(token)
-            // Restrict to owner only (mode 0600) - not world-readable
-            tokenFile.setReadable(true, true)   // owner read only
-            tokenFile.setWritable(true, true)   // owner write only
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write agent token file: ${e.message}")
-        }
-        return token
     }
 
     private fun handleVoiceInput(context: Context, out: java.io.OutputStream) {
@@ -2310,12 +2181,31 @@ object LocalApiServer {
                     Log.i(TAG, "Wifi control EXECUTED: scan (${results.size} results)")
                     sendResponse(out, 200, "OK", json)
                 }
-                cmd.startsWith("connect:", ignoreCase = true) -> {
-                    val parts = cmd.removePrefix("connect:").removePrefix("CONNECT:").trim().split(":", limit=2)
-                    val ssid = parts[0].trim()
-                    val password = if (parts.size > 1) parts[1].trim() else ""
+                cmd.startsWith("connect:", ignoreCase = true) || cmd.startsWith("{") -> {
+                    // JSON {"ssid","password"} umí SSID s ':'; legacy "connect:SSID:heslo"
+                    // dělí na první ':' (SSID s dvojtečkou jen přes JSON).
+                    val ssid: String
+                    val password: String
+                    if (cmd.startsWith("{")) {
+                        val obj = try { JSONObject(cmd) } catch (_: Exception) {
+                            sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+                            return
+                        }
+                        ssid = obj.optString("ssid", "").trim()
+                        password = obj.optString("password", "")
+                    } else {
+                        val parts = cmd.substring("connect:".length).trim().split(":", limit = 2)
+                        ssid = parts[0].trim()
+                        password = if (parts.size > 1) parts[1].trim() else ""
+                    }
                     if (ssid.isEmpty()) {
                         sendResponse(out, 400, "Bad Request", "{\"error\":\"SSID cannot be empty\"}")
+                        return
+                    }
+                    // SSID/PSK jdou do WifiConfiguration v uvozovkách bez escapingu —
+                    // uvozovka nebo řídicí znak by konfiguraci rozbil.
+                    if ((ssid + password).any { it == '"' || it.isISOControl() }) {
+                        sendResponse(out, 400, "Bad Request", "{\"error\":\"SSID/password must not contain quotes or control characters\"}")
                         return
                     }
                     @Suppress("DEPRECATION")
@@ -2342,7 +2232,7 @@ object LocalApiServer {
                     @Suppress("DEPRECATION")
                     wifiManager.reconnect()
                     Log.i(TAG, "Wifi control EXECUTED: connect (ssid=\"$ssid\")")
-                    sendResponse(out, 200, "OK", "{\"connected\":true,\"ssid\":\"$ssid\"}")
+                    sendResponse(out, 200, "OK", "{\"connected\":true,\"ssid\":${JSONObject.quote(ssid)}}")
                 }
                 else -> {
                     // Legacy compat: treat as enable/disable boolean

@@ -51,12 +51,15 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
 
     // CWD
     size_t cwd_len = strlen(cwd);
+    if ((ptr + cwd_len + 1) - (unsigned char *)payload_buf >= BUFFER_SIZE) return -2;
     memcpy(ptr, cwd, cwd_len + 1); ptr += cwd_len + 1;
 
     // ARGV (the real command — wrapper name already stripped by caller)
+    // Přetečení = chyba (-2), nic se neposílá — useknutý argv by daemon
+    // jinak provedl jako jiný příkaz bez jakékoli hlášky.
     for (int i = 0; i < argc; i++) {
         size_t arg_len = strlen(argv[i]);
-        if ((ptr + arg_len + 1) - (unsigned char *)payload_buf >= BUFFER_SIZE) break;
+        if ((ptr + arg_len + 1) - (unsigned char *)payload_buf >= BUFFER_SIZE) return -2;
         memcpy(ptr, argv[i], arg_len + 1);
         ptr += arg_len + 1;
     }
@@ -65,12 +68,11 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
     const char *term = getenv("TERM");
     if (!term) term = "xterm-256color";
     uint32_t term_len = (uint32_t)strlen(term);
-    if ((ptr + sizeof(uint32_t) + term_len) - (unsigned char *)payload_buf < BUFFER_SIZE) {
-        memcpy(ptr, &term_len, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
-        memcpy(ptr, term, term_len);
-        ptr += term_len;
-    }
+    if ((ptr + sizeof(uint32_t) + term_len) - (unsigned char *)payload_buf >= BUFFER_SIZE) return -2;
+    memcpy(ptr, &term_len, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+    memcpy(ptr, term, term_len);
+    ptr += term_len;
 
     // Session name (protocol extension, appended after TERM) — nepovinne.
     // Kdyz NH_SU_SESSION je nastaveny, su_daemon nezabije root shell pri
@@ -80,12 +82,11 @@ static int send_fds_and_payload(int socket_fd, int *fds, int fd_count,
     const char *session = getenv("NH_SU_SESSION");
     if (session && session[0] != '\0') {
         uint32_t session_len = (uint32_t)strlen(session);
-        if ((ptr + sizeof(uint32_t) + session_len) - (unsigned char *)payload_buf < BUFFER_SIZE) {
-            memcpy(ptr, &session_len, sizeof(uint32_t));
-            ptr += sizeof(uint32_t);
-            memcpy(ptr, session, session_len);
-            ptr += session_len;
-        }
+        if ((ptr + sizeof(uint32_t) + session_len) - (unsigned char *)payload_buf >= BUFFER_SIZE) return -2;
+        memcpy(ptr, &session_len, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        memcpy(ptr, session, session_len);
+        ptr += session_len;
     }
 
     size_t payload_size = ptr - (unsigned char *)payload_buf;
@@ -170,6 +171,11 @@ int main(int argc, char **argv) {
         cmd_argc = 3;
     } else if (argc > 1) {
         // sudo <cmd> [args...] or su <cmd> [args...] or su_wrapper <cmd> [args...]
+        if (argc - 1 > MAX_ARGS - 1) {
+            fprintf(stderr, "[su_wrapper] CHYBA: příliš mnoho argumentů (%d, max %d)\n",
+                    argc - 1, MAX_ARGS - 1);
+            return 1;
+        }
         for (int i = 1; i < argc && cmd_argc < MAX_ARGS - 1; i++) {
             cmd_argv[cmd_argc++] = argv[i];
         }
@@ -222,19 +228,31 @@ int main(int argc, char **argv) {
     uint32_t target_uid = 0; // Default root
     uint32_t target_gid = 0;
 
-    if (send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv) < 0) {
+    int sret = send_fds_and_payload(sock_fd, fds, 3, target_uid, target_gid, cwd, cmd_argc, cmd_argv);
+    if (sret == -2) {
+        close(sock_fd);
+        fprintf(stderr, "[su_wrapper] CHYBA: příkaz je příliš dlouhý (payload > %d B), neodesláno\n",
+                BUFFER_SIZE);
+        return 1;
+    }
+    if (sret < 0) {
         close(sock_fd);
         return try_fallback(argc, argv);
     }
 
     // Read exit status code from host daemon
     int exit_code = 0;
-    ssize_t res = read(sock_fd, &exit_code, sizeof(exit_code));
+    ssize_t res;
+    do {
+        res = read(sock_fd, &exit_code, sizeof(exit_code));
+    } while (res < 0 && errno == EINTR);
     close(sock_fd);
 
     if (res == sizeof(exit_code)) {
         return exit_code;
     }
 
-    return 0;
+    /* Fail-closed: daemon zavřel spojení bez exit kódu (chyba / pád / krátké
+     * čtení) — nevracet 0, volající by si myslel, že příkaz uspěl. */
+    return 1;
 }

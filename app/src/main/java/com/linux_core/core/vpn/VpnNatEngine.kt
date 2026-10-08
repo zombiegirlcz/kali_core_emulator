@@ -30,14 +30,30 @@ class VpnNatEngine(
         const val LOCAL_IP_INT = 0xAC120BDA.toInt() // 172.18.11.218
         private val TLS_PORTS = setOf(443, 8443, 993, 995, 587, 465, 25)
         private val DOT_PORT = 853
+        private const val MAX_CONNECTION_THREADS = 256
     }
 
     private val isRunning = AtomicBoolean(false)
     private var selector: Selector? = null
     private var selectorThread: Thread? = null
     private var aiBrainWorker: AIBrainWorker? = null
-    private val connectionThreadPool = java.util.concurrent.Executors.newCachedThreadPool()
+    // Ohraničený pool: úlohy (proxy connect, MITM session) jsou dlouhodobé, takže fixní pool
+    // s frontou by je hladověl — proto SynchronousQueue + strop vláken. Při vyčerpání se úloha
+    // zahodí s logem; session pak dočistí cleanIdleSessions (SYN_RECEIVED timeout).
+    private val connectionThreadPool = java.util.concurrent.ThreadPoolExecutor(
+        0, MAX_CONNECTION_THREADS,
+        60L, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue<Runnable>()
+    ) { _, _ ->
+        Log.w(TAG, "connectionThreadPool vyčerpán ($MAX_CONNECTION_THREADS vláken) — úloha zahozena")
+    }
     private val pendingRegistrations = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+
+    // DNS cache + cleaner vlákno MUSÍ být deklarované před init blokem: Kotlin inicializuje
+    // vlastnosti v textovém pořadí, takže pozdější `= null` by přepsalo vlákno spuštěné v init
+    // a stop() by ho nikdy nepřerušil (únik vlákna po stop/start).
+    private val dnsResponseCache = ConcurrentHashMap<DnsHeaderCacheKey, CachedDnsResponse>()
+    private var dnsCacheCleanerThread: Thread? = null
 
     // Session maps keyed by client source port
     private val tcpSessions = ConcurrentHashMap<Int, TcpSession>()
@@ -302,8 +318,9 @@ class VpnNatEngine(
 
             VpnLogManager.logConnection(vpnService, "UDP", "172.18.11.218", srcPort, dstIpStr, dstPort, payloadLen, aiCategory, detail, payloadForAi)
 
+            var channel: DatagramChannel? = null
             try {
-                val channel = DatagramChannel.open()
+                channel = DatagramChannel.open()
                 
                 if (!vpnService.protect(channel.socket())) {
                     Log.e(TAG, "protect() FAILED for UDP DatagramChannel to $dstIpStr:$dstPort")
@@ -332,12 +349,15 @@ class VpnNatEngine(
                 channel.configureBlocking(false)
 
                 // Register with Selector (wakeup to avoid blocking on selector contention)
+                val udpChannel = channel
                 selector?.let { sel ->
                     pendingRegistrations.offer(Runnable {
                         try {
-                            channel.register(sel, SelectionKey.OP_READ, session)
+                            udpChannel.register(sel, SelectionKey.OP_READ, session)
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to register UDP channel: ${e.message}")
+                            // Nezaregistrovaný kanál by nikdo nečetl ani nezavřel
+                            closeUdpSession(srcPort)
                         }
                     })
                     sel.wakeup()
@@ -345,6 +365,9 @@ class VpnNatEngine(
                 Log.d(TAG, "Created UDP session for port $srcPort to $dstIpStr:$dstPort")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to establish UDP connection: ${e.message}")
+                // Nedokončený kanál (connect/write/configureBlocking selhal) jinak uniká
+                if (udpSessions[srcPort]?.datagramChannel === channel) udpSessions.remove(srcPort)
+                try { channel?.close() } catch (_: IOException) {}
                 return
             }
         } else {
@@ -559,8 +582,8 @@ class VpnNatEngine(
                 Log.d(TAG, "TCP session established with client on port $srcPort")
             }
 
-            session.serverSeqNum = Math.max(session.serverSeqNum, tcpHeader.ackNum)
-            session.clientSeqNum = Math.max(session.clientSeqNum, tcpHeader.seqNum)
+            session.serverSeqNum = seqMax(session.serverSeqNum, tcpHeader.ackNum)
+            session.clientSeqNum = seqMax(session.clientSeqNum, tcpHeader.seqNum)
 
             val headerLen = ipHeader.ihl + tcpHeader.dataOffset
             val payloadLen = ipHeader.totalLength - headerLen
@@ -1154,6 +1177,17 @@ class VpnNatEngine(
         }
     }
 
+    /**
+     * Pozdější ze dvou TCP sekvenčních čísel v aritmetice modulo 2^32 (RFC 1982).
+     * Math.max na Long po přetečení 32bit prostoru (>4 GB na session) přestane posouvat.
+     * Výsledek je maskovaný na 32 bitů; setter v IpPacket stejně ořezává na Int.
+     */
+    private fun seqMax(a: Long, b: Long): Long {
+        val am = a and 0xFFFFFFFFL
+        val bm = b and 0xFFFFFFFFL
+        return if ((bm - am).toInt() > 0) bm else am
+    }
+
     fun stop() {
         Log.i(TAG, "Stopping NAT Engine - closing all connections...")
         isRunning.set(false)
@@ -1187,7 +1221,14 @@ class VpnNatEngine(
         
         aiBrainWorker?.close()
         aiBrainWorker = null
-        try { connectionThreadPool.shutdownNow() } catch (_: Exception) {}
+        try {
+            connectionThreadPool.shutdownNow()
+            if (!connectionThreadPool.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.w(TAG, "connectionThreadPool neskončil do 1 s")
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (_: Exception) {}
         dnsCacheCleanerThread?.interrupt()
         dnsCacheCleanerThread = null
         dnsResponseCache.clear()
@@ -1445,9 +1486,6 @@ class VpnNatEngine(
         val headerBytes: ByteArray,  // předgenerovaná IP+UDP hlavička (20+8=28 bajtů)
         val expiresAt: Long
     )
-
-    private val dnsResponseCache = ConcurrentHashMap<DnsHeaderCacheKey, CachedDnsResponse>()
-    private var dnsCacheCleanerThread: Thread? = null
 
     /**
      * Předgeneruje IP+UDP hlavičku pro NXDOMAIN odpověď.

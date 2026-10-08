@@ -15,7 +15,7 @@
  *   u8 type | u32 be payload_len | payload
  *
  *   Client -> Server:
- *     0x05 HELLO        payload = cmd \0 cwd \0 rootfs \0 term \0 interactive \0
+ *     0x05 HELLO        payload = cmd \0 cwd \0 rootfs \0 term \0 interactive \0 token \0
  *     0x01 STDIN        payload = raw bytes for the command's stdin
  *     0x06 STDIN_EOF    no payload — close the command's stdin (pipe mode)
  *     0x03 WINCH        payload = 8 bytes: u32 cols, u32 rows
@@ -30,13 +30,27 @@
  * in a fresh pty (echo on). Otherwise it runs on plain pipes (no echo, no
  * \n->\r\n translation) — correct for `ashell -c 'cmd | tail'` and piped stdin.
  *
- * Security: only accepts peers from 127.0.0.1 — same trust model as the
- * LocalApiServer /shell endpoint that the PRoot guest reaches over loopback.
+ * Security: only accepts peers from 127.0.0.1 AND only from an allowed UID.
+ * Loopback is shared by every app on Android, so 127.0.0.1 alone is not
+ * enough (HTTP /shell has a Bearer token, this protocol has none). Without
+ * changing the protocol, the worker looks the peer's socket up in
+ * /proc/net/tcp{,6} (entry whose local port == client port and remote port ==
+ * our listen port) and reads its owner uid. Allowed: getuid() (the app itself
+ * / the PRoot guest), 0 (root, su_daemon/sudo) and 2000 (shell_daemon). If the
+ * uid cannot be determined, the connection is refused (fail-closed).
+ *
+ * POZOR (ověřeno 2026-10-08 na zařízení): v kontextu untrusted_app_27 SELinux
+ * zakazuje čtení /proc/net/tcp{,6} (EACCES) i NETLINK_SOCK_DIAG. Když /proc/net
+ * při startu nejde číst vůbec, UID kontrola se vypne (g_peer_uid_check=0).
+ * Skutečnou ochranu dává TOKEN: 6. pole HELLO musí odpovídat
+ * <filesDir>/api.token (LocalApiServer.publishGuestToken, 0600 pod UID appky).
  */
 
 #define _GNU_SOURCE
 
 #include <stdio.h>
+#include <stdint.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -88,16 +102,25 @@ static void set_nonblock(int fd) {
     if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-/* Write all bytes; handles EINTR and EAGAIN (non-blocking fd) via short poll. */
+/* Max doba bez jakéhokoli pokroku zápisu (EAGAIN) — pak write_all vzdá (-1).
+ * Jinak by dítě, které nečte stdin, zablokovalo relay navždy (nečetl by se
+ * klient ani výstup, nedetekoval by se POLLHUP). */
+#define WRITE_STALL_MS 10000
+
+/* Write all bytes; handles EINTR and EAGAIN (non-blocking fd) via short poll.
+ * Returns -1 on error or when no progress is made for WRITE_STALL_MS. */
 static int write_all(int fd, const char *buf, size_t len) {
     size_t off = 0;
+    int stalled_ms = 0;
     while (off < len) {
         ssize_t w = write(fd, buf + off, len - off);
-        if (w > 0) { off += (size_t)w; continue; }
+        if (w > 0) { off += (size_t)w; stalled_ms = 0; continue; }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && errno == EAGAIN) {
+            if (stalled_ms >= WRITE_STALL_MS) return -1;
             struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-            if (poll(&pfd, 1, 2000) < 0) return -1;
+            if (poll(&pfd, 1, 500) < 0 && errno != EINTR) return -1;
+            stalled_ms += 500;
             continue;
         }
         return -1;
@@ -270,7 +293,8 @@ static void run_pty(int client_fd, const char *files_dir, const char *cmd,
                     break;
                 }
                 if (t == F_STDIN) {
-                    write_all(master_fd, b, (size_t)len);
+                    if (write_all(master_fd, b, (size_t)len) != 0)
+                        fprintf(stderr, "[ashell_pty] pty stdin zapis zasekly/selhal — vstup zahozen\n");
                 } else if (t == F_STDIN_EOF) {
                     write_all(master_fd, "\x04", 1); /* VEOF = ^D */
                 } else if (t == F_WINCH && len >= 8) {
@@ -397,9 +421,13 @@ static void run_pipe(int client_fd, const char *files_dir, const char *cmd,
                     break;
                 }
                 if (t == F_STDIN) {
-                    if (stdin_open) write_all(in_pipe[1], b, (size_t)len);
+                    /* Zaseknutý zápis (dítě nečte stdin) → zavřít stdin, dítě dostane EOF/EPIPE. */
+                    if (stdin_open && write_all(in_pipe[1], b, (size_t)len) != 0) {
+                        fprintf(stderr, "[ashell_pty] pipe stdin zapis zasekly/selhal — zaviram stdin\n");
+                        close(in_pipe[1]); in_pipe[1] = -1; stdin_open = 0;
+                    }
                 } else if (t == F_STDIN_EOF) {
-                    if (stdin_open) { close(in_pipe[1]); stdin_open = 0; }
+                    if (stdin_open) { close(in_pipe[1]); in_pipe[1] = -1; stdin_open = 0; }
                 } else if (t == F_CLOSE) {
                     kill(pid, SIGHUP);
                 }
@@ -426,13 +454,103 @@ static void run_pipe(int client_fd, const char *files_dir, const char *cmd,
         }
     }
 
-    close(in_pipe[1]);
+    if (in_pipe[1] >= 0) close(in_pipe[1]);
     close(out_pipe[0]);
     if (!client_dead) {
         send_exit(client_fd, (uint32_t)(exit_code & 0xFF));
         send_frame(client_fd, F_CLOSE, NULL, 0);
     }
     close(client_fd);
+}
+
+/* Najde v /proc/net/tcp{,6} socket klienta (local port == client_port,
+ * remote port == listen_port) a vrátí počet shod; *uid_out = jeho uid.
+ * TIME_WAIT (06) a LISTEN (0A) se přeskakují — timewait záznamy mají uid 0.
+ * Víc shod s různým uid → -2 (nejednoznačné, odmítnout). Soubor nejde
+ * otevřít → -1. */
+static int lookup_peer_uid_in(const char *path, unsigned client_port,
+                              unsigned listen_port, unsigned *uid_out) {
+    FILE *f = fopen(path, "r");
+    if (f == NULL) return -1;
+    char line[512];
+    int matches = 0;
+    unsigned found = 0;
+    if (fgets(line, sizeof(line), f) == NULL) { fclose(f); return 0; } /* hlavička */
+    while (fgets(line, sizeof(line), f) != NULL) {
+        unsigned lport = 0, rport = 0, st = 0, uid = 0;
+        /* sl: local_addr:port rem_addr:port st tx:rx tr:when retrnsmt uid ... */
+        if (sscanf(line, " %*d: %*[0-9A-Fa-f]:%x %*[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u",
+                   &lport, &rport, &st, &uid) != 4)
+            continue;
+        if (lport != client_port || rport != listen_port) continue;
+        if (st == 0x06 || st == 0x0A) continue;
+        if (matches > 0 && uid != found) { fclose(f); return -2; }
+        found = uid;
+        matches++;
+    }
+    fclose(f);
+    if (matches > 0) *uid_out = found;
+    return matches;
+}
+
+/* 1 = /proc/net/tcp{,6} je čitelný → UID peera se vynucuje; 0 = nejde (SELinux). */
+static int g_peer_uid_check = 1;
+
+/* Ověří UID peera TCP spojení (viz Security v hlavičce). 0 = povolit, -1 = odmítnout. */
+static int check_peer_uid(int client_fd, unsigned listen_port) {
+    if (!g_peer_uid_check) return 0;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof(ss);
+    if (getpeername(client_fd, (struct sockaddr *)&ss, &sl) < 0) {
+        fprintf(stderr, "[ashell_pty] getpeername: %s — spojeni odmitnuto\n", strerror(errno));
+        return -1;
+    }
+    unsigned client_port;
+    if (ss.ss_family == AF_INET) {
+        client_port = ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    } else if (ss.ss_family == AF_INET6) {
+        client_port = ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+    } else {
+        fprintf(stderr, "[ashell_pty] neznama rodina peera (%d) — spojeni odmitnuto\n", ss.ss_family);
+        return -1;
+    }
+
+    unsigned uid = 0, uid6 = 0;
+    int n4 = lookup_peer_uid_in("/proc/net/tcp", client_port, listen_port, &uid);
+    int n6 = lookup_peer_uid_in("/proc/net/tcp6", client_port, listen_port, &uid6);
+    if (n4 == -2 || n6 == -2 || (n4 > 0 && n6 > 0 && uid != uid6)) {
+        fprintf(stderr, "[ashell_pty] nejednoznacny uid peera (port %u) — spojeni odmitnuto\n", client_port);
+        return -1;
+    }
+    if (n4 <= 0 && n6 > 0) { uid = uid6; n4 = n6; }
+    if (n4 <= 0) {
+        fprintf(stderr, "[ashell_pty] uid peera (port %u) nelze zjistit z /proc/net/tcp{,6} — spojeni odmitnuto\n",
+                client_port);
+        return -1;
+    }
+    if (uid == (unsigned)getuid() || uid == 0 || uid == 2000) return 0;
+    fprintf(stderr, "[ashell_pty] peer uid %u neni povolen (povoleno %u/0/2000) — spojeni odmitnuto\n",
+            uid, (unsigned)getuid());
+    return -1;
+}
+
+/* Porovná token z HELLO s filesDir/api.token v konstantním čase. */
+static int token_ok(const char *files_dir, const char *given) {
+    char path[1024], want[256];
+    if (!given || !*given) return 0;
+    snprintf(path, sizeof(path), "%s/api.token", files_dir);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, want, sizeof(want) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    while (n > 0 && (want[n-1] == '\n' || want[n-1] == '\r' || want[n-1] == ' ')) n--;
+    want[n] = '\0';
+    size_t gl = strlen(given), wl = (size_t)n;
+    if (wl == 0 || gl != wl) return 0;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < wl; i++) diff |= (unsigned char)(given[i] ^ want[i]);
+    return diff == 0;
 }
 
 /* Handle one client connection (runs in a forked worker). */
@@ -446,16 +564,34 @@ static void handle_client(int client_fd, const char *files_dir) {
     }
     hello[hlen] = '\0';
 
-    char *cmd = hello;
-    char *cwd = cmd + strlen(cmd) + 1;
-    if (cwd >= hello + hlen) cwd = "";
-    char *rootfs = cwd + strlen(cwd) + 1;
-    if (rootfs >= hello + hlen) rootfs = "";
-    char *term = rootfs + strlen(rootfs) + 1;
-    if (term >= hello + hlen) term = "xterm-256color";
-    char *itv = term + strlen(term) + 1;
+    /* Sekvenční parsování s explicitní mezí: pole[i] ukazuje jen dovnitř
+     * hello[0..hlen]; chybějící pole = NULL → nahradí se defaultem. Žádná
+     * aritmetika za koncem literálu ani srovnání ukazatelů mezi objekty. */
+    const char *fields[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+    {
+        size_t pos = 0;
+        for (int i = 0; i < 6 && pos < (size_t)hlen; i++) {
+            fields[i] = hello + pos;
+            pos += strlen(hello + pos) + 1;   /* hello[hlen] == '\0' → nepřeteče */
+        }
+    }
+    const char *cmd    = fields[0] ? fields[0] : "";
+    const char *cwd    = fields[1] ? fields[1] : "";
+    const char *rootfs = fields[2] ? fields[2] : "";
+    const char *term   = fields[3] ? fields[3] : "xterm-256color";
     int interactive = 1;
-    if (itv < hello + hlen) interactive = (itv[0] == '1') ? 1 : 0;
+    if (fields[4]) interactive = (fields[4][0] == '1') ? 1 : 0;
+
+    /* Autentizace: 6. pole HELLO = API token (filesDir/api.token, 0600 pod UID
+     * appky — přečte ho jen appka/guest a root). Kontrola UID peera přes
+     * /proc/net/tcp na Androidu 10+ pro untrusted_app nefunguje, token ano. */
+    if (!token_ok(files_dir, fields[5])) {
+        fprintf(stderr, "[ashell_pty] HELLO bez platneho tokenu — spojeni odmitnuto\n");
+        send_exit(client_fd, 126);
+        send_frame(client_fd, F_CLOSE, NULL, 0);
+        close(client_fd);
+        return;
+    }
 
     if (cmd[0] == '\0') {
         send_exit(client_fd, 0);
@@ -510,6 +646,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (access("/proc/net/tcp", R_OK) != 0 && access("/proc/net/tcp6", R_OK) != 0) {
+        g_peer_uid_check = 0;
+        fprintf(stderr, "[ashell_pty] VAROVANI: /proc/net/tcp{,6} nelze cist (%s) — "
+                        "kontrola UID peera vypnuta, plati jen loopback\n", strerror(errno));
+    }
+
     printf("[ashell_pty] listening on 127.0.0.1:%d (filesDir=%s)\n", port, files_dir);
     fflush(stdout);
 
@@ -520,7 +662,12 @@ int main(int argc, char **argv) {
         if (client_fd < 0) {
             if (errno == EINTR) continue;
             perror("[ashell_pty] accept");
-            break;
+            /* Přechodné chyby (ECONNABORTED, EMFILE, ENOBUFS, …) nesmí shodit
+             * celý most — krátká pauza a znovu. Konec jen u EBADF/EINVAL/ENOTSOCK. */
+            if (errno == EBADF || errno == EINVAL || errno == ENOTSOCK) break;
+            struct timespec ts = { 0, 100 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
+            continue;
         }
         if (ntohl(peer.sin_addr.s_addr) != INADDR_LOOPBACK) {
             close(client_fd);
@@ -536,6 +683,10 @@ int main(int argc, char **argv) {
         if (worker == 0) {
             signal(SIGCHLD, SIG_DFL);
             close(listen_fd);
+            if (check_peer_uid(client_fd, (unsigned)port) != 0) {
+                close(client_fd);
+                _exit(0);
+            }
             handle_client(client_fd, files_dir);
             _exit(0);
         }

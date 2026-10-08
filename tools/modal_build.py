@@ -11,7 +11,7 @@ Volume layout after setup:
   /vol/builds/app-debug.apk    – latest built APK
 
 Setup:
-  1) modal secret create build-secrets RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)
+  1) modal secret create build-secrets RELEASE_JKS_BASE64=$(base64 -w0 app/debug.jks)
   2) modal secret create github-token GITHUB_TOKEN=<personal access token>
   3) modal run modal_build.py init     # store keystore
   4) modal run modal_build.py sync     # git clone/pull zdroje z GitHubu
@@ -189,30 +189,39 @@ def sync(branch: str = ""):
     if not branch:
         branch = _DEFAULT_BRANCH
     token = os.environ.get("GITHUB_TOKEN", "")
-    auth = f"{token}@" if token else ""
-    repo_url = f"https://{auth}github.com/{GITHUB_REPO}.git"
+    # Token NIKDY do origin URL ani do argv: při pádu fetch/reset/lfs by zůstal
+    # v .git/config na Volume. Předává se jen env-only konfigurací
+    # (GIT_CONFIG_COUNT → http.extraheader, stejně jako actions/checkout);
+    # git i git-lfs ji čtou, na disk se nezapisuje.
+    git_env = dict(os.environ)
+    if token:
+        import base64
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        git_env.update({
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+        })
+    repo_url = f"https://github.com/{GITHUB_REPO}.git"
     dest = "/vol/src"
+
+    def _git(args, **kw):
+        subprocess.run(args, env=git_env, check=True, **kw)
 
     if os.path.isdir(os.path.join(dest, ".git")):
         print(f"[sync] Repo už existuje na Volume — fetch + reset --hard origin/{branch}")
-        subprocess.run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, check=True)
-        subprocess.run(["git", "fetch", "origin", branch], cwd=dest, check=True)
-        subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=dest, check=True)
-        subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
+        # set-url hned na začátku → případný token ze starší verze sync() zmizí
+        _git(["git", "remote", "set-url", "origin", repo_url], cwd=dest)
+        _git(["git", "fetch", "origin", branch], cwd=dest)
+        _git(["git", "reset", "--hard", f"origin/{branch}"], cwd=dest)
+        _git(["git", "lfs", "pull"], cwd=dest)
     else:
         print(f"[sync] Klonuji {GITHUB_REPO}@{branch} -> {dest}")
         if os.path.isdir(dest):
             shutil.rmtree(dest)
-        subprocess.run(
-            ["git", "clone", "--branch", branch, repo_url, dest],
-            check=True,
-        )
-        subprocess.run(["git", "lfs", "pull"], cwd=dest, check=True)
+        _git(["git", "clone", "--branch", branch, repo_url, dest])
+        _git(["git", "lfs", "pull"], cwd=dest)
 
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", f"https://github.com/{GITHUB_REPO}.git"],
-        cwd=dest, check=True,
-    )
     build_vol.commit()
     print(f"[sync] Hotovo. Tracked strom = 1:1 GitHub ({branch}); build artefakty zachovány.")
 
@@ -252,7 +261,7 @@ def init_keys():
     Reads RELEASE_JKS_BASE64 from a Modal Secret.  Create the secret first:
 
         modal secret create build-secrets \\
-          RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)
+          RELEASE_JKS_BASE64=$(base64 -w0 app/debug.jks)
     """
     keys_dir = "/vol/keys"
     os.makedirs(keys_dir, exist_ok=True)
@@ -266,13 +275,15 @@ def init_keys():
     secret_key = os.environ.get("RELEASE_JKS_BASE64")
     if secret_key:
         import base64
-        with open(key_path, "wb") as f:
+        # 0600 už při vytvoření (ne až chmod po zápisu)
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(base64.b64decode(secret_key))
     else:
         print(
             "[init] RELEASE_JKS_BASE64 not set.  Create the secret first:\n"
             "  modal secret create build-secrets \\\n"
-            "    RELEASE_JKS_BASE64=$(base64 -w0 app/release.jks)"
+            "    RELEASE_JKS_BASE64=$(base64 -w0 app/debug.jks)"
         )
         return
 
@@ -579,7 +590,7 @@ def _build_usrtools(assets_usr, builds_dir):
 
     def extract(archive, dest):
         with tarfile.open(archive) as tf:
-            tf.extractall(dest)
+            tf.extractall(dest, **_TAR_SAFE)
 
     def needed_libs(path):
         dyn = subprocess.run([READELF, "-d", path], capture_output=True, text=True).stdout
@@ -848,6 +859,12 @@ END {
 """
 
 
+# tarfile filter="data" (PEP 706) — odmítne absolutní cesty, "../" a linky
+# mimo cíl (path traversal ze staženého archivu). Starší Python bez filtrů
+# extrahuje jako dřív.
+_TAR_SAFE = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+
+
 def _proot_run(cmd, **kw):
     print(f"  $ {' '.join(cmd) if isinstance(cmd, list) else cmd}")
     subprocess.run(cmd, check=True, **kw)
@@ -869,7 +886,7 @@ def _tar_extract(archive, dest, strip_components=0):
                 m.name = "/".join(parts)
                 stripped.append(m)
             members = stripped
-        tf.extractall(dest, members=members)
+        tf.extractall(dest, members=members, **_TAR_SAFE)
 
 
 
@@ -891,9 +908,21 @@ def _build_proot_static(assets_dir, builds_dir):
 
     # ── Fetch sources (cached on Volume) ────────────────────────────────────
     proot_clone = os.path.join(SRC_CACHE, "proot")
+    # Cache klonu je klíčovaná podle PROOT_TAG (značka vedle klonu) — bez toho
+    # by bump PROOT_TAG tiše buildil starý strom z Volume.
+    tag_marker = os.path.join(SRC_CACHE, "proot.tag")
+    cached_tag = ""
+    if os.path.exists(tag_marker):
+        with open(tag_marker) as f:
+            cached_tag = f.read().strip()
+    if os.path.isdir(proot_clone) and cached_tag != PROOT_TAG:
+        print(f"[proot-static] cache klonu ({cached_tag or '?'}) != {PROOT_TAG} — klonuji znovu")
+        shutil.rmtree(proot_clone)
     if not os.path.isdir(proot_clone):
         _proot_run(["git", "clone", "--depth", "1", "--branch", PROOT_TAG,
                     PROOT_GIT, proot_clone])
+        with open(tag_marker, "w") as f:
+            f.write(PROOT_TAG + "\n")
     talloc_tar = os.path.join(SRC_CACHE, f"talloc-{TALLOC_VER}.tar.gz")
     if not os.path.exists(talloc_tar):
         _proot_run(["wget", "-q", TALLOC_URL, "-O", talloc_tar])
@@ -923,8 +952,9 @@ def _build_proot_static(assets_dir, builds_dir):
     print("[proot-static] Results:")
     for k, v in results.items():
         print(f"  {k}: {v}")
-    if "FAIL" in results.get("aarch64", "FAIL"):
-        raise SystemExit("[proot-static] aarch64 build FAILED — aborting")
+    # SKIP (chybějící kompilátor) musí shodit pipeline stejně jako FAIL
+    if results.get("aarch64") != "OK":
+        raise SystemExit("[proot-static] aarch64 build FAILED/SKIPPED — aborting")
 
 
 def _build_proot_one_arch(suffix, cc, triple, machine, proot_clone,

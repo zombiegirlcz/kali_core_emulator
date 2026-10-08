@@ -1428,18 +1428,21 @@ object ProotManager {
 
         val assetsToDeploy =
             listOf(
-                "nethunter_agent.py" to "nethunter_agent.py",
                 // terminalmap: ELF se nasazuje jako .bin; wrapper skript
                 // /usr/local/bin/terminalmap ho spouští přes rootfs ld-linux.
                 // (Dřív obojí na 'terminalmap' → binárka přepsala wrapper a
                 //  glibc ELF pod bionic bez ld-linux spadl.)
                 "usr/bin/terminalmap" to "terminalmap.bin",
                 "usr/bin/ifconfig" to "ifconfig",
-                "scripts/ai-agent.py" to "ai-agent.py",
                 "scripts/vpn-log-viewer.py" to "vpn-log-viewer.py",
                 "usb_bridge" to "usb_bridge",
                 "usbtool" to "usbtool",
             )
+        // Starý python agent (port 13338) nahradila appka Kali AI Assistant —
+        // uklidit dříve nasazené kopie v guestu.
+        for (stale in listOf("nethunter_agent.py", "ai-agent.py")) {
+            try { File(binDir, stale).delete() } catch (_: Exception) {}
+        }
         for ((assetName, targetName) in assetsToDeploy) {
             val destFile = File(binDir, targetName)
             try {
@@ -1450,8 +1453,8 @@ object ProotManager {
                 }
                 destFile.setExecutable(true, false)
                 destFile.setReadable(true, false)
-                destFile.setWritable(true, false)
-                Log.i("ProotManager", "Successfully deployed agent script: $targetName")
+                destFile.setWritable(true, true)    // jen vlastník (dříve world-writable)
+                Log.i("ProotManager", "Successfully deployed guest helper: $targetName")
             } catch (e: Exception) {
                 Log.e("ProotManager", "Failed to deploy P2P/AI asset script $targetName: ${e.message}")
             }

@@ -32,6 +32,10 @@ object VpnLogManager {
     private const val PERSIST_INTERVAL = 50
     private val persistBatch = ConcurrentLinkedQueue<LogEntry>()
     private val processCache = ConcurrentHashMap<String, ProcessResolver.ProcessInfo>()
+    // Strop cache: klíč processCache obsahuje i zdrojový port (= roste s každým spojením),
+    // dnsBlockCache s každou unikátní doménou. Po překročení se cache celá vyprázdní
+    // (levné, thread-safe; jde jen o cache, hodnoty se dopočítají znovu).
+    private const val MAX_CACHE_ENTRIES = 4096
 
     enum class AuditCategory {
         ALLOWED,
@@ -123,6 +127,7 @@ object VpnLogManager {
         val cleanDomain = domain.trim().lowercase()
         dnsBlockCache[cleanDomain]?.let { return it }
         val blocked = isDomainBlockedUncached(cleanDomain)
+        if (dnsBlockCache.size >= MAX_CACHE_ENTRIES) dnsBlockCache.clear()
         dnsBlockCache[cleanDomain] = blocked
         return blocked
     }
@@ -281,6 +286,7 @@ object VpnLogManager {
             val entropyVal = dataCopy?.let { calculateEntropy(it) } ?: 0.0
 
             val cacheKey = "$protocol:$srcIp:$srcPort:$dstIp:$dstPort"
+            if (processCache.size >= MAX_CACHE_ENTRIES) processCache.clear()
             val resolved = processCache.getOrPut(cacheKey) {
                 if (appContext != null) ProcessResolver.resolve(appContext, protocol, srcIp, srcPort, dstIp, dstPort)
                 else ProcessResolver.ProcessInfo("System", null)

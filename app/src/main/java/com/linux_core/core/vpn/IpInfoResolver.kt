@@ -24,6 +24,9 @@ object IpInfoResolver {
     private const val TAG = "IpInfoResolver"
     private val client = OkHttpClient()
     private val cache = ConcurrentHashMap<String, IpInfo>()
+    // Strop cache — roste s každou unikátní cílovou IP; po překročení se vyprázdní
+    // (data se při dalším dotazu znovu dotáhnou).
+    private const val MAX_CACHE_ENTRIES = 2048
 
     fun getCached(ip: String): IpInfo? {
         val cleanIp = ip.trim().substringBefore(":")
@@ -131,6 +134,7 @@ object IpInfoResolver {
                             flagEmoji = emoji
                         )
 
+                        if (cache.size >= MAX_CACHE_ENTRIES) cache.clear()
                         cache[cleanIp] = info
                         onResolved(info)
                     } catch (e: Exception) {

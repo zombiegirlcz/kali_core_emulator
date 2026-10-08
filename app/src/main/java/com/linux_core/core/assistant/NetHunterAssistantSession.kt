@@ -44,10 +44,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.json.JSONObject
 import java.io.OutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -60,10 +57,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import com.linux_core.core.LocalApiServer
-import com.linux_core.core.rootfs.RootfsManager
 
-import java.util.concurrent.Executors
 
 data class ChatMessage(
     val text: String,
@@ -74,6 +68,7 @@ data class ChatMessage(
 class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(context), TextToSpeech.OnInitListener {
     companion object {
         private const val TAG = "NetHunterAssistantSess"
+        private const val AI_ASSISTANT_PKG = "com.kali.aiassistant"
     }
 
     private class AssistantLifecycleOwner : LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
@@ -111,7 +106,6 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
-    private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
 
     // UI States
@@ -309,103 +303,28 @@ class NetHunterAssistantSession(context: Context) : VoiceInteractionSession(cont
         isListeningState.value = false
     }
 
+    /**
+     * Dotaz se předá aplikaci Kali AI Assistant (`com.kali.aiassistant`), která
+     * nahradila starý python agent (`nethunter_agent.py`, port 13338 — odstraněn).
+     */
     private fun sendQueryToAgent(prompt: String) {
-        // Add prompt immediately to list of messages
-        handler.post {
-            messages.add(ChatMessage(prompt, isUser = true))
+        handler.post { messages.add(ChatMessage(prompt, isUser = true)) }
+        val intent = android.content.Intent(android.content.Intent.ACTION_ASSIST).apply {
+            setPackage(AI_ASSISTANT_PKG)
+            putExtra("query", prompt)
+            putExtra(android.content.Intent.EXTRA_TEXT, prompt)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-
-        executor.execute {
-            var isQueryRunning = true
-            val kaliStatusFile = RootfsManager.distroRootfsDir(context, "kali").resolve("tmp/nethunter_agent_status.json")
-            val parrotStatusFile = RootfsManager.distroRootfsDir(context, "parrot").resolve("tmp/nethunter_agent_status.json")
-
-            // Delete old files if they exist
-            try { kaliStatusFile.delete() } catch (e: Exception) {}
-            try { parrotStatusFile.delete() } catch (e: Exception) {}
-
-            // Set initial status
-            handler.post { statusState.value = "Connecting to agent..." }
-
-            val statusPoller = Runnable {
-                Log.d(TAG, "Status poller started.")
-                while (isQueryRunning) {
-                    try {
-                        // Priority 1: Read in-memory status from LocalApiServer (reliable)
-                        val serverStatus = LocalApiServer.currentAgentStatus
-                        if (serverStatus.isNotEmpty()) {
-                            handler.post { statusState.value = serverStatus }
-                        } else {
-                            // Priority 2: Read file-based status from chroot (bonus detail)
-                            val statusFile = if (kaliStatusFile.exists()) kaliStatusFile
-                                else if (parrotStatusFile.exists()) parrotStatusFile
-                                else null
-                            if (statusFile != null) {
-                                val content = statusFile.readText()
-                                if (content.isNotEmpty()) {
-                                    val json = JSONObject(content)
-                                    val currentStatus = json.optString("status", "")
-                                    if (currentStatus.isNotEmpty()) {
-                                        handler.post { statusState.value = currentStatus }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error polling status: ${e.message}")
-                    }
-                    try { Thread.sleep(250) } catch (e: Exception) {}
-                }
-                Log.d(TAG, "Status poller stopped.")
-            }
-            val pollerThread = Thread(statusPoller)
-            pollerThread.start()
-
-            try {
-                val url = URL("http://127.0.0.1:1337/agent/query")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.connectTimeout = 5000
-                conn.readTimeout = 0
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-
-                val payload = JSONObject().put("prompt", prompt).toString()
-                conn.outputStream.use { os ->
-                    os.write(payload.toByteArray(Charsets.UTF_8))
-                }
-
-                if (conn.responseCode == 200) {
-                    val responseText = conn.inputStream.bufferedReader().use { it.readText() }
-                    val json = JSONObject(responseText)
-                    val reply = json.optString("response", "")
-                    
-                    handler.post {
-                        statusState.value = "Ready"
-                        messages.add(ChatMessage(reply, isUser = false))
-                        speakResponse(reply)
-                    }
-                } else {
-                    handler.post {
-                        statusState.value = "Error"
-                        val errorText = "Sorry, there was an error communicating with the agent."
-                        messages.add(ChatMessage(errorText, isUser = false))
-                        speakResponse(errorText)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error querying agent: ${e.message}")
-                handler.post {
-                    statusState.value = "Offline"
-                    val errorText = "Sorry, I could not reach the Hunter agent server. Please make sure the daemon is running."
-                    messages.add(ChatMessage(errorText, isUser = false))
-                    speakResponse(errorText)
-                }
-            } finally {
-                isQueryRunning = false
-                try { pollerThread.join(1000) } catch (e: Exception) {}
-                try { kaliStatusFile.delete() } catch (e: Exception) {}
-                try { parrotStatusFile.delete() } catch (e: Exception) {}
+        try {
+            context.startActivity(intent)
+            handler.post { statusState.value = "Předáno Kali AI Assistant" }
+        } catch (e: Exception) {
+            Log.w(TAG, "Kali AI Assistant není dostupný: ${e.message}")
+            handler.post {
+                statusState.value = "Offline"
+                val errorText = "Kali AI Assistant není nainstalovaný."
+                messages.add(ChatMessage(errorText, isUser = false))
+                speakResponse(errorText)
             }
         }
     }

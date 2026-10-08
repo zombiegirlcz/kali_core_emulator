@@ -53,6 +53,25 @@ static int  fix_skip_top = 0;
 
 static char g_session_name[64] = {0}; /* posledni prijate jmeno persistentni session (prazdne = zadne) */
 
+/* Vrátí uid procesu na druhém konci UNIX socketu (SO_PEERCRED = skutečné
+ * kernelové uid — PRoot `-0` ho nezfejkuje), nebo -1 při chybě. */
+static long peer_uid(int fd) {
+    struct ucred cr;
+    socklen_t len = sizeof(cr);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0 || len != sizeof(cr)) return -1;
+    return (long)cr.uid;
+}
+
+/* Klient hlavního socketu smí být jen root nebo app uid (su_wrapper v guestu
+ * běží pod app uid, re-entry sudo session pod rootem). Ochrana nesmí stát jen
+ * na dosažitelnosti cesty socketu. */
+static int peer_allowed(int fd) {
+    long uid = peer_uid(fd);
+    if (uid < 0) return 0;
+    if (uid == 0) return 1;
+    return g_app_uid != (uid_t)-1 && (uid_t)uid == g_app_uid;
+}
+
 static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
                                 uint32_t *target_uid, uint32_t *target_gid,
                                 char *cwd, size_t cwd_size,
@@ -136,6 +155,11 @@ static int recv_fds_and_payload(int socket_fd, int *fds, int max_fds,
         arg_index++;
     }
     argv[arg_index] = NULL;
+    /* Useknutý argv (přetečení payloadu / víc než MAX_ARGS) se nesmí tiše
+     * provést se zbytkem příkazu — odmítnout. */
+    if (arg_index != (int)argc) {
+        return -1;
+    }
 
     // Parse optional TERM field (new protocol extension, appended after argv)
     g_term[0] = '\0';
@@ -574,13 +598,29 @@ static int write_all(int fd, const char *buf, size_t len) {
  * (chown root-owned souborů zpátky na app uid) se spouští jen JEDNOU, při
  * skutečném zániku session (kill/child exit), ne při každém detachu. */
 
-#define SU_SESSION_SOCK_DIR "/data/local/tmp"
+/* Sockety session NEJSOU přímo v /data/local/tmp (zapisovatelné pro shell
+ * uid → jiný proces by mohl cestu obsadit a přijmout guest/client fd přes
+ * SCM_RIGHTS). Vlastní podadresář root 0700 + SO_PEERCRED (peer musí být
+ * root) na obou stranách spojení. */
+#define SU_SESSION_SOCK_DIR "/data/local/tmp/.nh_sud"
 #define SU_SESSION_NAME_MAX 64
 #define SU_SESSION_CTL_ATTACH 1u
 #define SU_SESSION_CTL_KILL   2u
 
+/* Zajistí SU_SESSION_SOCK_DIR jako skutečný adresář (ne symlink) vlastněný
+ * rootem s právy 0700. Vrací 0 = OK. */
+static int su_session_dir_ok(void) {
+    struct stat st;
+    if (mkdir(SU_SESSION_SOCK_DIR, 0700) < 0 && errno != EEXIST) return -1;
+    if (lstat(SU_SESSION_SOCK_DIR, &st) < 0) return -1;
+    if (!S_ISDIR(st.st_mode) || st.st_uid != 0) return -1;
+    if ((st.st_mode & 0777) != 0700 && chmod(SU_SESSION_SOCK_DIR, 0700) < 0) return -1;
+    return 0;
+}
+
 static int su_session_sock_path(char *out, size_t outlen, const char *name) {
     if (name == NULL || name[0] == '\0') return -1;
+    if (su_session_dir_ok() < 0) return -1;
     char safe[SU_SESSION_NAME_MAX];
     size_t j = 0;
     for (size_t i = 0; name[i] != '\0' && j < sizeof(safe) - 1; i++) {
@@ -769,6 +809,8 @@ static void su_session_supervisor(const char *sock_path, char **cmd_argv,
 
         int ctl_conn = accept(listen_fd, NULL, NULL);
         if (ctl_conn < 0) continue;
+        /* Řídicí spojení smí otevřít jen root (worker su_daemonu). */
+        if (peer_uid(ctl_conn) != 0) { close(ctl_conn); continue; }
 
         uint8_t ctl = 0;
         int guest_fd = -1, client_fd = -1;
@@ -830,6 +872,19 @@ static void su_session_supervisor(const char *sock_path, char **cmd_argv,
  * (guest_fd i client_fd) se predavaji spolecne supervisoru pres SCM_RIGHTS —
  * bezpecne, protoze oba konce jsou hostitelske procesy mimo PRoot ptrace
  * (viz komentar u definice SU_SESSION_SOCK_DIR vyse). */
+/* connect() na socket session + ověření, že na druhé straně je root
+ * (supervisor). Cizí proces, který by cestu obsadil, fd nedostane. */
+static int su_session_connect(const struct sockaddr_un *addr) {
+    int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sock < 0) return -1;
+    if (connect(sock, (const struct sockaddr *)addr, sizeof(*addr)) < 0 ||
+        peer_uid(sock) != 0) {
+        close(sock);
+        return -1;
+    }
+    return sock;
+}
+
 static void handle_persistent_session_su(int client_fd, int guest_fd, char **cmd_argv,
                                           const char *cwd, const char *session_name) {
     char sock_path[512];
@@ -844,11 +899,8 @@ static void handle_persistent_session_su(int client_fd, int guest_fd, char **cmd
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
 
-    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock < 0) { int err_code = 1; write(client_fd, &err_code, sizeof(err_code)); return; }
-
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock);
+    int sock = su_session_connect(&addr);
+    if (sock < 0) {
         int readyp[2];
         if (pipe(readyp) < 0) { int err_code = 1; write(client_fd, &err_code, sizeof(err_code)); return; }
         pid_t sup = fork();
@@ -874,9 +926,8 @@ static void handle_persistent_session_su(int client_fd, int guest_fd, char **cmd
         close(readyp[0]);
         if (!got_ready) { int err_code = 1; write(client_fd, &err_code, sizeof(err_code)); return; }
 
-        sock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (sock < 0 || connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            if (sock >= 0) close(sock);
+        sock = su_session_connect(&addr);
+        if (sock < 0) {
             int err_code = 1; write(client_fd, &err_code, sizeof(err_code));
             return;
         }
@@ -986,7 +1037,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    chmod(socket_path, 0777);
+    /* Socket vlastní app uid s 0600 (root projde DAC i tak). Když chown
+     * selže (SELinux/neznámé uid), zůstane 0777 — autorizaci stejně dělá
+     * SO_PEERCRED kontrola v accept smyčce (peer_allowed). */
+    if (g_app_uid == 0) {
+        chmod(socket_path, 0600);
+    } else if (chown(socket_path, g_app_uid, g_app_gid) == 0) {
+        chmod(socket_path, 0600);
+    } else {
+        chmod(socket_path, 0777);
+    }
 
     if (listen(listen_fd, 10) < 0) {
         perror("[su_daemon] listen");
@@ -1052,6 +1112,14 @@ int main(int argc, char **argv) {
             perror("[su_daemon] accept");
             break;
         }
+        if (!peer_allowed(client_fd)) {
+            fprintf(stderr, "[su_daemon] odmitnut klient uid=%ld (povoleno jen 0 a %u)\n",
+                    peer_uid(client_fd), (unsigned)g_app_uid);
+            int deny_code = 126;
+            (void)!write(client_fd, &deny_code, sizeof(deny_code));
+            close(client_fd);
+            continue;
+        }
 
         pid_t worker = fork();
         if (worker < 0) {
@@ -1100,6 +1168,10 @@ static void handle_client(int client_fd) {
     char *cmd_argv[MAX_ARGS] = {NULL};
 
     if (recv_fds_and_payload(client_fd, fds, 3, &target_uid, &target_gid, cwd, sizeof(cwd), cmd_argv, MAX_ARGS) < 0) {
+        /* Vždy odpovědět — jinak su_wrapper dostane EOF a dřív to bral jako
+         * úspěch (exit 0), i když příkaz vůbec neproběhl. */
+        int err_code = 1;
+        (void)!write(client_fd, &err_code, sizeof(err_code));
         close(fds[0]); close(fds[1]); close(fds[2]);
         close(client_fd);
         for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);

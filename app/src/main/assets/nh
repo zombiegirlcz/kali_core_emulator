@@ -20,6 +20,12 @@ GRAY='\033[0;90m'
 # ─── Helpers ───────────────────────────────────────────────
 
 get_token() {
+    # Plaintext token publikuje appka do filesDir/api.token (0600, jen UID appky);
+    # api_security.xml drží jen šifrované "enc:…".
+    if [ -r /data/data/com.linux_core/files/api.token ]; then
+        cat /data/data/com.linux_core/files/api.token
+        return
+    fi
     TOKEN=$(grep 'name="auth_token"' /data/data/com.linux_core/shared_prefs/api_security.xml 2>/dev/null | \
         sed -n 's/.*<string name="auth_token">\([^<]*\)<\/string>.*/\1/p' | head -n 1)
     echo "$TOKEN"
@@ -906,87 +912,25 @@ except: print('Error')
 # ─── AGENT ─────────────────────────────────────────────────
 
 agent_dispatch() {
-    local config_dir="$HOME/.config/nethunter"
+    # Starý python agent (nethunter_agent.py, port 13338) byl odstraněn —
+    # nahradila ho appka Kali AI Assistant (com.kali.aiassistant).
     case "$1" in
-        help|-h|--help) help_agent; exit 0 ;;
-        config)
+        help|-h|--help|"") help_agent; exit 0 ;;
+        ask|open)
             shift
-            local provider="" key="" model=""
-            while [ $# -gt 0 ]; do
-                case "$1" in
-                    --provider)
-                        [ -z "$2" ] && { echo "Error: --provider requires a value"; exit 1; }
-                        provider="$2"; shift 2 ;;
-                    --key)
-                        [ -z "$2" ] && { echo "Error: --key requires a value"; exit 1; }
-                        key="$2"; shift 2 ;;
-                    --model)
-                        [ -z "$2" ] && { echo "Error: --model requires a value"; exit 1; }
-                        model="$2"; shift 2 ;;
-                    *) echo "Unknown parameter: $1"; exit 1 ;;
-                esac
-            done
-            mkdir -p "$config_dir"
-            if [ ! -f "$config_dir/agent.json" ]; then
-                echo '{"provider":"gemini","key":"","model":"gemini-2.0-flash"}' > "$config_dir/agent.json"
-            fi
-            python3 -c "
-import json, os
-f='$config_dir/agent.json'
-data=json.load(open(f))
-if '$provider': data['provider']='$provider'
-if '$key': data['key']='$key'
-if '$model': data['model']='$model'
-elif '$provider':
-    m={'gemini':'gemini-2.0-flash','openai':'gpt-4o-mini','anthropic':'claude-3-5-sonnet-20240620','ollama':'llama3'}
-    data['model']=m.get('$provider','gemini-2.0-flash')
-json.dump(data,open(f,'w'),indent=2)
-print(f'[+] Configuration updated: {json.dumps(data,indent=2)}')
-"
-            ;;
-        start)
-            local pid_file="/tmp/nethunter_agent.pid"
-            if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-                echo "[*] Agent daemon already running (PID: $(cat "$pid_file"))"
+            local q="$*" esc
+            # single-quote escape pro host shell (am start běží přes ashell)
+            esc=$(printf '%s' "$q" | sed "s/'/'\\\\''/g")
+            if command -v ashell >/dev/null 2>&1; then
+                ashell -c "am start -a android.intent.action.ASSIST -p com.kali.aiassistant --es query '$esc'" >/dev/null \
+                    && echo "[+] Předáno Kali AI Assistant" \
+                    || { echo "[-] Kali AI Assistant se nepodařilo spustit (je nainstalovaný?)" >&2; exit 1; }
             else
-                echo "[*] Starting Agent daemon..."
-                nohup python3 /usr/local/bin/nethunter_agent.py > /tmp/nethunter_agent.log 2>&1 &
-                echo $! > "$pid_file"
-                sleep 1
-                if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-                    echo "[+] Agent daemon started (PID: $(cat "$pid_file"))"
-                else
-                    echo "[-] Daemon failed to start. Logs:"; cat /tmp/nethunter_agent.log
-                fi
+                echo "[-] ashell není k dispozici — otevři Kali AI Assistant ručně." >&2; exit 1
             fi
             ;;
-        stop)
-            local pid_file="/tmp/nethunter_agent.pid"
-            if [ -f "$pid_file" ]; then
-                kill "$(cat "$pid_file")" 2>/dev/null; rm -f "$pid_file"
-                echo "[-] Agent daemon stopped."
-            else
-                pkill -f nethunter_agent.py 2>/dev/null || true
-                echo "[-] Agent daemon stopped."
-            fi
-            ;;
-        status)
-            local pid_file="/tmp/nethunter_agent.pid"
-            if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-                printf "${GREEN}${BOLD}🟢 Agent daemon RUNNING${RST} (PID: $(cat "$pid_file"))\n"
-            else
-                printf "${RED}${BOLD}🔴 Agent daemon STOPPED${RST}\n"
-            fi
-            ;;
-        ask)
-            shift
-            [ $# -eq 0 ] && { echo "Usage: nh agent ask <prompt...>"; exit 1; }
-            python3 /usr/local/bin/nethunter_agent.py run-direct "$*"
-            ;;
-        chat)
-            python3 /usr/local/bin/nethunter_agent.py chat
-            ;;
-        *) echo "Usage: nh agent config|start|stop|status|ask|chat"; exit 1 ;;
+        *) echo "[-] 'nh agent $1' už neexistuje: python agent byl nahrazen appkou Kali AI Assistant." >&2
+           echo "    Použij: nh agent ask <dotaz>" >&2; exit 1 ;;
     esac
 }
 
@@ -1555,7 +1499,15 @@ fix_git() {
             if [ -e "$d1" ] && [ ! -L "$d1" ]; then dd="$d1"
             elif [ -e "$d2" ] && [ ! -L "$d2" ]; then dd="$d2"
             else dd=""; fi
-            [ -n "$dd" ] && { rm -f "$l" && cp "$dd" "$l"; }
+            # cp do dočasného souboru + atomický mv: selhání cp nesmí
+            # nechat objekt bez odkazu (rm by symlink smazal předem)
+            if [ -n "$dd" ]; then
+                if cp "$dd" "$l.nhtmp"; then
+                    mv -f "$l.nhtmp" "$l" || rm -f "$l.nhtmp"
+                else
+                    rm -f "$l.nhtmp"
+                fi
+            fi
         done
     done
 
@@ -1596,28 +1548,67 @@ fix_permission() {
     exit $rc
 }
 
+# Název balíku pro dpkg (volitelně s :arch) — nic jiného nesmí do cesty
+# /var/lib/dpkg/info/<pkg>.postinst.
+fix_pkg_valid() {
+    printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?$'
+}
+
+# Nakonfiguruje JEDEN balík s postinst dočasně nahrazeným za no-op a originál
+# hned obnoví (i při Ctrl-C), aby budoucí upgrade/reconfigure běžel normálně.
+fix_pkg_mocked() {
+    local pkg="$1" pi rc=0
+    pi="/var/lib/dpkg/info/$pkg.postinst"
+    if [ ! -e "$pi" ] && [ ! -L "$pi" ]; then
+        dpkg --configure "$pkg"
+        return $?
+    fi
+    if [ -e "$pi.nh-orig" ] || [ -L "$pi.nh-orig" ]; then
+        echo "[-] $pi.nh-orig už existuje (předchozí přerušený běh?) — obnov ho ručně" >&2
+        return 1
+    fi
+    mv "$pi" "$pi.nh-orig" || return 1
+    trap 'rm -f "$pi"; mv "$pi.nh-orig" "$pi"; exit 130' INT TERM HUP
+    printf '#!/bin/sh\nexit 0\n' > "$pi" && chmod 755 "$pi" || rc=1
+    [ $rc -eq 0 ] && { dpkg --configure "$pkg" || rc=$?; }
+    rm -f "$pi"
+    mv "$pi.nh-orig" "$pi"
+    trap - INT TERM HUP
+    return $rc
+}
+
 fix_pkg() {
     local pkg="$1"
     [ -z "$pkg" ] && { echo "Usage: nh fix pkg <package-name>"; exit 1; }
-    echo "[*] Mocking postinst for $pkg..."
-    ln -sf /bin/true "/var/lib/dpkg/info/$pkg.postinst" 2>/dev/null || true
-    echo "[*] Reconfiguring dpkg..."
-    dpkg --configure -a
-    echo "[+] Fixed postinst for $pkg!"
+    fix_pkg_valid "$pkg" || { echo "[-] Neplatný název balíku: $pkg" >&2; exit 1; }
+    echo "[*] Konfiguruji $pkg s dočasně vypnutým postinst..."
+    if fix_pkg_mocked "$pkg"; then
+        echo "[*] Reconfiguring dpkg..."
+        dpkg --configure -a
+        echo "[+] Fixed postinst for $pkg! (originální postinst obnoven)"
+    else
+        echo "[-] Konfigurace $pkg selhala" >&2
+        exit 1
+    fi
 }
 
 fix_auto() {
     echo "[*] Scanning for broken packages..."
     dpkg --configure -a 2>&1 || true
-    # Find packages with failed postinst
-    for info in /var/lib/dpkg/info/*.postinst; do
-        [ -f "$info" ] || continue
-        pkg=$(basename "$info" .postinst)
-        if [ -x "$info" ] && ! "$info" configure 2>/dev/null; then
+    # Jen balíky, které dpkg eviduje jako nedokonfigurované (half-configured /
+    # unpacked) — maintainer skripty se mimo dpkg nespouštějí.
+    local pkg st
+    dpkg-query -W -f='${binary:Package} ${db:Status-Abbrev}\n' 2>/dev/null | \
+        while read -r pkg st; do
+            case "$st" in
+                ?F*|?U*) ;;
+                *) continue ;;
+            esac
+            fix_pkg_valid "$pkg" || continue
+            dpkg --configure "$pkg" >/dev/null 2>&1 && continue
             echo "[*] Fixing $pkg..."
-            ln -sf /bin/true "/var/lib/dpkg/info/$pkg.postinst" 2>/dev/null || true
-        fi
-    done
+            fix_pkg_mocked "$pkg" || echo "[!] $pkg se nepodařilo nakonfigurovat" >&2
+        done
     dpkg --configure -a
     echo "[+] Auto-fix complete."
 }
@@ -1699,7 +1690,7 @@ help_dispatch() {
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "distro" "" "Správa PRoot kontejnerů (kali, parrot): list, ps, kill, backup, restore, login"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "cpu" "" "CPU pin proot na jedno rychlé jádro (on/off/status), příkaz na všech jádrech (all)"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "usb" "" "USB Host (list, claim, bulk, control), raw USB bridge ioctl, USB gadget g2"
-            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Pi-Coding Agent LLM konfig (provider, key, model), dotazy a chat"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Předání dotazu appce Kali AI Assistant"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "fix" "" "Oprava dpkg locků, zaseklých balíčků, vlastnictví souborů a PRoot git .l2s linků"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "desktop" "(vnc)" "Spuštění a správa headless GUI prostředí (Xvfb / VNC / X11)"
@@ -1915,20 +1906,12 @@ help_distro() {
 }
 
 help_agent() {
-    banner
+    echo "${BOLD}nh agent${RST} — předání dotazu appce Kali AI Assistant (com.kali.aiassistant)"
     echo ""
-    echo "  ${WHITE}${BOLD}AGENT (ai)${RST} ${DIM}– Pi-Coding Agent a LLM rozhraní${RST}"
-    separator
-    echo "  ${GREEN}config [--provider P] [--key K] [--model M]${RST} Konfigurace poskytovatele LLM (gemini, openai, anthropic)"
-    echo "  ${GREEN}start | stop | status${RST}                          Správa na pozadí běžícího agent bridge démona"
-    echo "  ${GREEN}ask <dotaz>${RST}                                    Jednorázová otázka/příkaz pro AI agenta"
-    echo "  ${GREEN}chat${RST}                                          Spustit interaktivní chatovací relaci s AI agentem"
+    echo "  ${GREEN}ask <dotaz>${RST}   Otevře Kali AI Assistant s dotazem (přes ashell → am start)"
+    echo "  ${GREEN}open${RST}          Otevře Kali AI Assistant"
     echo ""
-    echo "  ${YELLOW}Příklady:${RST}"
-    echo "    nh agent config --provider gemini --key MY_API_KEY --model gemini-2.0-flash"
-    echo '    nh agent ask "Jaký příkaz v Linuxu najde největší soubory v /var/log?"'
-    echo "    nh agent chat"
-    echo ""
+    echo "  Starý python agent (nethunter_agent.py, port 13338) byl odstraněn."
 }
 
 help_log() {
@@ -2196,7 +2179,7 @@ distro_remove() {
         echo "    nh distro remove $DISTRO_ID --force"
         exit 1
     fi
-    api_post "/distro/remove" "{\"id\":\"$DISTRO_ID\",\"force\":true}" | fmt '
+    api_post "/distro/remove" "$(python3 -c "import json,sys; print(json.dumps({'id':sys.argv[1],'force':True}))" "$DISTRO_ID")" | fmt '
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -2221,7 +2204,7 @@ distro_backup() {
         esac
     done
     echo "[i] Zálohuji rootfs '$DISTRO_ID' do Downloads (bude chvíli trvat)..." >&2
-    api_post "/rootfs/backup" "{\"id\":\"$DISTRO_ID\"}" | fmt '
+    api_post "/rootfs/backup" "$(python3 -c "import json,sys; print(json.dumps({'id':sys.argv[1]}))" "$DISTRO_ID")" | fmt '
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -2251,7 +2234,7 @@ distro_restore() {
         echo "    nh distro restore $FILE_NAME --force"
         exit 1
     fi
-    api_post "/rootfs/restore" "{\"file\":\"$FILE_NAME\",\"force\":true}" | fmt '
+    api_post "/rootfs/restore" "$(python3 -c "import json,sys; print(json.dumps({'file':sys.argv[1],'force':True}))" "$FILE_NAME")" | fmt '
 import sys, json
 try:
     d = json.load(sys.stdin)

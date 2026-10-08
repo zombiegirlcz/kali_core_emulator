@@ -53,7 +53,10 @@
 
 #define API_PORT       1337
 #define PTY_PORT       13340
+#define PTY_FRAME_MAX  (1024 * 1024)  /* horní mez délky framu od ashell_pty (server posílá max 64 KiB) */
 #define API_HOST_TOKEN_PATH "/data/data/com.linux_core/shared_prefs/api_security.xml"
+/* plaintext token (LocalApiServer.publishGuestToken) — xml drží jen šifrované "enc:…" */
+#define API_TOKEN_FILE      "/data/data/com.linux_core/files/api.token"
 
 /* Verbose/debug marker: zapne se vlajkou `-v`/`--verbose` (před -c) nebo
  * env ASHELL_DEBUG=1. Když je zapnutý, `ashell -c ...` napíše na stderr,
@@ -99,6 +102,16 @@ static void sb_appends(strbuf *s, const char *str) { sb_append(s, str, strlen(st
 
 static void sb_free(strbuf *s) { free(s->buf); s->buf = NULL; s->len = s->cap = 0; }
 
+/* Připojí str jako jeden sh token v jednoduchých uvozovkách ('…', apostrof → '\'\''). */
+static void sb_append_shquoted(strbuf *s, const char *str) {
+    sb_append(s, "'", 1);
+    for (const char *p = str; *p; p++) {
+        if (*p == '\'') sb_appends(s, "'\\''");
+        else sb_append(s, p, 1);
+    }
+    sb_append(s, "'", 1);
+}
+
 /* ── low-level IO ────────────────────────────────────────────────────── */
 
 static ssize_t write_all(int fd, const void *buf, size_t len) {
@@ -134,6 +147,18 @@ static int tcp_connect(int port) {
 /* ── auth token z api_security.xml (bez externiho grep/sed) ─────────── */
 
 static char *read_auth_token(void) {
+    FILE *tf = fopen(API_TOKEN_FILE, "r");
+    if (tf) {
+        char buf[256];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, tf);
+        fclose(tf);
+        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' ')) n--;
+        if (n > 0) {
+            char *r = malloc(n + 1);
+            if (r) { memcpy(r, buf, n); r[n] = '\0'; }
+            return r;
+        }
+    }
     FILE *f = fopen(API_HOST_TOKEN_PATH, "r");
     if (!f) return NULL;
     char line[4096];
@@ -147,6 +172,7 @@ static char *read_auth_token(void) {
         char *lt = strchr(gt, '<');
         if (!lt) continue;
         size_t n = (size_t)(lt - gt);
+        if (n >= 4 && memcmp(gt, "enc:", 4) == 0) break;   /* šifrovaný — nepoužitelný */
         result = malloc(n + 1);
         if (result) { memcpy(result, gt, n); result[n] = '\0'; }
         break;
@@ -287,11 +313,16 @@ static char *http_request(const char *method, const char *endpoint,
     sb_append(&req, " ", 1);
     sb_appends(&req, endpoint);
     sb_appends(&req, " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+    /* Token posílat VŽDY: LocalApiServer na loopbacku nedokáže ověřit UID volajícího
+     * (/proc/net/tcp je pro untrusted_app zakázaný), citlivé endpointy chtějí Bearer. */
+    char *auto_token = NULL;
+    if (!token || !*token) token = auto_token = read_auth_token();
     if (token && *token) {
         sb_appends(&req, "Authorization: Bearer ");
         sb_appends(&req, token);
         sb_appends(&req, "\r\n");
     }
+    free(auto_token);
     if (body) {
         sb_appends(&req, "Content-Type: ");
         sb_appends(&req, content_type ? content_type : "text/plain");
@@ -479,6 +510,12 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
     sb_append(&hello, "\0", 1);
     sb_appends(&hello, pty_mode ? "1" : "0");
     sb_append(&hello, "\0", 1);
+    {   /* 6. pole: API token (ashell_pty ho vyžaduje) */
+        char *tok = read_auth_token();
+        sb_appends(&hello, tok ? tok : "");
+        sb_append(&hello, "\0", 1);
+        free(tok);
+    }
     if (send_frame(fd, F_HELLO, hello.buf, hello.len) < 0) {
         sb_free(&hello);
         if (winch_installed) sigaction(SIGWINCH, &sa_old_winch, NULL);
@@ -492,7 +529,10 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
         fprintf(stderr, "[ashell] via PTY (ashell_pty @ 127.0.0.1:%d, pty=%d)\n",
                 PTY_PORT, pty_mode);
 
-    int exit_code = 0;
+    /* Bez EXIT framu (přerušené spojení, chybný frame) nesmíme vrátit 0 —
+     * volající by si myslel, že příkaz uspěl. Default 1, F_EXIT ho přepíše. */
+    int exit_code = 1;
+    int got_exit = 0;
     int stdin_open = 1;
     unsigned char buf[8192];
 
@@ -540,8 +580,17 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
             unsigned int plen = ((unsigned int)hdr[1] << 24) | ((unsigned int)hdr[2] << 16) |
                                  ((unsigned int)hdr[3] << 8) | hdr[4];
             unsigned char *payload = NULL;
+            if (plen > PTY_FRAME_MAX) {
+                /* Server posílá max FRAME_MAX (64 KiB) — větší délka = poškozený stream. */
+                fprintf(stderr, "[ashell] ashell_pty: neplatna delka framu (%u)\n", plen);
+                break;
+            }
             if (plen > 0) {
                 payload = malloc(plen);
+                if (!payload) {
+                    fprintf(stderr, "[ashell] ashell_pty: malloc(%u) selhal\n", plen);
+                    break;
+                }
                 size_t off = 0;
                 int bad = 0;
                 while (off < plen) {
@@ -557,6 +606,7 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
                 if (plen >= 4) {
                     exit_code = ((unsigned int)payload[0] << 24 | (unsigned int)payload[1] << 16 |
                                  (unsigned int)payload[2] << 8 | payload[3]) & 0xFF;
+                    got_exit = 1;
                 }
                 free(payload);
                 break;
@@ -581,6 +631,8 @@ static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *root
     if (winch_installed) sigaction(SIGWINCH, &sa_old_winch, NULL);
     if (have_old) tcsetattr(STDIN_FILENO, TCSADRAIN, &old_termios);
     close(fd);
+    if (!got_exit)
+        fprintf(stderr, "[ashell] ashell_pty: spojeni preruseno bez exit kodu\n");
     return exit_code;
 }
 
@@ -744,8 +796,10 @@ static int cmd_adb(int argc, char **argv) {
         free(resp);
         if (!stopped_via_api) {
             if (system("command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q device$") == 0) {
-                system("adb shell \"cat /data/local/tmp/shelldaemon.pid 2>/dev/null\" > /tmp/.ashell_pid_$$ 2>/dev/null");
-                system("_p=$(cat /tmp/.ashell_pid_$$ 2>/dev/null); [ -n \"$_p\" ] && adb shell \"kill $_p 2>/dev/null; sleep 1; kill -9 $_p 2>/dev/null || true\" >/dev/null 2>&1; rm -f /tmp/.ashell_pid_$$");
+                /* PID čteme přímo přes command substitution (žádný předvídatelný /tmp soubor)
+                 * a do kill ho pustíme jen když je čistě číselný. */
+                system("_p=$(adb shell \"cat /data/local/tmp/shelldaemon.pid 2>/dev/null\" 2>/dev/null | tr -d '\\r\\n'); "
+                       "case \"$_p\" in ''|*[!0-9]*) ;; *) adb shell \"kill $_p 2>/dev/null; sleep 1; kill -9 $_p 2>/dev/null || true\" >/dev/null 2>&1 ;; esac");
                 system("adb shell \"pkill -f libshelldaemon 2>/dev/null || true\" >/dev/null 2>&1");
                 system("adb shell \"rm -f /data/local/tmp/shelldaemon.pid 2>/dev/null || true\" >/dev/null 2>&1");
                 struct timespec ts = { 1, 0 };
@@ -814,11 +868,15 @@ static int cmd_adb(int argc, char **argv) {
         if (argc < 2) { fprintf(stderr, "[-] Usage: ashell adb install [-r] [-g] <apk>\n"); return 1; }
         const char *apk = NULL;
         strbuf opts; sb_init(&opts);
+        strbuf qopts; sb_init(&qopts);
         for (int i = 1; i < argc; i++) {
-            if (argv[i][0] == '-') { sb_appends(&opts, " "); sb_appends(&opts, argv[i]); }
+            if (argv[i][0] == '-') {
+                sb_appends(&opts, " "); sb_appends(&opts, argv[i]);           /* API: "-r -g" */
+                sb_appends(&qopts, " "); sb_append_shquoted(&qopts, argv[i]); /* fallback sh */
+            }
             else apk = argv[i];
         }
-        if (!apk) { fprintf(stderr, "[-] Usage: ashell adb install [-r] [-g] <apk>\n"); sb_free(&opts); return 1; }
+        if (!apk) { fprintf(stderr, "[-] Usage: ashell adb install [-r] [-g] <apk>\n"); sb_free(&opts); sb_free(&qopts); return 1; }
         strbuf body; sb_init(&body);
         sb_appends(&body, "{\"apk\":"); sb_append_json_escaped(&body, apk);
         sb_appends(&body, ",\"args\":"); sb_append_json_escaped(&body, opts.buf ? opts.buf : "");
@@ -827,18 +885,22 @@ static int cmd_adb(int argc, char **argv) {
         sb_free(&body);
         if (resp && !json_has_key(resp, "error")) {
             int rc = print_exec_response(resp);
-            free(resp); sb_free(&opts);
+            free(resp); sb_free(&opts); sb_free(&qopts);
             return rc;
         }
         free(resp);
         const char *base = strrchr(apk, '/');
         base = base ? base + 1 : apk;
+        /* apk/base/opts jsou kvotované (sb_append_shquoted) — apostrof v cestě nerozbije příkaz. */
+        strbuf dst; sb_init(&dst);
+        sb_appends(&dst, "/data/local/tmp/"); sb_appends(&dst, base);
         strbuf cmd; sb_init(&cmd);
-        sb_appends(&cmd, "cp '"); sb_appends(&cmd, apk); sb_appends(&cmd, "' '/data/local/tmp/"); sb_appends(&cmd, base);
-        sb_appends(&cmd, "' && pm install"); sb_appends(&cmd, opts.buf ? opts.buf : "");
-        sb_appends(&cmd, " '/data/local/tmp/"); sb_appends(&cmd, base); sb_appends(&cmd, "'");
+        sb_appends(&cmd, "cp "); sb_append_shquoted(&cmd, apk); sb_appends(&cmd, " "); sb_append_shquoted(&cmd, dst.buf);
+        sb_appends(&cmd, " && pm install"); sb_appends(&cmd, qopts.buf ? qopts.buf : "");
+        sb_appends(&cmd, " "); sb_append_shquoted(&cmd, dst.buf);
+        sb_free(&dst);
         int rc = daemon_exec(cmd.buf);
-        sb_free(&cmd); sb_free(&opts);
+        sb_free(&cmd); sb_free(&opts); sb_free(&qopts);
         return rc;
     }
 
@@ -959,10 +1021,13 @@ static int cmd_config_edit(char *token) {
         free(resp);
         return 1;
     }
+    /* mkstemps: náhodné jméno + O_EXCL, 0600 — nenásleduje podvržený symlink v /tmp. */
     char tmpfile[64];
-    snprintf(tmpfile, sizeof(tmpfile), "/tmp/.ashell_conf_%d.conf", getpid());
-    FILE *f = fopen(tmpfile, "w");
-    if (!f) { free(resp); return 1; }
+    snprintf(tmpfile, sizeof(tmpfile), "/tmp/.ashell_conf_XXXXXX.conf");
+    int tfd = mkstemps(tmpfile, 5);
+    if (tfd < 0) { free(resp); return 1; }
+    FILE *f = fdopen(tfd, "w");
+    if (!f) { close(tfd); remove(tmpfile); free(resp); return 1; }
     fwrite(resp, 1, strlen(resp), f);
     fclose(f);
     free(resp);

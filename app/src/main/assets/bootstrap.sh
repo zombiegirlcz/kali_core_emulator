@@ -169,37 +169,7 @@ EOF
     log "Created /root/.bashrc"
 fi
 
-# Create basic .zshrc for kali if missing
-if [ ! -f /home/kali/.zshrc ]; then
-    cat > /home/kali/.zshrc << 'EOF'
-zsh
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-autoload -Uz compinit
-compinit -u
-bindkey -v
-bindkey "^P" up-history
-bindkey "^N" down-history
-aliasshow() { sed -n 's/^alias *//p' ~/.zshrc | sed -n '/^alias /p' }
-EOF
-    log "Created /home/kali/.zshrc"
-fi
-
-# Create basic .zshrc for parrot if missing
-if [ ! -f /home/parrot/.zshrc ]; then
-    cat > /home/parrot/.zshrc << 'EOF'
-zsh
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-autoload -Uz compinit
-compinit -u
-bindkey -v
-bindkey "^P" up-history
-bindkey "^N" down-history
-aliasshow() { sed -n 's/^alias *//p' ~/.zshrc | sed -n '/^alias /p' }
-EOF
-    log "Created /home/parrot/.zshrc"
-fi
+# ~/.zshrc se negeneruje zde — nasazuje ho ProotManager z assets/zshrc.{kali,parrot}.
 
 # Set correct permissions for user homes
 log "Setting permissions for user homes..."
@@ -223,7 +193,7 @@ EOF
 # Set up NetHunter database (simplified)
 log "Setting up NetHunter database..."
 mkdir -p /opt/nethunter/data
-cat > /opt/nethunter/data/.nethunter << 'EOF'
+cat > /opt/nethunter/data/.nethunter << EOF
 VERSION=2.0
 INSTALL_DATE=$(date +%Y-%m-%d)
 EOF
@@ -247,7 +217,8 @@ log "Cleaning up temporary files..."
 rm -f /root/.bash_history
 rm -f /home/kali/.bash_history
 rm -f /home/parrot/.bash_history
-rm -rf /tmp/* /var/tmp/*
+# /tmp se nemaže: s --shared-tmp je to bind sdíleného $FILES_DIR/tmp (sockety, sessions).
+rm -rf /var/tmp/*
 
 # Final checks
 log "Performing final system checks..."

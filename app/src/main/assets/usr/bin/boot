@@ -64,20 +64,44 @@ if [ "${NH_ENV_FROM_APP:-0}" != "1" ]; then
 fi
 
 # ─── Session tracking ───────────────────────────────────
+# Formát čte MainActivity (karta „Active Sessions"): nh/sessions/<id>.pid
+# (PID) + <id>.info (popis). <id> = <distro>.<PID>, aby souběžné session
+# stejného distra nepřepisovaly jedna druhou. PID zůstává platný i po exec
+# do proot (exec PID nemění), takže kill z UI zasáhne proot. EXIT trap po exec
+# neběží -> mrtvé záznamy uklízí až další start (kill -0) a UI je ignoruje.
+nh_session_id() {
+    # $1 = distro name (docker image může obsahovat '/')
+    local _d
+    _d=$(echo "$1" | tr '/: ' '___')
+    echo "$_d.$$"
+}
+
 nh_session_start() {
     # $1 = distro name
-    local distro="$1"
+    local distro="$1" _f _p
     local SESSION_DIR="$FILES_DIR/nh/sessions"
+    local sid
+    sid=$(nh_session_id "$distro")
     mkdir -p "$SESSION_DIR"
-    # JSON session metadata
-    cat > "$SESSION_DIR/$$.json" << SESSIONEOF
-{"pid": $$, "container": "$distro", "kind": "login", "command": [], "user": "root", "start_time": $(date +%s), "isolated": ${NH_ISOLATED:-0}, "minimal": ${NH_MINIMAL:-0}, "detach": false}
-SESSIONEOF
+    # úklid záznamů mrtvých sessions + starý nečtený formát <pid>.json
+    for _f in "$SESSION_DIR"/*.pid; do
+        [ -f "$_f" ] || continue
+        _p=$(cat "$_f" 2>/dev/null || echo "")
+        if [ -z "$_p" ] || ! kill -0 "$_p" 2>/dev/null; then
+            rm -f "$_f" "${_f%.pid}.info"
+        fi
+    done
+    rm -f "$SESSION_DIR"/*.json 2>/dev/null || true
+    echo "$$" > "$SESSION_DIR/$sid.pid"
+    echo "$distro isolated=${NH_ISOLATED:-0} minimal=${NH_MINIMAL:-0} start=$(date +%s)" \
+        > "$SESSION_DIR/$sid.info"
 }
 
 nh_session_stop() {
-    local distro="$1"
-    rm -f "$FILES_DIR/nh/sessions/$distro.pid" "$FILES_DIR/nh/sessions/$distro.info" 2>/dev/null || true
+    # Volá se jen z EXIT trapu, tj. když boot skončí PŘED exec do proot.
+    local sid
+    sid=$(nh_session_id "$1")
+    rm -f "$FILES_DIR/nh/sessions/$sid.pid" "$FILES_DIR/nh/sessions/$sid.info" 2>/dev/null || true
 }
 
 nh_lock() {
@@ -651,7 +675,7 @@ boot_classic() {
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi' "$GUEST_SH" "$GUEST_PATH"
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -661,7 +685,7 @@ boot_classic() {
             # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
             # then exec the exact args verbatim (no shell re-quoting loss)
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; shift; exec "$@"' "$GUEST_SH" "$GUEST_PATH" "$@"
         fi
     fi
 
@@ -686,8 +710,40 @@ boot_classic() {
 #   NH_PATH=...                PATH v guestu
 #   NH_WORKDIR=/root           pracovní adresář
 #   NH_ENV=KEY=VAL             proměnná navíc (opakovatelné, bez mezer)
-#   NH_BIND=/src[:/dest]       bind navíc (opakovatelné, absolutní host cesta)
+#   NH_BIND=/src[:/dest]       bind navíc (opakovatelné, absolutní host cesta;
+#                              jen uvnitř rootfs nebo z allowlistu manifest_bind_ok)
 #   NH_PKG / NH_LIBC / NH_INTEGRATION čte appka (ProotManager), boot je ignoruje.
+# Manifest pochází ze staženého rootfs (katalog), takže mu nevěříme: NH_BIND
+# smí mířit jen do vlastního rootfs nebo na systémové cesty, které guest
+# beztak vidí (build_binds). Appková data, /data, / atd. se odmítnou.
+manifest_bind_ok() {
+    # $1 = ROOTFS, $2 = hodnota NH_BIND
+    local _src="${2%%:*}" _dst=""
+    case "$2" in *:*) _dst="${2#*:}" ;; esac
+    case "$_src$_dst" in *..*|*"	"*) return 1 ;; esac
+    [ -n "$_dst" ] && case "$_dst" in /*) ;; *) return 1 ;; esac
+    case "$_src" in
+        "$1"/*)
+            # symlink uvnitř rootfs by se na hostu vyhodnotil ven z rootfs
+            local _real _root
+            _real=$(readlink -f "$_src" 2>/dev/null) || return 1
+            _root=$(readlink -f "$1" 2>/dev/null) || return 1
+            case "$_real" in "$_root"/*) return 0 ;; esac
+            return 1 ;;
+        /dev|/dev/*|/proc|/proc/*|/sys|/sys/*) return 0 ;;
+        /system|/system/*|/vendor|/vendor/*|/product|/product/*) return 0 ;;
+        /apex|/apex/*|/linkerconfig/*) return 0 ;;
+        "$FILES_DIR/share"|"$FILES_DIR/share/"*) return 0 ;;
+    esac
+    return 1
+}
+
+# NH_PATH jde do guest PATH; povolit jen běžné znaky cest.
+manifest_path_ok() {
+    case "$1" in ''|*[!A-Za-z0-9_./:+-]*) return 1 ;; esac
+    return 0
+}
+
 MF_PRESENT=0 MF_SHELL="" MF_ENTRY="" MF_BOOTSTRAP="" MF_PATH="" MF_WORKDIR="" MF_ENV="" MF_BINDS=""
 read_manifest() {
     # $1 = ROOTFS
@@ -703,7 +759,9 @@ read_manifest() {
             NH_SHELL) MF_SHELL="$_v" ;;
             NH_ENTRYPOINT) MF_ENTRY="$_v" ;;
             NH_BOOTSTRAP) MF_BOOTSTRAP="$_v" ;;
-            NH_PATH) MF_PATH="$_v" ;;
+            NH_PATH)
+                if manifest_path_ok "$_v"; then MF_PATH="$_v"
+                else err "manifest: NH_PATH s neplatnými znaky ignorováno: $_v"; fi ;;
             NH_WORKDIR) MF_WORKDIR="$_v" ;;
             NH_ENV)
                 case "$_v" in
@@ -714,7 +772,12 @@ read_manifest() {
             NH_BIND)
                 case "$_v" in
                     *" "*) err "manifest: NH_BIND s mezerou ignorováno: $_v" ;;
-                    /*) MF_BINDS="$MF_BINDS -b $_v" ;;
+                    /*)
+                        if manifest_bind_ok "$1" "$_v"; then
+                            MF_BINDS="$MF_BINDS -b $_v"
+                        else
+                            err "manifest: NH_BIND mimo rootfs/allowlist přeskočeno: $_v"
+                        fi ;;
                     *) err "manifest: NH_BIND musí být absolutní cesta: $_v" ;;
                 esac ;;
         esac
@@ -879,7 +942,7 @@ boot_docker() {
         if [ $# -eq 0 ]; then
             # Bare `su` -> interactive root login shell
             exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi'
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; if command -v zsh >/dev/null 2>&1; then exec zsh --login; elif command -v bash >/dev/null 2>&1; then exec bash --login; else exec /bin/sh -l; fi' "$GUEST_SH" "$GUEST_PATH"
         else
             # Map /bin/sh or /system/bin/sh to guest shell
             if [ "$1" = "/bin/sh" ] || [ "$1" = "/system/bin/sh" ]; then
@@ -887,7 +950,7 @@ boot_docker() {
                 set -- "$GUEST_SH" "$@"
             fi
             exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH='"$GUEST_PATH"'; exec "$@"' -- "$@"
+                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; shift; exec "$@"' "$GUEST_SH" "$GUEST_PATH" "$@"
         fi
     fi
 
@@ -895,12 +958,15 @@ boot_docker() {
     if [ "$IS_TERMUX_IMAGE" = "1" ]; then
         # Host-shell image: inject profile + use login binary
         inject_profile "$ROOTFS"
+        # Hodnoty z manifestu jdou jako argumenty ($1 = PATH, $2 = cwd,
+        # zbytek = příkaz), nic se necituje do -c řetězce (jako _launch níže).
+        local _tlaunch='unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; cd "$2" 2>/dev/null || cd /; shift 2; exec "$@"'
         if [ -n "$ENTRYPOINT" ]; then
             exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec $ENTRYPOINT \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "$_tlaunch" "$GUEST_SH" "$GUEST_PATH" "$PROOT_CWD" "$ENTRYPOINT" "$@"
         else
             exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$PROOT_CWD" $BINDS \
-                "$GUEST_SH" -c "unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH=$GUEST_PATH; cd $PROOT_CWD 2>/dev/null || cd /; exec /data/data/com.termux/files/usr/bin/login \"\$@\"" -- "$@"
+                "$GUEST_SH" -c "$_tlaunch" "$GUEST_SH" "$GUEST_PATH" "$PROOT_CWD" /data/data/com.termux/files/usr/bin/login "$@"
         fi
     else
         # Normal image: (jednorázový bootstrap) + entrypoint nebo login shell.
@@ -1100,11 +1166,15 @@ cpu_pin_isolate_host() {
         case "$comm" in
             com.linux_core*|linux_core*|nethunter*|dropbear|sshd)
                 local pid=${p#/proc/}; pid=${pid%/comm}
-                $TASKSET_BIN -p "$avoid" "$pid" >/dev/null 2>&1 && \
+                # if, ne `&&`: proces mohl mezitím zaniknout a taskset selže;
+                # návratová hodnota by pak se `set -e` ukončila celý boot
+                if $TASKSET_BIN -p "$avoid" "$pid" >/dev/null 2>&1; then
                     log "CPU isolate: $comm ($pid) → 0x$avoid"
+                fi
                 ;;
         esac
     done
+    return 0
 }
 
 cpu_pin_apply() {

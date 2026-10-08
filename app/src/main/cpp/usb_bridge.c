@@ -152,14 +152,33 @@ static void usage(const char *prog)
     exit(1);
 }
 
-// Parse hex string like "7e0f" into bytes. Returns number of bytes written.
+// Parse hex string like "7e0f" (optional spaces between bytes) into bytes.
+// Returns number of bytes written, or -1 on invalid input (non-hex char,
+// odd number of digits, or more data than max_len) — nikdy tiše neořezat.
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 static int parse_hex(const char *hex, unsigned char *out, int max_len)
 {
     int len = 0;
-    while (*hex && len < max_len) {
-        unsigned int byte;
-        if (sscanf(hex, "%2x", &byte) != 1) break;
-        out[len++] = (unsigned char)byte;
+    while (*hex == ' ') hex++;
+    while (*hex) {
+        int hi = hex_nibble(hex[0]);
+        int lo = hi < 0 ? -1 : hex_nibble(hex[1]);
+        if (hi < 0 || lo < 0) {
+            fprintf(stderr, "Invalid hex data near \"%.8s\" (need pairs of 0-9a-f)\n", hex);
+            return -1;
+        }
+        if (len >= max_len) {
+            fprintf(stderr, "Hex data too long (max %d bytes)\n", max_len);
+            return -1;
+        }
+        out[len++] = (unsigned char)((hi << 4) | lo);
         hex += 2;
         // Skip optional spaces
         while (*hex == ' ') hex++;
@@ -232,6 +251,10 @@ int main(int argc, char **argv)
             unsigned char *buf = malloc(max_len);
             CHECK(buf, "malloc failed");
             int len = parse_hex(hex, buf, max_len);
+            if (len < 0) {
+                free(buf);
+                exit(1);
+            }
             if (len == 0) {
                 fprintf(stderr, "No hex data provided\n");
                 free(buf);
@@ -293,6 +316,10 @@ int main(int argc, char **argv)
         unsigned char *buf = malloc(max_len);
         CHECK(buf, "malloc failed");
         int len = parse_hex(hex, buf, max_len);
+        if (len < 0) {
+            free(buf);
+            exit(1);
+        }
 
         int ret = usb_control_transfer(bmReq, bReq, wVal, wIdx, buf, len, timeout_ms);
         if (ret < 0) {

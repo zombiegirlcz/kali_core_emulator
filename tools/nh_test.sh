@@ -36,7 +36,7 @@ if [ -z "$APP_UID" ] && command -v cmd >/dev/null 2>&1; then
     APP_UID=$(cmd package list packages -U "$PKG" 2>/dev/null | sed -n 's/.*uid:\([0-9][0-9]*\).*/\1/p' | head -n1)
 fi
 if [ -z "$APP_UID" ]; then
-    APP_UID=$(id 2>/dev/null | sed -n 's/.*u0_a\([0-9][0-9]*\).*/1\1/p' | head -n1)
+    APP_UID=$(id 2>/dev/null | sed -n 's/.*u0_a\([0-9][0-9]*\).*/\1/p' | head -n1)
     [ -n "$APP_UID" ] && APP_UID=$((10000 + APP_UID))
 fi
 [ -z "$APP_UID" ] && APP_UID=10323
@@ -164,11 +164,13 @@ fi
 
 # ── korelace ──────────────────────────────────────────────
 # Pocitej jen nase endpointy (vynech /app/logs harness).
-REQS=$(grep -E 'Request: (GET|POST) ' "$RAW" 2>/dev/null | grep -vc '/app/logs' || echo 0)
+REQS=$(grep -E 'Request: (GET|POST) ' "$RAW" 2>/dev/null | grep -vc '/app/logs' || true)
 # Vsechny varianty uspechu: "EXECUTED ...", "EXECUTED: ...", "POSTED", "READ EXECUTED".
-EXEC_OK=$(grep -cE 'EXECUTED|POSTED|READ EXECUTED' "$RAW" 2>/dev/null || echo 0)
+EXEC_OK=$(grep -cE 'EXECUTED|POSTED|READ EXECUTED' "$RAW" 2>/dev/null || true)
 # Chyby: ok=false z accessibility + speech permission + E/ radky z naseho serveru.
-ERRS=$(grep -cE 'EXECUTED ok=false|Speech error|E/LocalApiServer' "$RAW" 2>/dev/null || echo 0)
+ERRS=$(grep -cE 'EXECUTED ok=false|Speech error|E/LocalApiServer' "$RAW" 2>/dev/null || true)
+# grep -c při 0 shodách tiskne "0" A vrací 1 → "|| echo 0" by dal "0\n0"
+REQS=${REQS:-0}; EXEC_OK=${EXEC_OK:-0}; ERRS=${ERRS:-0}
 
 {
     echo "=========================================================="

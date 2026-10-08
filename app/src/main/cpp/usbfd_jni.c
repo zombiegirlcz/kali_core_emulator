@@ -11,6 +11,7 @@
  *     -I$NDK/sysroot/usr/include -I$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
  */
 
+#define _GNU_SOURCE  /* struct ucred / SO_PEERCRED */
 #include <jni.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -62,8 +63,9 @@ Java_com_linux_1core_core_UsbFdExporter_nativeCreateServerSocket(
         return -err;
     }
 
-    // Make socket world-readable/writable so PRoot (same UID) can connect
-    chmod(cpath, 0666);
+    // PRoot guest běží pod stejným app UID (sudo seance = root, ten DAC obejde),
+    // takže stačí 0600 — žádný world-writable socket (dřív 0666).
+    chmod(cpath, 0600);
 
     if (listen(fd, MAX_CLIENTS) < 0) {
         int err = errno;
@@ -95,7 +97,23 @@ Java_com_linux_1core_core_UsbFdExporter_nativeAcceptAndSendFd(
         return -err;
     }
 
-    LOGI("Client connected on fd=%d, sending USB fd=%d", clientFd, usbFd);
+    // Peer kontrola: USB fd dostane jen vlastní UID (PRoot guest) nebo root (sudo).
+    struct ucred cred;
+    socklen_t credLen = sizeof(cred);
+    if (getsockopt(clientFd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) < 0) {
+        int err = errno;
+        LOGE("SO_PEERCRED failed: %s — client rejected", strerror(err));
+        close(clientFd);
+        return -err;
+    }
+    if (cred.uid != getuid() && cred.uid != 0) {
+        LOGE("Client uid=%u pid=%d not allowed (own uid=%u/0) — rejected",
+             (unsigned)cred.uid, (int)cred.pid, (unsigned)getuid());
+        close(clientFd);
+        return -EACCES;
+    }
+
+    LOGI("Client connected on fd=%d (uid=%u), sending USB fd=%d", clientFd, (unsigned)cred.uid, usbFd);
 
     // SCM_RIGHTS: pass the USB fd to the client
     // We send a single dummy byte + ancillary fd
@@ -155,6 +173,10 @@ JNIEXPORT jint JNICALL
 Java_com_linux_1core_core_UsbFdExporter_nativeReadClient(
     JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
+    if (!buf) return -EINVAL;
+    jsize arrLen = (*env)->GetArrayLength(env, buf);
+    // offset/len z Javy validovat vůči délce pole (jinak zápis/čtení mimo buffer)
+    if (offset < 0 || len < 0 || offset > arrLen || len > arrLen - offset) return -EINVAL;
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
     if (!cBuf) return -ENOMEM;
 
@@ -172,11 +194,15 @@ JNIEXPORT jint JNICALL
 Java_com_linux_1core_core_UsbFdExporter_nativeWriteClient(
     JNIEnv *env, jobject thiz, jint clientFd, jbyteArray buf, jint offset, jint len)
 {
+    if (!buf) return -EINVAL;
+    jsize arrLen = (*env)->GetArrayLength(env, buf);
+    // offset/len z Javy validovat vůči délce pole (jinak zápis/čtení mimo buffer)
+    if (offset < 0 || len < 0 || offset > arrLen || len > arrLen - offset) return -EINVAL;
     jbyte *cBuf = (*env)->GetByteArrayElements(env, buf, NULL);
     if (!cBuf) return -ENOMEM;
 
     ssize_t n = write(clientFd, cBuf + offset, len);
-    (*env)->ReleaseByteArrayElements(env, buf, cBuf, 0);
+    (*env)->ReleaseByteArrayElements(env, buf, cBuf, JNI_ABORT);  // jen čteno, bez zpětné kopie
 
     if (n < 0) return -errno;
     return (jint)n;

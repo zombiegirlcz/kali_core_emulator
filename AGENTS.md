@@ -65,9 +65,10 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 | Port | Služba |
 |---|---|
 | 1337 | `LocalApiServer` — REST most (baterka, toast, wifi, GPS, schránka, VPN, USB, `/shell`, `/distro/*`) |
-| 13338 | AI agent démon (`nethunter_agent.py`, ReAct LLM, nástroj `analyze_network`) |
 | 13339 | VPN bypass proxy (`http(s)_proxy` pro guest → obchází AdGuard) |
 | 6000/tcp | X11 server **Xvfb :0** v guestu (`DISPLAY=:0`, viewer `127.0.0.1:6000`) |
+| 13340 | `ashell_pty` (PTY/pipe relay, jen vlastní UID / root / 2000) |
+| 13341 | `shell_daemon` (uid 2000, token) |
 
 ### Klíčové třídy
 
@@ -156,13 +157,50 @@ Původní audit: 25 nálezů (9 CRITICAL / 8 HIGH / 5 MEDIUM / 3 LOW) — všech
 - **AndroidManifest.xml:** `allowBackup=false`, `usesCleartextTraffic=false`, `networkSecurityConfig`;
   citlivé komponenty (`TerminalActivity`, notification/accessibility service, `DistroDocumentsProvider`)
   `exported="false"`.
-- **LocalApiServer.kt:** Bearer token (UUID v `api_security` SharedPreferences), localhost detekce pro
-  citlivé endpointy, blocklist destruktivních příkazů, max délka commandu 1024 znaků.
+- **LocalApiServer.kt:** Bearer token (šifrovaně v `api_security`, plaintext pro guest v `filesDir/api.token`), povinný
+  pro citlivé endpointy i z loopbacku, blocklist destruktivních příkazů, max délka commandu (`/shell` 1024, `/shelldaemon/exec` 8192).
 - **RootfsManager.kt:** HTTPS + host whitelist (`kali.org`, `parrot.sh`, `raw.githubusercontent.com`),
   TLS 1.2+, OkHttp timeouty. **VpnFirewallManager.kt:** IPv4/IPv6 validace před blokací.
 - **res/xml/network_security_config.xml:** cert piny (platnost do 2027-12-31).
 - Hotovo: cert pinning, `OffensiveEngine` notification confirm (Allow/Deny, 30 s), odstraněný hex dump
-  z CSV/JSON exportu, autentizace agenta na 13338.
+  z CSV/JSON exportu. Starý python agent (13338) odstraněn 2026-10-08 → AI je v appce
+  Kali AI Assistant (`com.kali.aiassistant`); `nh agent ask` i hlasový asistent jí dotaz jen předají.
+
+### Audit 2026-10-08 — záměrná rozhodnutí (NEhlásit znovu jako chyby)
+
+- **Uživatelské CA v `network_security_config.xml`** jsou záměrné — bez nich nefunguje TLS MITM
+  (uživatel instaluje vygenerovanou CA z `GET /vpn/mitm/ca`).
+- **Rootfs katalog / Docker image** se ověřují při přidání do seznamu v repu `zombiegirlcz/ROOTFS-for-proot`
+  (`tools/validate.py`, SHA256 v `<distro>.sh`) — appka pak stahuje jen z katalogu.
+- **`app/debug.jks`** (alias `debugKey`, heslo `password123`) je veřejný vývojový klíč, ne tajný release klíč.
+- **Loopback ≠ důvěra (API token):** na 127.0.0.1 se dostane každá appka v zařízení a UID volajícího
+  z `/proc/net/tcp{,6}` ani `sock_diag` **zjistit nejde** (SELinux `untrusted_app_27` → EACCES, ověřeno
+  2026-10-08). Proto citlivé endpointy na 1337 chtějí Bearer token **i z loopbacku** a `ashell_pty`
+  (13340) chce token v 6. poli HELLO. Token: `LocalApiServer.start()` ho vygeneruje/rozšifruje a zapíše
+  plaintext do `filesDir/api.token` (0600, jen UID appky → appka, její PRoot guest a root). `api_security.xml`
+  drží jen šifrované `enc:…` — guest ho **nepoužije**. Klienti: `nh` (`get_token`), `ashell`
+  (`read_auth_token`, posílá token u každého HTTP requestu i v HELLO). Nový klient = musí číst `api.token`.
+  (Dřív se `getAuthToken()` nikde nevolalo → `authToken==null` a prázdný `Bearer ` prošel.)
+- **`su_daemon` socket** je `0600` pod app UID + `SO_PEERCRED` (jen uid 0 a app UID z argv[4]);
+  perzistentní sudo sessions v root-only `/data/local/tmp/.nh_sud` (0700, peer musí být root).
+- **`shell_daemon`**: `accept4(SOCK_CLOEXEC)` (děti nedědí `client_fd`), token porovnáván v konstantním
+  čase a po parsování přepsán v argv; useknutý výstup (> 256 KB) hlásí do stderr.
+- **Limity příkazů:** `/shell` 1024 znaků (`ExecCore.hostExec`), `/shelldaemon/exec` 8192
+  (`MAX_SHELL_CMD_LEN`) + stejný `DESTRUCTIVE_PATTERNS`/blocklist jako `/shell`.
+- **Manifest rootfs je nedůvěryhodný:** `boot` pustí `NH_BIND` jen do vlastního rootfs (bez symlinků ven)
+  nebo na allowlist (`/dev`, `/proc`, `/sys`, `/system`, `/vendor`, `/product`, `/apex`, `$FILES_DIR/share`),
+  `NH_PATH` jen se znaky `[A-Za-z0-9_./:+-]`; hodnoty se předávají jako argumenty, ne do `-c` řetězce.
+- **Session evidence:** `boot` zapisuje `nh/sessions/<distro>.<PID>.pid` + `.info` (čte MainActivity),
+  mrtvé záznamy uklízí při dalším startu.
+- **`tools/mbuild`** odmítne `all|native|smart|pull|proot`, když jsou necommitnuté změny v `assets/`,
+  `jniLibs/`, `magisk-modules/` (pull by je přepsal); přebití `MBUILD_FORCE_PULL=1`. Výstup jde i do
+  `build.log` (`tee`).
+- **`su_daemon` blocklist** přeskakuje obalové příkazy (`env`, `timeout`, `busybox`, …) a chrání
+  `/`, `/system`, `/vendor`, `/data`, `/dev`, `/proc`, `/sys`, `/storage`, … (rekurzivní chmod/chown/rm,
+  `find -delete`); `-c` payload se skenuje celý. Je to pojistka proti nehodě, ne bezpečnostní hranice.
+- Root zápisy (cpuctl, Magisk moduly) nikdy nenásledují symlinky v app-writable/`/data/local/tmp`
+  (`O_NOFOLLOW`, `lchown`, logy `custom_usb_g2_setup` v `/data/adb/usb_g2`).
+- Dropbear se v `entrypoint.sh` **nespouští automaticky** (dřív 0.0.0.0:2222 + účty bez hesla).
 
 ### Cert pin SHA-256 (k 2026-06-27, potřebují obnovu po expiraci)
 
@@ -200,7 +238,7 @@ Kompletní proxy pro dešifrování HTTPS v VPN tunelu. Zapnuto/vypnuto přes `e
   `VpnNatEngine.kt` (detekce), `VpnSecurityTab.kt` (UI), `VpnSettingsTab.kt` (přepínač),
   `LocalApiServer.kt` (endpointy).
 - **CLI:** `vpn-cli mitm on|off|status|ca`, `vpn-cli logs [json]` (token z
-  `/data/data/com.linux_core/shared_prefs/api_security.xml`).
+  `/data/data/com.linux_core/files/api.token`).
 - **API (1337, Bearer):** `POST /vpn/mitm` (on|off), `GET /vpn/mitm`, `GET /vpn/mitm/ca`,
   `GET /vpn/mitm/logs[?format=json]`.
 - **Známé bugy — nevracet zpět:** double-flip v `writeToServer` (volající flipují sami); passthrough
@@ -551,7 +589,7 @@ default přesměrovává stderr do /dev/null, takže `spatny magic`/crash hláš
 **su_daemon / Root Bridge:** fork-per-connection (parent hned `accept()`, žádné blokování nových `sudo`),
 POLLHUP → SIGKILL command childa, config v `g_*` globálech, ignorovat SIGPIPE, `pkill -x` (ne `-f`),
 fail-closed bez launcheru (`_exit(126)`), **re-entry do PRoot** místo host `chroot` (ochrana proti
-host-globálním příkazům), ownership fix `nftw`+`lchown` s vynecháním bind dirů
+host-globálním příkazům), ownership fix fd-based (`openat`+`fchownat` `AT_SYMLINK_NOFOLLOW`, odolné proti TOCTOU) s vynecháním bind dirů
 (`dev proc sys run sdcard mnt system vendor product apex storage data`), `@FIX` režim + `nh fix permission`.
 
 **Terminál:** paste přes `emulator.paste()` (bracketed paste, ESC/C1 sanitizace), ne `session.write()`;
@@ -573,7 +611,7 @@ KAŽDÉ volání (`api_call()`/`daemon_exec()`) a psal si dočasný `.py` klient
 každý ten fork+exec generoval vlastní `avc: granted { execute }` (viz „Druhý zdroj audit bouře" výše);
 `-c` dělal 1 extra exec (python3 pro PTY bridge), `ashell adb <cmd>` dělal 2 (curl+python3). Nativní
 klient mluví HTTP (127.0.0.1:1337) i binární `ashell_pty` protokol (127.0.0.1:13340, framing
-`0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`) přímo raw sockety — 0 extra
+`0x01 STDIN/0x02 STDOUT/0x03 WINCH/0x04 EXIT/0x05 HELLO/0x06 STDIN_EOF`; HELLO = `cmd\0cwd\0rootfs\0term\0interactive\0token\0`) přímo raw sockety — 0 extra
 execů na hot paths. CLI grammar zachována 1:1 (`-c`, `adb start/stop/status/shell/<cmd>/install/
 uninstall/push/pull/devices/help`, `--add/--remove/--list/-e`, bare = host shell) + vedoucí boolean vlajky
 `-v`/`--verbose` (debug marker, nebo env `ASHELL_DEBUG=1`) a `-t`/`--tty` (vynuť serverový PTY). Oddělené

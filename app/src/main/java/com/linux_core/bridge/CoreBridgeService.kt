@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.IBinder
-import android.os.Process
 import android.util.Log
 import com.linux_core.BuildConfig
 import com.linux_core.core.device.DeviceInfo
@@ -55,17 +54,30 @@ class CoreBridgeService : Service() {
             }
         }
 
-        override fun getBattery(): String = DeviceInfo.batteryJson(applicationContext)
-        override fun getWifi(): String = DeviceInfo.wifiJson(applicationContext)
-        override fun getLocation(): String = DeviceInfo.locationJson(applicationContext)
+        override fun getBattery(): String {
+            checkCaller("getBattery")
+            return DeviceInfo.batteryJson(applicationContext)
+        }
+
+        override fun getWifi(): String {
+            checkCaller("getWifi")
+            return DeviceInfo.wifiJson(applicationContext)
+        }
+
+        override fun getLocation(): String {
+            checkCaller("getLocation")
+            return DeviceInfo.locationJson(applicationContext)
+        }
 
         override fun getStatus(): String {
             checkCaller("getStatus")
             return """{"bridge_version":1,"core_version":"${BuildConfig.VERSION_NAME}"}"""
         }
 
-        override fun listDistros(): String =
-            ExecCore.listDistros(applicationContext)
+        override fun listDistros(): String {
+            checkCaller("listDistros")
+            return ExecCore.listDistros(applicationContext)
+        }
     }
 
     /**
@@ -77,9 +89,11 @@ class CoreBridgeService : Service() {
         val pm = packageManager
         val callerUid = Binder.getCallingUid()
 
-        // Stejné UID (sharedUserId cz.nethunter.agent) → jiná appka téhož účtu.
-        // Je podepsaná stejným klíčem už tím, že sharedUserId vůbec dostala.
-        if (callerUid == Process.myUid()) return
+        // Stejné UID (sharedUserId cz.nethunter.agent) se už NEpropouští zkratkou —
+        // ověřuje se stejně jako cizí UID přes checkSignatures(). Pro kali_ai_assistant
+        // to nic nemění (sharedUserId vyžaduje stejný podpis, takže MATCH projde), ale
+        // bezpečnost nestojí jen na zastaralém sharedUserId mechanismu.
+        // sharedUserId z manifestu odebrat nejde — změna by vyžadovala reinstalaci.
 
         // POZOR: getNameForUid() vrací u sdíleného UID jméno shared-user účtu
         // (např. "cz.nethunter.agent"), ne jméno balíčku — checkSignatures() na

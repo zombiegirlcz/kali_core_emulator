@@ -4,6 +4,7 @@ import org.bouncycastle.asn1.x500.X500Name
 import java.math.BigInteger
 import java.net.InetAddress
 import java.security.PrivateKey
+import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.Date
 import java.util.regex.Pattern
@@ -33,7 +34,7 @@ internal object MitmCertSigner {
         val notAfter = Date(now.time + oneDay * 30)
 
         val builder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
-            caCert, BigInteger.valueOf(serial), notBefore, notAfter, subject, subjectPublicKey
+            caCert, randomSerial(serial), notBefore, notAfter, subject, subjectPublicKey
         )
 
         sanDns.forEach { validateDnsName(it) }
@@ -53,6 +54,22 @@ internal object MitmCertSigner {
     }
 
     private const val SIGNER_ALGO = "SHA256WithRSA"
+
+    private val serialRng = SecureRandom()
+
+    /**
+     * Sériové číslo certifikátu: 159 náhodných bitů z [SecureRandom] (kladné, max 20 oktetů
+     * dle RFC 5280 §4.1.2.2). Volající historicky předávají `System.currentTimeMillis()` —
+     * MITM sessiony běží souběžně, takže dva leafy ze stejné ms by měly stejný serial pod
+     * stejným issuerem. Parametr [hint] se proto nepoužívá jako serial, jen zůstává kvůli
+     * API kompatibilitě volajících.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun randomSerial(hint: Long): BigInteger {
+        var s: BigInteger
+        do { s = BigInteger(159, serialRng) } while (s.signum() == 0)
+        return s
+    }
     private const val MAX_HOSTNAME_LENGTH = 253
     private val HOSTNAME_PATTERN = Pattern.compile(
         "^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*$"
@@ -99,7 +116,7 @@ internal object MitmCertSigner {
 
         val builder: org.bouncycastle.cert.X509v3CertificateBuilder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
             caCert,
-            BigInteger.valueOf(serial),
+            randomSerial(serial),
             notBefore,
             notAfter,
             subject,
@@ -144,7 +161,7 @@ internal object MitmCertSigner {
         val oneDay = 1000L * 60 * 60 * 24
         val notBefore = Date(now.time - oneDay)
         val notAfter = Date(now.time + oneDay * validityDays)
-        val serial = BigInteger.valueOf(now.time)
+        val serial = randomSerial(now.time)
 
         val builder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
             name, serial, notBefore, notAfter, name, keyPair.public
