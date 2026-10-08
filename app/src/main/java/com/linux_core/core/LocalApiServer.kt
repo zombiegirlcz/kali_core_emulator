@@ -504,7 +504,7 @@ object LocalApiServer {
                 "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
                 "/vpn/logs", "/map", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/usb/",
-                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/cpu/apps", "/terminal/input")
+                "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/shizuku", "/cpu/apps", "/terminal/input")
             val isLocalConnection = try {
                 val localAddr = socket.localAddress?.hostAddress ?: "127.0.0.1"
                 val remoteAddr = socket.inetAddress?.hostAddress ?: ""
@@ -660,6 +660,13 @@ object LocalApiServer {
                 path == "/shelldaemon/stop" && method == "POST" -> handleShellDaemonStop(context, out)
                 path == "/shelldaemon/exec" && method == "POST" -> handleShellDaemonExec(context, body, out)
                 path == "/shelldaemon/install" && method == "POST" -> handleShellDaemonInstall(context, body, out)
+
+                // ─── Shizuku-compat server (uid 2000, nh shizuku) ───────────
+                path == "/shizuku/info" && method == "GET" -> handleShizukuInfo(context, out)
+                path == "/shizuku/permission/list" && method == "GET" -> handleShizukuPermissionList(context, out)
+                path.startsWith("/shizuku/permission") && method == "GET" -> handleShizukuPermissionGet(context, path, out)
+                path == "/shizuku/permission" && method == "POST" -> handleShizukuPermissionPost(context, body, out)
+                path.startsWith("/shizuku/resolve") && method == "GET" -> handleShizukuResolve(context, path, out)
 
                 // ─── USB Host endpoints ─────────────────────────────────────
                 path == "/usb/devices" && method == "GET" -> handleUsbDevices(context, out)
@@ -1391,6 +1398,111 @@ object LocalApiServer {
         }
         val json = ShellDaemonClient.install(context, java.io.File(apk), args)
         sendResponse(out, statusFor(json), "OK", json)
+    }
+
+    // ─── Shizuku-compat server (uid 2000, app_process, viz com.linux_core.shizuku) ───
+
+    private const val SHIZUKU_PREFS = "shizuku_permissions"
+    private const val SHIZUKU_PID_FILE = "/data/local/tmp/shizuku_server.pid"
+    private const val SHIZUKU_TOKEN_KEY = "shizuku_server_token"
+
+    /** Perzistentní token pro vlastní bootstrap (stejný princip jako ShellDaemonClient.ensureToken). */
+    private fun ensureShizukuToken(context: Context): String {
+        val prefs = context.getSharedPreferences("api_security", Context.MODE_PRIVATE)
+        var t = prefs.getString(SHIZUKU_TOKEN_KEY, null)
+        if (t.isNullOrEmpty()) {
+            t = java.util.UUID.randomUUID().toString().replace("-", "")
+            prefs.edit().putString(SHIZUKU_TOKEN_KEY, t).apply()
+        }
+        return t
+    }
+
+    /**
+     * GET /shizuku/info → {token, apkPath, pid, running}
+     * Volá `nh shizuku start` (uid app, čte vlastní api.token) k získání
+     * startovacího tokenu pro app_process server (uid 2000, nemůže číst
+     * filesDir appky) — stejný vzor jako /shelldaemon/info.
+     */
+    private fun handleShizukuInfo(context: Context, out: OutputStream) {
+        val token = ensureShizukuToken(context)
+        val apkPath = context.packageManager.getApplicationInfo(context.packageName, 0).sourceDir
+        val pid = readShizukuPid()
+        val running = pid != null && isPidAlive(pid)
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("token", token)
+            put("apkPath", apkPath)
+            put("mainClass", "com.linux_core.shizuku.ShizukuServerMain")
+            put("pid", pid ?: JSONObject.NULL)
+            put("running", running)
+        }.toString())
+    }
+
+    private fun readShizukuPid(): Int? = try {
+        java.io.File(SHIZUKU_PID_FILE).readText().trim().toIntOrNull()
+    } catch (_: Exception) { null }
+
+    private fun isPidAlive(pid: Int): Boolean = try {
+        java.io.File("/proc/$pid").exists()
+    } catch (_: Exception) { false }
+
+    /** GET /shizuku/permission/list → [{package, granted}, ...] */
+    private fun handleShizukuPermissionList(context: Context, out: OutputStream) {
+        val prefs = context.getSharedPreferences(SHIZUKU_PREFS, Context.MODE_PRIVATE)
+        val arr = org.json.JSONArray()
+        for ((pkg, granted) in prefs.all) {
+            arr.put(JSONObject().apply { put("package", pkg); put("granted", granted as? Boolean ?: false) })
+        }
+        sendResponse(out, 200, "OK", arr.toString())
+    }
+
+    /** GET /shizuku/permission?pkg=<balíček> → {granted: bool} — volá server (uid 2000) při checkSelfPermission/attachApplication. */
+    private fun handleShizukuPermissionGet(context: Context, path: String, out: OutputStream) {
+        val pkg = parseQueryParams(path)["pkg"]
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"pkg required\"}")
+            return
+        }
+        val prefs = context.getSharedPreferences(SHIZUKU_PREFS, Context.MODE_PRIVATE)
+        sendResponse(out, 200, "OK", JSONObject().apply {
+            put("package", pkg)
+            put("granted", prefs.getBoolean(pkg, false))
+        }.toString())
+    }
+
+    /** POST /shizuku/permission {"package":"...", "granted":bool} — jediný způsob udělení/odebrání, čistě přes `nh shizuku grant/revoke` CLI. */
+    private fun handleShizukuPermissionPost(context: Context, body: String, out: OutputStream) {
+        val pkg: String
+        val granted: Boolean
+        try {
+            val obj = JSONObject(body.trim())
+            pkg = obj.getString("package")
+            granted = obj.optBoolean("granted", true)
+        } catch (_: Exception) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"Invalid JSON body\"}")
+            return
+        }
+        val prefs = context.getSharedPreferences(SHIZUKU_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(pkg, granted).apply()
+        sendResponse(out, 200, "OK", JSONObject().apply { put("package", pkg); put("granted", granted) }.toString())
+    }
+
+    /** GET /shizuku/resolve?pkg=<balíček> → {apkPath, uid} — pro budoucí UserService hosting. */
+    private fun handleShizukuResolve(context: Context, path: String, out: OutputStream) {
+        val pkg = parseQueryParams(path)["pkg"]
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "Bad Request", "{\"error\":\"pkg required\"}")
+            return
+        }
+        try {
+            val ai = context.packageManager.getApplicationInfo(pkg, 0)
+            sendResponse(out, 200, "OK", JSONObject().apply {
+                put("package", pkg)
+                put("apkPath", ai.sourceDir)
+                put("uid", ai.uid)
+            }.toString())
+        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+            sendResponse(out, 404, "Not Found", "{\"error\":\"package not found\"}")
+        }
     }
 
     /**

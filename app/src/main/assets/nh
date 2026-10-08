@@ -1183,6 +1183,154 @@ print("cp %s %s && pm install%s %s" % (shlex.quote(apk), shlex.quote(dst), opts,
     esac
 }
 
+# ─── SHIZUKU (Shizuku-protokol-kompatibilní server, uid 2000) ────────
+
+shizuku_help() {
+    cat <<'EOF'
+nh shizuku — Shizuku-kompatibilní privilegovaný server (uid 2000, app_process)
+
+  nh shizuku start              spustí server (jednorázově, přes adb shell)
+  nh shizuku stop                zastaví server
+  nh shizuku restart             stop + start
+  nh shizuku status              stav serveru (pidfile + /proc probe)
+  nh shizuku list                seznam balíčků s uloženým grant stavem
+  nh shizuku grant <balíček>     povolí balíčku Shizuku přístup (persistentní, CLI)
+  nh shizuku revoke <balíček>    zakáže balíčku Shizuku přístup
+
+Pozn.: appky používající `rikka.shizuku:api` knihovnu fungují beze změny —
+server mluví stejný binární protokol (AIDL vendorováno 1:1 z originálu).
+Grant/revoke je čistě CLI, žádná potvrzovací notifikace v appce.
+EOF
+}
+
+shizuku_pid() {
+    local resp
+    resp=$(api_get "/shizuku/info") || return 1
+    [ -z "$resp" ] && return 1
+    echo "$resp" | fmt '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    p = d.get("pid")
+    print(p if p else "0", "1" if d.get("running") else "0")
+except Exception:
+    print("0 0")
+'
+}
+
+shizuku_alive() {
+    local st; st=$(shizuku_pid) || return 1
+    [ "${st##* }" = "1" ]
+}
+
+shizuku_start() {
+    if shizuku_alive; then
+        echo "[+] shizuku server už běží."
+        return 0
+    fi
+    if ! command -v adb >/dev/null 2>&1; then
+        echo "[-] adb není v guestu k dispozici (apt install android-tools-adb)." >&2
+        return 1
+    fi
+    if ! adb devices 2>/dev/null | grep -q device$; then
+        echo "[-] adb není připojeny. Nejdřív spáruj (adb pair/connect)." >&2
+        return 1
+    fi
+    local resp apk token
+    resp=$(api_get "/shizuku/info") || { echo "[-] LocalApiServer neodpovídá." >&2; return 1; }
+    apk=$(echo "$resp" | fmt 'import sys,json; print(json.load(sys.stdin).get("apkPath",""))')
+    token=$(echo "$resp" | fmt 'import sys,json; print(json.load(sys.stdin).get("token",""))')
+    if [ -z "$apk" ] || [ -z "$token" ]; then
+        echo "[-] Nepodařilo se získat apkPath/token z /shizuku/info." >&2
+        return 1
+    fi
+    echo "[*] Startuji Shizuku-compat server pod shell UID (non-root)..."
+    adb shell "nohup sh -c \"CLASSPATH='$apk' app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token\" >/dev/null 2>&1 &" >/dev/null 2>&1
+    sleep 2
+    if shizuku_alive; then
+        echo "[+] shizuku server běží."
+        return 0
+    fi
+    echo "[-] shizuku server nenaběhl." >&2
+    return 1
+}
+
+shizuku_stop() {
+    local st pid
+    st=$(shizuku_pid)
+    pid="${st%% *}"
+    if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+        adb shell "kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null || true" >/dev/null 2>&1
+    fi
+    adb shell "rm -f /data/local/tmp/shizuku_server.pid 2>/dev/null || true" >/dev/null 2>&1
+    echo "[+] shizuku server stopped"
+}
+
+shizuku_status() {
+    local st pid running
+    st=$(shizuku_pid) || { echo "[-] LocalApiServer neodpovídá na /shizuku/info" >&2; return 1; }
+    pid="${st%% *}"; running="${st##* }"
+    if [ "$running" = "1" ]; then
+        echo "[+] shizuku server běží (pid=$pid)"
+    else
+        echo "[-] shizuku server neběží"
+    fi
+}
+
+shizuku_list() {
+    api_get "/shizuku/permission/list" | fmt '
+import sys, json
+try:
+    arr = json.load(sys.stdin)
+except Exception:
+    arr = []
+if not arr:
+    print("(žádné uložené grant záznamy)")
+for e in arr:
+    print("%-40s %s" % (e.get("package",""), "granted" if e.get("granted") else "denied"))
+'
+}
+
+shizuku_grant_revoke() {
+    local pkg="$1" granted="$2"
+    if [ -z "$pkg" ]; then
+        echo "[-] Usage: nh shizuku grant|revoke <balíček>" >&2
+        return 1
+    fi
+    local body
+    body=$(PKG="$pkg" GR="$granted" fmt '
+import json, os
+print(json.dumps({"package": os.environ["PKG"], "granted": os.environ["GR"] == "1"}))
+')
+    local resp
+    resp=$(api_post_json "/shizuku/permission" "$body")
+    if [ -z "$resp" ]; then
+        echo "[-] Požadavek selhal." >&2
+        return 1
+    fi
+    echo "$resp" | fmt '
+import sys, json
+d = json.load(sys.stdin)
+print("[+] %s: %s" % (d.get("package",""), "granted" if d.get("granted") else "denied"))
+'
+}
+
+shizuku_dispatch() {
+    local sub="${1:-status}"
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        start) shizuku_start ;;
+        stop) shizuku_stop ;;
+        restart) shizuku_stop; sleep 1; shizuku_start ;;
+        status) shizuku_status ;;
+        list) shizuku_list ;;
+        grant) shizuku_grant_revoke "$1" "1" ;;
+        revoke) shizuku_grant_revoke "$1" "0" ;;
+        help|-h|--help) shizuku_help ;;
+        *) echo "[-] Neznámý příkaz: nh shizuku $sub" >&2; shizuku_help; return 1 ;;
+    esac
+}
+
 # ─── LOG ───────────────────────────────────────────────────
 
 log_dispatch() {
@@ -1910,6 +2058,7 @@ help_dispatch() {
         vpn)                      help_vpn ;;
         agent|ai)                 help_agent ;;
         adb)                      adb_help ;;
+        shizuku)                  shizuku_help ;;
         log|logs)                 help_log ;;
         device|dev)               help_device ;;
         api)                      help_api ;;
@@ -3909,6 +4058,7 @@ case "$CMD" in
     vpn)                    vpn_dispatch "$@" ;;
     agent|ai)               agent_dispatch "$@" ;;
     adb)                    adb_dispatch "$@" ;;
+    shizuku)                shizuku_dispatch "$@" ;;
     log|logs)               log_dispatch "$@" ;;
     device|dev)             device_dispatch "$@" ;;
     api)                    api_dispatch "$@" ;;
