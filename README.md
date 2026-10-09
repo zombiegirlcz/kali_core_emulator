@@ -580,8 +580,10 @@ nh shizuku list | revoke <balíček> | status | stop | restart
   `<balíček>.shizuku` provider (znovu po restartu appky) — po `grant` stačí appku
   otevřít / restartovat.
 - `newProcess` a `setSystemProperty` bez grantu → `SecurityException`.
-- Nepodporováno: UserService (`addUserService`) a raw transact-relay — appky,
-  které je vyžadují (Hail, Canta…), zatím nefungují.
+- UserService (`Shizuku.bindUserService`, např. aShell, MacroDroid) — server spustí
+  `app_process` `<balíček>:<suffix>` pod uid 2000 a předá klientovi binder jeho služby.
+  Non-daemon služby končí se smrtí klienta, všechny služby se zastavením serveru.
+- Nepodporováno: raw transact-relay (`BINDER_TRANSACTION_transact`).
 
 ---
 

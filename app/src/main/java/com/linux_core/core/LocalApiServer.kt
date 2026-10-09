@@ -1501,7 +1501,7 @@ object LocalApiServer {
         sendResponse(out, 200, "OK", JSONObject().apply { put("package", pkg); put("granted", granted) }.toString())
     }
 
-    /** GET /shizuku/resolve?pkg=<balíček> → {apkPath, uid} — pro budoucí UserService hosting. */
+    /** GET /shizuku/resolve?pkg=<balíček> → {apkPath, uid} — UserService hosting (ověření vlastníka, CLASSPATH starteru). */
     private fun handleShizukuResolve(context: Context, path: String, out: OutputStream) {
         val pkg = parseQueryParams(path)["pkg"]
         if (pkg.isNullOrEmpty()) {

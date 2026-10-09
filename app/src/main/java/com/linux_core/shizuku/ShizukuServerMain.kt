@@ -30,12 +30,11 @@ import java.util.concurrent.ConcurrentHashMap
  * deterministické z .aidl textu → appky používající `rikka.shizuku:api`
  * fungují beze zásahu).
  *
+ * UserService hostování (`bindUserService`) → `UserServiceManager`.
+ *
  * ZÁMĚRNĚ NEIMPLEMENTOVÁNO (dokumentovaný gap, ne bug):
  *  - raw transact-relay (BINDER_TRANSACTION_transact=1) — mechanismus
  *    neověřitelný z dostupných zdrojů.
- *  - plné UserService hostování (addUserService/removeUserService) — jen
- *    stub, viz komentáře u metod. Běžné "spusť příkaz/čti property" use-case
- *    appek (Termux:API-like nástroje, package manažery bez root) funguje.
  *
  * Permission grant/revoke je čistě CLI (`nh shizuku grant/revoke/list`),
  * ŽÁDNÁ UI/notifikace — na přání uživatele.
@@ -168,6 +167,9 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
     private val attachedApps = ConcurrentHashMap<Int, IShizukuApplication>()
     private val flagsStore = ConcurrentHashMap<Int, Int>()
     private val uidToPackage = ConcurrentHashMap<Int, String>()
+    /** uid → `shizuku:attach-api-version` klienta (peekUserService návratový kód). */
+    private val apiVersions = ConcurrentHashMap<Int, Int>()
+    private val userServices = UserServiceManager()
 
     /** Výstup je `package:<balíček> uid:<N>` → bereme jen první token. */
     private fun callerPackage(): String {
@@ -236,18 +238,18 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
         if (name != null && value != null) HiddenApis.setSystemProperty(name, value)
     }
 
-    /**
-     * STUB — plné spawnutí hostované AIDL služby klienta vyžaduje druhý
-     * binder-delivery hop (spawnutý proces → klientova <pkg>.shizuku →
-     * klientův ServiceConnection), který se bez testu na zařízení nedal
-     * bezpečně implementovat. Vrací -1 (selhání), appka musí mít fallback.
-     */
     override fun addUserService(conn: IShizukuServiceConnection?, args: Bundle?): Int {
-        Log.w(TAG_SVC, "addUserService: nepodporováno (viz AGENTS.md known gap)")
-        return -1
+        val uid = Binder.getCallingUid()
+        enforceGranted("addUserService")
+        if (conn == null || args == null) throw NullPointerException("connection/options is null")
+        return userServices.addUserService(conn, args, uid, apiVersions[uid] ?: ShizukuServerMain.SERVER_VERSION)
     }
 
-    override fun removeUserService(conn: IShizukuServiceConnection?, args: Bundle?): Int = -1
+    override fun removeUserService(conn: IShizukuServiceConnection?, args: Bundle?): Int {
+        val uid = Binder.getCallingUid()
+        if (args == null) throw NullPointerException("options is null")
+        return userServices.removeUserService(conn, args, uid)
+    }
 
     override fun requestPermission(requestCode: Int) {
         val pkg = callerPackage()
@@ -272,6 +274,7 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
         if (application == null) return
         val uid = Binder.getCallingUid()
         attachedApps[uid] = application
+        args?.getInt("shizuku:attach-api-version", -1)?.takeIf { it > 0 }?.let { apiVersions[uid] = it }
         val pkg = args?.getString("shizuku:attach-package-name") ?: callerPackage()
         val granted = ShizukuHttpClient.isGranted(pkg)
         val reply = Bundle().apply {
@@ -294,9 +297,10 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
         Process.killProcess(Process.myPid())
     }
 
-    /** STUB — viz addUserService. */
+    /** Originální tok (starter → server s tokenem); náš starter jde přes UserServiceBinderProvider. */
     override fun attachUserService(binder: android.os.IBinder?, options: Bundle?) {
-        Log.w(TAG_SVC, "attachUserService: nepodporováno (viz AGENTS.md known gap)")
+        if (binder == null || options == null) throw NullPointerException("binder/options is null")
+        userServices.attachUserService(binder, options)
     }
 
     override fun dispatchPackageChanged(intent: android.content.Intent?) {

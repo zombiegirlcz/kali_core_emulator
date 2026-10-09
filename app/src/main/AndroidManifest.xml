@@ -233,6 +233,13 @@
             </intent-filter>
         </provider>
 
+        <!-- Shizuku UserService: předávka binderu starter → server (oba uid 2000) -->
+        <provider
+            android:name=".shizuku.UserServiceBinderProvider"
+            android:authorities="com.linux_core.shizuku.userservice"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <service
             android:name="com.linux_core.core.assistant.NetHunterNotificationListenerService"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"

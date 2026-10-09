@@ -1237,7 +1237,7 @@ shizuku_help() {
     echo "  ${DIM}Appky s 'rikka.shizuku:api' fungují beze změny (AIDL 1:1, stejný binder protokol).${RST}"
     echo "  ${DIM}Grant/revoke je čistě CLI, bez potvrzovací notifikace. Po grantu server pošle binder${RST}"
     echo "  ${DIM}běžící appce do ~5 s (jinak při příštím startu) — žádná originální Shizuku appka netřeba.${RST}"
-    echo "  ${DIM}Nepodporováno: UserService (addUserService) → appky jako Hail/Canta nefungují.${RST}"
+    echo "  ${DIM}UserService (bindUserService) podporován; nepodporováno: raw transact-relay.${RST}"
     echo ""
 }
 

@@ -388,15 +388,32 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
   k binárce brát z `/shelldaemon/info`. `am start`/`cmd activity` z uid appky padá na SecurityException
   → `nh agent ask` jde přes shell_daemon.
 
+**UserService hosting (2026-10-09)** — `UserServiceManager.kt` je port `UserServiceManager` +
+`UserServiceRecord` ze Shizuku-API `server-shared` (klíč `<pkg>:<tag ?: class>`, dedup, změna
+`versionCode` = nový proces, peek vrací `versionCode`/-1, non-daemon končí smrtí posledního
+spojení, odstranění = transakce `16777115` destroy + kill procesu po 2 s, start timeout 30 s).
+aShell i MacroDroid bez něj hlásí „Shizuku není nainstalováno“.
+
+- **Proces:** server spustí `app_process /system/bin --nice-name=<pkg>:<suffix>
+  com.linux_core.shizuku.UserServiceStarter --token= --package= --class= --uid= --apk=` s
+  `CLASSPATH=<naše APK>` (z `/shizuku/resolve?pkg=com.linux_core`, ne z env serveru — po update
+  appky by stará cesta neexistovala). Starter = port `UserService.create()` reflexí:
+  `ActivityThread.systemMain()` → `createPackageContextAsUser` → `LoadedApk.makeApplication(true)`
+  → konstruktor `(Context)` nebo bez args; fallback `PathClassLoader(apk)`.
+- **Binder zpět:** starter ani server nemají provider → starter `putUserService` do
+  `UserServiceBinderProvider` (`com.linux_core.shizuku.userservice`, jen uid 0/2000, TTL 60 s),
+  na stdout `READY:<token>`, server ho čte a `takeUserService`. **Neplést stdout starteru s logem**
+  — logovat jen přes `Log`, stdout je kontrolní kanál. `attachUserService(101)` funguje i
+  originálním tokenovým tokem.
+- **Stdin starteru server nikdy nezavírá** — EOF = server umřel → starter `exitProcess(0)`
+  (náhrada `linkToDeath` na binder serveru, který starter nemá).
+- Ownership: balíček z `ComponentName` musí mít appId volajícího (přes `/shizuku/resolve`),
+  `addUserService` navíc chce grant.
+
 **Záměrně nedokončeno (dokumentovaný gap, ne bug):**
 
 - Raw transact-relay (`BINDER_TRANSACTION_transact = 1`, proxy arbitrárních systémových binder
   volání přes server) — mechanismus nejde ověřit z dostupných zdrojů, **vědomě vynecháno**.
-- Plné UserService hostování (`addUserService`/`removeUserService`/`attachUserService`) — jen
-  stub vracející selhání. Reálná implementace vyžaduje druhý binder-delivery hop (spawnutý
-  `app_process` → klientova vlastní `<pkg>.shizuku` provider → klientův `ServiceConnection`),
-  který je bez testu na zařízení příliš riskantní zavést napůl funkční. Běžný "spusť příkaz / čti
-  property / zkontroluj permission" use-case (drtivá většina Shizuku-konzumujících appek) funguje.
 - `getContentProviderExternal`/`IContentProvider.call` signatury se liší SDK verzí —
   `HiddenApis.kt` zkouší víc arit podle běžící verze, ale **nebylo ověřeno na zařízení**,
   jen že se to zkompiluje a Modal build projde.
