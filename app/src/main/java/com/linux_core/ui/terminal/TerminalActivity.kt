@@ -115,12 +115,13 @@ class TerminalActivity : ComponentActivity() {
 
     // ── Services Panel State ──
     internal var isServicesExpanded = false
-    internal var expandedService: String? = null // "adb", "cpu" or null
+    internal var expandedService: String? = null // "adb", "cpu", "shizuku" or null
     internal lateinit var servicesPanel: LinearLayout
     internal lateinit var servicesDetailPanel: LinearLayout
     internal lateinit var btnServicesToggle: Button
     internal lateinit var btnAdb: Button
     internal lateinit var btnCpu: Button
+    internal lateinit var btnShizuku: Button
     internal val servicesUpdateHandler = Handler(Looper.getMainLooper())
 
     // Poslední stav služeb změřený na pozadí. UI (indikátor i detail) kreslí
@@ -130,6 +131,10 @@ class TerminalActivity : ComponentActivity() {
         com.linux_core.core.terminal.ShellDaemonStatus(running = false)
 
     @Volatile internal var lastCpuAlive = false
+
+    // Shizuku: přímé binder volání (ShizukuServerState), ne shell_daemon/proc.
+    @Volatile internal var lastShizukuStatus =
+        com.linux_core.shizuku.ShizukuServerState.Status(running = false)
     internal val servicesPoller =
         object : Runnable {
             override fun run() {
@@ -139,11 +144,14 @@ class TerminalActivity : ComponentActivity() {
                             com.linux_core.core.terminal.ShellDaemonClient
                                 .status()
                         val cpuRunning = isCpuDaemonAlive()
+                        val shizukuSt = com.linux_core.shizuku.ShizukuServerState.status()
                         lastAdbStatus = adbSt
                         lastCpuAlive = cpuRunning
+                        lastShizukuStatus = shizukuSt
                         runOnUiThread {
                             updateServiceIndicator("adb", btnAdb, adbSt.running)
                             updateServiceIndicator("cpu", btnCpu, cpuRunning)
+                            updateServiceIndicator("shizuku", btnShizuku, shizukuSt.running)
                         }
 
                         if (isServicesExpanded) {

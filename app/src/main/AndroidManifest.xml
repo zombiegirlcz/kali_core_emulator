@@ -119,6 +119,12 @@
             android:label="CPU aplikací"
             android:theme="@style/Theme.Nethunteraioperator" />
 
+        <activity
+            android:name=".ui.ShizukuAppsActivity"
+            android:exported="false"
+            android:label="Shizuku aplikace"
+            android:theme="@style/Theme.Nethunteraioperator" />
+
         <!-- „Open with“ / share příjemce — uloží soubor do ~/share a otevře terminál -->
         <activity
             android:name=".core.terminal.ShareReceiverActivity"

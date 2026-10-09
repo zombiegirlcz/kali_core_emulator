@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
  * hraje provider Shizuku manageru (`sendUserService`).
  *
  * Tok: starter `put(token, binder)` → na stdout `READY` → server `take(token)`.
+ * Navíc `sendServerBinder`: server sem posílá vlastní binder → `ShizukuServerState`.
  * Volat smí jen uid 0/2000 (ověřeno v `call`, manifest navíc chce
  * INTERACT_ACROSS_USERS_FULL, kterou běžná appka nemá).
  */
@@ -32,6 +33,14 @@ class UserServiceBinderProvider : ContentProvider() {
         if (uid != 0 && uid != SHELL_UID) {
             Log.w(TAG, "$method zamítnuto pro uid $uid")
             return null
+        }
+        if (method == METHOD_SEND_SERVER) {
+            extras ?: return null
+            extras.classLoader = BinderContainer::class.java.classLoader
+            @Suppress("DEPRECATION")
+            val binder = extras.getParcelable<BinderContainer>(EXTRA_BINDER)?.binder ?: return null
+            ShizukuServerState.set(binder, extras.getInt(ARG_PID, -1))
+            return Bundle()
         }
         val token = extras?.getString(ARG_TOKEN) ?: return null
         prune()
@@ -71,6 +80,9 @@ class UserServiceBinderProvider : ContentProvider() {
         const val AUTHORITY = "com.linux_core.shizuku.userservice"
         const val METHOD_PUT = "putUserService"
         const val METHOD_TAKE = "takeUserService"
+        /** Server → appka: binder serveru pro stav/stop v UI (`ShizukuServerState`). */
+        const val METHOD_SEND_SERVER = "sendServerBinder"
+        const val ARG_PID = "shizuku:server-pid"
         const val EXTRA_BINDER = "moe.shizuku.privileged.api.intent.extra.BINDER"
         const val ARG_TOKEN = "shizuku:user-service-arg-token"
 

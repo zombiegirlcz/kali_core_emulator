@@ -111,9 +111,10 @@ private class BinderDistributor(private val binder: IBinder) : Thread("shizuku-b
             ShizukuHttpClient.grantedPackages()?.let { granted = it }
             lastGrantRefresh = now
         }
-        delivered.keys.retainAll(granted)
+        delivered.keys.retainAll(granted + OWN_PKG)
+        val running = mainProcesses(granted + OWN_PKG)
+        deliverToOwnApp(running[OWN_PKG])
         if (granted.isEmpty()) return
-        val running = mainProcesses(granted)
         for (pkg in granted) {
             val pid = running[pkg]
             if (pid == null) {
@@ -132,6 +133,28 @@ private class BinderDistributor(private val binder: IBinder) : Thread("shizuku-b
             }
             Log.i(TAG, "binder → $pkg (pid=$pid): ${if (ok) "OK" else "selhalo"}")
         }
+    }
+
+    /** Vlastní appce (stav serveru v UI) — přes náš provider, ne `<pkg>.shizuku`. */
+    private fun deliverToOwnApp(pid: Int?) {
+        if (pid == null) {
+            delivered.remove(OWN_PKG)
+            return
+        }
+        if (delivered[OWN_PKG] == pid) return
+        delivered[OWN_PKG] = pid
+        val extras = android.os.Bundle().apply {
+            putParcelable(UserServiceBinderProvider.EXTRA_BINDER, moe.shizuku.api.BinderContainer(binder))
+            putInt(UserServiceBinderProvider.ARG_PID, Process.myPid())
+        }
+        val ok = try {
+            BinderDelivery.callProvider(
+                CALLING_PKG, UserServiceBinderProvider.AUTHORITY, UserServiceBinderProvider.METHOD_SEND_SERVER, extras
+            ) != null
+        } catch (t: Throwable) {
+            false
+        }
+        Log.i(TAG, "binder → $OWN_PKG (pid=$pid): ${if (ok) "OK" else "selhalo"}")
     }
 
     /** balíček → PID hlavního procesu (argv0 == balíček, bez `:sub` procesů). */
@@ -158,6 +181,7 @@ private class BinderDistributor(private val binder: IBinder) : Thread("shizuku-b
         private const val GRANT_REFRESH_MS = 5000L
         // AttributionSource balíček musí patřit volajícímu uid (2000).
         private const val CALLING_PKG = "com.android.shell"
+        private const val OWN_PKG = "com.linux_core"
     }
 }
 

@@ -13,7 +13,7 @@ import android.widget.TextView
 import java.util.concurrent.TimeUnit
 
 /**
- * Panel služeb (ADB shell daemon, CPU daemon) v topbaru — sbalený indikátor,
+ * Panel služeb (ADB shell daemon, CPU daemon, Shizuku server) v topbaru — sbalený indikátor,
  * rozbalený detail se start/stop tlačítkem a "START ALL"/refresh akce.
  */
 internal fun TerminalActivity.buildServicesPanel(): LinearLayout =
@@ -77,6 +77,35 @@ internal fun TerminalActivity.buildServicesPanel(): LinearLayout =
                 }
             }
         addView(btnCpu)
+
+        View(this@buildServicesPanel)
+            .apply {
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics).toInt(),
+                        1,
+                    )
+            }.also { addView(it) }
+
+        btnShizuku =
+            Button(this@buildServicesPanel).apply {
+                text = "🔑 SHIZUKU ○"
+                textSize = 9f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(Color.GRAY)
+                background = createRoundedDrawable(Color.parseColor("#0c0d12"), 6f, Color.parseColor("#1e2026"), 1f)
+                setPadding(10, 4, 10, 4)
+                layoutParams =
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                    )
+                setOnClickListener {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    toggleServiceDetail("shizuku")
+                }
+            }
+        addView(btnShizuku)
 
         View(this@buildServicesPanel)
             .apply {
@@ -183,6 +212,7 @@ internal fun TerminalActivity.toggleServiceDetail(service: String) {
 internal fun TerminalActivity.updateAllServiceIndicators() {
     updateServiceIndicator("adb", btnAdb, lastAdbStatus.running)
     updateServiceIndicator("cpu", btnCpu, lastCpuAlive)
+    updateServiceIndicator("shizuku", btnShizuku, lastShizukuStatus.running)
 
     val svc = expandedService
     if (svc != null) {
@@ -206,6 +236,7 @@ internal fun TerminalActivity.updateServiceIndicator(
         when (service) {
             "adb" -> "📡 ADB $icon"
             "cpu" -> "⚡ CPU $icon"
+            "shizuku" -> "🔑 SHIZUKU $icon"
             else -> button.text
         }
     button.setTextColor(color)
@@ -407,6 +438,76 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
                 },
             )
         }
+
+        "shizuku" -> {
+            val st = lastShizukuStatus
+            val icon = if (st.running) "●" else "○"
+            val color = if (st.running) Color.parseColor("#00FF41") else Color.GRAY
+
+            row.addView(
+                TextView(this).apply {
+                    text = "🔑 SHIZUKU SERVER  $icon"
+                    setTextColor(color)
+                    textSize = 11f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                },
+            )
+            row.addView(
+                TextView(this).apply {
+                    text = if (st.running) "  pid:${st.pid}  v${st.version}  uid:${st.uid}" else "  stopped"
+                    setTextColor(Color.LTGRAY)
+                    textSize = 10f
+                    typeface = Typeface.MONOSPACE
+                },
+            )
+            row.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+
+            row.addView(
+                Button(this).apply {
+                    if (st.running) {
+                        text = "⏹ STOP"
+                        setTextColor(Color.parseColor("#FF5555"))
+                        background = createRoundedDrawable(Color.parseColor("#1a1a2e"), 6f, Color.parseColor("#FF5555"), 1f)
+                    } else {
+                        text = "▶ START (guest)"
+                        setTextColor(Color.parseColor("#00FF41"))
+                        background = createRoundedDrawable(Color.parseColor("#0a1a0a"), 6f, Color.parseColor("#00FF41"), 1f)
+                    }
+                    textSize = 9f
+                    setPadding(10, 4, 10, 4)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        )
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        if (st.running) stopShizukuServer() else startShizukuInGuest()
+                    }
+                },
+            )
+
+            row.addView(
+                Button(this).apply {
+                    text = "⚙ APLIKACE"
+                    textSize = 9f
+                    setTextColor(Color.parseColor("#00D2FF"))
+                    background = createRoundedDrawable(Color.parseColor("#0a1420"), 6f, Color.parseColor("#00D2FF"), 1f)
+                    setPadding(10, 4, 10, 4)
+                    layoutParams =
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 26f, resources.displayMetrics).toInt(),
+                        ).apply { leftMargin = 8 }
+                    setOnClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        this@updateServiceDetail.startActivity(
+                            android.content.Intent(this@updateServiceDetail, com.linux_core.ui.ShizukuAppsActivity::class.java),
+                        )
+                    }
+                },
+            )
+        }
     }
 
     servicesDetailPanel.addView(row)
@@ -523,6 +624,50 @@ internal fun TerminalActivity.runCpuBoost(on: Boolean) {
         runOnUiThread {
             servicesUpdateHandler.removeCallbacks(servicesPoller)
             servicesUpdateHandler.post(servicesPoller)
+        }
+    }.start()
+}
+
+/**
+ * START: server běží pod uid 2000 a spustit ho umí jen adb/shell_daemon
+ * z guestu → jednorázově `nh shizuku start` přes boot (jako ADB START).
+ * Binder serveru pak do ~2 s dorazí do appky (BinderDistributor).
+ */
+internal fun TerminalActivity.startShizukuInGuest() {
+    Log.i(TerminalActivity.TAG, "startShizukuInGuest: boot -- nh shizuku start")
+    Thread {
+        try {
+            val boot = java.io.File(applicationContext.filesDir, "usr/bin/boot")
+            if (!boot.exists()) {
+                Log.e(TerminalActivity.TAG, "boot script not found at ${boot.absolutePath}")
+                return@Thread
+            }
+            val pb = ProcessBuilder("sh", boot.absolutePath, "--", "nh", "shizuku", "start")
+            pb.directory(applicationContext.filesDir)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val out = proc.inputStream.bufferedReader().readText()
+            if (!proc.waitFor(40, TimeUnit.SECONDS)) proc.destroyForcibly()
+            Log.i(TerminalActivity.TAG, "startShizukuInGuest: $out")
+        } catch (e: Exception) {
+            Log.e(TerminalActivity.TAG, "startShizukuInGuest failed: ${e.message}")
+        }
+        // binder přijde až po prvním ticku distributoru (≤ 2 s)
+        runOnUiThread {
+            servicesUpdateHandler.removeCallbacks(servicesPoller)
+            servicesUpdateHandler.postDelayed(servicesPoller, 3000)
+        }
+    }.start()
+}
+
+/** STOP: přímo `IShizukuService.exit()` přes binder serveru. */
+internal fun TerminalActivity.stopShizukuServer() {
+    Thread {
+        val ok = com.linux_core.shizuku.ShizukuServerState.stop()
+        Log.i(TerminalActivity.TAG, "stopShizukuServer: $ok")
+        runOnUiThread {
+            servicesUpdateHandler.removeCallbacks(servicesPoller)
+            servicesUpdateHandler.postDelayed(servicesPoller, 500)
         }
     }.start()
 }

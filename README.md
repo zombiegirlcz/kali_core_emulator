@@ -575,7 +575,9 @@ nh shizuku grant in.sunilpaulmathew.ashell
 nh shizuku list | revoke <balíček> | status | stop | restart
 ```
 
-- Oprávnění jsou **jen přes CLI** (`grant`/`revoke`), žádný dialog v appce.
+- Oprávnění: CLI (`grant`/`revoke`) nebo v terminálu panel služeb → **🔑 SHIZUKU → ⚙ APLIKACE**
+  (přepínač u každé appky s Shizuku API). Žádný dialog při žádosti appky.
+- Kontrolka 🔑 SHIZUKU ukazuje stav přímo z binderu serveru (pid, verze, uid); STOP volá `exit()`.
 - Server každé 2 s hledá běžící appky s grantem a pošle jim binder přes jejich
   `<balíček>.shizuku` provider (znovu po restartu appky) — po `grant` stačí appku
   otevřít / restartovat.

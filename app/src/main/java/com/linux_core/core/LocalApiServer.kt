@@ -1431,8 +1431,10 @@ object LocalApiServer {
     private fun handleShizukuInfo(context: Context, out: OutputStream) {
         val token = ensureShizukuToken(context)
         val apkPath = context.packageManager.getApplicationInfo(context.packageName, 0).sourceDir
-        val pid = readShizukuPid()
-        val running = pid != null && isPidAlive(pid)
+        // Appka /proc procesů uid 2000 nevidí (hidepid) → stav z binderu serveru.
+        val st = com.linux_core.shizuku.ShizukuServerState.status()
+        val pid = if (st.running) st.pid else readShizukuPid()
+        val running = st.running
         sendResponse(out, 200, "OK", JSONObject().apply {
             put("token", token)
             put("apkPath", apkPath)
@@ -1455,10 +1457,6 @@ object LocalApiServer {
     private fun readShizukuPid(): Int? = try {
         java.io.File(SHIZUKU_PID_FILE).readText().trim().toIntOrNull()
     } catch (_: Exception) { null }
-
-    private fun isPidAlive(pid: Int): Boolean = try {
-        java.io.File("/proc/$pid").exists()
-    } catch (_: Exception) { false }
 
     /** GET /shizuku/permission/list → [{package, granted}, ...] */
     private fun handleShizukuPermissionList(context: Context, out: OutputStream) {

@@ -352,8 +352,9 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
   `apkPath`+`token` z `GET /shizuku/info` (appka, uid app, čte vlastní `api.token`), pak
   `CLASSPATH='<apk>' app_process /system/bin --nice-name=shizuku_server
   com.linux_core.shizuku.ShizukuServerMain --token=<token>`.
-- **Permission grant/revoke je čistě CLI, žádná UI/notifikace** (`nh shizuku grant/revoke/list`) —
-  explicitní požadavek, ne defaultní Shizuku chování. Stav žije v appce
+- **Permission grant/revoke:** `nh shizuku grant/revoke/list` **nebo** `ShizukuAppsActivity`
+  (terminál → panel služeb → 🔑 SHIZUKU → ⚙ APLIKACE; seznam appek s `<pkg>.shizuku` providerem,
+  přepínač píše do stejných prefs). Žádný dialog/notifikace při `requestPermission` — to zůstává. Stav žije v appce
   (`SharedPreferences "shizuku_permissions"`, `LocalApiServer`), server (uid 2000, nemá přístup
   k `filesDir`) se dotazuje přes loopback `GET /shizuku/permission?pkg=` (`ShizukuHttpClient.kt`,
   token z `/shizuku/info`, stejný vzor jako `shell_daemon` token delivery, jen v opačném směru).
@@ -377,8 +378,11 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
 - **Token serveru** smí v `LocalApiServer` jen GET `/shizuku/permission*` a `/shizuku/resolve`
   (`isShizukuServerToken`); grant/revoke dál jen `api.token`.
 - `newProcess`/`setSystemProperty` vyžadují grant volajícího (`enforceGranted`).
-- **Stav serveru nezjišťovat z appky** — uid appky `/proc` procesů uid 2000 nevidí (hidepid), takže
-  `running` v `/shizuku/info` je vždy false. `nh shizuku status/start/stop` se ptá pod uid 2000
+- **Stav serveru v appce = binder, ne `/proc`** (2026-10-09): uid appky `/proc` procesů uid 2000
+  nevidí (hidepid). `BinderDistributor` proto posílá binder serveru i vlastní appce
+  (`UserServiceBinderProvider.sendServerBinder`, při každém novém PID `com.linux_core`) →
+  `ShizukuServerState` (`pingBinder`/`getVersion`, STOP = `IShizukuService.exit()`); z něj čte
+  kontrolka 🔑 SHIZUKU v panelu služeb i `running` v `/shizuku/info`. Dřív to bylo vždy false. `nh shizuku status/start/stop` se ptá pod uid 2000
   (`pidof shizuku_server` přes shell_daemon/adb). `comm` serveru je `main` → `pkill -x` nefunguje.
   Start přes `exec app_process`, jinak drží obalový `sh -c` token v cmdline.
 - **`nh` nesmí definovat funkci `ashell()`** — zakrývá binárku `ashell` (všechna `ashell -c …` v `nh`
