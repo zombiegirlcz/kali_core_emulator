@@ -55,10 +55,11 @@ object HiddenApis {
                 m.isAccessible = true
                 return m.invoke(target, *args)
             } catch (t: Throwable) {
-                lastError = t
+                // InvocationTargetException nese skutečnou výjimku z volání (message je null)
+                lastError = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
             }
         }
-        throw NoSuchMethodException("$methodName/${args.size} nenalezena na ${target.javaClass}: ${lastError?.message}")
+        throw NoSuchMethodException("$methodName/${args.size} selhala na ${target.javaClass}: $lastError")
     }
 
     fun checkPermission(iam: Any, permission: String, pid: Int, uid: Int): Int = try {
@@ -136,6 +137,11 @@ object HiddenApis {
                 .setPackageName(callingPkg)
                 .build()
             attempts += arrayOf<Any?>(source, authority, method, arg, extras)
+            // Bez balíčku — tak volá originální Shizuku ServiceStarter (callingPkg=null)
+            attempts += arrayOf<Any?>(
+                android.content.AttributionSource.Builder(android.os.Process.myUid()).build(),
+                authority, method, arg, extras,
+            )
         }
         attempts += listOf(
             arrayOf<Any?>(callingPkg, null, authority, method, arg, extras), // API 29/30 s featureId
@@ -146,7 +152,7 @@ object HiddenApis {
             try {
                 return invokeByNameArity(provider, "call", a) as? Bundle
             } catch (t: Throwable) {
-                Log.d(TAG, "contentProviderCall attempt (${a.size} args) failed: ${t.message}")
+                Log.w(TAG, "contentProviderCall attempt (${a.size} args) failed: ${t.message}")
             }
         }
         Log.e(TAG, "contentProviderCall: žádná varianta signatury nesedí (authority=$authority)")

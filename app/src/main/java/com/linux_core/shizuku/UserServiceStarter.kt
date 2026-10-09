@@ -56,6 +56,15 @@ object UserServiceStarter {
         if (Looper.getMainLooper() == null) Looper.prepareMainLooper()
 
         Log.i(TAG, "startuji $pkg/$cls (uid=${android.os.Process.myUid()})")
+        // Provider otevřít PŘED ActivityThread.systemMain() — po něm volání
+        // IContentProvider.call ze starteru selhávalo (server ho volá bez systemMain OK).
+        val iam = HiddenApis.getActivityManagerProxy()
+        val authority = UserServiceBinderProvider.AUTHORITY
+        val provider = iam?.let { HiddenApis.getContentProviderExternal(it, authority, 0, null, authority) }
+        if (provider == null) {
+            Log.e(TAG, "provider $authority nedostupný")
+            exitProcess(1)
+        }
         val service = createService(pkg, cls, apk, uid)
         if (service == null) {
             Log.e(TAG, "nelze vytvořit $pkg/$cls")
@@ -66,9 +75,10 @@ object UserServiceStarter {
             putString(UserServiceBinderProvider.ARG_TOKEN, token)
             putParcelable(UserServiceBinderProvider.EXTRA_BINDER, BinderContainer(service))
         }
-        val reply = BinderDelivery.callProvider(
-            CALLING_PKG, UserServiceBinderProvider.AUTHORITY, UserServiceBinderProvider.METHOD_PUT, extras
+        val reply = HiddenApis.contentProviderCall(
+            provider, CALLING_PKG, authority, UserServiceBinderProvider.METHOD_PUT, null, extras
         )
+        HiddenApis.removeContentProviderExternal(iam!!, authority, null)
         if (reply == null) {
             Log.e(TAG, "binder se nepodařilo předat serveru")
             exitProcess(1)
