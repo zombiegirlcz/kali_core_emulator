@@ -14,6 +14,7 @@ okhttp = "5.3.2"
 xz = "1.12"
 drawerlayout = "1.2.0"
 commonsCompress = "1.28.0"
+zstdJni = "1.5.7-4"
 termuxApp = "v0.118.0"
 guava = "33.6.0-android"
 bouncycastle = "1.78.1"
@@ -39,6 +40,7 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 androidx-drawerlayout = { group = "androidx.drawerlayout", name = "drawerlayout", version.ref = "drawerlayout" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutinesAndroid" }
 xz = { module = "org.tukaani:xz", version.ref = "xz" }
+zstd-jni = { module = "com.github.luben:zstd-jni", version.ref = "zstdJni" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
 termux-shared = { group = "com.github.termux.termux-app", name = "termux-shared", version.ref = "termuxApp" }

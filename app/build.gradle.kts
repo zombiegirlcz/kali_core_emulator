@@ -152,6 +152,8 @@ dependencies {
 
     implementation(libs.commons.compress)
     implementation(libs.xz)
+    // zstd vrstvy/rootfs (commons-compress ZstdCompressorInputStream); Android AAR s .so
+    implementation(libs.zstd.jni) { artifact { type = "aar" } }
 
     implementation(libs.termux.shared) {
         exclude(group = "com.google.guava", module = "listenablefuture")

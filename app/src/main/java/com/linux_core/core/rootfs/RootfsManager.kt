@@ -21,7 +21,6 @@ import org.apache.commons.compress.archivers.ArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
@@ -50,7 +49,7 @@ private fun processTarEntry(
     inputStream: InputStream? = null,
 ) {
     when {
-        tarEntry != null && tarEntry.name.contains("/.wh.") -> {
+        tarEntry != null && name.substringAfterLast("/").startsWith(".wh.") -> {
             val baseName = name.substringAfterLast("/")
             val parentDir = entryFile.parentFile ?: targetDir
             if (baseName == ".wh..wh..opq") {
@@ -142,46 +141,6 @@ private fun TarArchiveInputStream.processEntries(targetDir: File) {
     }
 }
 
-/** Detect tar format from filename/URL: gzip|xz|bzip2|plain|auto. */
-private fun detectTarFormat(name: String): String {
-    val lower = name.lowercase()
-    return when {
-        lower.endsWith(".tar.xz") || lower.endsWith(".txz") -> "xz"
-        lower.endsWith(".tar.bz2") || lower.endsWith(".tbz2") -> "bzip2"
-        lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> "gzip"
-        lower.endsWith(".tar") -> "plain"
-        else -> "auto"
-    }
-}
-
-/** Extract a .tar.bz2 archive into targetDir. */
-private fun extractTarBzip2(
-    source: File,
-    targetDir: File,
-) {
-    java.io.FileInputStream(source).use { fis ->
-        BufferedInputStream(fis, 512 * 1024).use { bis ->
-            bis.mark(1024)
-            val isBz2 =
-                try {
-                    BZip2CompressorInputStream(bis).use {
-                        it.read()
-                        true
-                    }
-                } catch (_: Exception) {
-                    false
-                }
-            bis.reset()
-            val stream: java.io.InputStream = if (isBz2) BZip2CompressorInputStream(bis) else bis
-            TarArchiveInputStream(stream).use { it.processEntries(targetDir) }
-        }
-    }
-    // TarArchiveInputStream preserves original tar permissions, which may not match
-    // the app UID/GID on Android. Ensure extracted files are readable/writable
-    // by the app so subsequent operations (bootstrap, entrypoint, etc.) can write.
-    relaxTreePermissions(targetDir)
-}
-
 /**
  * Zpřístupní rozbalený strom appce (rw pro všechny, x pro adresáře). Nenásleduje
  * symlinky — `File.walk()` je následoval, takže absolutní symlink v rootfs vedl
@@ -226,30 +185,136 @@ private fun relaxTreePermissions(targetDir: File) {
     }
 }
 
-/** Extract a plain .tar archive into targetDir (no compression). */
-private fun extractTarPlain(
+/**
+ * Rozbalí rootfs archiv libovolného podporovaného formátu do targetDir. Formát
+ * se pozná z MAGIC BAJTŮ obsahu, ne z přípony URL/souboru (katalog i Docker
+ * registry mívají URL bez přípony nebo vrstvy v zstd/nekomprimovaném taru):
+ * komprese gzip (i vícečlenný), xz, bzip2, zstd, lzma, lz4, .Z, deflate,
+ * kontejner tar nebo zip. `docker save` tar (manifest.json + vrstvy) se
+ * rozbalí vrstva po vrstvě (whiteouty platí).
+ */
+internal fun extractArchive(
     source: File,
     targetDir: File,
 ) {
-    java.io.FileInputStream(source).use { fis ->
-        BufferedInputStream(fis, 512 * 1024).use { bis ->
-            TarArchiveInputStream(bis).use { it.processEntries(targetDir) }
+    val wasEmpty = targetDir.list().isNullOrEmpty()
+    when (val kind = ArchiveFormats.open(source)) {
+        is ArchiveFormats.Opened.Tar -> TarArchiveInputStream(kind.stream).use { it.processEntries(targetDir) }
+        is ArchiveFormats.Opened.Zip -> kind.stream.use { extractZipEntries(it, targetDir) }
+    }
+    if (wasEmpty) unpackDockerSave(targetDir)
+    relaxTreePermissions(targetDir)
+}
+
+/** Zip (např. Termux bootstrap): unix symlinky + `SYMLINKS.txt` (`cíl←cesta`). */
+private fun extractZipEntries(
+    zip: org.apache.commons.compress.archivers.zip.ZipArchiveInputStream,
+    targetDir: File,
+) {
+    val canonicalBase = targetDir.canonicalPath
+    var entry = zip.nextEntry
+    while (entry != null) {
+        val entryFile = File(targetDir, entry.name)
+        val canonicalDest = entryFile.canonicalPath
+        if (canonicalDest.startsWith(canonicalBase + File.separator) || canonicalDest == canonicalBase) {
+            when {
+                entry.isDirectory -> entryFile.mkdirs()
+                entry.isUnixSymlink -> {
+                    entryFile.parentFile?.mkdirs()
+                    val target = zip.readBytes().toString(Charsets.UTF_8)
+                    try {
+                        entryFile.delete()
+                        android.system.Os.symlink(target, entryFile.absolutePath)
+                    } catch (_: Exception) {
+                    }
+                }
+                else -> {
+                    entryFile.parentFile?.mkdirs()
+                    if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
+                    FileOutputStream(entryFile).use { zip.copyTo(it) }
+                    if ((entry.unixMode and 0b001_000_000) != 0) entryFile.setExecutable(true, false)
+                }
+            }
         }
+        entry = zip.nextEntry
+    }
+    val symlinks = File(targetDir, "SYMLINKS.txt")
+    if (symlinks.isFile) {
+        symlinks.readLines().forEach { line ->
+            val parts = line.split("←")
+            if (parts.size != 2) return@forEach
+            val link = File(targetDir, parts[1].removePrefix("./"))
+            if (!link.canonicalPath.startsWith(canonicalBase + File.separator)) return@forEach
+            try {
+                link.parentFile?.mkdirs()
+                link.delete()
+                android.system.Os.symlink(parts[0], link.absolutePath)
+            } catch (e: Exception) {
+                Log.w("RootfsManager", "SYMLINKS.txt ${parts[1]}: ${e.message}")
+            }
+        }
+        symlinks.delete()
     }
 }
 
-/** Extract a .tar.gz archive into targetDir (streaming, progress-free variant used by pull). */
-private fun extractTarGzip(
-    source: File,
-    targetDir: File,
-) {
-    java.io.FileInputStream(source).use { fis ->
-        BufferedInputStream(fis, 512 * 1024).use { bis ->
-            GzipCompressorInputStream(bis).use { gz ->
-                TarArchiveInputStream(gz).use { it.processEntries(targetDir) }
+/**
+ * `docker save` / OCI tar: v kořeni je jen `manifest.json` (+ `repositories`,
+ * `blobs/` nebo `<hash>/layer.tar`), ne rootfs. Vrstvy z `Layers` rozbalí
+ * popořadě do targetDir (každá svého formátu) a mezivýsledek smaže.
+ */
+private fun unpackDockerSave(targetDir: File) {
+    val manifest = File(targetDir, "manifest.json")
+    if (!manifest.isFile || File(targetDir, "etc").isDirectory || File(targetDir, "usr").isDirectory) return
+    val layers =
+        try {
+            val arr = org.json.JSONArray(manifest.readText())
+            val l = arr.getJSONObject(0).getJSONArray("Layers")
+            (0 until l.length()).map { l.getString(it) }
+        } catch (_: Exception) {
+            return
+        }
+    if (layers.isEmpty() || layers.any { !File(targetDir, it).isFile }) return
+    Log.i("RootfsManager", "docker save archiv: ${layers.size} vrstev → rozbaluji")
+    val staging = File(targetDir.parentFile, ".${targetDir.name}.dockersave")
+    deleteTreeNoFollow(staging)
+    if (!targetDir.renameTo(staging)) throw IOException("Nelze přesunout docker save do ${staging.path}")
+    try {
+        targetDir.mkdirs()
+        for (layer in layers) {
+            val f = File(staging, layer)
+            when (val kind = ArchiveFormats.open(f)) {
+                is ArchiveFormats.Opened.Tar -> TarArchiveInputStream(kind.stream).use { it.processEntries(targetDir) }
+                is ArchiveFormats.Opened.Zip -> kind.stream.use { extractZipEntries(it, targetDir) }
             }
         }
+    } finally {
+        deleteTreeNoFollow(staging)
     }
+}
+
+/** Smaže strom bez následování symlinků (staging docker save, jen soubory archivu). */
+private fun deleteTreeNoFollow(dir: File) {
+    if (!Files.exists(dir.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+    Files.walkFileTree(
+        dir.toPath(),
+        object : java.nio.file.SimpleFileVisitor<Path>() {
+            override fun visitFile(
+                f: Path,
+                attrs: java.nio.file.attribute.BasicFileAttributes,
+            ): java.nio.file.FileVisitResult {
+                Files.deleteIfExists(f)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(
+                d: Path,
+                exc: IOException?,
+            ): java.nio.file.FileVisitResult {
+                Files.deleteIfExists(d)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        },
+    )
 }
 
 data class Distro(
@@ -1235,8 +1300,8 @@ object RootfsManager {
 
                         emit(layerProgress + 5 to "Extracting layer ${index + 1}/$totalLayers…")
 
-                        // Extract tar.gz layer into rootfs from temp file
-                        extractTarGzip(tempLayerFile, rootfsDir)
+                        // Vrstva může být gzip, zstd i nekomprimovaný tar
+                        extractArchive(tempLayerFile, rootfsDir)
                     } finally {
                         tempLayerFile.delete()
                     }
@@ -1411,13 +1476,7 @@ object RootfsManager {
 
                 // ── Extract (all tar* formats) ──
                 emit(88 to "Extracting rootfs…")
-                when (detectTarFormat(url)) {
-                    "xz" -> extractTarXz(tempFile, rootfsDir)
-                    "bzip2" -> extractTarBzip2(tempFile, rootfsDir)
-                    "gzip" -> extractTarGzip(tempFile, rootfsDir)
-                    "plain" -> extractTarPlain(tempFile, rootfsDir)
-                    else -> extractTarGzip(tempFile, rootfsDir) // auto-detect fallback
-                }
+                extractArchive(tempFile, rootfsDir)
 
                 // ── Backup original archive next to docker dir (best-effort) ──
                 try {
@@ -1517,12 +1576,7 @@ object RootfsManager {
 
             try {
                 emit(10 to "Extracting local rootfs archive…")
-                when (detectTarFormat(archiveFile.name)) {
-                    "xz" -> extractTarXz(archiveFile, rootfsDir)
-                    "bzip2" -> extractTarBzip2(archiveFile, rootfsDir)
-                    "plain" -> extractTarPlain(archiveFile, rootfsDir)
-                    else -> extractTarGzip(archiveFile, rootfsDir)
-                }
+                extractArchive(archiveFile, rootfsDir)
 
                 try {
                     File(rootfsDir, ".docker_image").writeText(
@@ -1548,165 +1602,6 @@ object RootfsManager {
                 }
             }
         }.flowOn(Dispatchers.IO)
-
-    /** Extract a .tar.xz archive into targetDir (streaming, progress-free variant used by pull). */
-    private fun extractTarXz(
-        source: File,
-        targetDir: File,
-    ) {
-        java.io.FileInputStream(source).use { fis ->
-            BufferedInputStream(fis, 512 * 1024).use { bis ->
-                XZCompressorInputStream(bis).use { xzIn ->
-                    TarArchiveInputStream(xzIn).use { tarIn ->
-                        val canonicalBase = targetDir.canonicalPath
-                        var entry: ArchiveEntry? = tarIn.nextEntry
-                        while (entry != null) {
-                            val entryFile = File(targetDir, entry.name)
-                            val canonicalDest = entryFile.canonicalPath
-                            if (!canonicalDest.startsWith(canonicalBase + java.io.File.separator) && canonicalDest != canonicalBase) {
-                                entry = tarIn.nextEntry
-                                continue
-                            }
-                            val tarEntry = entry as? TarArchiveEntry
-                            when {
-                                tarEntry?.isSymbolicLink == true -> {
-                                    entryFile.parentFile?.mkdirs()
-                                    try {
-                                        android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
-                                    } catch (_: Exception) {
-                                    }
-                                }
-                                tarEntry?.isDirectory == true -> entryFile.mkdirs()
-                                else -> {
-                                    entryFile.parentFile?.mkdirs()
-                                    java.io.FileOutputStream(entryFile).use { fos ->
-                                        tarIn.copyTo(fos)
-                                    }
-                                    if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
-                                        entryFile.setExecutable(true, false)
-                                    }
-                                    entryFile.setReadable(true, false)
-                                    // Jen vlastník (app uid) — konzistentně s ostatními extraktory
-                                    // musí jít soubor přepsat (apt/dpkg upgrade v guestu).
-                                    entryFile.setWritable(true)
-                                }
-                            }
-                            entry = tarIn.nextEntry
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun extractTarGzip(
-        source: File,
-        targetDir: File,
-    ) {
-        java.io.FileInputStream(source).use { fis ->
-            BufferedInputStream(fis, 512 * 1024).use { bis ->
-                bis.mark(1024)
-                val isGzip =
-                    try {
-                        val gzIn = GzipCompressorInputStream(bis)
-                        gzIn.read()
-                        true
-                    } catch (_: Exception) {
-                        false
-                    }
-                bis.reset()
-
-                val tarInStream: java.io.InputStream =
-                    if (isGzip) {
-                        GzipCompressorInputStream(bis)
-                    } else {
-                        bis
-                    }
-
-                TarArchiveInputStream(tarInStream).use { tarIn ->
-                    val canonicalBase = targetDir.canonicalPath
-                    var entry: ArchiveEntry? = tarIn.nextEntry
-                    while (entry != null) {
-                        val entryFile = File(targetDir, entry.name)
-                        val canonicalDest = entryFile.canonicalPath
-                        if (!canonicalDest.startsWith(canonicalBase + java.io.File.separator) && canonicalDest != canonicalBase) {
-                            entry = tarIn.nextEntry
-                            continue
-                        }
-
-                        val tarEntry = entry as? TarArchiveEntry
-                        val name = tarEntry?.name ?: entry.name
-                        when {
-                            // ── Docker whiteouts: .wh.<name> smaže <name> z předchozí vrstvy,
-                            //    .wh..wh..opq vyprázdní celý adresář. Bez toho po rozbalení
-                            //    zůstávají soubory ze starších vrstev, které image odstranil.
-                            tarEntry != null && tarEntry.name.contains("/.wh.") -> {
-                                val baseName = name.substringAfterLast("/")
-                                val parentDir = entryFile.parentFile ?: targetDir
-                                if (baseName == ".wh..wh..opq") {
-                                    parentDir.listFiles()?.forEach { it.deleteRecursively() }
-                                    Log.d("RootfsManager", "Opaque whiteout: cleared ${parentDir.path}")
-                                } else {
-                                    val victim = java.io.File(parentDir, baseName.removePrefix(".wh."))
-                                    if (victim.exists()) {
-                                        victim.deleteRecursively()
-                                        Log.d("RootfsManager", "Whiteout: removed ${victim.path}")
-                                    }
-                                }
-                            }
-                            // ── Hardlink: commons-compress nedodává obsah — vytvoř symlink na
-                            //    cíl v rámci rootfs (funkční ekvivalent; PRoot symlinky zvládá).
-                            tarEntry?.isLink == true -> {
-                                val parent = entryFile.parentFile
-                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                                    throw IOException("Failed to create parent dir for link: ${parent.absolutePath}")
-                                }
-                                try {
-                                    entryFile.delete()
-                                    android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
-                                } catch (_: Exception) {
-                                }
-                            }
-                            tarEntry?.isSymbolicLink == true -> {
-                                val parent = entryFile.parentFile
-                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                                    throw IOException("Failed to create parent dir for symlink: ${parent.absolutePath}")
-                                }
-                                try {
-                                    entryFile.delete()
-                                    android.system.Os.symlink(tarEntry.linkName, entryFile.absolutePath)
-                                } catch (_: Exception) {
-                                }
-                            }
-                            tarEntry?.isDirectory == true -> {
-                                if (!entryFile.exists() && !entryFile.mkdirs()) {
-                                    throw IOException("Failed to create directory: ${entryFile.absolutePath}")
-                                }
-                            }
-                            else -> {
-                                val parent = entryFile.parentFile
-                                if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                                    throw IOException("Failed to create parent dir for file: ${parent.absolutePath}")
-                                }
-                                // Přepis existujícího souboru: pokud je to symlink, smaž ho
-                                // (FileOutputStream by psal SKRZ symlink do cíle mimo rootfs!)
-                                if (entryFile.exists() && !entryFile.isFile) entryFile.delete()
-                                FileOutputStream(entryFile).use { fos ->
-                                    tarIn.copyTo(fos)
-                                }
-                                if (tarEntry != null && (tarEntry.mode and 0b001_000_000) != 0) {
-                                    entryFile.setExecutable(true, false)
-                                }
-                                entryFile.setReadable(true, false)
-                                entryFile.setWritable(true, false)
-                            }
-                        }
-                        entry = tarIn.nextEntry
-                    }
-                }
-            }
-        }
-    }
 
     // ──────────────────────────────────────────────────────────────────────
     // Layout migration (Fáze 1): old layout → nh/distro + usr/{bin,lib}
@@ -1954,13 +1849,7 @@ object RootfsManager {
 
                 // Extract
                 emit(88 to "Extracting rootfs...")
-                when (detectTarFormat(script.tarballUrl)) {
-                    "xz" -> extractTarXz(tempFile, rootfsDir)
-                    "bzip2" -> extractTarBzip2(tempFile, rootfsDir)
-                    "gzip" -> extractTarGzip(tempFile, rootfsDir)
-                    "plain" -> extractTarPlain(tempFile, rootfsDir)
-                    else -> extractTarGzip(tempFile, rootfsDir)
-                }
+                extractArchive(tempFile, rootfsDir)
 
                 // Write bootstrap.sh from script
                 if (script.bootstrapScript.isNotEmpty()) {

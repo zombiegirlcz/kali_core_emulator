@@ -578,6 +578,12 @@ kopie zdroje (linkName je od kořene archivu), procházení stromu jen přes nio
 `resolv.conf` symlink se nahradí souborem. Mazání rootfs jen `RootfsManager.deleteRootfsTree()`
 (nenásleduje symlinky — `File.deleteRecursively()` přes absolutní symlink leze na host).
 Spec + validátor + prompt denního agenta: `ROOTFS-for-proot/AGENTS.md`, `tools/validate.py`.
+**Formát archivu se pozná z obsahu, ne z přípony (2026-10-09):** všechny cesty (katalog
+`pullRemoteDistroScript`, URL, lokální import, Docker vrstvy) volají `extractArchive()` →
+`ArchiveFormats.open()` (magic bajty přes commons-compress `ArchiveStreamFactory`/`CompressorStreamFactory`):
+gzip (i vícečlenný), xz, bzip2, zstd (`zstd-jni` AAR), lzma, lz4, .Z + kontejner tar/zip; `docker save`
+tar (`manifest.json` + `Layers`) se rozbalí po vrstvách. Dřív rozhodovala přípona URL a Docker vrstvy
+šly natvrdo přes gzip → „not in the .gz format“ (Chimera). Nevracet na `detectTarFormat(url)`.
 
 **Výkon PRoot = affinity, ne flagy (2026-09-25):** každý trasovaný syscall ~320 µs (i
 `fstat`/`getcwd`; netrasovaný `getpid` 0,5 µs) = latence ptrace výměny mezi jádry. Flagy
