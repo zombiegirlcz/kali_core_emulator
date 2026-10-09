@@ -312,6 +312,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- Odinstalace appky → smazat její Shizuku grant (správce aplikací) -->
+        <receiver
+            android:name=".shizuku.ShizukuPackageRemovedReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_FULLY_REMOVED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
         <!-- Midnight auto-pull of daily rootfs + retry on failure -->
         <receiver
             android:name=".core.rootfs.RemoteRootfsSyncReceiver"

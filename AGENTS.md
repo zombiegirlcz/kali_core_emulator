@@ -354,7 +354,8 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
   com.linux_core.shizuku.ShizukuServerMain --token=<token>`.
 - **Permission grant/revoke:** `nh shizuku grant/revoke/list` **nebo** `ShizukuAppsActivity`
   (terminál → panel služeb → 🔑 SHIZUKU → ⚙ APLIKACE; seznam appek s `<pkg>.shizuku` providerem,
-  přepínač píše do stejných prefs). Žádný dialog/notifikace při `requestPermission` — to zůstává. Stav žije v appce
+  přepínač píše do stejných prefs; odinstalace appky grant maže — `ShizukuPackageRemovedReceiver`
+  na `PACKAGE_FULLY_REMOVED` + promazání při načtení správce). Žádný dialog/notifikace při `requestPermission` — to zůstává. Stav žije v appce
   (`SharedPreferences "shizuku_permissions"`, `LocalApiServer`), server (uid 2000, nemá přístup
   k `filesDir`) se dotazuje přes loopback `GET /shizuku/permission?pkg=` (`ShizukuHttpClient.kt`,
   token z `/shizuku/info`, stejný vzor jako `shell_daemon` token delivery, jen v opačném směru).

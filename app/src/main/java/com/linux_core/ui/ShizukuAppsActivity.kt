@@ -59,6 +59,10 @@ class ShizukuAppsActivity : ComponentActivity() {
 
     private fun loadApps(): List<AppRow> {
         val pm = packageManager
+        // Granty odinstalovaných appek pryč (pojistka k ShizukuPackageRemovedReceiver,
+        // např. odinstalace dřív, než receiver existoval).
+        val stale = prefs().all.keys.filter { !isInstalled(it) }
+        if (stale.isNotEmpty()) prefs().edit().apply { stale.forEach { remove(it) } }.apply()
         val grants = prefs().all.mapValues { it.value as? Boolean ?: false }
         @Suppress("DEPRECATION")
         val withProvider =
@@ -66,16 +70,24 @@ class ShizukuAppsActivity : ComponentActivity() {
                 .filter { p -> p.providers?.any { it.authority?.split(';')?.contains("${p.packageName}.shizuku") == true } == true }
                 .map { it.packageName }
                 .toSet() - packageName
-        return (withProvider + grants.keys).map { pkg ->
+        return (withProvider + grants.keys).mapNotNull { pkg ->
             val label =
                 try {
                     pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
                 } catch (_: PackageManager.NameNotFoundException) {
-                    "(nenainstalováno)"
+                    return@mapNotNull null
                 }
             AppRow(pkg, label, grants[pkg] ?: false, pkg in withProvider)
         }.sortedWith(compareByDescending<AppRow> { it.granted }.thenBy { it.label.lowercase() })
     }
+
+    private fun isInstalled(pkg: String): Boolean =
+        try {
+            packageManager.getApplicationInfo(pkg, 0)
+            true
+        } catch (_: PackageManager.NameNotFoundException) {
+            false
+        }
 
     @Composable
     private fun ShizukuAppsScreen() {
