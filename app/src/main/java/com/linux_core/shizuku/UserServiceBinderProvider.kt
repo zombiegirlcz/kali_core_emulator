@@ -34,9 +34,11 @@ class UserServiceBinderProvider : ContentProvider() {
             Log.w(TAG, "$method zamítnuto pro uid $uid")
             return null
         }
+        // Classloader PŘED prvním čtením: starší Bundle rozbalí při getString celou
+        // mapu a bez něj spadne na BadParcelableException (BinderContainer).
+        extras?.classLoader = BinderContainer::class.java.classLoader
         if (method == METHOD_SEND_SERVER) {
             extras ?: return null
-            extras.classLoader = BinderContainer::class.java.classLoader
             @Suppress("DEPRECATION")
             val binder = extras.getParcelable<BinderContainer>(EXTRA_BINDER)?.binder ?: return null
             ShizukuServerState.set(binder, extras.getInt(ARG_PID, -1))
@@ -46,7 +48,6 @@ class UserServiceBinderProvider : ContentProvider() {
         prune()
         return when (method) {
             METHOD_PUT -> {
-                extras.classLoader = BinderContainer::class.java.classLoader
                 @Suppress("DEPRECATION")
                 val binder = extras.getParcelable<BinderContainer>(EXTRA_BINDER)?.binder ?: return null
                 pending[token] = Entry(binder, SystemClock.elapsedRealtime())
