@@ -385,6 +385,9 @@ knihovnu (velmi rozšířené u root-less nástrojů) fungují **beze zásahu**,
   kontrolka 🔑 SHIZUKU v panelu služeb i `running` v `/shizuku/info`. Dřív to bylo vždy false. `nh shizuku status/start/stop` se ptá pod uid 2000
   (`pidof shizuku_server` přes shell_daemon/adb). `comm` serveru je `main` → `pkill -x` nefunguje.
   Start přes `exec app_process`, jinak drží obalový `sh -c` token v cmdline.
+  `nh shizuku start` jde **primárně přes shell_daemon** (`adb_daemon_exec "CLASSPATH=… setsid nohup
+  app_process …"` — setsid kvůli odpojení od exec požadavku démona, ověřeno 2026-10-09), adb jen
+  jako fallback; adb tedy nemusí být připojené, stačí běžící `nh adb start`.
 - **`nh` nesmí definovat funkci `ashell()`** — zakrývá binárku `ashell` (všechna `ashell -c …` v `nh`
   pak otevírala host shell okno pod uid appky; tak vznikl bug „`nh adb shell` běží pod 10323“).
   `nh adb shell` v terminálu běží inline: `ashell -tc` + `libshelldaemon.so --attach --token-file=…`

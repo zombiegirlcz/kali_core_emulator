@@ -1266,12 +1266,14 @@ shizuku_start() {
         echo "[+] shizuku server už běží."
         return 0
     fi
-    if ! command -v adb >/dev/null 2>&1; then
-        echo "[-] adb není v guestu k dispozici (apt install android-tools-adb)." >&2
-        return 1
-    fi
-    if ! adb devices 2>/dev/null | grep -q device$; then
-        echo "[-] adb není připojeny. Nejdřív spáruj (adb pair/connect)." >&2
+    # Cesta: shell_daemon (uid 2000, bez adb) → fallback adb.
+    local via=""
+    if adb_shelldaemon_alive 2>/dev/null; then
+        via=daemon
+    elif command -v adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q 'device$'; then
+        via=adb
+    else
+        echo "[-] Neběží shell_daemon (nh adb start) a adb není připojené (adb connect)." >&2
         return 1
     fi
     local resp apk token
@@ -1282,10 +1284,16 @@ shizuku_start() {
         echo "[-] Nepodařilo se získat apkPath/token z /shizuku/info." >&2
         return 1
     fi
-    echo "[*] Startuji Shizuku-compat server pod shell UID (non-root)..."
-    # exec: bez něj zůstane obalový `sh -c` s tokenem v /proc/<pid>/cmdline
-    # (app_process si vlastní argv přepíše na --nice-name, sh ne).
-    adb shell "nohup sh -c \"CLASSPATH='$apk' exec app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token\" >/dev/null 2>&1 &" >/dev/null 2>&1
+    echo "[*] Startuji Shizuku-compat server pod shell UID (non-root, přes $via)..."
+    if [ "$via" = daemon ]; then
+        # setsid: server nesmí zůstat v session exec požadavku démona;
+        # setsid/nohup execují app_process přímo → token nezůstane v cmdline obalu.
+        adb_daemon_exec "CLASSPATH='$apk' setsid nohup app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+    else
+        # exec: bez něj zůstane obalový `sh -c` s tokenem v /proc/<pid>/cmdline
+        # (app_process si vlastní argv přepíše na --nice-name, sh ne).
+        adb shell "nohup sh -c \"CLASSPATH='$apk' exec app_process /system/bin --nice-name=shizuku_server com.linux_core.shizuku.ShizukuServerMain --token=$token\" >/dev/null 2>&1 &" >/dev/null 2>&1
+    fi
     sleep 2
     if shizuku_alive; then
         echo "[+] shizuku server běží."
