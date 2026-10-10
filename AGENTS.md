@@ -740,6 +740,19 @@ hot path. JSON parsing je ručně napsaný minimální extraktor (jen pro known 
 tohoto projektu, ne obecný parser) — **nerozšiřovat na obecné vnořené struktury** bez rozmyslu.
 Testováno lokální kompilací v guestu (glibc, jen pro validaci — oficiální artefakt musí přes Modal).
 
+**Boot sessions (2026-10-10, spec `docs/superpowers/specs/2026-10-10-boot-sessions-design.md`):**
+`boot <distro> -- "a | b && c"` — **jeden** argument se shellovou syntaxí, který v guestu není příkaz,
+jde přes `sh -c` (`REENTRY_WRAP`); víc argumentů vždy verbatim (su_daemon argv).
+`boot <distro> --attach[=jméno] [-- cmd]` = proot na pozadí, prvním procesem je inline `SESSION_SERVER`
+(nic se nenasazuje do rootfs), který čte FIFO `ipc/sessions/<sid>/ctl` (`run <rid>` / `exit`).
+`boot -p <pid|sid|jméno> [-q] -- cmd` = klient (FIFO `req/<rid>/{out,err}`, `rc`), `-q` = výstup do
+`tmp/boot-<sid>.log`, hned 0; `--kill`. Guest vidí řídicí adresář jako `/run/host_ipc/sessions/<sid>`:
+v D přes bind celého `ipc`, v I/M bindem jen toho podadresáře („fake host_ipc“ — sockety su_daemon
+v izolaci nevidět). Ctrl-C zabíjí strom příkazu **z hosta** (`pgrep -P`), ne job controlem guest shellu.
+`nh distro login <distro> --tmux[=jméno]` = `ltmux` session `nh-<distro>[-jméno]` (tmux server na hostu,
+panely = `usr/bin/boot-tmux-shell`, generuje `nh`). Test: `ashell -c "sh <repo>/tools/test-boot-session.sh"`
+(BOOT=… / DISTRO=… / SKIP_TMUX=1). **tmux v módu D funguje** (ověřeno 2026-10-10, attach i capture-pane).
+
 **Launcher:** flag `-E` pro proot **neexistuje** — LD_PRELOAD/PROOT_LOADER se v guestu řeší přes
 `/bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"'` před prvním exec.
 

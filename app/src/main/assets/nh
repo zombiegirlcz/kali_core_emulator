@@ -2355,7 +2355,7 @@ help_distro() {
     echo "  ${GREEN}remove <distro>${RST}         Odstranit rootfs zvolené distribuce (kali | parrot, vyžaduje --force)"
     echo "  ${GREEN}backup [distro]${RST}  Vytvořit kompletní zálohu rootfs do Downloads (.tar.gz)"
     echo "  ${GREEN}restore <soubor>${RST}        Obnovit distribuční kontejner ze zálohy .tar.gz"
-    echo "  ${GREEN}login <distro> [--bind src:dst]${RST} Vstoupit do distribuce s možnosti připojení hostitelských složek"
+    echo "  ${GREEN}login <distro> [--bind src:dst] [--tmux[=jméno]]${RST} Vstoupit do distribuce (--tmux: přežije detach)"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh distro list"
@@ -2684,18 +2684,27 @@ except Exception as e:
 # takže se z ashellu (host shell) dostaneme do PRoot kontejneru. Extra bindy
 # se předávají boot skriptu přes NH_EXTRA_BINDS env.
 distro_login() {
-    [ $# -lt 1 ] && { echo "[-] Usage: nh distro login <distro> [--bind src:dst ...]" >&2; exit 1; }
+    [ $# -lt 1 ] && { echo "[-] Usage: nh distro login <distro> [--bind src:dst ...] [--tmux[=jméno]]" >&2; exit 1; }
     local DISTRO="$1"; shift
-    local EXTRA_BINDS=""
+    local EXTRA_BINDS="" USE_TMUX=0 TMUX_NAME=""
     while [ $# -gt 0 ]; do
         case "$1" in
+            --tmux) USE_TMUX=1; shift ;;
+            --tmux=*)
+                USE_TMUX=1; TMUX_NAME="${1#--tmux=}"
+                case "$TMUX_NAME" in
+                    ""|*[!A-Za-z0-9_-]*) echo "[-] --tmux jméno smí obsahovat jen A-Z a-z 0-9 _ -" >&2; exit 1 ;;
+                esac
+                shift ;;
             --bind|-b)
                 [ $# -lt 2 ] && { echo "[-] --bind vyžaduje argument src:dst" >&2; exit 1; }
                 EXTRA_BINDS="$EXTRA_BINDS -b $2"
                 shift 2 ;;
             -h|--help)
-                echo "Usage: nh distro login <distro> [--bind src:dst ...]"
+                echo "Usage: nh distro login <distro> [--bind src:dst ...] [--tmux[=jméno]]"
                 echo "  --bind src:dst   host cesta -> guest cesta (absolutní, vícekrát)"
+                echo "  --tmux[=jméno]   login v tmux session nh-<distro>[-jméno] (tmux běží na hostu,"
+                echo "                   po detachi C-b d panely i proot běží dál; znovu = připojit)"
                 exit 0 ;;
             *)
                 echo "[-] Neznámý argument: $1" >&2; exit 1 ;;
@@ -2754,6 +2763,11 @@ distro_login() {
         fi
     done
 
+    if [ "$USE_TMUX" = "1" ]; then
+        distro_login_tmux "$FILES_DIR" "$DISTRO" "$EXTRA_BINDS" "$TMUX_NAME"
+        exit $?
+    fi
+
     echo "[*] Vstup do $DISTRO (rootfs=$ROOTFS)"
     [ -n "$EXTRA_BINDS" ] && echo "[*] Extra bindy: $EXTRA_BINDS"
     echo "[*] Ukončení: exit / Ctrl+D"
@@ -2768,6 +2782,36 @@ distro_login() {
             NH_EXTRA_BINDS="$EXTRA_BINDS" exec "$BOOT_SCRIPT" "$DISTRO"
             ;;
     esac
+}
+
+# nh distro login <distro> --tmux: tmux server běží na hostu (ltmux = glibc
+# tmux z rootfs přes elf_loader), proot je jen proces v panelu → přežije
+# detach. Panely i nová okna spouští boot-tmux-shell podle NH_TMUX_DISTRO
+# z prostředí tmux session (new-session -e), takže na jednom serveru můžou
+# být sessions různých distro.
+distro_login_tmux() {
+    local FILES_DIR="$1" DISTRO="$2" EXTRA_BINDS="$3" NAME="$4"
+    local LT="$FILES_DIR/usr/bin/ltmux" W="$FILES_DIR/usr/bin/boot-tmux-shell" S want
+    [ -x "$LT" ] || { echo "[-] ltmux nenalezen ($LT)" >&2; return 127; }
+    want='#!/system/bin/sh
+# Generuje nh distro login --tmux: shell panelu = boot <NH_TMUX_DISTRO>.
+B=/data/user/0/com.linux_core/files/usr/bin/boot
+case "$NH_TMUX_DISTRO" in
+    docker/*) exec "$B" docker "${NH_TMUX_DISTRO#docker/}" ;;
+    ?*)       exec "$B" "$NH_TMUX_DISTRO" ;;
+    *)        exec /system/bin/sh ;;
+esac'
+    if [ "$(cat "$W" 2>/dev/null)" != "$want" ]; then
+        printf '%s\n' "$want" > "$W.tmp" && chmod 700 "$W.tmp" && mv "$W.tmp" "$W" \
+            || { echo "[-] nelze zapsat $W" >&2; return 1; }
+    fi
+    # tmux nepovoluje v názvu session '.' ani ':'
+    S="nh-$(echo "$DISTRO" | tr '/.: ' '____')${NAME:+-$NAME}"
+    # default-shell je volba session: i nová okna (C-b c, C-b %) spustí boot,
+    # i když server už běží s jiným SHELL.
+    LTMUX_SHELL="$W" exec "$LT" new-session -A -s "$S" \
+        -e "NH_TMUX_DISTRO=$DISTRO" -e "NH_EXTRA_BINDS=$EXTRA_BINDS" "$W" \; \
+        set-option -t "$S" default-shell "$W"
 }
 
 usb_list() {

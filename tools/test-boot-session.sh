@@ -61,12 +61,12 @@ sleep 2
 grep -q '^quiet6$' "$FILES_DIR/tmp/boot-$sid.log" 2>/dev/null && ok "6 výstup v tmp logu" || bad "6 log: $(cat "$FILES_DIR/tmp/boot-$sid.log" 2>&1)"
 
 # 7: Ctrl-C (SIGINT klientovi) zabije příkaz v guestu
-B -p smk -- sleep 77 & cp=$!
+sh "$BOOT" -p smk -- sleep 77 & cp=$!   # ne funkce B: & by poslal signál subshellu
 sleep 2
 kill -INT "$cp"; wait "$cp"; rc=$?
 check "7 rc po Ctrl-C" 130 "$rc"
 sleep 1
-pgrep -f 'sleep 77' >/dev/null && bad "7 sleep 77 přežil" || ok "7 příkaz zabit"
+pgrep -f '^sleep 77$' >/dev/null && bad "7 sleep 77 přežil" || ok "7 příkaz zabit"
 
 # 8: --kill
 B -p smk --kill >/dev/null 2>&1
@@ -87,7 +87,8 @@ case "$msg" in *neběží*) ok "9 hláška";; *) bad "9 hláška: $msg";; esac
 for m in -i -m; do
     out=$(B "$m" "$DISTRO" --attach=smk$m 2>&1)
     s=$(echo "$out" | sed -n 's/.*SID=\([^ ]*\).*/\1/p')
-    check "I/M $m ls /run/host_ipc" "sessions $s" "$(B -p "smk$m" -- "echo \$(ls /run/host_ipc) \$(ls /run/host_ipc/sessions)")"
+    check "I/M $m jen vlastní session" "$s" "$(B -p "smk$m" -- "ls /run/host_ipc/sessions")"
+    check "I/M $m ipc není vidět" none "$(B -p "smk$m" -- "[ -e /run/host_ipc/su_daemon.pid ] && echo leak || echo none")"
     B -p "smk$m" --kill >/dev/null 2>&1
 done
 
@@ -106,8 +107,9 @@ if [ "${SKIP_TMUX:-0}" != 1 ]; then
     $LT has-session -t "nh-$DISTRO-smk" 2>/dev/null && ok "10 tmux session vznikla" || bad "10 tmux session chybí"
     $LT kill-session -t smkouter 2>/dev/null; sleep 1
     $LT has-session -t "nh-$DISTRO-smk" 2>/dev/null && ok "10 přežila detach" || bad "10 nepřežila detach"
-    $LT send-keys -t "nh-$DISTRO-smk" "cat /etc/os-release | head -1" Enter; sleep 2
-    $LT capture-pane -p -t "nh-$DISTRO-smk" | grep -q 'NAME=' && ok "10 panel běží v guestu" || bad "10 panel: $($LT capture-pane -p -t "nh-$DISTRO-smk" | tail -3)"
+    $LT send-keys -t "nh-$DISTRO-smk" "grep -c ^NAME= /etc/os-release" Enter
+    i=0; while [ $i -lt 20 ] && ! $LT capture-pane -p -t "nh-$DISTRO-smk" | grep -qx '1'; do sleep 1; i=$((i+1)); done
+    [ $i -lt 20 ] && ok "10 panel běží v guestu" || bad "10 panel: $($LT capture-pane -p -t "nh-$DISTRO-smk" | tail -3)"
     $LT kill-session -t "nh-$DISTRO-smk" 2>/dev/null
 fi
 

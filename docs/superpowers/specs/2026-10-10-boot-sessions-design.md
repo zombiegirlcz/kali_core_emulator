@@ -1,6 +1,6 @@
 # Boot sessions — shellová syntaxe, `--attach`, `-p`, `nh distro login --tmux`
 
-Datum: 2026-10-10 · Stav: **schváleno 2026-10-10** · Rozsah: jen shell (`assets/usr/bin/boot`, `assets/nh`,
+Datum: 2026-10-10 · Stav: **implementováno 2026-10-10** (odchylky v §9) · Rozsah: jen shell (`assets/usr/bin/boot`, `assets/nh`,
 nový `tools/test-boot-session.sh`). Nativní kód ani Kotlin se nemění.
 
 ## 1. Cíl a kritéria úspěchu
@@ -226,3 +226,18 @@ souhrn a nenulový exit při chybě. Uklízí po sobě (`--kill` všech svých s
 
 1. ~~`-q`~~ potvrzeno: bez výstupu do `tmp/boot-<sid>.log`, nečeká, hned vrací 0.
 2. Log `tmp/boot-<sid>.log` je V1 bez rotace; maže se při úklidu mrtvé session.
+
+## 9. Odchylky implementace od návrhu
+
+- **Ctrl-C bez `kill` operace na `ctl`:** guest procesy jsou obyčejné procesy hosta se stejným UID
+  (proot = ptrace), takže klient zabije strom příkazu přímo (`pgrep -P` rekurzivně, TERM → po 3 s
+  KILL). Server nepotřebuje job control (`set -m` v dash/busybox bez tty nefunguje). Protokol `ctl`
+  má jen `run <rid>` a `exit`.
+- **Příkaz se spouští jako skript** `"$GUEST_SH" req/<rid>/cmd` (ne `sh -c "$(cat cmd)"`) — bez
+  dalšího `cat` execu a bez problémů s quotingem.
+- **`-q` nic nevypisuje** (ani cestu k logu) — „bez výstupu“.
+- **Re-exec přes `/system/bin/sh "$0"`** (attach dítě, `-q` drain) — funguje i bez exec bitu
+  (kopie v repu) a nezávisí na `PATH`.
+- `rid` = `<PID klienta>.<$RANDOM>` (PID odpojeného `-q` klienta se může recyklovat).
+- `--tmux` nastavuje navíc `default-shell` volbu session, protože když už tmux server běží
+  (jiné `ltmux`), `LTMUX_SHELL` se neuplatní.

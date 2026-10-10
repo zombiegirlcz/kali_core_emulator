@@ -88,8 +88,14 @@ nh_session_start() {
         [ -f "$_f" ] || continue
         _p=$(cat "$_f" 2>/dev/null || echo "")
         if [ -z "$_p" ] || ! kill -0 "$_p" 2>/dev/null; then
-            rm -f "$_f" "${_f%.pid}.info"
+            _f=${_f##*/}
+            session_purge "${_f%.pid}"
         fi
+    done
+    # řídicí adresáře attach sessions bez .pid (sirotci)
+    for _f in "$SESS_IPC"/*; do
+        [ -d "$_f" ] || continue
+        [ -f "$SESSION_DIR/${_f##*/}.pid" ] || session_purge "${_f##*/}"
     done
     rm -f "$SESSION_DIR"/*.json 2>/dev/null || true
     echo "$$" > "$SESSION_DIR/$sid.pid"
@@ -101,7 +107,7 @@ nh_session_stop() {
     # Volá se jen z EXIT trapu, tj. když boot skončí PŘED exec do proot.
     local sid
     sid=$(nh_session_id "$1")
-    rm -f "$FILES_DIR/nh/sessions/$sid.pid" "$FILES_DIR/nh/sessions/$sid.info" 2>/dev/null || true
+    session_purge "$sid"
 }
 
 nh_lock() {
@@ -126,6 +132,288 @@ nh_lock() {
 
 nh_unlock() {
     rm -f "$FILES_DIR/nh/locks/$1.lock" 2>/dev/null || true
+}
+
+# ─── Attach sessions: boot --attach / boot -p ───────────
+# Spec: docs/superpowers/specs/2026-10-10-boot-sessions-design.md
+# Evidence (.pid/.info, name.<jméno>) je v nh/sessions, řídicí adresář
+# ipc/sessions/<sid>/ (ctl FIFO + req/<rid>/) vidí guest jako
+# /run/host_ipc/sessions/<sid>. Prvním procesem v proot je SESSION_SERVER:
+# čte z ctl řádky `run <rid>` / `exit` (< PIPE_BUF → atomické). Každý run
+# spustí req/<rid>/cmd na pozadí se stdout/stderr do FIFO out/err a exit kód
+# zapíše do rc. Dokud server žije, proot (--kill-on-exit) žije taky.
+SESS_DIR="$FILES_DIR/nh/sessions"
+SESS_IPC="$FILES_DIR/ipc/sessions"
+
+# Guest strana: $0 = guest shell, $1 = PATH, $2 = sid, $3 = bootstrap (docker).
+SESSION_SERVER='unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"
+S="/run/host_ipc/sessions/$2"; b="$3"
+if [ -n "$b" ] && [ -f "$b" ] && [ ! -f /.nh/bootstrap.done ]; then
+    "$0" "$b" >&2 && mkdir -p /.nh && : > /.nh/bootstrap.done
+fi
+exec 3<>"$S/ctl" || exit 1
+while read -r op rid <&3; do
+    case "$op" in
+        run)
+            d="$S/req/$rid"
+            [ -f "$d/cmd" ] || continue
+            ( c=/root; [ -f "$d/cwd" ] && read -r c < "$d/cwd"; cd "$c" 2>/dev/null || cd /
+              "$0" "$d/cmd" </dev/null >"$d/out" 2>"$d/err" &
+              echo $! > "$d/pid.t"; mv "$d/pid.t" "$d/pid"
+              wait $!; echo $? > "$d/rc.t"; mv "$d/rc.t" "$d/rc" ) 3<&- &
+            ;;
+        exit) exit 0 ;;
+    esac
+done'
+
+# Guest wrapper pro `boot <distro> -- …` (i sudo/su_daemon re-entry):
+# $0 = guest shell, $1 = PATH, zbytek = příkaz. Jediný argument se shellovou
+# syntaxí (mezera/metaznak), který není existující příkaz, jde přes `sh -c`.
+# Víc argumentů vždy verbatim — su_daemon předává argv.
+REENTRY_WRAP='unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; shift
+if [ $# -eq 1 ] && ! command -v "$1" >/dev/null 2>&1; then
+    case "$1" in
+        *[" 	|&;<>()\$\`*?{}~"]*|*"["*|*"]"*|*"
+"*) exec "$0" -c "$1" ;;
+    esac
+fi
+exec "$@"'
+
+# Úklid evidence jedné session.
+session_purge() {
+    local sid="$1" _n _v
+    [ -n "$sid" ] || return 0
+    rm -f "$SESS_DIR/$sid.pid" "$SESS_DIR/$sid.info" "$FILES_DIR/tmp/boot-$sid.log" 2>/dev/null
+    rm -rf "$SESS_IPC/$sid" 2>/dev/null
+    for _n in "$SESS_DIR"/name.*; do
+        [ -f "$_n" ] || continue
+        _v=""
+        { read -r _v < "$_n"; } 2>/dev/null || true
+        if [ "$_v" = "$sid" ]; then rm -f "$_n"; fi
+    done
+    return 0
+}
+
+# Hlášení rodiči (boot --attach čeká na řádek `sid …` nebo `err …`).
+session_ready() {
+    echo "$*" >> "$SESS_DIR/attach.${NH_ATTACH_CHILD%%,*}.ready" 2>/dev/null || true
+}
+
+# Dítě: připraví řídicí adresář a evidenci, nastaví NH_ATTACH_SID (čte
+# build_binds). Volá se po nh_session_start, před build_binds.
+session_prepare() {
+    local sid name="${NH_ATTACH_CHILD#*,}" d _old _p _i
+    [ "$name" = "$NH_ATTACH_CHILD" ] && name=""
+    sid=$(nh_session_id "$1")
+    d="$SESS_IPC/$sid"
+    if [ -n "$name" ] && [ -f "$SESS_DIR/name.$name" ]; then
+        _old="" _p=""
+        { read -r _old < "$SESS_DIR/name.$name"; } 2>/dev/null || true
+        { read -r _p < "$SESS_DIR/$_old.pid"; } 2>/dev/null || true
+        if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then
+            session_ready "err jméno '$name' už používá session $_old"
+            return 1
+        fi
+    fi
+    if ! { mkdir -p "$d/req" && chmod 700 "$d" && mkfifo -m 600 "$d/ctl"; }; then
+        session_ready "err nelze vytvořit $d"
+        return 1
+    fi
+    [ -n "$name" ] && echo "$sid" > "$SESS_DIR/name.$name"
+    { read -r _i < "$SESS_DIR/$sid.info"; } 2>/dev/null || _i="$1"
+    echo "$_i attach=1 name=$name" > "$SESS_DIR/$sid.info"
+    NH_ATTACH_SID="$sid"
+}
+
+# Dítě: exec proot se serverem jako prvním procesem.
+# $1 ROOTFS  $2 GUEST_SH  $3 GUEST_PATH  $4 cwd  $5 BINDS  $6 bootstrap  $7 env navíc
+session_server_exec() {
+    session_ready "sid $NH_ATTACH_SID"
+    exec env -i $(guest_env) $7 "$PROOT" $PROOT_FLAGS -r "$1" -w "$4" $5 \
+        "$2" -c "$SESSION_SERVER" "$2" "$3" "$NH_ATTACH_SID" "$6"
+}
+
+# Rodič `boot … --attach`: spustí sám sebe odpojeně (setsid, stdin /dev/null)
+# a čeká, až dítě nahlásí sid. $1 / $2 = quotované argumenty před / za `--`.
+session_attach_parent() {
+    set +e
+    local ready="$SESS_DIR/attach.$$.ready" log="$FILES_DIR/tmp/boot-attach.$$.log"
+    local _k _l _pid="" _sid="" _err="" _t=0 _v _post="$2"
+    mkdir -p "$SESS_DIR" "$FILES_DIR/tmp"
+    : > "$ready"
+    # Dítě dostane hotové hodnoty v env, root_env znovu nečte (přebil by -d/-i/-m).
+    export NH_ENV_FROM_APP=1
+    for _v in NH_ISOLATED NH_MINIMAL NH_FAKE_SYS NH_MOUNT_STORAGE NH_SHARED_TMP \
+              NH_EXTRA_MOUNTS NH_EXTRA_BINDS NH_CPU_PIN NH_CPU_PIN_CORE NH_DISTRO CPU_ALL; do
+        if eval "[ -n \"\${$_v+x}\" ]"; then export "$_v"; fi
+    done
+    eval "set -- $1"
+    setsid /system/bin/sh "$0" --attach-child="$$${NH_ATTACH_NAME:+,$NH_ATTACH_NAME}" "$@" \
+        </dev/null >"$log" 2>&1 &
+    while :; do
+        while read -r _k _l; do
+            case "$_k" in
+                pid) _pid=$_l ;;
+                sid) _sid=$_l ;;
+                err) _err=$_l ;;
+            esac
+        done < "$ready"
+        [ -n "$_sid" ] || [ -n "$_err" ] && break
+        if [ -n "$_pid" ]; then
+            kill -0 "$_pid" 2>/dev/null || { _err="session skončila při startu"; break; }
+        elif [ "$_t" -ge 50 ]; then
+            _err="session se nespustila"; break
+        fi
+        [ "$_t" = 25 ] && echo "[boot] čekám na start session (první start / bootstrap)…" >&2
+        _t=$((_t + 1))
+        sleep 0.2
+    done
+    rm -f "$ready"
+    if [ -z "$_sid" ]; then
+        err "${_err:-session se nespustila}"
+        tail -n 15 "$log" >&2 2>/dev/null
+        return 1
+    fi
+    echo "PID=$_pid SID=$_sid${NH_ATTACH_NAME:+ NAME=$NH_ATTACH_NAME}"
+    # proot vypisuje varování (bindy) do logu jen při startu
+    rm -f "$log"
+    if [ -n "$_post" ]; then
+        eval "set -- $_post"
+        NH_QUIET=1
+        session_client "$_sid" "$@"
+    fi
+    return 0
+}
+
+# <pid|sid|jméno> → sid na stdout; 2 = nenalezeno.
+session_resolve() {
+    local x="$1" f p
+    case "$x" in
+        ""|*[!A-Za-z0-9_.-]*) return 2 ;;
+        *[!0-9]*) ;;
+        *)
+            for f in "$SESS_DIR"/*.pid; do
+                [ -f "$f" ] || continue
+                p=""
+                { read -r p < "$f"; } 2>/dev/null || continue
+                if [ "$p" = "$x" ]; then f=${f##*/}; echo "${f%.pid}"; return 0; fi
+            done
+            return 2
+            ;;
+    esac
+    if [ -f "$SESS_DIR/name.$x" ]; then
+        { read -r p < "$SESS_DIR/name.$x"; } 2>/dev/null && [ -n "$p" ] && { echo "$p"; return 0; }
+    fi
+    [ -f "$SESS_DIR/$x.pid" ] && { echo "$x"; return 0; }
+    return 2
+}
+
+# Argumenty → jeden shellový řetězec ('…' + '\'').
+session_quote() {
+    local a out=""
+    for a in "$@"; do
+        out="$out '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
+    done
+    echo "${out# }"
+}
+
+# Zápis řádku do ctl. timeout: open FIFO bez čtenáře by visel navždy.
+session_send() {  # $1 ctl, $2 řádek
+    timeout 15 /system/bin/sh -c 'echo "$1" > "$2"' _ "$2" "$1"
+}
+
+session_wait_rc() {  # $1 req dir, $2 PID session → rc na stdout
+    local rc=""
+    while [ ! -f "$1/rc" ]; do
+        kill -0 "$2" 2>/dev/null || { echo 255; return 0; }
+        sleep 0.1
+    done
+    { read -r rc < "$1/rc"; } 2>/dev/null
+    echo "${rc:-255}"
+}
+
+# Guest procesy jsou obyčejné procesy hosta (proot = ptrace) se stejným UID,
+# takže strom příkazu jde zabít přímo odsud — bez job control v guest shellu.
+session_kill_tree() {  # $1 PID, $2 signál; potomci dřív než rodič
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null); do session_kill_tree "$c" "$2"; done
+    kill -"$2" "$1" 2>/dev/null || true
+}
+
+session_interrupt() {  # $1 req dir (Ctrl-C v klientovi)
+    local p="" i=0
+    { read -r p < "$1/pid"; } 2>/dev/null
+    [ -n "$p" ] && session_kill_tree "$p" TERM
+    while [ ! -f "$1/rc" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    [ -f "$1/rc" ] || { [ -n "$p" ] && session_kill_tree "$p" KILL; }
+    rm -rf "$1"
+    exit 130
+}
+
+session_kill() {  # $1 sid, $2 PID
+    local i=0
+    session_send "$SESS_IPC/$1/ctl" exit
+    while kill -0 "$2" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$2" 2>/dev/null && kill -TERM "$2" 2>/dev/null
+    session_purge "$1"
+    echo "[boot] session $1 ukončena"
+}
+
+# Klient `boot -p <cíl> [-q] -- příkaz…` / `boot -p <cíl> --kill`.
+session_client() {
+    set +e
+    local target="$1" sid pid="" d req cmd distro cwd=/root co ce rc
+    shift
+    sid=$(session_resolve "$target") || { err "session '$target' neexistuje"; return 2; }
+    { read -r pid < "$SESS_DIR/$sid.pid"; } 2>/dev/null
+    d="$SESS_IPC/$sid"
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        err "session $sid neběží (PID ${pid:-?}), uklízím"
+        session_purge "$sid"
+        return 3
+    fi
+    [ -p "$d/ctl" ] || { err "session $sid není --attach session (chybí $d/ctl)"; return 3; }
+    if [ "${NH_KILL:-0}" = "1" ]; then session_kill "$sid" "$pid"; return 0; fi
+    [ $# -gt 0 ] || { err "chybí příkaz: boot -p $target -- <příkaz>"; return 2; }
+    if [ $# -eq 1 ]; then cmd="$1"; else cmd=$(session_quote "$@"); fi
+    # cwd klienta, pokud v rootfs existuje (1. slovo .info = distro)
+    { read -r distro _ < "$SESS_DIR/$sid.info"; } 2>/dev/null
+    [ -n "$PWD" ] && [ -n "$distro" ] && [ -d "$FILES_DIR/nh/distro/$distro$PWD" ] && cwd="$PWD"
+    req="$d/req/$$.$RANDOM"
+    mkdir "$req" || { err "nelze vytvořit $req"; return 1; }
+    echo "$cmd" > "$req/cmd"
+    echo "$cwd" > "$req/cwd"
+    mkfifo -m 600 "$req/out" "$req/err" || { rm -rf "$req"; err "mkfifo selhal"; return 1; }
+    if ! session_send "$d/ctl" "run ${req##*/}"; then
+        rm -rf "$req"; err "session $sid neodpovídá"; return 1
+    fi
+    if [ "${NH_QUIET:-0}" = "1" ]; then
+        setsid /system/bin/sh "$0" --pid="$sid" --drain="${req##*/}" </dev/null >/dev/null 2>&1 &
+        return 0
+    fi
+    trap 'session_interrupt "$req"' INT TERM HUP
+    # oba cat na pozadí: `wait` přeruší signál hned, popředí by trap odložilo
+    cat "$req/out" & co=$!
+    cat "$req/err" >&2 & ce=$!
+    wait "$co"; wait "$ce"
+    rc=$(session_wait_rc "$req" "$pid")
+    trap - INT TERM HUP
+    rm -rf "$req"
+    return "$rc"
+}
+
+# `-q`: odpojený čtenář out/err → tmp/boot-<sid>.log.
+session_drain() {  # $1 sid, $2 rid
+    set +e
+    local req="$SESS_IPC/$1/req/$2" log="$FILES_DIR/tmp/boot-$1.log" pid="" co ce c=""
+    { read -r pid < "$SESS_DIR/$1.pid"; } 2>/dev/null
+    { read -r c < "$req/cmd"; } 2>/dev/null
+    echo "--- $2 $c" >> "$log"
+    cat "$req/out" >> "$log" & co=$!
+    cat "$req/err" >> "$log" & ce=$!
+    wait "$co"; wait "$ce"
+    echo "--- $2 rc=$(session_wait_rc "$req" "$pid")" >> "$log"
+    rm -rf "$req"
 }
 
 # ─── Validate proot stack ───────────────────────────────
@@ -542,6 +830,13 @@ build_binds() {
         _binds="$_binds -b $FILES_DIR/tmp:/tmp"
     fi
 
+    # Attach session: řídicí adresář jako /run/host_ipc/sessions/<sid>. V D je
+    # vidět přes bind celého ipc výše; v I/M se bindne jen tenhle podadresář
+    # („fake host_ipc“ — su_daemon/magisk sockety z ipc izolovaný guest nevidí).
+    if [ -n "${NH_ATTACH_SID:-}" ] && { [ "$NH_MINIMAL" != "0" ] || [ "$NH_ISOLATED" != "0" ]; }; then
+        _binds="$_binds -b $SESS_IPC/$NH_ATTACH_SID:/run/host_ipc/sessions/$NH_ATTACH_SID"
+    fi
+
     # Extra binds from preferences / CLI
     [ -n "${NH_EXTRA_MOUNTS:-}" ] && _binds="$_binds $NH_EXTRA_MOUNTS"
     [ -n "${NH_EXTRA_BINDS:-}" ] && _binds="$_binds $NH_EXTRA_BINDS"
@@ -645,6 +940,7 @@ boot_classic() {
     log "distro=$distro rootfs=$ROOTFS shell=$GUEST_SH"
     nh_session_start "$distro"
     trap 'nh_session_stop "$distro"' EXIT
+    if [ -n "${NH_ATTACH_CHILD:-}" ]; then session_prepare "$distro" || return 1; fi
 
     # Prepare sysdata/shm before binds
     setup_sysdata_shm "$distro"
@@ -662,6 +958,11 @@ boot_classic() {
         else
             echo "[boot] WARNING: bootstrap failed — keeping .bootstrap_required" >&2
         fi
+    fi
+
+    # boot <distro> --attach: command server místo shellu
+    if [ -n "${NH_ATTACH_SID:-}" ]; then
+        session_server_exec "$ROOTFS" "$GUEST_SH" "$(build_path "$ROOTFS")" /root "$BINDS" "" ""
     fi
 
     # su_daemon re-entry mode: boot <distro> -- <cmd> [args...]
@@ -685,7 +986,7 @@ boot_classic() {
             # Route through guest shell to strip host LD_PRELOAD/PROOT_LOADER,
             # then exec the exact args verbatim (no shell re-quoting loss)
             exec env -i $(guest_env) "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; shift; exec "$@"' "$GUEST_SH" "$GUEST_PATH" "$@"
+                "$GUEST_SH" -c "$REENTRY_WRAP" "$GUEST_SH" "$GUEST_PATH" "$@"
         fi
     fi
 
@@ -888,6 +1189,12 @@ boot_docker() {
         return 1
     fi
     log "Docker image=$image_name shell=$GUEST_SH hostshell=$IS_TERMUX_IMAGE"
+    # Docker sessions se do nh/sessions zapisují jen v attach režimu.
+    if [ -n "${NH_ATTACH_CHILD:-}" ]; then
+        nh_session_start "docker/$image_name"
+        trap 'nh_session_stop "docker/$image_name"' EXIT
+        session_prepare "docker/$image_name" || return 1
+    fi
 
     # Prepare sysdata/shm before binds
     setup_sysdata_shm "docker/$image_name"
@@ -933,6 +1240,11 @@ boot_docker() {
     local PROOT_CWD="${MF_WORKDIR:-/root}"
     rootfs_resolve "$ROOTFS" "$PROOT_CWD" >/dev/null || PROOT_CWD="/"
 
+    # boot docker <image> --attach: command server místo shellu
+    if [ -n "${NH_ATTACH_SID:-}" ]; then
+        session_server_exec "$ROOTFS" "$GUEST_SH" "$GUEST_PATH" "$PROOT_CWD" "$BINDS" "$BOOTSTRAP" "$MF_ENV"
+    fi
+
     # su_daemon re-entry mode
     if [ "${1:-}" = "--" ]; then
         shift
@@ -950,7 +1262,7 @@ boot_docker() {
                 set -- "$GUEST_SH" "$@"
             fi
             exec env -i $(guest_env) $MF_ENV "$PROOT" $PROOT_FLAGS -r "$ROOTFS" -w "$NH_CWD" $BINDS \
-                "$GUEST_SH" -c 'unset LD_PRELOAD PROOT_LOADER PROOT_TMP_DIR LD_LIBRARY_PATH; export PATH="$1"; shift; exec "$@"' "$GUEST_SH" "$GUEST_PATH" "$@"
+                "$GUEST_SH" -c "$REENTRY_WRAP" "$GUEST_SH" "$GUEST_PATH" "$@"
         fi
     fi
 
@@ -1232,10 +1544,26 @@ cpu_pin_apply() {
 main() {
     # Volby kdekoli před `--`. Vše od `--` dál je guest příkaz a projde
     # beze změny (jinak by třeba `boot -- ls -i` sebralo -i jako mód).
-    local _newargs="" _rest=0
+    local _newargs="" _rest=0 _q _pre="" _post="" _dd=0
     while [ $# -gt 0 ]; do
         if [ "$_rest" = "0" ]; then
             case "$1" in
+                --attach) NH_ATTACH=1; shift; continue ;;
+                --attach=*)
+                    NH_ATTACH=1; NH_ATTACH_NAME="${1#--attach=}"
+                    case "$NH_ATTACH_NAME" in
+                        ""|*[!A-Za-z0-9_.-]*) err "jméno session smí obsahovat jen A-Z a-z 0-9 _ . -"; return 2 ;;
+                    esac
+                    shift; continue ;;
+                --attach-child=*) NH_ATTACH_CHILD="${1#--attach-child=}"; shift; continue ;;
+                -p|--pid)
+                    shift
+                    [ -n "${1:-}" ] || { err "-p/--pid vyžaduje <pid|sid|jméno>"; return 2; }
+                    NH_CLIENT="$1"; shift; continue ;;
+                --pid=*) NH_CLIENT="${1#--pid=}"; shift; continue ;;
+                --drain=*) NH_DRAIN="${1#--drain=}"; shift; continue ;;
+                -q|--quiet) NH_QUIET=1; shift; continue ;;
+                --kill) NH_KILL=1; shift; continue ;;
                 -b|--bind)
                     shift
                     [ -n "${1:-}" ] || { err "-b/--bind requires a src:dest argument"; return 1; }
@@ -1255,9 +1583,33 @@ main() {
                 --) _rest=1 ;;
             esac
         fi
-        _newargs="$_newargs '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+        _q="'$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+        _newargs="$_newargs $_q"
+        if [ "$_rest" = "0" ]; then
+            _pre="$_pre $_q"
+        elif [ "$_dd" = "1" ]; then
+            _post="$_post $_q"
+        else
+            _dd=1
+        fi
         shift
     done
+    # boot -p … / --attach: klient a rodič nebootují ani nepinují CPU
+    if [ -n "${NH_DRAIN:-}" ]; then
+        session_drain "$NH_CLIENT" "$NH_DRAIN"
+        return 0
+    fi
+    if [ -n "${NH_CLIENT:-}" ]; then
+        eval "set -- $_post"
+        session_client "$NH_CLIENT" "$@"
+        return
+    fi
+    if [ "${NH_ATTACH:-0}" = "1" ] && [ -z "${NH_ATTACH_CHILD:-}" ]; then
+        [ "$_dd" = "1" ] && [ -z "$_post" ] && { err "--attach: prázdný příkaz za --"; return 2; }
+        session_attach_parent "$_pre" "$_post"
+        return
+    fi
+    [ -n "${NH_ATTACH_CHILD:-}" ] && session_ready "pid $$"
     [ -n "${NH_EXTRA_BINDS:-}" ] && export NH_EXTRA_BINDS
     eval "set -- $_newargs"
     apply_mode
@@ -1279,6 +1631,9 @@ main() {
             echo "       boot [options] docker <image-name> [-- cmd args...]"
             echo "       boot -- cmd args...   (su_daemon re-entry, auto-detect distro)"
             echo "       boot [options]        (auto-detect active distro)"
+            echo "       boot [options] <distro> --attach[=jméno] [-- příkaz]   session na pozadí"
+            echo "       boot -p <pid|sid|jméno> [-q] -- příkaz                 příkaz do session"
+            echo "       boot -p <pid|sid|jméno> --kill                         ukončit session"
             echo ""
             echo "Options (kdekoli před --):"
             echo "  -d                 DEFAULT mód: host bindy, fake /proc+/sys, Android env"
@@ -1287,6 +1642,13 @@ main() {
             echo "  -b src:dest        Extra bind mount (opakovatelné), = --bind src:dest"
             echo "  --bind=src:dest    Totéž, forma s rovnítkem"
             echo "  --shared-tmp       Hostitelský \$FILES_DIR/tmp jako guest /tmp"
+            echo "  --attach[=jméno]   Session na pozadí s command serverem, vypíše PID/SID"
+            echo "  -p, --pid X        Pošle příkaz do attach session (PID, SID nebo jméno)"
+            echo "  -q, --quiet        S -p: bez výstupu (do \$FILES_DIR/tmp/boot-<sid>.log), hned exit 0"
+            echo "  --kill             S -p: ukončí session"
+            echo ""
+            echo "Jeden argument za -- se shellovou syntaxí běží přes sh -c:"
+            echo "  boot kali -- \"ls / | grep usr && echo ok\""
             echo ""
             echo "Env vars: PREFIX, FILES_DIR, NH_ISOLATED, NH_MINIMAL, NH_FAKE_SYS,"
             echo "          NH_MOUNT_STORAGE, NH_SHARED_TMP, NH_EXTRA_MOUNTS, NH_EXTRA_BINDS,"
