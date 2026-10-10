@@ -567,11 +567,6 @@ static void set_nonblock(int fd) {
     if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-static void set_block(int fd) {
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
-}
-
 /* Write all bytes; handles EAGAIN on non-blocking fds via short poll. */
 static int write_all(int fd, const char *buf, size_t len) {
     size_t off = 0;
@@ -694,11 +689,30 @@ static int su_recv_ctl_fds(int sock, uint8_t *ctl_type, int *fd1_out, int *fd2_o
  * zmizel" (su_wrapper socket) — na rozdíl od původní bridge smyčky
  * NEZABÍJÍ child na odpojení klienta, to řeší volající (supervisor).
  * Vrací 1, pokud child skončil, 0 při detachu (child žije dál). */
-static int su_relay_loop(int master_fd, int guest_fd, int client_fd, pid_t pid) {
+static int su_relay_loop_inner(int master_fd, int guest_fd, int client_fd, pid_t pid) {
     char buf[4096];
+    struct winsize gw = {0};
     for (;;) {
+        /* resize guest terminalu → session pty (jadro posle SIGWINCH) */
+        struct winsize cw;
+        if (ioctl(guest_fd, TIOCGWINSZ, &cw) == 0 &&
+            (cw.ws_row != gw.ws_row || cw.ws_col != gw.ws_col)) {
+            gw = cw;
+            ioctl(master_fd, TIOCSWINSZ, &gw);
+        }
+
         pid_t wr = waitpid(pid, NULL, WNOHANG);
-        if (wr == pid) return 1;
+        if (wr == pid) {
+            /* dočerpat zbytek výstupu, ať se poslední řádky neztratí */
+            for (;;) {
+                struct pollfd p = { master_fd, POLLIN, 0 };
+                if (poll(&p, 1, 50) <= 0 || !(p.revents & POLLIN)) break;
+                ssize_t n = read(master_fd, buf, sizeof(buf));
+                if (n <= 0) break;
+                write_all(guest_fd, buf, (size_t)n);
+            }
+            return 1;
+        }
 
         struct pollfd pfds[3];
         pfds[0].fd = guest_fd;  pfds[0].events = POLLIN;  pfds[0].revents = 0;
@@ -721,6 +735,22 @@ static int su_relay_loop(int master_fd, int guest_fd, int client_fd, pid_t pid) 
             }
         }
     }
+}
+
+/* Guest terminal je po dobu attachu raw (jinak dvojí echo, line editing
+ * v guestu a ctrl-c zabije su_wrapper = detach místo SIGINT do root shellu);
+ * po detachi/konci se vrátí původní termios. */
+static int su_relay_loop(int master_fd, int guest_fd, int client_fd, pid_t pid) {
+    struct termios saved;
+    int have_term = (tcgetattr(guest_fd, &saved) == 0);
+    if (have_term) {
+        struct termios raw = saved;
+        cfmakeraw(&raw);
+        tcsetattr(guest_fd, TCSANOW, &raw);
+    }
+    int r = su_relay_loop_inner(master_fd, guest_fd, client_fd, pid);
+    if (have_term) tcsetattr(guest_fd, TCSANOW, &saved);
+    return r;
 }
 
 /* Supervisor: drží launcher child (root shell v guestu) naživu napříč
@@ -1196,15 +1226,22 @@ static void handle_client(int client_fd) {
         return;
     }
 
-    int guest_fd = fds[0];
-    int use_bridge = isatty(guest_fd);
+    /* PTY bridge, kdyz je terminal ALESPON na jednom z fd (model sudo
+     * use_pty). Ne-tty fd (presmerovani `> soubor`, roura `| grep`, `< in`)
+     * dostane command PRIMO — driv sel veskery vystup do stdin tty, takze
+     * `sudo cmd > f` nechal f prazdny a `sudo cmd | wc` cetl 0 bajtu. */
+    int in_tty  = isatty(fds[0]);
+    int out_tty = isatty(fds[1]);
+    int err_tty = isatty(fds[2]);
+    int guest_fd = in_tty ? fds[0] : out_tty ? fds[1] : err_tty ? fds[2] : fds[0];
+    int use_bridge = in_tty || out_tty || err_tty;
 
     /* Pojmenovana perzistentni session (NH_SU_SESSION v su_wrapperu) — jen
      * pro interaktivni (PTY) pozadavky, presne jako jednorazovy bridge nize,
      * ale root shell prezije odpojeni klienta misto aby se zabil. Vlastni
      * PTY si otevira az supervisor, tenhle worker zadny master/slave
      * nepotrebuje. */
-    if (use_bridge && g_session_name[0] != '\0') {
+    if (in_tty && g_session_name[0] != '\0') {
         close(fds[1]); close(fds[2]);
         handle_persistent_session_su(client_fd, guest_fd, cmd_argv, cwd, g_session_name);
         for (int i = 0; cmd_argv[i] != NULL; i++) free(cmd_argv[i]);
@@ -1228,11 +1265,16 @@ static void handle_client(int client_fd) {
          * command gets its OWN pty (its controlling terminal), so /dev/tty,
          * ctrl-c (SIGINT) and job control all work. Guest PTY termios is
          * fully restored when the command exits (see cleanup below). */
-        if (have_term) {
+        /* Raw jen kdyz z terminalu cteme vstup; jinak ctrl-c zustava
+         * guestovi (zabije su_wrapper → POLLHUP → SIGKILL commandu). */
+        if (have_term && in_tty) {
             struct termios raw = saved_term;
             cfmakeraw(&raw);
             tcsetattr(guest_fd, TCSANOW, &raw);
         }
+        /* O_NONBLOCK je na sdileném file description — guest shell by ho
+         * zdedil (EAGAIN v dalsich prikazech), proto se na konci vraci. */
+        int guest_fl = fcntl(guest_fd, F_GETFL, 0);
         set_nonblock(guest_fd);
         set_nonblock(master_fd);
 
@@ -1240,15 +1282,12 @@ static void handle_client(int client_fd) {
         if (pid < 0) {
             /* bridge setup failed → restore guest tty and fall back to direct */
             if (have_term) tcsetattr(guest_fd, TCSANOW, &saved_term);
-            set_block(guest_fd);
+            if (guest_fl >= 0) fcntl(guest_fd, F_SETFL, guest_fl);
             close(master_fd); close(slave_fd);
             use_bridge = 0;
         } else if (pid == 0) {
             /* command child: own session + fresh controlling pty */
             close(client_fd);
-            close(guest_fd);
-            close(fds[1]);
-            close(fds[2]);
             close(master_fd);
 
             if (setsid() < 0) {
@@ -1259,13 +1298,25 @@ static void handle_client(int client_fd) {
             if (have_term) tcsetattr(slave_fd, TCSANOW, &saved_term);
             ioctl(slave_fd, TIOCSWINSZ, &gw);
 
-            dup2(slave_fd, STDIN_FILENO);
-            dup2(slave_fd, STDOUT_FILENO);
-            dup2(slave_fd, STDERR_FILENO);
-            close(slave_fd);
-
             /* become foreground process group on our own pty → ctrl-c works */
-            tcsetpgrp(STDIN_FILENO, getpgrp());
+            tcsetpgrp(slave_fd, getpgrp());
+
+            /* tty fd → nase pty, ne-tty fd (soubor/roura) → primo. Zdroje
+             * se nejdriv presunou nad 2, aby je dup2 na 0..2 neprepsal. */
+            int src[3] = {
+                in_tty  ? slave_fd : fds[0],
+                out_tty ? slave_fd : fds[1],
+                err_tty ? slave_fd : fds[2],
+            };
+            for (int i = 0; i < 3; i++) {
+                if (src[i] >= 0 && src[i] <= STDERR_FILENO) src[i] = fcntl(src[i], F_DUPFD, 3);
+            }
+            for (int i = 0; i < 3; i++) dup2(src[i], i);
+            for (int i = 0; i < 3; i++) {
+                if (src[i] > STDERR_FILENO) close(src[i]);
+                if (fds[i] > STDERR_FILENO) close(fds[i]);
+            }
+            if (slave_fd > STDERR_FILENO) close(slave_fd);
 
             /* SAFETY: never exec on the bare host — re-enter PRoot (fail closed). */
             if (g_launcher_path[0] == '\0' || access(g_launcher_path, X_OK) != 0) {
@@ -1309,7 +1360,7 @@ static void handle_client(int client_fd) {
             int status = 0, exit_code = 0, aborted = 0;
             for (;;) {
                 struct pollfd pfds[3];
-                pfds[0].fd = guest_fd;  pfds[0].events = POLLIN;
+                pfds[0].fd = in_tty ? guest_fd : -1; pfds[0].events = POLLIN;
                 pfds[1].fd = master_fd; pfds[1].events = POLLIN;
                 pfds[2].fd = client_fd; pfds[2].events = POLLIN | POLLHUP;
                 int pr = poll(pfds, 3, 100);
@@ -1363,6 +1414,7 @@ static void handle_client(int client_fd) {
 
             /* CRITICAL: restore guest shell terminal (raw was only temporary) */
             if (have_term) tcsetattr(guest_fd, TCSANOW, &saved_term);
+            if (guest_fl >= 0) fcntl(guest_fd, F_SETFL, guest_fl);
             close(master_fd);
             close(fds[0]); close(fds[1]); close(fds[2]);
 
