@@ -9,6 +9,9 @@
  *   cpuctl apps [N]          — per-app CPU% (1s sample), current core mask
  *   cpuctl app-pin <pkg> <hexmask|off> — pin every process of an app package
  *
+ * Affinity je per-vlákno: všechno, co pinuje existující procesy, prochází
+ * /proc/<pid>/task (dřív jen hlavní vlákno → ostatní vlákna zůstala jinde).
+ *
  * Build: aarch64-linux-android24-clang -static -o cpuctl cpuctl.c
  */
 #define _GNU_SOURCE
@@ -37,7 +40,7 @@
 /* Verze binárky = verze modulu (magisk-modules/nh_cpuctl/module.prop).
  * `cpuctl version` ji vypíše; nh/usage-cpu.sh podle ní poznají starou
  * binárku (v1.0 neznala apps/app-pin ani version → exit 1). */
-#define CPUCTL_VERSION  "1.2"
+#define CPUCTL_VERSION  "1.3"
 #define FILES_DIR       "/data/user/0/com.linux_core/files"
 #define CPU_DIR         FILES_DIR "/nh/cpu"
 #define LOG_DIR         "/data/adb/cpuctl"
@@ -50,6 +53,7 @@
 #define MAX_TREE        2048
 #define MAX_WORDS       128
 #define WORD_LEN        64
+#define APP_UID_MIN     10000
 
 /* ── Globals ───────────────────────────────────────────────────────── */
 static volatile sig_atomic_t g_running = 1;
@@ -61,6 +65,10 @@ typedef struct {
     pid_t pid;
     unsigned long mask;
     char rootfs[PATH_MAX];
+    /* Poslední zalogovaný stav repinu — log jen při změně (jinak se maska
+     * mimo cpuset appky logovala každých 5 s). Přenáší se přes scan_sessions. */
+    unsigned long last_was;
+    int last_err;
 } session_t;
 
 static session_t g_sess[MAX_SESSIONS];
@@ -73,7 +81,6 @@ static int g_npend;
 /* Per-app pin rules (foreign apps): file $CPU_DIR/app.<package> = hexmask.
  * Only apps (uid >= APP_UID_MIN) are ever pinned — never system services. */
 #define MAX_APPRULES  64
-#define APP_UID_MIN   10000
 typedef struct { char pkg[128]; unsigned long mask; } apprule_t;
 static apprule_t g_apps[MAX_APPRULES];
 static int g_napps;
@@ -113,6 +120,26 @@ static int append_file(const char *path, const char *str) {
 
 static void chown_app(const char *path) {
     if (g_app_uid > 0) lchown(path, g_app_uid, g_app_uid);   /* nenásledovat symlink */
+}
+
+/* UID appky z vlastníka filesDir. Při startu z service.sh bývá filesDir ještě
+ * nedostupný (credential-encrypted úložiště před prvním odemčením) → zkoušet
+ * znovu, dokud se nepovede (dřív app_uid=-1 natrvalo a soubory zůstaly root). */
+static void refresh_app_uid(void) {
+    if (g_app_uid > 0) return;
+    struct stat st;
+    if (stat(FILES_DIR, &st) == 0 && (int)st.st_uid >= APP_UID_MIN)
+        g_app_uid = (int)st.st_uid;
+}
+
+/* nh/cpu musí patřit appce (boot do něj zapisuje pin.<pid>). Bez známého UID
+ * nic nevytvářet — adresář vlastněný rootem by appce pin rozbil. */
+static int ensure_cpu_dir(void) {
+    refresh_app_uid();
+    if (g_app_uid <= 0) return -1;
+    if (mkdir(FILES_DIR "/nh", 0700) == 0) chown_app(FILES_DIR "/nh");
+    if (mkdir(CPU_DIR, 0700) == 0) chown_app(CPU_DIR);
+    return 0;
 }
 
 static int pid_alive(pid_t p) {
@@ -188,6 +215,38 @@ static unsigned long get_aff(pid_t pid) {
     for (int i = 0; i < 64; i++)
         if (CPU_ISSET(i, &cs)) m |= 1UL << i;
     return m;
+}
+
+/* Nastaví masku všem vláknům procesu (affinity je per-vlákno). Vlákna, která
+ * masku už mají, přeskočí. Vrací počet změněných vláken; *err = poslední errno
+ * (EINVAL = maska nemá průnik s cpusetem procesu). */
+static int set_aff_tasks(pid_t pid, unsigned long mask, int *err) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/task", pid);
+    DIR *d = opendir(path);
+    if (!d) {
+        if (get_aff(pid) == mask) return 0;
+        if (set_aff(pid, mask) == 0) return 1;
+        if (err) *err = errno;
+        return 0;
+    }
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t t = (pid_t)atoi(de->d_name);
+        if (t <= 0 || get_aff(t) == mask) continue;
+        if (set_aff(t, mask) == 0) n++;
+        else if (err) *err = errno;
+    }
+    closedir(d);
+    return n;
+}
+
+static void get_cpuset(pid_t pid, char *out, int sz) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%d/cpuset", pid);
+    if (read_file(path, out, sz) < 0) snprintf(out, sz, "?");
 }
 
 static pid_t get_ppid_of(pid_t pid) {
@@ -507,7 +566,7 @@ static int check_cpu_all(pid_t pid, session_t *s) {
 /* ── Free a process (CPU_ALL match) ────────────────────────────────── */
 
 static void free_pid(pid_t pid, session_t *s) {
-    set_aff(pid, all_mask());
+    set_aff_tasks(pid, all_mask(), NULL);
     char path[PATH_MAX], line[32];
     snprintf(path, sizeof path, "%s/free.%d", CPU_DIR, s->pid);
     snprintf(line, sizeof line, "%d\n", pid);
@@ -530,7 +589,9 @@ static int pin_pkg(const char *pkg, unsigned long mask) {
         char cur[128];
         if (get_pkg(p, cur, sizeof cur) != 0 || strcmp(cur, pkg) != 0) continue;
         if (get_uid_of(p) < APP_UID_MIN) continue;   /* never touch system */
-        if (set_aff(p, mask) == 0) n++;
+        int err = 0;
+        set_aff_tasks(p, mask, &err);
+        if (!err) n++;
     }
     closedir(d);
     return n;
@@ -563,7 +624,7 @@ static void handle_new_app(pid_t pid) {
     if (get_pkg(pid, pkg, sizeof pkg) != 0 || !pkg[0]) return;
     for (int i = 0; i < g_napps; i++) {
         if (strcmp(g_apps[i].pkg, pkg) != 0) continue;
-        if (get_uid_of(pid) >= APP_UID_MIN) set_aff(pid, g_apps[i].mask);
+        if (get_uid_of(pid) >= APP_UID_MIN) set_aff_tasks(pid, g_apps[i].mask, NULL);
         return;
     }
 }
@@ -582,8 +643,8 @@ static void repin_apps(void) {
         if (get_pkg(p, pkg, sizeof pkg) != 0 || !pkg[0]) continue;
         for (int i = 0; i < g_napps; i++) {
             if (strcmp(g_apps[i].pkg, pkg) != 0) continue;
-            if (get_uid_of(p) >= APP_UID_MIN && get_aff(p) != g_apps[i].mask)
-                set_aff(p, g_apps[i].mask);
+            if (get_uid_of(p) >= APP_UID_MIN)
+                set_aff_tasks(p, g_apps[i].mask, NULL);   /* kontroluje každé vlákno */
             break;
         }
     }
@@ -595,6 +656,9 @@ static void repin_apps(void) {
 static void scan_sessions(void) {
     DIR *d = opendir(CPU_DIR);
     if (!d) return;
+    static session_t old[MAX_SESSIONS];
+    int nold = g_nsess;
+    memcpy(old, g_sess, sizeof(session_t) * (size_t)nold);
     g_nsess = 0;
     struct dirent *de;
     while ((de = readdir(d)) != NULL && g_nsess < MAX_SESSIONS) {
@@ -615,6 +679,9 @@ static void scan_sessions(void) {
         if (!mask) continue;
         session_t *s = &g_sess[g_nsess++];
         s->pid = pid; s->mask = mask; s->rootfs[0] = '\0';
+        s->last_was = 0; s->last_err = 0;
+        for (int k = 0; k < nold; k++)
+            if (old[k].pid == pid) { s->last_was = old[k].last_was; s->last_err = old[k].last_err; break; }
         get_rootfs(pid, s->rootfs, sizeof s->rootfs);
     }
     closedir(d);
@@ -629,26 +696,40 @@ static void repin_sessions(void) {
         unsigned long cur = get_aff(s->pid);
         if (cur == s->mask) continue;
         pid_t tree[MAX_TREE];
-        int n = collect_tree(s->pid, s->pid, tree, MAX_TREE);
-        int changed = 0;
-        for (int j = 0; j < n; j++) {
-            if (!is_freed(tree[j], s->pid)) {
-                set_aff(tree[j], s->mask);
-                changed++;
-            }
+        int n = collect_tree(s->pid, s->pid, tree, MAX_TREE);   /* bez free podstromů */
+        int changed = 0, err = 0;
+        for (int j = 0; j < n; j++)
+            changed += set_aff_tasks(tree[j], s->mask, &err);
+        unsigned long now_aff = get_aff(s->pid);
+        /* cpuset v logu ukáže, kdo affinity přepsal. Neúspěch (maska mimo
+         * cpuset appky) se opakuje každých 5 s → logovat jen změnu stavu. */
+        char cs[128];
+        int failed = (err != 0 || now_aff != s->mask);
+        if (!failed) {
+            get_cpuset(s->pid, cs, sizeof cs);
+            logmsg("repin session %d mask=%lx was=%lx threads=%d cpuset=%s",
+                   s->pid, s->mask, cur, changed, cs);
+            s->last_was = 0; s->last_err = 0;
+        } else if (cur != s->last_was || err != s->last_err) {
+            get_cpuset(s->pid, cs, sizeof cs);
+            logmsg("repin session %d FAILED mask=%lx was=%lx now=%lx cpuset=%s err=%d"
+                   " (maska mimo cpuset procesu?)", s->pid, s->mask, cur, now_aff, cs, err);
+            s->last_was = cur; s->last_err = err;
         }
-        logmsg("repin session %d mask=%lx was=%lx procs=%d", s->pid, s->mask, cur, changed);
     }
 }
 
 /* ── Handle new process ────────────────────────────────────────────── */
 
-static void handle_new(pid_t pid) {
+/* whole = 1: proces už může mít vlákna (fallback scan, EXEC) → všechna;
+ * whole = 0: FORK event, pid je jedno nové vlákno/proces. */
+static void handle_new(pid_t pid, int whole) {
     handle_new_app(pid);
     session_t *s = find_session(pid);
     if (!s) return;
     if (is_freed(pid, s->pid)) return;
-    set_aff(pid, s->mask);
+    if (whole) set_aff_tasks(pid, s->mask, NULL);
+    else if (get_aff(pid) != s->mask) set_aff(pid, s->mask);
     if (check_cpu_all(pid, s)) {
         free_pid(pid, s);
         logmsg("cpu_all freed pid=%d sess=%d", pid, s->pid);
@@ -669,6 +750,9 @@ static void process_pending(void) {
         if (!pid_alive(p->pid) || p->tries <= 0) {
             g_pend[i] = g_pend[--g_npend]; continue;
         }
+        /* Appka ze zygote: jméno balíčku se objeví v cmdline až po forku
+         * (setArgV0, bez exec) → pravidlo zkoušet i se zpožděním. */
+        handle_new_app(p->pid);
         session_t *s = find_session(p->pid);
         if (s && !is_freed(p->pid, s->pid) && check_cpu_all(p->pid, s)) {
             free_pid(p->pid, s);
@@ -685,22 +769,26 @@ static void process_pending(void) {
 static void write_heartbeat(void) {
     char buf[64];
     snprintf(buf, sizeof buf, "%d %ld", getpid(), (long)time(NULL));
-    mkdir(CPU_DIR, 0755);
+    if (ensure_cpu_dir() != 0) return;   /* filesDir ještě zamčený */
     write_file(HEARTBEAT_FILE, buf);
     chown_app(HEARTBEAT_FILE);
 }
 
 /* ── Netlink proc connector ────────────────────────────────────────── */
 
+static const char *g_nl_stage = "";
+static int g_nl_errno;
+
 static int nl_connect(void) {
     int sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
-    if (sock < 0) return -1;
+    if (sock < 0) { g_nl_stage = "socket"; g_nl_errno = errno; return -1; }
     struct sockaddr_nl addr;
     memset(&addr, 0, sizeof addr);
     addr.nl_family = AF_NETLINK;
     addr.nl_pid = (unsigned)getpid();
     addr.nl_groups = CN_IDX_PROC;
     if (bind(sock, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        g_nl_stage = "bind"; g_nl_errno = errno;
         close(sock); return -1;
     }
     struct {
@@ -717,9 +805,48 @@ static int nl_connect(void) {
     msg.cn.len = sizeof(enum proc_cn_mcast_op);
     msg.op = PROC_CN_MCAST_LISTEN;
     if (send(sock, &msg, sizeof msg, 0) < 0) {
+        g_nl_stage = "send"; g_nl_errno = errno;
         close(sock); return -1;
     }
     return sock;
+}
+
+/* ── /proc fallback (bez netlink) ──────────────────────────────────── */
+
+/* Emulace FORK/EXEC eventů: každý PID, který při minulém průchodu nebyl,
+ * projde stejnou cestou jako z netlinku (pin session, CPU_ALL, pravidla
+ * appek). Dřív fallback jen vynucoval masku session celému stromu —
+ * CPU_ALL tam nefungoval vůbec (programy se každé 2 s vracely na 1 jádro). */
+static pid_t g_seen[4096];
+static int g_nseen = -1;   /* -1 = první průchod: jen zapamatovat */
+
+static int cmp_pid(const void *a, const void *b) {
+    pid_t x = *(const pid_t *)a, y = *(const pid_t *)b;
+    return (x > y) - (x < y);
+}
+
+static void fallback_scan(void) {
+    static pid_t cur[4096];
+    int nc = 0;
+    DIR *d = opendir("/proc");
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && nc < 4096) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        pid_t p = (pid_t)atoi(de->d_name);
+        if (p > 0) cur[nc++] = p;
+    }
+    closedir(d);
+    qsort(cur, (size_t)nc, sizeof(pid_t), cmp_pid);
+    if (g_nseen >= 0) {
+        for (int i = 0; i < nc; i++) {
+            if (bsearch(&cur[i], g_seen, (size_t)g_nseen, sizeof(pid_t), cmp_pid)) continue;
+            handle_new(cur[i], 1);
+            schedule_recheck(cur[i]);
+        }
+    }
+    memcpy(g_seen, cur, sizeof(pid_t) * (size_t)nc);
+    g_nseen = nc;
 }
 
 /* ── Daemon ────────────────────────────────────────────────────────── */
@@ -745,20 +872,29 @@ static int daemon_main(void) {
 
     if (log_open() != 0) return 1;
 
-    struct stat st;
-    g_app_uid = (stat(FILES_DIR, &st) == 0) ? (int)st.st_uid : -1;
-    logmsg("daemon started pid=%d app_uid=%d", getpid(), g_app_uid);
+    refresh_app_uid();
+    logmsg("daemon v%s started pid=%d app_uid=%d", CPUCTL_VERSION, getpid(), g_app_uid);
 
     int nl = nl_connect();
     int use_nl = (nl >= 0);
-    logmsg(use_nl ? "proc connector active" : "proc connector unavailable, /proc fallback");
+    if (use_nl)
+        logmsg("proc connector active");
+    else
+        logmsg("proc connector unavailable (%s: %s), /proc fallback every 2 s",
+               g_nl_stage, strerror(g_nl_errno));
 
     time_t last_hb = 0, last_rp = 0, last_pend = 0;
+    int uid_logged = (g_app_uid > 0);
 
     while (g_running) {
         time_t now = time(NULL);
 
         if (now - last_hb >= HB_INTERVAL) {
+            refresh_app_uid();
+            if (!uid_logged && g_app_uid > 0) {
+                logmsg("app_uid=%d (filesDir dostupný)", g_app_uid);
+                uid_logged = 1;
+            }
             scan_sessions();
             scan_apprules();
             write_heartbeat();
@@ -780,6 +916,12 @@ static int daemon_main(void) {
             if (r > 0 && (pfd.revents & POLLIN)) {
                 char buf[4096];
                 int len = (int)recv(nl, buf, sizeof buf, 0);
+                if (len < 0 && errno == ENOBUFS) {
+                    /* přetečení fronty — eventy ztraceny: projít všechny
+                     * procesy jako nové (handle_new je idempotentní) */
+                    g_nseen = 0;
+                    fallback_scan();
+                }
                 if (len > 0) {
                     struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
                     for (; NLMSG_OK(nlh, (unsigned)len); nlh = NLMSG_NEXT(nlh, len)) {
@@ -787,11 +929,20 @@ static int daemon_main(void) {
                         struct proc_event *ev = (struct proc_event *)cn->data;
                         switch (ev->what) {
                         case PROC_EVENT_EXEC:
-                            handle_new(ev->event_data.exec.process_pid);
+                            handle_new(ev->event_data.exec.process_pid, 1);
                             schedule_recheck(ev->event_data.exec.process_pid);
                             break;
                         case PROC_EVENT_FORK:
-                            handle_new(ev->event_data.fork.child_pid);
+                            handle_new(ev->event_data.fork.child_pid, 0);
+                            break;
+                        case PROC_EVENT_COMM:
+                            /* přejmenování hlavního vlákna = appka ze zygote
+                             * dostala jméno balíčku (fork bez exec) */
+                            if (g_napps > 0 &&
+                                ev->event_data.comm.process_pid == ev->event_data.comm.process_tgid) {
+                                handle_new_app(ev->event_data.comm.process_tgid);
+                                schedule_recheck(ev->event_data.comm.process_tgid);
+                            }
                             break;
                         default: break;
                         }
@@ -800,16 +951,7 @@ static int daemon_main(void) {
             }
         } else {
             usleep(2000000);
-            for (int i = 0; i < g_nsess; i++) {
-                session_t *s = &g_sess[i];
-                if (!pid_alive(s->pid)) continue;
-                pid_t tree[MAX_TREE];
-                int n = collect_tree(s->pid, s->pid, tree, MAX_TREE);
-                for (int j = 0; j < n; j++) {
-                    if (!is_freed(tree[j], s->pid))
-                        set_aff(tree[j], s->mask);
-                }
-            }
+            fallback_scan();
         }
     }
 
@@ -846,6 +988,30 @@ static int find_policy_num(int core) {
     snprintf(path, sizeof path, "/sys/devices/system/cpu/cpufreq/policy%d", core);
     if (access(path, F_OK) == 0) return core;
     return core;
+}
+
+/* Stav boostu pro appku: /data/adb je root-only, UI (uid appky) by
+ * boost_orig.* nikdy nevidělo. $CPU_DIR/boost = seznam zvednutých policy. */
+static void write_boost_state(void) {
+    char list[256] = "";
+    DIR *d = opendir(LOG_DIR);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            if (strncmp(de->d_name, "boost_orig.", 11) != 0) continue;
+            char w[32];
+            snprintf(w, sizeof w, "policy%d", atoi(de->d_name + 11));
+            append_word(list, sizeof list, w);
+        }
+        closedir(d);
+    }
+    if (ensure_cpu_dir() != 0) return;
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "%s/boost", CPU_DIR);
+    if (!list[0]) { unlink(path); return; }
+    size_t l = strlen(list);
+    if (l && list[l-1] == ' ') list[l-1] = '\n';
+    if (write_file(path, list) == 0) chown_app(path);
 }
 
 static int cmd_boost(int argc, char **argv) {
@@ -889,15 +1055,22 @@ static int cmd_boost(int argc, char **argv) {
         if (read_file(mx_path, mx_buf, sizeof mx_buf) <= 0) {
             fprintf(stderr, "cpuctl: cannot read max freq for policy%d\n", pn); return 1;
         }
-        if (read_file(mn_path, mn_buf, sizeof mn_buf) > 0) {
-            char orig[PATH_MAX];
-            snprintf(orig, sizeof orig, "%s/boost_orig.%d", LOG_DIR, pn);
-            mkdir(LOG_DIR, 0755);
+        char orig[PATH_MAX];
+        snprintf(orig, sizeof orig, "%s/boost_orig.%d", LOG_DIR, pn);
+        /* Už zvednuté: původní min NEpřepisovat zvednutou hodnotou — jinak by
+         * `boost off` "obnovil" maximum a boost zůstal do rebootu. */
+        if (access(orig, F_OK) == 0) {
+            char ob[32] = "";
+            read_file(orig, ob, sizeof ob);
+            snprintf(mn_buf, sizeof mn_buf, "%s", ob);
+        } else if (read_file(mn_path, mn_buf, sizeof mn_buf) > 0) {
+            mkdir(LOG_DIR, 0700);
             write_file(orig, mn_buf);
         }
         if (write_file(mn_path, mx_buf) != 0) {
             fprintf(stderr, "cpuctl: cannot write scaling_min_freq (need root)\n"); return 1;
         }
+        write_boost_state();
         printf("boost ON: policy%d min=%d MHz (was %d)\n",
                pn, atoi(mx_buf)/1000, atoi(mn_buf)/1000);
         return 0;
@@ -924,6 +1097,7 @@ static int cmd_boost(int argc, char **argv) {
             }
         }
         closedir(d);
+        write_boost_state();
         if (!restored) printf("boost: nothing to restore\n");
         return 0;
     }
@@ -1009,9 +1183,12 @@ static int cmd_pin(const char *hex, const char *spid) {
     pid_t tree[MAX_TREE];
     int n = collect_tree(pid, pid, tree, MAX_TREE);
     int ok = 0;
-    for (int i = 0; i < n; i++)
-        if (set_aff(tree[i], mask) == 0) ok++;
-    printf("pinned %d/%d processes (mask %lx)\n", ok, n, mask);
+    for (int i = 0; i < n; i++) {
+        int err = 0;
+        set_aff_tasks(tree[i], mask, &err);
+        if (!err) ok++;
+    }
+    printf("pinned %d/%d processes (mask %lx, all threads)\n", ok, n, mask);
     return 0;
 }
 
@@ -1110,9 +1287,10 @@ static int cmd_app_pin(const char *pkg, const char *arg) {
         fprintf(stderr, "Usage: cpuctl app-pin <package> <hexmask|off>\n");
         return 1;
     }
-    struct stat st;
-    g_app_uid = (stat(FILES_DIR, &st) == 0) ? (int)st.st_uid : -1;
-    mkdir(CPU_DIR, 0755);
+    if (ensure_cpu_dir() != 0) {
+        fprintf(stderr, "cpuctl: %s unavailable (locked or need root)\n", CPU_DIR);
+        return 1;
+    }
     char buf[32];
     snprintf(buf, sizeof buf, "%lx", mask);
     if (write_file(path, buf) != 0) {
