@@ -423,7 +423,8 @@ static void fix_walk_fd(int dirfd, int depth) {
 static int fix_walk(const char *path, int depth) {
     (void)depth;
     struct stat st;
-    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (lstat(path, &st) != 0) return 0;     /* st by byl neinicializovaný */
+    if (!S_ISDIR(st.st_mode)) {
         if (S_ISREG(st.st_mode) && (st.st_uid != fix_uid || st.st_gid != fix_gid))
             lchown(path, fix_uid, fix_gid);
         return 0;

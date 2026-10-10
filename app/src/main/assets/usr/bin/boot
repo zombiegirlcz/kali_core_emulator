@@ -1044,9 +1044,11 @@ TASKSET_BIN=/system/bin/taskset
 # benche pořád řádově lepší než rozjetí na dvě různá jádra.
 cpu_pick_core() {
     local best= c f core=
+    local on
     for c in /sys/devices/system/cpu/cpu[0-9]*; do
-        f=$(cat "$c/cpufreq/cpuinfo_max_freq" 2>/dev/null) || continue
-        [ "$(cat "$c/online" 2>/dev/null || echo 1)" = "1" ] || continue
+        { read -r f < "$c/cpufreq/cpuinfo_max_freq"; } 2>/dev/null || continue
+        { read -r on < "$c/online"; } 2>/dev/null || on=1
+        [ "$on" = "1" ] || continue
         c=${c##*cpu}
         if [ -z "$best" ] || [ "$f" -lt "$best" ]; then best=$f; core=$c
         elif [ "$f" -eq "$best" ] && [ "$c" -lt "$core" ]; then core=$c; fi
@@ -1176,8 +1178,10 @@ cpu_pin_isolate_host() {
     done
     avoid=$(printf '%x' $(( all_mask & ~0x$proot_mask )))
     [ "$avoid" != "0" ] || return 0
+    # `read`, ne `$(cat …)`: pod rootem (sudo re-entry) je vidět ~900 procesů
+    # a fork+exec catu na každý stál ~16–25 s při KAŽDÉM sudo (2026-10-10).
     for p in /proc/[0-9]*/comm; do
-        comm=$(cat "$p" 2>/dev/null) || continue
+        { read -r comm < "$p"; } 2>/dev/null || continue
         case "$comm" in
             com.linux_core*|linux_core*|nethunter*|dropbear|sshd)
                 local pid=${p#/proc/}; pid=${pid%/comm}
