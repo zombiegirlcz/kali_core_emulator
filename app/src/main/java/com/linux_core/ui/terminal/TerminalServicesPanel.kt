@@ -374,7 +374,9 @@ internal fun TerminalActivity.updateServiceDetail(service: String) {
                 },
             )
 
-            val boostFile = java.io.File("/data/adb/cpuctl/boost_orig.0")
+            // /data/adb je root-only → appka boost_orig.* nevidí; cpuctl (v1.3+)
+            // zapisuje seznam zvednutých policy do filesDir/nh/cpu/boost.
+            val boostFile = java.io.File(filesDir, "nh/cpu/boost")
             val boosted = boostFile.exists()
 
             if (boosted) {

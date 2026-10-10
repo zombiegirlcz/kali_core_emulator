@@ -29,5 +29,9 @@ if [ -f "$HEARTBEAT" ]; then
     fi
 fi
 
+# Boost (scaling_min_freq) reboot nepřežije → uložené původní hodnoty
+# z minulého bootu jsou neplatné (status by hlásil BOOSTED, UI taky).
+rm -f /data/adb/cpuctl/boost_orig.* 2>/dev/null
+
 /system/bin/cpuctl daemon
 log "cpuctl daemon started"

@@ -811,6 +811,8 @@ static int nl_connect(void) {
     return sock;
 }
 
+static void write_boost_state(void);
+
 /* ── /proc fallback (bez netlink) ──────────────────────────────────── */
 
 /* Emulace FORK/EXEC eventů: každý PID, který při minulém průchodu nebyl,
@@ -885,6 +887,7 @@ static int daemon_main(void) {
 
     time_t last_hb = 0, last_rp = 0, last_pend = 0;
     int uid_logged = (g_app_uid > 0);
+    if (uid_logged) write_boost_state();   /* service.sh smazal boost z minulého bootu */
 
     while (g_running) {
         time_t now = time(NULL);
@@ -894,6 +897,7 @@ static int daemon_main(void) {
             if (!uid_logged && g_app_uid > 0) {
                 logmsg("app_uid=%d (filesDir dostupný)", g_app_uid);
                 uid_logged = 1;
+                write_boost_state();
             }
             scan_sessions();
             scan_apprules();

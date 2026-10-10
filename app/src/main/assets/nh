@@ -3543,11 +3543,27 @@ print(f"{D}Session vrácena na původní masku {sorted(orig_tracer)}. Zapnout tr
 PYBENCH
 }
 
+# cpuctl jako root na HOSTU. Ne `sudo`: to je re-entry do PRootu s falešným
+# /proc a /sys (NH_FAKE_SYS) — cpuctl pak hlásil běžící daemon jako STALE,
+# četl falešné cpufreq (policy0 max=0) a boost psal mimo skutečný sysfs.
+# Argumenty jen [A-Za-z0-9._-] (balíček, hex maska, číslo) → bezpečné v su -c.
+cpu_ctl() {  # <args…>
+    local a
+    for a in "$@"; do
+        case "$a" in ''|*[!A-Za-z0-9._-]*) echo "cpuctl: neplatný argument '$a'" >&2; return 2 ;; esac
+    done
+    if command -v ashell >/dev/null 2>&1; then
+        ashell -c "su -c '/system/bin/cpuctl $*'"
+    else
+        sudo /system/bin/cpuctl "$@"
+    fi
+}
+
 cpu_boost() {
     case "${1:-status}" in
-        on)     sudo /system/bin/cpuctl boost on ${2:-} ;;
-        off)    sudo /system/bin/cpuctl boost off ;;
-        status|st) sudo /system/bin/cpuctl boost status ;;
+        on)     cpu_ctl boost on ${2:-} ;;
+        off)    cpu_ctl boost off ;;
+        status|st) cpu_ctl boost status ;;
         *)      echo "Použití: nh cpu boost on|off|status [jádro]"; exit 1 ;;
     esac
 }
@@ -3577,9 +3593,9 @@ CPU_CTL_VER=""
 cpu_ctl_new() {
     if [ "$CPU_CTL_CHECKED" = 0 ]; then
         CPU_CTL_CHECKED=1
-        CPU_CTL_VER=$(sudo /system/bin/cpuctl version 2>/dev/null | sed -n 's/^cpuctl //p' | head -n1)
+        CPU_CTL_VER=$(cpu_ctl version 2>/dev/null | sed -n 's/^cpuctl //p' | head -n1)
         # build z 2026-09-27 před `version` už apps umí — poznat podle nápovědy
-        if [ -z "$CPU_CTL_VER" ] && sudo /system/bin/cpuctl 2>&1 | grep -q 'app-pin'; then
+        if [ -z "$CPU_CTL_VER" ] && cpu_ctl 2>&1 | grep -q 'app-pin'; then
             CPU_CTL_VER="1.0+apps"
         fi
     fi
@@ -3618,7 +3634,7 @@ cpu_apps_raw() {  # [N]
         now_s=$(date +%s)
         if [ -n "$hb_ts" ] && [ $(( now_s - hb_ts )) -lt 15 ]; then
             if cpu_ctl_new; then
-                sudo /system/bin/cpuctl apps "${1:-0}" | awk 'NR>1'
+                cpu_ctl apps "${1:-0}" | awk 'NR>1'
                 return 0
             fi
             # daemon běží, ale binárka je stará → zkus aspoň non-root měření
@@ -3715,11 +3731,11 @@ cpu_app() {
     }
     cpu_root_ready || return 1
     if [ "$spec" = "off" ]; then
-        sudo /system/bin/cpuctl app-pin "$pkg" off
+        cpu_ctl app-pin "$pkg" off
         return $?
     fi
     mask=$(cpu_cores_to_mask "$spec") || { echo "  [-] Neplatná jádra: $spec (např. 0-3 nebo 4,6,7)"; return 1; }
-    sudo /system/bin/cpuctl app-pin "$pkg" "$mask"
+    cpu_ctl app-pin "$pkg" "$mask"
 }
 
 cpu_trace() {
