@@ -872,24 +872,26 @@ object ProotManager {
                 }
             }
 
-            if (dnsList.isEmpty()) {
-                val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
-                val customDns = sharedPrefs.getString("vpn_dns", "8.8.8.8") ?: "8.8.8.8"
-                dnsList.add(customDns)
-                if (customDns != "8.8.8.8") {
-                    dnsList.add("8.8.8.8")
-                }
-                dnsList.add("1.1.1.1")
-            }
+            // DNS sítě umí na dotazy z guestu vracet REFUSED (ověřeno 2026-10-12:
+            // apt/apk/xbps „Temporary failure resolving“), proto vždy fallback.
+            // glibc i musl při REFUSED/timeoutu zkusí další server; glibc čte
+            // jen první 3 (MAXNS) → 1 síťový + 2 záložní.
+            val sharedPrefs = context.getSharedPreferences("vpn_settings", Context.MODE_PRIVATE)
+            val customDns = sharedPrefs.getString("vpn_dns", "8.8.8.8") ?: "8.8.8.8"
+            val servers =
+                (dnsList.take(1) + listOf(customDns, "8.8.8.8", "1.1.1.1"))
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(3)
 
-            val content = dnsList.joinToString("\n") { "nameserver $it" } + "\n"
+            val content = servers.joinToString("\n") { "nameserver $it" } + "\n"
             // Symlink (Ubuntu: -> ../run/systemd/resolve/stub-resolv.conf) by
             // writeText následoval do neexistující cesty → guest bez DNS.
             if (java.nio.file.Files.isSymbolicLink(resolvConf.toPath())) resolvConf.delete()
             resolvConf.writeText(content)
             resolvConf.setReadable(true, false)
             resolvConf.setWritable(true, false)
-            Log.i(TAG, "Dynamically updated resolv.conf with DNS servers: $dnsList")
+            Log.i(TAG, "Dynamically updated resolv.conf with DNS servers: $servers")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update resolv.conf: ${e.message}")
         }
