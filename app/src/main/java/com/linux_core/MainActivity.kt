@@ -352,6 +352,118 @@ fun MatrixBackground() {
     }
 }
 
+/** Tlačítko v liště tabů hlavní obrazovky. */
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.CyberTab(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier =
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (selected) Color(0xFF008F11) else Color.Transparent)
+                .clickable(onClick = onClick)
+                .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) Color.White else Color.Gray,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = label,
+                color = if (selected) Color.White else Color.Gray,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+/**
+ * Rozbalovací sekce v tabu SETTINGS. Stav (otevřeno/zavřeno) se pamatuje
+ * v SharedPreferences "ui_prefs" pod [key]; defaultně zavřeno.
+ */
+@Composable
+private fun CollapsibleSection(
+    key: String,
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ui_prefs", Context.MODE_PRIVATE) }
+    var expanded by remember { mutableStateOf(prefs.getBoolean(key, false)) }
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0x990B0D13))
+                    .border(
+                        1.dp,
+                        if (expanded) Color(0xFF00FF41) else Color(0xFF1E2026),
+                        RoundedCornerShape(10.dp),
+                    ).clickable {
+                        expanded = !expanded
+                        prefs.edit().putBoolean(key, expanded).apply()
+                    }.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (expanded) Color(0xFF00FF41) else Color.Gray,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = title,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (expanded) Color.White else Color.Gray,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                )
+            }
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = Color.Gray,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        if (expanded) {
+            Spacer(modifier = Modifier.height(8.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SectionHint(text: String) {
+    Text(
+        text = text,
+        fontSize = 11.sp,
+        color = Color.Gray,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+    )
+}
+
+
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
@@ -391,7 +503,6 @@ fun MainScreen() {
     }
     val scope = rememberCoroutineScope()
 
-    var isMoreMenuExpanded by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var backupFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     val restorePicker =
@@ -402,7 +513,6 @@ fun MainScreen() {
             downloadJob =
                 scope.launch {
                     isDownloading = true
-                    isMoreMenuExpanded = false
                     try {
                         statusText = "Restoring from selected file..."
                         downloadProgress = 0
@@ -530,92 +640,13 @@ fun MainScreen() {
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val isHome = (currentTab == "home")
-                Box(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isHome) Color(0xFF008F11) else Color.Transparent)
-                            .clickable { currentTab = "home" }
-                            .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Terminal,
-                            contentDescription = "Distros",
-                            tint = if (isHome) Color.White else Color.Gray,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "GUEST DISTROS",
-                            color = if (isHome) Color.White else Color.Gray,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        )
-                    }
-                }
+                CyberTab("DISTROS", Icons.Default.Terminal, currentTab == "home") { currentTab = "home" }
                 Spacer(modifier = Modifier.width(4.dp))
-                val isVpn = (currentTab == "vpn_center")
-                Box(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isVpn) Color(0xFF008F11) else Color.Transparent)
-                            .clickable { currentTab = "vpn_center" }
-                            .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Shield,
-                            contentDescription = "VPN Center",
-                            tint = if (isVpn) Color.White else Color.Gray,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "VPN GATEWAY",
-                            color = if (isVpn) Color.White else Color.Gray,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        )
-                    }
-                }
+                CyberTab("VPN", Icons.Default.Shield, currentTab == "vpn_center") { currentTab = "vpn_center" }
                 Spacer(modifier = Modifier.width(4.dp))
-                val isRootTab = (currentTab == "root")
-                Box(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isRootTab) Color(0xFF008F11) else Color.Transparent)
-                            .clickable { currentTab = "root" }
-                            .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Bolt,
-                            contentDescription = "Root Bridge",
-                            tint = if (isRootTab) Color.White else Color.Gray,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "ROOT BRIDGE",
-                            color = if (isRootTab) Color.White else Color.Gray,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        )
-                    }
-                }
+                CyberTab("ROOT", Icons.Default.Bolt, currentTab == "root") { currentTab = "root" }
+                Spacer(modifier = Modifier.width(4.dp))
+                CyberTab("SETTINGS", Icons.Default.Settings, currentTab == "settings") { currentTab = "settings" }
             }
 
             if (currentTab == "home") {
@@ -1458,373 +1489,6 @@ fun MainScreen() {
                         }
                     }
 
-                    // Mount /sdcard storage card
-                    Card(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 20.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0x3300FF41)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
-                    ) {
-                        Row(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = !isDownloading) {
-                                        val nextState = !mountStorage
-                                        if (nextState && !hasStoragePermission) {
-                                            requestAllFilesAccess(context)
-                                            // Nerovnávat mountStorage dokud není oprávnění potvrzeno —
-                                            // lifecycle observer (ON_RESUME) aktualizuje hasStoragePermission
-                                            return@clickable
-                                        }
-                                        mountStorage = nextState
-                                        sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
-                                    }
-                                    .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .size(36.dp)
-                                            .background(Color(0x1A00FF41), CircleShape)
-                                            .border(1.dp, Color(0x3300FF41), CircleShape),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Storage,
-                                        contentDescription = "Storage",
-                                        tint = Color(0xFF00FF41),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = "Shared Storage",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    Text(
-                                        text = "/storage/self/primary → /sdcard, /mnt/sdcard, /storage/emulated/0 (mód D)",
-                                        color = Color.Gray,
-                                        fontSize = 10.sp,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    if (mountStorage && !hasStoragePermission) {
-                                        Text(
-                                            text = "Files Access Required (Tap to Grant)",
-                                            color = Color(0xFFFF3333),
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                            modifier = Modifier.clickable { requestAllFilesAccess(context) },
-                                        )
-                                    }
-                                }
-                            }
-                            androidx.compose.material3.Switch(
-                                checked = mountStorage,
-                                onCheckedChange = { checked ->
-                                    if (checked && !hasStoragePermission) {
-                                        requestAllFilesAccess(context)
-                                        // Nepovolit mount dokud uživatel nepotvrdí oprávnění
-                                        return@Switch
-                                    }
-                                    mountStorage = checked
-                                    sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
-                                },
-                                colors =
-                                    androidx.compose.material3.SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF00FF41),
-                                        checkedTrackColor = Color(0x6600FF41),
-                                        uncheckedThumbColor = Color.Gray,
-                                        uncheckedTrackColor = Color(0xFF1E2026),
-                                    ),
-                            )
-                        }
-                    }
-
-                    // Backup Manager card
-                    Card(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 20.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0x3300FF41)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
-                    ) {
-                        Row(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = !isDownloading) {
-                                        showBackupDialog = true
-                                    }
-                                    .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .size(36.dp)
-                                            .background(Color(0x1A00FF41), CircleShape)
-                                            .border(1.dp, Color(0x3300FF41), CircleShape),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Backup,
-                                        contentDescription = "Backup",
-                                        tint = Color(0xFF00FF41),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = "Backup Manager",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    Text(
-                                        text = "Restore / delete rootfs backups from nh/distro/backup/",
-                                        color = Color.Gray,
-                                        fontSize = 10.sp,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                }
-                            }
-                            Icon(
-                                imageVector = Icons.Default.FolderOpen,
-                                contentDescription = "Open Backup Manager",
-                                tint = Color(0xFF00FF41),
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-
-                    // Active sessions
-                    val sessionsDir = File(context.filesDir, "nh/sessions")
-                    val sessionFiles = sessionsDir.listFiles { f -> f.extension == "pid" } ?: emptyArray()
-                    val sessions =
-                        sessionFiles.mapNotNull { pidFile ->
-                            val distro = pidFile.nameWithoutExtension
-                            val pid = pidFile.readText().trim()
-                            val infoFile = File(sessionsDir, "$distro.info")
-                            val info = if (infoFile.exists()) infoFile.readText().trim() else "unknown"
-                            // Check if process is still alive
-                            val alive =
-                                try {
-                                    val proc = Runtime.getRuntime().exec(arrayOf("kill", "-0", pid))
-                                    proc.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)
-                                    proc.exitValue() == 0
-                                } catch (e: Exception) {
-                                    false
-                                }
-
-                            if (alive) distro to info else null
-                        }
-
-                    if (sessions.isNotEmpty()) {
-                        Card(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 20.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, Color(0x33FFA500)),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier =
-                                                Modifier
-                                                    .size(36.dp)
-                                                    .background(Color(0x1AFFA500), CircleShape)
-                                                    .border(1.dp, Color(0x33FFA500), CircleShape),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.PlayArrow,
-                                                contentDescription = "Active Sessions",
-                                                tint = Color(0xFFFFA500),
-                                                modifier = Modifier.size(18.dp),
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                text = "Active Sessions",
-                                                color = Color.White,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                            )
-                                            Text(
-                                                text = "${sessions.size} running",
-                                                color = Color(0xFFFFA500),
-                                                fontSize = 10.sp,
-                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                            )
-                                        }
-                                    }
-                                    androidx.compose.material3.IconButton(
-                                        onClick = {
-                                            sessions.forEach { (distro, _) ->
-                                                try {
-                                                    val proc =
-                                                        Runtime.getRuntime().exec(
-                                                            arrayOf(
-                                                                "kill",
-                                                                "-9",
-                                                                context.filesDir.resolve("nh/sessions/$distro.pid").readText().trim(),
-                                                            ),
-                                                        )
-                                                    proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
-                                                } catch (e: Exception) {
-                                                    // ignore
-                                                }
-                                            }
-                                            sessionsDir.listFiles()?.forEach { it.delete() }
-                                            // Re-read after cleanup
-                                        },
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Kill All Sessions",
-                                            tint = Color(0xFFFF3333),
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                sessions.forEach { (distro, info) ->
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier =
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .padding(vertical = 4.dp),
-                                    ) {
-                                        Text(
-                                            text = distro,
-                                            color = Color(0xFFFFA500),
-                                            fontSize = 12.sp,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        Text(
-                                            text = info,
-                                            color = Color.Gray,
-                                            fontSize = 10.sp,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Background boot — cron automation (auto-start after reboot)
-                    Card(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val nextState = !bootAutostart
-                                    bootAutostart = nextState
-                                    sharedPrefs.edit().putBoolean("boot_autostart", nextState).apply()
-                                }
-                                .padding(0.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, Color(0xFF333333)),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14)),
-                    ) {
-                        Row(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .size(36.dp)
-                                            .background(Color(0x1A00FF41), CircleShape)
-                                            .border(1.dp, Color(0x3300FF41), CircleShape),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Boot",
-                                        tint = Color(0xFF00FF41),
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = "Auto-start po restartu",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                    Text(
-                                        text = "Spustí proot na pozadí (cron) po bootu zařízení",
-                                        color = Color.Gray,
-                                        fontSize = 10.sp,
-                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    )
-                                }
-                            }
-                            androidx.compose.material3.Switch(
-                                checked = bootAutostart,
-                                onCheckedChange = { checked ->
-                                    bootAutostart = checked
-                                    sharedPrefs.edit().putBoolean("boot_autostart", checked).apply()
-                                },
-                                colors =
-                                    androidx.compose.material3.SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF00FF41),
-                                        checkedTrackColor = Color(0x6600FF41),
-                                        uncheckedThumbColor = Color.Gray,
-                                        uncheckedTrackColor = Color(0xFF1E2026),
-                                    ),
-                            )
-                        }
-                    }
-
                     // Action Flow — isDownloading has HIGHEST priority
                     if (isDownloading) {
                         Card(
@@ -2041,189 +1705,401 @@ fun MainScreen() {
                                 }
                             }
                         }
+                    } // end else
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                        // Collapsible Advanced Guest Management Tools
+                    // Active sessions
+                    val sessionsDir = File(context.filesDir, "nh/sessions")
+                    val sessionFiles = sessionsDir.listFiles { f -> f.extension == "pid" } ?: emptyArray()
+                    val sessions =
+                        sessionFiles.mapNotNull { pidFile ->
+                            val distro = pidFile.nameWithoutExtension
+                            val pid = pidFile.readText().trim()
+                            val infoFile = File(sessionsDir, "$distro.info")
+                            val info = if (infoFile.exists()) infoFile.readText().trim() else "unknown"
+                            // Check if process is still alive
+                            val alive =
+                                try {
+                                    val proc = Runtime.getRuntime().exec(arrayOf("kill", "-0", pid))
+                                    proc.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)
+                                    proc.exitValue() == 0
+                                } catch (e: Exception) {
+                                    false
+                                }
+
+                            if (alive) distro to info else null
+                        }
+
+                    if (sessions.isNotEmpty()) {
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, if (isMoreMenuExpanded) Color(0xFF00FF41) else Color(0xFF1E2026)),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13)),
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 20.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0x33FFA500)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
                         ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
                                 Row(
-                                    modifier =
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .clickable { isMoreMenuExpanded = !isMoreMenuExpanded }
-                                            .padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth(),
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier =
+                                                Modifier
+                                                    .size(36.dp)
+                                                    .background(Color(0x1AFFA500), CircleShape)
+                                                    .border(1.dp, Color(0x33FFA500), CircleShape),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.PlayArrow,
+                                                contentDescription = "Active Sessions",
+                                                tint = Color(0xFFFFA500),
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                text = "Active Sessions",
+                                                color = Color.White,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            )
+                                            Text(
+                                                text = "${sessions.size} running",
+                                                color = Color(0xFFFFA500),
+                                                fontSize = 10.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            )
+                                        }
+                                    }
+                                    androidx.compose.material3.IconButton(
+                                        onClick = {
+                                            sessions.forEach { (distro, _) ->
+                                                try {
+                                                    val proc =
+                                                        Runtime.getRuntime().exec(
+                                                            arrayOf(
+                                                                "kill",
+                                                                "-9",
+                                                                context.filesDir.resolve("nh/sessions/$distro.pid").readText().trim(),
+                                                            ),
+                                                        )
+                                                    proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                                                } catch (e: Exception) {
+                                                    // ignore
+                                                }
+                                            }
+                                            sessionsDir.listFiles()?.forEach { it.delete() }
+                                            // Re-read after cleanup
+                                        },
+                                    ) {
                                         Icon(
-                                            imageVector = Icons.Default.Settings,
-                                            contentDescription = "Settings",
-                                            tint = if (isMoreMenuExpanded) Color(0xFF00FF41) else Color.Gray,
-                                            modifier = Modifier.size(16.dp),
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "ADVANCED GUEST MANAGEMENT",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isMoreMenuExpanded) Color.White else Color.Gray,
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Kill All Sessions",
+                                            tint = Color(0xFFFF3333),
+                                            modifier = Modifier.size(18.dp),
                                         )
                                     }
-                                    Icon(
-                                        imageVector = if (isMoreMenuExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = "Expand",
-                                        tint = Color.Gray,
-                                        modifier = Modifier.size(18.dp),
-                                    )
                                 }
-                                if (isMoreMenuExpanded) {
-                                    Box(
+                                Spacer(modifier = Modifier.height(8.dp))
+                                sessions.forEach { (distro, info) ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
                                         modifier =
                                             Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 14.dp)
-                                                .height(1.dp)
-                                                .background(Color(0xFF1E2026)),
-                                    )
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                                .padding(vertical = 4.dp),
                                     ) {
-                                        val canManageDocker = isDockerMode && selectedDockerDir != null
-                                        val canManageDistro = !isDockerMode && isExtracted
-
-                                        if (canManageDocker || canManageDistro) {
-                                            val isDocker = canManageDocker
-                                            Button(
-                                                onClick = {
-                                                    if (isDocker) {
-                                                        // Remove Docker image
-                                                        scope.launch {
-                                                            try {
-                                                                val dockerDir = File(context.filesDir, selectedDockerDir!!)
-                                                                val ok =
-                                                                    kotlinx.coroutines.withContext(Dispatchers.IO) {
-                                                                        RootfsManager.deleteRootfsTree(context, dockerDir)
-                                                                    }
-                                                                dockerFsTick++
-                                                                if (!ok) {
-                                                                    Toast.makeText(context, "Remove failed (viz nethunter-log)", Toast.LENGTH_SHORT).show()
-                                                                    return@launch
-                                                                }
-                                                                dockerImageDirs = dockerImageDirs.filter { it != selectedDockerDir }
-                                                                selectedDockerDir = null
-                                                                dockerImageRef = null
-                                                                isDockerMode = false
-                                                                Toast.makeText(context, "Docker image removed", Toast.LENGTH_SHORT).show()
-                                                            } catch (e: Exception) {
-                                                                Toast.makeText(
-                                                                    context,
-                                                                    "Remove failed: ${e.message}",
-                                                                    Toast.LENGTH_SHORT,
-                                                                ).show()
-                                                            }
-                                                        }
-                                                    } else {
-                                                        downloadJob =
-                                                            scope.launch {
-                                                                isDownloading = true
-                                                                isMoreMenuExpanded = false
-                                                                try {
-                                                                    val cacheDir = File(context.filesDir, selectedDistro.id)
-                                                                    val archiveFile = File(cacheDir, selectedDistro.tarFileName)
-
-                                                                    statusText = "Reinstalling: Deleting old files…"
-                                                                    val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
-                                                                    if (rootfsDir.exists()) {
-                                                                        kotlinx.coroutines.withContext(Dispatchers.IO) {
-                                                                            RootfsManager.deleteRootfsTree(context, rootfsDir)
-                                                                        }
-                                                                    }
-                                                                    isExtracted = false
-                                                                    downloadProgress = 0
-
-                                                                    val hasArchive = archiveFile.exists() && archiveFile.length() > 0
-                                                                    if (!hasArchive) {
-                                                                        statusText = "Reinstalling: Downloading rootfs archive…"
-                                                                        RootfsManager.downloadRootfs(context, selectedDistro).collect {
-                                                                                progress ->
-                                                                            downloadProgress = progress
-                                                                        }
-                                                                        downloadProgress = 0
-                                                                    }
-
-                                                                    statusText = "Reinstalling: Extracting filesystem…"
-                                                                    RootfsManager.extractRootfs(context, selectedDistro).collect {
-                                                                            progress ->
-                                                                        downloadProgress = progress
-                                                                    }
-
-                                                                    isExtracted = true
-                                                                    statusText = ""
-                                                                    Toast.makeText(
-                                                                        context,
-                                                                        "Reinstallation complete!",
-                                                                        Toast.LENGTH_LONG,
-                                                                    ).show()
-                                                                } catch (e: kotlinx.coroutines.CancellationException) {
-                                                                    isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                                    throw e
-                                                                } catch (e: Exception) {
-                                                                    isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
-                                                                    Toast.makeText(
-                                                                        context,
-                                                                        "Reinstallation failed: ${e.message}",
-                                                                        Toast.LENGTH_LONG,
-                                                                    ).show()
-                                                                } finally {
-                                                                    isDownloading = false
-                                                                    statusText = ""
-                                                                    downloadProgress = 0
-                                                                }
-                                                            }
-                                                    }
-                                                },
-                                                shape = RoundedCornerShape(6.dp),
-                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FF3333)),
-                                                modifier =
-                                                    Modifier
-                                                        .fillMaxWidth()
-                                                        .height(40.dp)
-                                                        .border(1.dp, Color(0x66FF3333), RoundedCornerShape(6.dp)),
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(
-                                                        if (isDocker) Icons.Default.Cloud else Icons.Default.Refresh,
-                                                        contentDescription = if (isDocker) "Remove" else "Reinstall",
-                                                        tint = Color(0xFFFF5555),
-                                                        modifier = Modifier.size(14.dp),
-                                                    )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(
-                                                        if (isDocker) "REMOVE DOCKER IMAGE" else "REINSTALL (DESTROY & REBUILD)",
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color(0xFFFF5555),
-                                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                                    )
-                                                }
-                                            }
-                                        }
+                                        Text(
+                                            text = distro,
+                                            color = Color(0xFFFFA500),
+                                            fontSize = 12.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            text = info,
+                                            color = Color.Gray,
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
                                     }
                                 }
                             }
                         }
+                    }
+                } // end Column (scrollable)
+            } // end if(currentTab == "home")
+            if (currentTab == "settings") {
+                val settingsScrollState = rememberScrollState()
+                Column(
+                    modifier =
+                        Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(settingsScrollState),
+                ) {
+                    val settingsTarget =
+                        if (isDockerMode) selectedDockerDir?.substringAfterLast("/") ?: "docker" else selectedDistro.name
+                    Text(
+                        text = "SETTINGS // ${settingsTarget.uppercase()}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Gray,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        modifier = Modifier.padding(bottom = 16.dp),
+                    )
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
+                    CollapsibleSection("sec_storage", "STORAGE (/SDCARD)", Icons.Default.Storage) {
+                        // Mount /sdcard storage card
+                        Card(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 20.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0x3300FF41)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
+                        ) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isDownloading) {
+                                            val nextState = !mountStorage
+                                            if (nextState && !hasStoragePermission) {
+                                                requestAllFilesAccess(context)
+                                                // Nerovnávat mountStorage dokud není oprávnění potvrzeno —
+                                                // lifecycle observer (ON_RESUME) aktualizuje hasStoragePermission
+                                                return@clickable
+                                            }
+                                            mountStorage = nextState
+                                            sharedPrefs.edit().putBoolean("mount_storage", nextState).apply()
+                                        }
+                                        .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .size(36.dp)
+                                                .background(Color(0x1A00FF41), CircleShape)
+                                                .border(1.dp, Color(0x3300FF41), CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Storage,
+                                            contentDescription = "Storage",
+                                            tint = Color(0xFF00FF41),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Shared Storage",
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                        Text(
+                                            text = "/storage/self/primary → /sdcard, /mnt/sdcard, /storage/emulated/0 (mód D)",
+                                            color = Color.Gray,
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                        if (mountStorage && !hasStoragePermission) {
+                                            Text(
+                                                text = "Files Access Required (Tap to Grant)",
+                                                color = Color(0xFFFF3333),
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                modifier = Modifier.clickable { requestAllFilesAccess(context) },
+                                            )
+                                        }
+                                    }
+                                }
+                                androidx.compose.material3.Switch(
+                                    checked = mountStorage,
+                                    onCheckedChange = { checked ->
+                                        if (checked && !hasStoragePermission) {
+                                            requestAllFilesAccess(context)
+                                            // Nepovolit mount dokud uživatel nepotvrdí oprávnění
+                                            return@Switch
+                                        }
+                                        mountStorage = checked
+                                        sharedPrefs.edit().putBoolean("mount_storage", checked).apply()
+                                    },
+                                    colors =
+                                        androidx.compose.material3.SwitchDefaults.colors(
+                                            checkedThumbColor = Color(0xFF00FF41),
+                                            checkedTrackColor = Color(0x6600FF41),
+                                            uncheckedThumbColor = Color.Gray,
+                                            uncheckedTrackColor = Color(0xFF1E2026),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    CollapsibleSection("sec_autostart", "AUTO-START AFTER BOOT", Icons.Default.PlayArrow) {
+                        // Background boot — cron automation (auto-start after reboot)
+                        Card(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val nextState = !bootAutostart
+                                        bootAutostart = nextState
+                                        sharedPrefs.edit().putBoolean("boot_autostart", nextState).apply()
+                                    }
+                                    .padding(0.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF333333)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xEE0C0E14)),
+                        ) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .size(36.dp)
+                                                .background(Color(0x1A00FF41), CircleShape)
+                                                .border(1.dp, Color(0x3300FF41), CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Boot",
+                                            tint = Color(0xFF00FF41),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Auto-start po restartu",
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                        Text(
+                                            text = "Spustí proot na pozadí (cron) po bootu zařízení",
+                                            color = Color.Gray,
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                    }
+                                }
+                                androidx.compose.material3.Switch(
+                                    checked = bootAutostart,
+                                    onCheckedChange = { checked ->
+                                        bootAutostart = checked
+                                        sharedPrefs.edit().putBoolean("boot_autostart", checked).apply()
+                                    },
+                                    colors =
+                                        androidx.compose.material3.SwitchDefaults.colors(
+                                            checkedThumbColor = Color(0xFF00FF41),
+                                            checkedTrackColor = Color(0x6600FF41),
+                                            uncheckedThumbColor = Color.Gray,
+                                            uncheckedTrackColor = Color(0xFF1E2026),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    CollapsibleSection("sec_backup", "BACKUP & RESTORE", Icons.Default.Backup) {
+                        // Backup Manager card
+                        Card(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 20.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0x3300FF41)),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xE60B0D13)),
+                        ) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isDownloading) {
+                                            showBackupDialog = true
+                                        }
+                                        .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .size(36.dp)
+                                                .background(Color(0x1A00FF41), CircleShape)
+                                                .border(1.dp, Color(0x3300FF41), CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Backup,
+                                            contentDescription = "Backup",
+                                            tint = Color(0xFF00FF41),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Backup Manager",
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                        Text(
+                                            text = "Restore / delete rootfs backups from nh/distro/backup/",
+                                            color = Color.Gray,
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    imageVector = Icons.Default.FolderOpen,
+                                    contentDescription = "Open Backup Manager",
+                                    tint = Color(0xFF00FF41),
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                    CollapsibleSection("sec_widgets", "1x1 WIDGET SHORTCUTS", Icons.Default.Android) {
                         if (isExtracted) {
                             // Custom 1x1 Script Launchers Card
                             var customCommandText by remember { mutableStateOf("") }
@@ -2357,9 +2233,151 @@ fun MainScreen() {
                                 }
                             }
                         } // end if(isExtracted) widget
-                    } // end else
-                } // end Column (scrollable)
-            } // end if(currentTab == "home")
+                        if (!isExtracted) {
+                            SectionHint("Selected distro is not installed")
+                        }
+                    }
+                    CollapsibleSection("sec_advanced", "ADVANCED GUEST MANAGEMENT", Icons.Default.Settings) {
+                        if (isDownloading) {
+                            SectionHint("Operation in progress…")
+                        } else {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFF1E2026)),
+                                colors = CardDefaults.cardColors(containerColor = Color(0x990B0D13)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    val canManageDocker = isDockerMode && selectedDockerDir != null
+                                    val canManageDistro = !isDockerMode && isExtracted
+
+                                    if (canManageDocker || canManageDistro) {
+                                        val isDocker = canManageDocker
+                                        Button(
+                                            onClick = {
+                                                if (isDocker) {
+                                                    // Remove Docker image
+                                                    scope.launch {
+                                                        try {
+                                                            val dockerDir = File(context.filesDir, selectedDockerDir!!)
+                                                            val ok =
+                                                                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                                                    RootfsManager.deleteRootfsTree(context, dockerDir)
+                                                                }
+                                                            dockerFsTick++
+                                                            if (!ok) {
+                                                                Toast.makeText(context, "Remove failed (viz nethunter-log)", Toast.LENGTH_SHORT).show()
+                                                                return@launch
+                                                            }
+                                                            dockerImageDirs = dockerImageDirs.filter { it != selectedDockerDir }
+                                                            selectedDockerDir = null
+                                                            dockerImageRef = null
+                                                            isDockerMode = false
+                                                            Toast.makeText(context, "Docker image removed", Toast.LENGTH_SHORT).show()
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Remove failed: ${e.message}",
+                                                                Toast.LENGTH_SHORT,
+                                                            ).show()
+                                                        }
+                                                    }
+                                                } else {
+                                                    downloadJob =
+                                                        scope.launch {
+                                                            isDownloading = true
+                                                            try {
+                                                                val cacheDir = File(context.filesDir, selectedDistro.id)
+                                                                val archiveFile = File(cacheDir, selectedDistro.tarFileName)
+
+                                                                statusText = "Reinstalling: Deleting old files…"
+                                                                val rootfsDir = File(context.filesDir, selectedDistro.rootfsDirName)
+                                                                if (rootfsDir.exists()) {
+                                                                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                                                        RootfsManager.deleteRootfsTree(context, rootfsDir)
+                                                                    }
+                                                                }
+                                                                isExtracted = false
+                                                                downloadProgress = 0
+
+                                                                val hasArchive = archiveFile.exists() && archiveFile.length() > 0
+                                                                if (!hasArchive) {
+                                                                    statusText = "Reinstalling: Downloading rootfs archive…"
+                                                                    RootfsManager.downloadRootfs(context, selectedDistro).collect {
+                                                                            progress ->
+                                                                        downloadProgress = progress
+                                                                    }
+                                                                    downloadProgress = 0
+                                                                }
+
+                                                                statusText = "Reinstalling: Extracting filesystem…"
+                                                                RootfsManager.extractRootfs(context, selectedDistro).collect {
+                                                                        progress ->
+                                                                    downloadProgress = progress
+                                                                }
+
+                                                                isExtracted = true
+                                                                statusText = ""
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    "Reinstallation complete!",
+                                                                    Toast.LENGTH_LONG,
+                                                                ).show()
+                                                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                                                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                                throw e
+                                                            } catch (e: Exception) {
+                                                                isExtracted = RootfsManager.isRootfsExtracted(context, selectedDistro)
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    "Reinstallation failed: ${e.message}",
+                                                                    Toast.LENGTH_LONG,
+                                                                ).show()
+                                                            } finally {
+                                                                isDownloading = false
+                                                                statusText = ""
+                                                                downloadProgress = 0
+                                                            }
+                                                        }
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(6.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FF3333)),
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .height(40.dp)
+                                                    .border(1.dp, Color(0x66FF3333), RoundedCornerShape(6.dp)),
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    if (isDocker) Icons.Default.Cloud else Icons.Default.Refresh,
+                                                    contentDescription = if (isDocker) "Remove" else "Reinstall",
+                                                    tint = Color(0xFFFF5555),
+                                                    modifier = Modifier.size(14.dp),
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    if (isDocker) "REMOVE DOCKER IMAGE" else "REINSTALL (DESTROY & REBUILD)",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFFFF5555),
+                                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        SectionHint("Selected distro is not installed")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if (currentTab == "vpn_center") {
                 VpnCenterScreen(modifier = Modifier.weight(1f))
             } else if (currentTab == "root") {
@@ -2418,7 +2436,6 @@ fun MainScreen() {
                                                 downloadJob =
                                                     scope.launch {
                                                         isDownloading = true
-                                                        isMoreMenuExpanded = false
                                                         try {
                                                             statusText = "Starting restore..."
                                                             downloadProgress = 0
