@@ -1324,8 +1324,13 @@ fun MainScreen() {
                                                                 .background(Color(0xFF0D0E12))
                                                                 .border(1.dp, Color(0xFF1E2026), RoundedCornerShape(6.dp))
                                                                 .padding(10.dp)
-                                                                .clickable(enabled = !isPulled && !isDownloading && !isPullingDocker) {
-                                                                    if (!isPulled) {
+                                                                .clickable(enabled = !isDownloading && !isPullingDocker) {
+                                                                    if (isPulled) {
+                                                                        // Už stažené: vybrat a zavřít dialog (BOOT přes hlavní tlačítko)
+                                                                        selectedDockerDir = "${RootfsManager.NH_DISTRO_DIR}/docker/${entry.slug}"
+                                                                        isDockerMode = true
+                                                                        showDockerDialog = false
+                                                                    } else {
                                                                         downloadJob?.cancel()
                                                                         downloadJob =
                                                                             scope.launch {
@@ -1351,6 +1356,13 @@ fun MainScreen() {
                                                                                                 ).relativeTo(context.filesDir).path
                                                                                         }
                                                                                     }
+                                                                                    // refresh installed list (jinak se objeví až po ON_RESUME)
+                                                                                    val pulledDir = selectedDockerDir
+                                                                                    if (pulledDir != null && pulledDir !in dockerImageDirs) {
+                                                                                        dockerImageDirs = (dockerImageDirs + pulledDir).sortedDescending()
+                                                                                    }
+                                                                                    isDockerMode = true
+                                                                                    dockerFsTick++
                                                                                     Toast.makeText(
                                                                                         context,
                                                                                         "${entry.distroName} pulled successfully!\nBoot from DOCKER HUB tab.",
