@@ -61,6 +61,159 @@ object ProotManager {
         return out
     }
 
+    /** Jméno guest účtu, který nese reálné uid aplikace (com.linux_core). */
+    const val APP_USER_NAME = "nh"
+
+    /**
+     * Přemapuje obsah /etc/passwd tak, aby:
+     *  - `root` zůstal `0:0` (PRoot `-0` fake-root potřebuje `getpwuid(0)=root`,
+     *    jinak zsh: "can't drop privileges"),
+     *  - existoval právě JEDEN účet nesoucí uid aplikace: [APP_USER_NAME]
+     *    (aby app-vlastněné soubory i session běžící pod reálným uid appky měly
+     *    korektní jméno, ne číslo),
+     *  - všechny ostatní účty měly ROZLIŠITELNÁ uid — jinak nejde přepínat
+     *    uživatele: když mají všichni stejné uid, `getpwuid()` vrátí první shodu
+     *    (= `daemon`), takže `su <kdokoli>` skončí jako "daemon".
+     *
+     * Čistá funkce (String→String) kvůli unit testu. Validní, unikátní uid se
+     * zachovají (čerstvý rootfs tak zůstane beze změny: daemon=1, …, kali=1000);
+     * kolidující (např. po staré vadné verzi, kdy se VŠE slilo na uid appky)
+     * se přealokují na volné hodnoty. [interactiveUser] (distro uživatel)
+     * dostane přednostně uid 1000.
+     */
+    fun remapPasswdContent(
+        content: String,
+        appUid: Int,
+        appGid: Int,
+        interactiveUser: String?,
+    ): String {
+        val used = mutableSetOf(0, appUid)
+        var nextFree = 30000
+        fun alloc(): Int {
+            while (nextFree in used || nextFree == appUid) nextFree++
+            used.add(nextFree)
+            return nextFree++
+        }
+        var hasApp = false
+        val lines = content.split("\n")
+        val out = ArrayList<String>(lines.size + 1)
+        for (line in lines) {
+            if (line.isBlank() || line.startsWith("#")) {
+                out.add(line)
+                continue
+            }
+            val parts = line.split(":").toMutableList()
+            if (parts.size < 7) {
+                out.add(line)
+                continue
+            }
+            val name = parts[0]
+            val id =
+                when {
+                    name == "root" -> 0
+                    name == APP_USER_NAME -> {
+                        hasApp = true
+                        appUid
+                    }
+                    else -> {
+                        val cur = parts[2].toIntOrNull()
+                        when {
+                            name == interactiveUser && 1000 !in used && 1000 != appUid -> {
+                                used.add(1000)
+                                1000
+                            }
+                            cur != null && cur != 0 && cur != appUid && cur !in used -> {
+                                used.add(cur)
+                                cur
+                            }
+                            else -> alloc()
+                        }
+                    }
+                }
+            // gid = uid (per-user private group; pro root pak 0, pro nh appGid)
+            val gid = if (name == APP_USER_NAME) appGid else id
+            parts[2] = id.toString()
+            parts[3] = gid.toString()
+            out.add(parts.joinToString(":"))
+        }
+        if (!hasApp) {
+            out.add("$APP_USER_NAME:x:$appUid:$appGid:NetHunter App:/root:/bin/bash")
+        }
+        return out.joinToString("\n")
+    }
+
+    /**
+     * Obdoba [remapPasswdContent] pro /etc/group (formát `name:passwd:gid:members`).
+     * Zajišťuje group [APP_USER_NAME] s gid appky a rozlišitelné gid u ostatních.
+     */
+    fun remapGroupContent(
+        content: String,
+        appGid: Int,
+        interactiveUser: String?,
+    ): String {
+        val used = mutableSetOf(0, appGid)
+        var nextFree = 30000
+        fun alloc(): Int {
+            while (nextFree in used || nextFree == appGid) nextFree++
+            used.add(nextFree)
+            return nextFree++
+        }
+        var hasApp = false
+        val lines = content.split("\n")
+        val out = ArrayList<String>(lines.size + 1)
+        for (line in lines) {
+            if (line.isBlank() || line.startsWith("#")) {
+                out.add(line)
+                continue
+            }
+            val parts = line.split(":").toMutableList()
+            if (parts.size < 3) {
+                out.add(line)
+                continue
+            }
+            val name = parts[0]
+            val gid =
+                when {
+                    name == "root" -> 0
+                    name == APP_USER_NAME -> {
+                        hasApp = true
+                        appGid
+                    }
+                    else -> {
+                        val cur = parts[2].toIntOrNull()
+                        when {
+                            name == interactiveUser && 1000 !in used && 1000 != appGid -> {
+                                used.add(1000)
+                                1000
+                            }
+                            cur != null && cur != 0 && cur != appGid && cur !in used -> {
+                                used.add(cur)
+                                cur
+                            }
+                            else -> alloc()
+                        }
+                    }
+                }
+            parts[2] = gid.toString()
+            out.add(parts.joinToString(":"))
+        }
+        if (!hasApp) out.add("$APP_USER_NAME:x:$appGid:")
+        return out.joinToString("\n")
+    }
+
+    /**
+     * Doplní /etc/shadow o řádek pro [APP_USER_NAME] (zamčené heslo), pokud chybí.
+     * Číselná pole NEMĚNÍ — ve shadow je `parts[2]` počet dní od poslední změny
+     * hesla, NE uid (starý kód ho mylně přepisoval na uid appky).
+     */
+    fun ensureShadowUser(content: String): String {
+        val lines = content.split("\n")
+        if (lines.any { it.startsWith("$APP_USER_NAME:") }) return content
+        val trimmed = content.trimEnd('\n')
+        val prefix = if (trimmed.isEmpty()) "" else trimmed + "\n"
+        return prefix + "$APP_USER_NAME:!:19000:0:99999:7:::"
+    }
+
     fun setupProotEnvironment(
         context: Context,
         rootfsDirName: String = "nh/distro/kali",
@@ -239,53 +392,13 @@ object ProotManager {
         }
 
         /**
-         * Map all guest UIDs/GIDs to the app's UID/GID so files created inside proot
-         * have the same ownership as files on the host (com.linux_core).
-         *
-         * This is necessary because proot runs as the app's UID, but the guest rootfs
-         * typically has root (0:0) ownership. Without this fix, guest-created files
-         * would be owned by root and inaccessible from the host.
+         * Sjednotí identitu guest účtů s hostem (com.linux_core) bez slévání uid:
+         * právě jeden účet ([APP_USER_NAME]) nese reálné uid aplikace, root zůstává
+         * 0:0 a ostatní účty mají rozlišitelná uid, takže `su <uživatel>` přepne
+         * na správného uživatele a app-vlastněné soubory mají jméno, ne číslo.
+         * Vlastní transformaci dělají čisté funkce [remapPasswdContent] /
+         * [remapGroupContent] / [ensureShadowUser] (viz jejich unit testy).
          */
-        fun fixUidGidFile(
-            file: File,
-            appUid: Int,
-            appGid: Int,
-            isGroup: Boolean,
-            isShadow: Boolean = false,
-        ) {
-            if (!file.exists()) return
-            val raw = file.readText().trim()
-            if (raw.isEmpty()) return
-
-            val fixed =
-                raw.lines().map { line ->
-                    if (line.startsWith("#") || line.isBlank()) return@map line
-                    val parts = line.split(":")
-                    if (parts.isEmpty()) return@map line
-
-                    when {
-                        isGroup && parts.size >= 3 ->
-                            parts.toMutableList().also {
-                                // root (gid 0) musí zůstat 0: PRoot `-0` běží jako fake root
-                                // a zsh potřebuje getgrgid(0), jinak nejde shodit privilegia.
-                                it[2] = if (parts[0] == "root") "0" else appGid.toString()
-                            }.joinToString(":")
-                        isShadow && parts.size >= 3 -> parts.toMutableList().also { it[2] = appUid.toString() }.joinToString(":")
-                        !isGroup && !isShadow && parts.size >= 4 ->
-                            parts.toMutableList().also {
-                                // root (uid 0) musí zůstat 0:0 — PRoot `-0` běží jako fake root,
-                                // takže `getpwuid(0)` musí uspět (jinak zsh: "can't drop privileges").
-                                if (parts[0] == "root") { it[2] = "0"; it[3] = "0" }
-                                else { it[2] = appUid.toString(); it[3] = appGid.toString() }
-                            }.joinToString(":")
-                        else -> line
-                    }
-                }
-
-            file.writeText(fixed.joinToString(separator = System.lineSeparator()) + System.lineSeparator())
-            file.setReadable(true, false)
-            file.setWritable(true, false)
-        }
         fun fixUidGidMapping(
             context: Context,
             rootfsDir: File,
@@ -294,24 +407,32 @@ object ProotManager {
             val appGid = appUid
             val etcDir = File(rootfsDir, "etc")
             if (!etcDir.exists()) return
+            // Docker image nebootstrapuje debianí účet → žádný interaktivní uživatel.
+            val interactiveUser = if (distroId.startsWith("docker:")) null else distroId
 
-            // /etc/passwd — replace all UIDs and GIDs with app's
-            fixUidGidFile(File(etcDir, "passwd"), appUid, appGid, isGroup = false)
-            // /etc/group — replace all GIDs with app's
-            fixUidGidFile(File(etcDir, "group"), appUid, appGid, isGroup = true)
-            // /etc/shadow — replace all UIDs with app's (for passwd field)
-            fixUidGidFile(File(etcDir, "shadow"), appUid, appGid, isGroup = false, isShadow = true)
+            fun rewrite(name: String, transform: (String) -> String) {
+                val f = File(etcDir, name)
+                if (!f.exists()) return
+                try {
+                    val raw = f.readText()
+                    if (raw.isBlank()) return
+                    var fixed = transform(raw)
+                    if (!fixed.endsWith("\n")) fixed += NL
+                    f.writeText(fixed)
+                    f.setReadable(true, false)
+                    f.setWritable(true, false)
+                } catch (e: Exception) {
+                    Log.w(TAG, "fixUidGid $name: ${e.message}")
+                }
+            }
 
-            Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, appGid=$appGid")
+            rewrite("passwd") { remapPasswdContent(it, appUid, appGid, interactiveUser) }
+            rewrite("group") { remapGroupContent(it, appGid, interactiveUser) }
+            rewrite("shadow") { ensureShadowUser(it) }
+
+            Log.i(TAG, "UID/GID mapping fixed: appUid=$appUid, interactiveUser=$interactiveUser, appUser=$APP_USER_NAME")
         }
 
-        /**
-         * Replace UID/GID values in passwd/group/shadow files.
-         *
-         * passwd format: name:passwd:UID:GID:GECOS:home:shell
-         * group format:  name:passwd:GID:user_list
-         * shadow format: name:passwd:UID:...
-         */
         // Fáze 2: sysdata/shm + rootfs permission fixupy
         setupFakeSysdata(context, rootfsDir, distroId)
         fixRootfsPermissions(context, rootfsDir)
