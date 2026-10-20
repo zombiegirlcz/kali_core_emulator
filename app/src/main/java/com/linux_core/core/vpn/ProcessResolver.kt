@@ -43,10 +43,12 @@ object ProcessResolver {
     private fun performResolve(context: Context, protocol: String, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): ProcessInfo {
         val localPort = if (srcIp == "172.18.11.218") srcPort else dstPort
         val isTcp = protocol.equals("TCP", ignoreCase = true)
+        // Jen /proc/self/net: /proc/net/* je pro untrusted_app odepřené a každé čtení
+        // vyrobí SELinux AVC audit (záplava logů → zahlcení paměti a úložiště).
         val files = if (isTcp) {
-            listOf("/proc/net/tcp", "/proc/net/tcp6", "/proc/self/net/tcp", "/proc/self/net/tcp6")
+            listOf("/proc/self/net/tcp", "/proc/self/net/tcp6")
         } else {
-            listOf("/proc/net/udp", "/proc/net/udp6", "/proc/self/net/udp", "/proc/self/net/udp6")
+            listOf("/proc/self/net/udp", "/proc/self/net/udp6")
         }
 
         val portHex = String.format("%04X", localPort)

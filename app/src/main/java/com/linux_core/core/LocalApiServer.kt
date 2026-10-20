@@ -313,36 +313,15 @@ object LocalApiServer {
         }
     }
 
-    /** UID klienta loopback spojení z /proc/net/tcp{,6}; null = nezjištěno. */
-    private fun loopbackPeerUid(socket: Socket): Int? {
-        val clientPortHex = String.format("%04X", socket.port)
-        val serverPortHex = String.format("%04X", socket.localPort)
-        for (f in listOf("/proc/net/tcp6", "/proc/net/tcp")) {
-            try {
-                for (line in java.io.File(f).readLines()) {
-                    val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size >= 8 &&
-                        parts[1].substringAfterLast(':').equals(clientPortHex, true) &&
-                        parts[2].substringAfterLast(':').equals(serverPortHex, true)) {
-                        parts[7].toIntOrNull()?.let { return it }
-                    }
-                }
-            } catch (_: Exception) { }
-        }
-        return null
-    }
-
-    private fun isTrustedLoopbackPeer(context: Context, socket: Socket): Boolean {
-        val uid = loopbackPeerUid(socket) ?: return false   // nezjištěno → vyžadovat token
-        val myUid = context.applicationInfo.uid
-        if (uid == myUid || uid == 0 || uid == 2000) return true
-        val sameSig = try {
-            context.packageManager.checkSignatures(myUid, uid) ==
-                android.content.pm.PackageManager.SIGNATURE_MATCH
-        } catch (_: Exception) { false }
-        if (!sameSig) Log.w(TAG, "Loopback požadavek z cizího UID $uid na citlivý endpoint — vyžadován token")
-        return sameSig
-    }
+    /**
+     * UID klienta loopback spojení se z /proc/net/tcp{,6} zjistit nedá: untrusted_app je
+     * na Androidu 10+ nesmí číst a každý pokus vyrobí SELinux AVC audit záznam. Při
+     * záplavě požadavků to zahlcuje kernel log / logd, paměť i úložiště a končí
+     * zamrznutím. /proc/net se proto nesmí číst vůbec → peer je vždy "nezjištěn"
+     * a citlivé endpointy chtějí token.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun isTrustedLoopbackPeer(context: Context, socket: Socket): Boolean = false
 
     private fun isAuthenticated(headers: Map<String, String>): Boolean {
         val token = headers["Authorization"] ?: headers["authorization"] ?: return false
