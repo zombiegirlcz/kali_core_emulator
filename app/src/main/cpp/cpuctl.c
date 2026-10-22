@@ -8,6 +8,7 @@
  *   cpuctl pin <hexmask> <pid> — one-shot: set affinity for pid + descendants
  *   cpuctl apps [N]          — per-app CPU% (1s sample), current core mask
  *   cpuctl app-pin <pkg> <hexmask|off> — pin every process of an app package
+ *   cpuctl cores             — per-core max/cur freq, zátěž, cluster (TSV)
  *
  * Affinity je per-vlákno: všechno, co pinuje existující procesy, prochází
  * /proc/<pid>/task (dřív jen hlavní vlákno → ostatní vlákna zůstala jinde).
@@ -40,7 +41,7 @@
 /* Verze binárky = verze modulu (magisk-modules/nh_cpuctl/module.prop).
  * `cpuctl version` ji vypíše; nh/usage-cpu.sh podle ní poznají starou
  * binárku (v1.0 neznala apps/app-pin ani version → exit 1). */
-#define CPUCTL_VERSION  "1.3"
+#define CPUCTL_VERSION  "1.4"
 #define FILES_DIR       "/data/user/0/com.linux_core/files"
 #define CPU_DIR         FILES_DIR "/nh/cpu"
 #define LOG_DIR         "/data/adb/cpuctl"
@@ -980,6 +981,130 @@ static int fastest_core(void) {
     return core;
 }
 
+/* ── CPU clustery ──────────────────────────────────────────────────── */
+
+/* Cluster = skupina jader se stejnou cpuinfo_max_freq (little/big/prime…).
+ * Nikdy hardcoded — vždy odvozeno z reálného HW. Jádro bez cpufreq (offline)
+ * se do žádné masky nepočítá. Homogenní SoC → jeden cluster (legální stav). */
+typedef struct { int id; unsigned long mask; long max_khz; int ncores; } cluster_t;
+
+static int cpu_clusters(cluster_t *out, int max) {
+    char path[PATH_MAX], buf[32];
+    long core_freq[64];
+    int ncpu = 0;
+    for (int i = 0; i < 64; i++) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d", i);
+        if (access(path, F_OK) != 0) break;
+        ncpu++;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        core_freq[i] = (read_file(path, buf, sizeof buf) > 0) ? atol(buf) : -1;
+    }
+
+    /* distinct frekvence vzestupně */
+    long uniq[64];
+    int nuniq = 0;
+    for (int i = 0; i < ncpu; i++) {
+        if (core_freq[i] <= 0) continue;
+        int found = 0;
+        for (int k = 0; k < nuniq; k++)
+            if (uniq[k] == core_freq[i]) { found = 1; break; }
+        if (!found && nuniq < 64) uniq[nuniq++] = core_freq[i];
+    }
+    for (int i = 1; i < nuniq; i++) {
+        long v = uniq[i];
+        int j = i - 1;
+        while (j >= 0 && uniq[j] > v) { uniq[j + 1] = uniq[j]; j--; }
+        uniq[j + 1] = v;
+    }
+
+    int n = 0;
+    for (int k = 0; k < nuniq && n < max; k++) {
+        out[n].id = n;
+        out[n].max_khz = uniq[k];
+        out[n].mask = 0;
+        out[n].ncores = 0;
+        for (int i = 0; i < ncpu; i++) {
+            if (core_freq[i] == uniq[k]) {
+                out[n].mask |= 1UL << i;
+                out[n].ncores++;
+            }
+        }
+        n++;
+    }
+    return n;
+}
+
+/* Jeden řádek /proc/stat (cpuN …) → busy/total jiffies (kumulativní). */
+static int read_cpu_stat_line(int core, unsigned long long *busy, unsigned long long *total) {
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return -1;
+    char tag[16];
+    snprintf(tag, sizeof tag, "cpu%d ", core);
+    size_t taglen = strlen(tag);
+    char line[256];
+    int ok = -1;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, tag, taglen) != 0) continue;
+        unsigned long long user, nice, sys_, idle, iowait, irq, softirq, steal;
+        int r = sscanf(line + taglen, "%llu %llu %llu %llu %llu %llu %llu %llu",
+                        &user, &nice, &sys_, &idle, &iowait, &irq, &softirq, &steal);
+        if (r < 4) break;
+        if (r < 8) { irq = softirq = steal = 0; }
+        if (r < 5) iowait = 0;
+        unsigned long long b = user + nice + sys_ + irq + softirq + steal;
+        *busy = b;
+        *total = b + idle + iowait;
+        ok = 0;
+        break;
+    }
+    fclose(f);
+    return ok;
+}
+
+/* `cpuctl cores` — per-jádro max/cur frekvence, zátěž (promile za 500 ms)
+ * a cluster id. Jen cpufreq a /proc/stat — nikdy ufstw_*/ufshpb_* (viz
+ * AGENTS.md §13, kernel panika). Bez hlavičkového řádku (TSV, 1 řádek/jádro). */
+static int cmd_cores(void) {
+    char path[PATH_MAX], buf[32];
+    int ncpu = 0;
+    for (int i = 0; i < 64; i++) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d", i);
+        if (access(path, F_OK) != 0) break;
+        ncpu++;
+    }
+
+    cluster_t clusters[64];
+    int nc = cpu_clusters(clusters, 64);
+
+    unsigned long long busy1[64], total1[64], busy2[64], total2[64];
+    for (int i = 0; i < ncpu; i++)
+        if (read_cpu_stat_line(i, &busy1[i], &total1[i]) != 0) busy1[i] = total1[i] = 0;
+
+    struct timespec ts = { 0, 500000000L };
+    nanosleep(&ts, NULL);
+
+    for (int i = 0; i < ncpu; i++)
+        if (read_cpu_stat_line(i, &busy2[i], &total2[i]) != 0) busy2[i] = total2[i] = 0;
+
+    for (int i = 0; i < ncpu; i++) {
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        long max_khz = (read_file(path, buf, sizeof buf) > 0) ? atol(buf) : 0;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", i);
+        long cur_khz = (read_file(path, buf, sizeof buf) > 0) ? atol(buf) : 0;
+
+        unsigned long long dbusy = (busy2[i] >= busy1[i]) ? busy2[i] - busy1[i] : 0;
+        unsigned long long dtotal = (total2[i] >= total1[i]) ? total2[i] - total1[i] : 0;
+        int promile = (dtotal > 0) ? (int)((dbusy * 1000ULL) / dtotal) : 0;
+
+        int cl = -1;
+        for (int k = 0; k < nc; k++)
+            if (clusters[k].mask & (1UL << i)) { cl = clusters[k].id; break; }
+
+        printf("%d\t%ld\t%ld\t%d\t%d\n", i, max_khz, cur_khz, promile, cl);
+    }
+    return 0;
+}
+
 static int find_policy_num(int core) {
     char path[PATH_MAX], buf[PATH_MAX];
     snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq", core);
@@ -1320,6 +1445,7 @@ int main(int argc, char **argv) {
             "  pin <hexmask> <pid>  one-shot affinity\n"
             "  apps [N]             per-app CPU%% (1s sample)\n"
             "  app-pin <pkg> <hexmask|off>  pin an app's processes\n"
+            "  cores                per-core max/cur freq + busy_promile + cluster\n"
             "  version              print version\n");
         return 1;
     }
@@ -1328,6 +1454,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "boost") == 0)  return cmd_boost(argc - 2, argv + 2);
     if (strcmp(argv[1], "status") == 0) return cmd_status();
     if (strcmp(argv[1], "apps") == 0)   return cmd_apps(argc - 2, argv + 2);
+    if (strcmp(argv[1], "cores") == 0)  return cmd_cores();
     if (strcmp(argv[1], "app-pin") == 0) {
         if (argc < 4) { fprintf(stderr, "Usage: cpuctl app-pin <package> <hexmask|off>\n"); return 1; }
         return cmd_app_pin(argv[2], argv[3]);
