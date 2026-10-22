@@ -3231,20 +3231,57 @@ cpu_fastest() {
     echo "${core:-0}"
 }
 
-cpu_setaff() {  # <hexmask> <pid>
+# `-a` (všechna vlákna) je povinné, ne kosmetika: `taskset -p <maska> <pid>`
+# přepne afinitu JEDINÉHO tasku (TID == PID, tj. hlavní vlákno). Pracovní
+# vlákna, která vznikla za staré masky, si ji drží — po `nh cpu unpin` pak
+# zůstalo 61 z 85 vláken session na jednom jádru a jeho vytížení nekleslo,
+# zatímco status (čte taky jen hlavní vlákno) hlásil "všechna jádra".
+# Toybox i util-linux `-a` umí (host i guest, ověřeno 2026-10-22).
+# Nevracet zpět na `taskset -p` bez `-a`.
+cpu_setaff() {  # <hexmask> <pid> — včetně všech vláken
     if command -v taskset >/dev/null 2>&1; then
-        taskset -p "$1" "$2" >/dev/null 2>&1
+        taskset -a -p "$1" "$2" >/dev/null 2>&1
     else
-        python3 -c "import os,sys; m=int(sys.argv[1],16); os.sched_setaffinity(int(sys.argv[2]), [i for i in range(64) if m>>i&1])" "$1" "$2" 2>/dev/null
+        python3 -c "
+import os, sys
+m = int(sys.argv[1], 16)
+cpus = [i for i in range(64) if m >> i & 1]
+pid = sys.argv[2]
+try:
+    tids = os.listdir('/proc/%s/task' % pid)
+except OSError:
+    tids = [pid]
+for t in tids:
+    try:
+        os.sched_setaffinity(int(t), cpus)
+    except OSError:
+        pass
+" "$1" "$2" 2>/dev/null
     fi
 }
 
-cpu_getaff() {  # <pid> -> hex
-    if command -v taskset >/dev/null 2>&1; then
-        taskset -p "$1" 2>/dev/null | sed 's/.*: //'
-    else
-        python3 -c "import os,sys; print('%x' % sum(1<<c for c in os.sched_getaffinity(int(sys.argv[1]))))" "$1" 2>/dev/null
-    fi
+# Čteno z /proc/<tid>/status (`Cpus_allowed`), ne tasksetem: pod prootem je
+# každý exec ~320 µs × trasované syscally, a audit vláken celé session by
+# jinak znamenal stovky forků (hlídač už na tom jednou zamrzl, viz boot).
+cpu_tid_mask() {  # <tid> -> hex bez čárek a vedoucích nul
+    sed -n 's/^Cpus_allowed:[[:space:]]*//p' /proc/"$1"/status 2>/dev/null |
+        tr -d ',' | sed 's/^0*//;s/^$/0/'
+}
+
+cpu_getaff() {  # <pid> -> hex (hlavní vlákno)
+    cpu_tid_mask "$1"
+}
+
+# Masky VŠECH vláken procesu i jeho potomků — jediný pravdivý pohled na to,
+# co se po pinu/unpinu skutečně stalo.
+cpu_tree_thread_masks() {  # <pid>
+    local p t
+    for p in $(cpu_tree "$1"); do
+        for t in /proc/"$p"/task/*; do
+            [ -d "$t" ] || continue
+            cpu_tid_mask "${t##*/}"
+        done
+    done
 }
 
 cpu_tree() {  # <pid> -> pid a všichni potomci
@@ -3299,6 +3336,20 @@ cpu_status() {
             printf "  pin: ${YELLOW}vypnutý${RST}\n"
         else
             printf "  pin: ${GREEN}zapnutý${RST}%s\n" "$([ -f "$CPU_STATE_DIR/pin.$tp" ] && echo " (hlídač běží)")"
+        fi
+        # Maska hlavního vlákna neříká nic o pracovních vláknech. Dokud se
+        # neukáže jejich rozpad, uživatel vidí "všechna jádra" a přitom mu
+        # vytížení drží na jednom jádru desítky zapomenutých vláken.
+        thr=$(cpu_tree_thread_masks "$tp" | sort | uniq -c | sort -rn)
+        nthr=$(printf '%s\n' "$thr" | awk '{s+=$1} END {print s+0}')
+        ndist=$(printf '%s\n' "$thr" | grep -c . )
+        if [ "$ndist" -gt 1 ]; then
+            printf "  vlákna: ${YELLOW}%s vláken ve %s různých maskách${RST} — %s\n" \
+                "$nthr" "$ndist" "$(printf '%s\n' "$thr" | awk '{printf "%s×%s ", $1, $2}')"
+            printf "         ${DIM}sjednotíš přes ${CYAN}nh cpu unpin${RST}${DIM} / ${CYAN}nh cpu pin <N>${RST}\n"
+        else
+            printf "  vlákna: %s vláken, všechna na masce %s\n" "$nthr" \
+                "$(printf '%s\n' "$thr" | awk '{print $2}')"
         fi
     else
         echo "  mimo proot (TracerPid 0)"
@@ -3365,8 +3416,23 @@ cpu_live() {  # on|off — aplikuje na běžící session
         mask=$(cpu_all_mask)
         rm -f "$CPU_STATE_DIR/pin.$tp" "$CPU_STATE_DIR/free.$tp" 2>/dev/null
     fi
-    for t in $(cpu_tree "$tp"); do cpu_setaff "$mask" "$t"; done
-    printf "  ${GREEN}✓${RST} běžící session (proot %s) → maska %s\n" "$tp" "$mask"
+    # Víc kol: `cpu_tree` je snapshot, takže proces odforkovaný během průchodu
+    # zdědí starou masku od rodiče, který ještě nebyl přepnutý. Při pinu zbytky
+    # dochytí hlídač/cpuctld, po unpinu ale žádný neběží — tam by zůstaly
+    # natrvalo (naměřeno: 3 z 82 vláken). Kola běží dokud něco uklízejí.
+    local round=0 stragglers=0
+    while [ "$round" -lt 4 ]; do
+        for t in $(cpu_tree "$tp"); do cpu_setaff "$mask" "$t"; done
+        stragglers=$(cpu_tree_thread_masks "$tp" | grep -vc "^$mask$") || stragglers=0
+        [ "$stragglers" -eq 0 ] && break
+        round=$((round + 1))
+    done
+    if [ "$stragglers" -eq 0 ]; then
+        printf "  ${GREEN}✓${RST} běžící session (proot %s) → maska %s ${DIM}(všechna vlákna)${RST}\n" "$tp" "$mask"
+    else
+        printf "  ${GREEN}✓${RST} běžící session (proot %s) → maska %s ${YELLOW}(%s vláken se nepodařilo přepnout)${RST}\n" \
+            "$tp" "$mask" "$stragglers"
+    fi
 }
 
 cpu_set() {  # on|off [distro] [--no-live]

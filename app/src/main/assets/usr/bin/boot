@@ -1471,7 +1471,9 @@ cpu_pin_watch() {
             { read -r mask < "$file"; } 2>/dev/null || mask=""
             cur=$($TASKSET_BIN -p "$pid" 2>/dev/null); cur=${cur##*: }
             if [ -n "$mask" ] && [ "$cur" != "$mask" ]; then
-                for t in $(cpu_tree "$pid"); do $TASKSET_BIN -p "$mask" "$t" >/dev/null 2>&1; done
+                # `-a` = všechna vlákna. Bez něj se přepne jen hlavní vlákno
+                # a workery zůstanou na staré masce (viz cpu_setaff v `nh`).
+                for t in $(cpu_tree "$pid"); do $TASKSET_BIN -a -p "$mask" "$t" >/dev/null 2>&1; done
             fi
             seen=" "        # PIDy se recyklují
         fi
@@ -1499,7 +1501,7 @@ cpu_pin_isolate_host() {
                 local pid=${p#/proc/}; pid=${pid%/comm}
                 # if, ne `&&`: proces mohl mezitím zaniknout a taskset selže;
                 # návratová hodnota by pak se `set -e` ukončila celý boot
-                if $TASKSET_BIN -p "$avoid" "$pid" >/dev/null 2>&1; then
+                if $TASKSET_BIN -a -p "$avoid" "$pid" >/dev/null 2>&1; then
                     log "CPU isolate: $comm ($pid) → 0x$avoid"
                 fi
                 ;;
@@ -1521,7 +1523,7 @@ cpu_pin_apply() {
     done
     core=${NH_CPU_PIN_CORE:-$(cpu_pick_core)}
     mask=$(printf '%x' $((1 << core)))
-    if $TASKSET_BIN -p "$mask" $$ >/dev/null 2>&1; then
+    if $TASKSET_BIN -a -p "$mask" $$ >/dev/null 2>&1; then
         echo "$mask" > "$CPU_DIR/pin.$$"
         log "CPU pin: cpu$core (mask $mask)"
         # isolate: přesunout host procesy (appku, agenta) z proot jádra
