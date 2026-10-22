@@ -1234,6 +1234,66 @@ def build():
     print(f"[build] APK copied to Volume: {dest}")
 
 
+# ── JVM unit testy ───────────────────────────────────────────────────────────
+@app.function(
+    image=base_image,
+    volumes={"/vol": build_vol},
+    secrets=[modal.Secret.from_name("build-secrets")],
+    timeout=3600,
+    memory=8192,
+    cpu=4,
+)
+def jvm_test(tests: str = ""):
+    """Spustí JVM unit testy (`./gradlew test`) nad zdrojem na Volume.
+
+    `tests` je volitelný Gradle `--tests` filtr (např. `*CpuDataTest*`).
+    Lokální build je v tomhle projektu zakázaný (AGENTS.md §0), takže
+    tohle je jediná povolená cesta, jak testy spustit.
+    """
+    src_dir = "/vol/src"
+
+    if not os.path.isdir(src_dir):
+        print(
+            "[test] Source directory not found on Volume.  "
+            "Sync first (sync je vždy samostatný krok):\n"
+            "  modal run modal_build.py::sync",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    commit = subprocess.run(
+        ["git", "log", "-1", "--format=%h %s"],
+        cwd=src_dir, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    print(f"[test] Testing: {commit}")
+
+    # local.properties + gradle cache stejně jako u build()
+    with open(os.path.join(src_dir, "local.properties"), "w") as f:
+        f.write(f"sdk.dir={ANDROID_SDK_ROOT}\n")
+    os.chmod(os.path.join(src_dir, "gradlew"), 0o755)
+    os.makedirs("/vol/gradle-cache", exist_ok=True)
+
+    cmd = ["./gradlew", "test", "--no-daemon", "--stacktrace"]
+    if tests:
+        cmd += ["--tests", tests]
+    print(f"[test] Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=src_dir, capture_output=False, text=True)
+
+    # XML/HTML reporty na Volume, aby šly stáhnout i po selhání
+    report_src = os.path.join(src_dir, "app/build/reports/tests")
+    report_dst = "/vol/builds/test-reports"
+    if os.path.isdir(report_src):
+        shutil.rmtree(report_dst, ignore_errors=True)
+        shutil.copytree(report_src, report_dst)
+        build_vol.commit()
+        print(f"[test] Reports copied to Volume: {report_dst}")
+
+    if result.returncode != 0:
+        print("[test] TESTS FAILED", file=sys.stderr)
+        sys.exit(result.returncode)
+    print("[test] All tests passed.")
+
+
 # ── Verify APK signature ─────────────────────────────────────────────────────
 @app.function(
     image=base_image,

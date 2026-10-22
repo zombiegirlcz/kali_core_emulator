@@ -151,6 +151,19 @@ case "$CMD" in
             || { echo "    [FATAL] stažení APK selhalo (builds/app-debug.apk na Volume?)"; exit 1; }
         ;;
 
+    test)
+        # JVM unit testy na Modalu (lokální build je zakázaný, AGENTS.md §0).
+        # Volitelný argument = Gradle --tests filtr, např.:
+        #   zsh mbuild test '*CpuDataTest*'
+        FILTER="${1:-}"
+        echo "=== JVM TESTY${FILTER:+ (filtr: $FILTER)} ==="
+        if [ -n "$FILTER" ]; then
+            modal run modal_build.py::jvm_test --tests "$FILTER" 2>&1 | tee test.log
+        else
+            modal run modal_build.py::jvm_test 2>&1 | tee test.log
+        fi
+        ;;
+
     smart)
         echo "=== SMART BUILD (inkrementální proot/native/gradle) ==="
         modal run modal_build.py::smart_build 2>&1 | tee build.log
@@ -178,7 +191,7 @@ case "$CMD" in
         pull_full_assets
         ;;
     *)
-        echo "Usage: zsh mbuild [sync|clean|all|native|build|usrtools|proot]"
+        echo "Usage: zsh mbuild [sync|clean|all|native|build|smart|test|usrtools|proot]"
         exit 1
         ;;
 esac
