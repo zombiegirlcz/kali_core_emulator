@@ -1273,9 +1273,15 @@ def jvm_test(tests: str = ""):
     os.chmod(os.path.join(src_dir, "gradlew"), 0o755)
     os.makedirs("/vol/gradle-cache", exist_ok=True)
 
-    cmd = ["./gradlew", "test", "--no-daemon", "--stacktrace"]
+    # Pozor na pořadí: `--tests` je task-scoped volba, musí stát HNED za
+    # názvem tasku. Za `--no-daemon` ji Gradle odmítne ("Unknown
+    # command-line option '--tests'", ověřeno na Modalu 2026-10-22).
+    # Task je `testDebugUnitTest`, ne `test`: `test` pouští i release
+    # variantu a `--tests` filtr, který v ní nic nenajde, celý build složí.
+    cmd = ["./gradlew", "testDebugUnitTest"]
     if tests:
         cmd += ["--tests", tests]
+    cmd += ["--no-daemon", "--stacktrace"]
     print(f"[test] Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=src_dir, capture_output=False, text=True)
 
