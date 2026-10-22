@@ -155,7 +155,7 @@ case "$CMD" in
         # JVM unit testy na Modalu (lokální build je zakázaný, AGENTS.md §0).
         # Volitelný argument = Gradle --tests filtr, např.:
         #   zsh mbuild test '*CpuDataTest*'
-        FILTER="${1:-}"
+        FILTER="${2:-}"
         echo "=== JVM TESTY${FILTER:+ (filtr: $FILTER)} ==="
         if [ -n "$FILTER" ]; then
             modal run modal_build.py::jvm_test --tests "$FILTER" 2>&1 | tee test.log
