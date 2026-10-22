@@ -1062,8 +1062,9 @@ static int read_cpu_stat_line(int core, unsigned long long *busy, unsigned long 
 }
 
 /* `cpuctl cores` — per-jádro max/cur frekvence, zátěž (promile za 500 ms)
- * a cluster id. Jen cpufreq a /proc/stat — nikdy ufstw_*/ufshpb_* (viz
- * AGENTS.md §13, kernel panika). Bez hlavičkového řádku (TSV, 1 řádek/jádro). */
+ * a cluster id. Jen cpufreq a /proc/stat — nikdy ufstw_ nebo ufshpb_ sysfs
+ * atributy (viz AGENTS.md sekce 13, kernel panika). Bez hlavičkového řádku
+ * (TSV, 1 řádek/jádro). */
 static int cmd_cores(void) {
     char path[PATH_MAX], buf[32];
     int ncpu = 0;
