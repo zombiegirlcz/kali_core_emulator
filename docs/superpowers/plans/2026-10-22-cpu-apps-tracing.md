@@ -24,6 +24,12 @@
 - Rozpočet vzorkování: ≤ 1 % jednoho jádra. Při překročení se zvětší krok hrubého pásu, neslevuje se z rozpočtu.
 - Barvy UI: little `#3987e5`, big `#d95926`, OK `#199e70`, surface `#1a1a19`, text `#f0efec`/`#c3c2b7`. Rozlišení nikdy jen odstínem.
 - Komunikace s uživatelem a komentáře v kódu česky, kód a identifikátory anglicky (jako zbytek `cpuctl.c`).
+- **Device testy se spouštějí z repa, ne kopií na `/sdcard`** (vzor `tools/test-boot-session.sh`):
+  `ashell -c "su -c 'sh <repo>/tools/test-cpuctl-14.sh'"`. Skript běží jako root
+  na hostu, takže cesty bere z argumentů / proměnných, nikdy relativně k cwd.
+  Kde plán níže píše `sh /sdcard/test-cpuctl-14.sh`, platí tahle cesta.
+- **Restart daemona v testech:** `pkill -x cpuctld` a znovu `cpuctl daemon &`
+  (jak to dělá `service.sh`). Podpříkaz `cpuctl daemon stop` **neexistuje**.
 
 ## Review Focus
 
@@ -149,7 +155,7 @@ pkill -f cpuctld; sleep 8   # service.sh/daemon ho nastartuje znovu
 after=$(cpuctl history "$BUSY_PKG" coarse | grep -c .)
 [ "$after" -ge "$before" ] || fail "coarse historie se restartem ztratila ($before → $after)"
 # poškozený history.bin → prázdná historie, daemon žije
-cpuctl daemon stop 2>/dev/null; printf 'ROZBITO' > /data/adb/cpuctl/history.bin
+pkill -x cpuctld; printf 'ROZBITO' > /data/adb/cpuctl/history.bin
 # (daemon start) ; pak:
 cpuctl history "$BUSY_PKG" coarse >/dev/null || fail "poškozený history.bin daemon složil"
 pidof cpuctld >/dev/null || fail "daemon po poškozeném history.bin neběží"
@@ -412,6 +418,7 @@ nh cpu 2>&1 | grep -q 'trace' || fail "help nezmiňuje trace"
 
 **Files:**
 - Create: `app/src/main/java/com/linux_core/ui/cpu/CpuCharts.kt`
+- Test: `app/src/test/java/com/linux_core/ui/cpu/CpuChartsTest.kt`
 
 **Interfaces:**
 - Consumes: `Sample`, `PinEvent`, `CoreRow`, `Cluster` z Tasku 5.
@@ -447,7 +454,13 @@ class CpuChartsTest {   // app/src/test/… — čistá logika škálování, be
 
 **Files:**
 - Create: `app/src/main/java/com/linux_core/ui/cpu/MonitorTab.kt`
+- Test: `app/src/test/java/com/linux_core/ui/cpu/MonitorStateTest.kt`
 - Modify: `app/src/main/java/com/linux_core/ui/CpuAppsActivity.kt` (taby, stav, `cpuctl()` ~ř. 62, `parseApps()` ~ř. 73 → nahradit `CpuTsv`)
+
+**Rozhodnuto (pre-flight ruling):** `enum CpuTab` zavést se **všemi třemi**
+hodnotami už tady a taby CORES/BENCH vykreslit jako prázdný stav s textem
+„připravuje se" — Task 10 je vyplní. `TabRow` se třemi taby je jedna
+komponenta; dělit ji mezi tasky by znamenalo skončit T9 s rozbitým UI.
 
 **Interfaces:**
 - Consumes: `CpuTsv`, `CpuctlState`, `CpuCharts`.
@@ -491,7 +504,8 @@ Expected: taby jdou přepnout, Monitor kreslí sparkliny, detail otevře graf, p
 **Files:**
 - Create: `app/src/main/java/com/linux_core/ui/cpu/CoresTab.kt`
 - Create: `app/src/main/java/com/linux_core/ui/cpu/BenchTab.kt`
-- Modify: `app/src/main/java/com/linux_core/ui/CpuAppsActivity.kt`
+- Test: `app/src/test/java/com/linux_core/ui/cpu/BenchVerdictTest.kt`
+- Modify: `app/src/main/java/com/linux_core/ui/CpuAppsActivity.kt` (nahradit prázdné stavy tabů CORES/BENCH z Tasku 9)
 
 **Interfaces:**
 - Consumes: `/cpu/cores`, `/cpu/layout`, `/cpu/bench`, `CpuCharts`.

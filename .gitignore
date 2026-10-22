@@ -182,3 +182,6 @@ tools/.proot-meta-file.*
 
 # lokální worktree Claude Code session
 .claude/worktrees/
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/
