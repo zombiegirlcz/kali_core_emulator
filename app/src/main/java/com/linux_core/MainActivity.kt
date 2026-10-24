@@ -545,6 +545,8 @@ fun MainScreen() {
     var dockerPullStatus by remember { mutableStateOf("") }
     var selectedDockerDir by remember { mutableStateOf<String?>(null) }
     var isDockerMode by remember { mutableStateOf(false) }
+    // ashell: host shell pod UID appky (bez PRootu) — volba v katalogu Docker/rootfs dialogu
+    var isAshellMode by remember { mutableStateOf(false) }
     var showDockerDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var activeSessions by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -585,7 +587,7 @@ fun MainScreen() {
                             ?: emptyList()
                     val dirs = (newDockerDirs + legacyDockerDirs).sortedDescending()
                     dockerImageDirs = dirs
-                    if (selectedDockerDir == null && dirs.isNotEmpty()) {
+                    if (!isAshellMode && selectedDockerDir == null && dirs.isNotEmpty()) {
                         selectedDockerDir = dirs.first()
                         isDockerMode = true
                     }
@@ -694,7 +696,7 @@ fun MainScreen() {
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         RootfsManager.DISTROS.forEach { distro ->
-                            val isSelected = !isDockerMode && (distro == selectedDistro)
+                            val isSelected = !isDockerMode && !isAshellMode && (distro == selectedDistro)
                             val exists = RootfsManager.isRootfsExtracted(context, distro)
                             val activeColor = if (distro.id == "kali") Color(0xFF00B0FF) else Color(0xFF00FF9F)
                             val borderBrush =
@@ -718,6 +720,7 @@ fun MainScreen() {
                                         .clickable(enabled = !isDownloading) {
                                             selectedDistro = distro
                                             isDockerMode = false
+                                            isAshellMode = false
                                         },
                                 shape = RoundedCornerShape(14.dp),
                                 border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderBrush),
@@ -846,8 +849,8 @@ fun MainScreen() {
                             shape = RoundedCornerShape(14.dp),
                             border =
                                 BorderStroke(
-                                    if (isDockerMode) 2.dp else 1.dp,
-                                    if (isDockerMode) {
+                                    if (isDockerMode || isAshellMode) 2.dp else 1.dp,
+                                    if (isDockerMode || isAshellMode) {
                                         Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
                                     } else {
                                         Brush.horizontalGradient(colors = listOf(Color(0xFF1E2026), Color(0xFF1E2026)))
@@ -855,7 +858,7 @@ fun MainScreen() {
                                 ),
                             colors =
                                 CardDefaults.cardColors(
-                                    containerColor = if (isDockerMode) Color(0xF20F111A) else Color(0xE608090D),
+                                    containerColor = if (isDockerMode || isAshellMode) Color(0xF20F111A) else Color(0xE608090D),
                                 ),
                         ) {
                             Box(modifier = Modifier.fillMaxWidth()) {
@@ -868,12 +871,12 @@ fun MainScreen() {
                                             Modifier
                                                 .size(54.dp)
                                                 .background(
-                                                    if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.15f) else Color(0xFF12131A),
+                                                    if (isDockerMode || isAshellMode) Color(0xFF00FF41).copy(alpha = 0.15f) else Color(0xFF12131A),
                                                     CircleShape,
                                                 )
                                                 .border(
                                                     width = 1.dp,
-                                                    color = if (isDockerMode) Color(0xFF00FF41).copy(alpha = 0.5f) else Color(0xFF1E2026),
+                                                    color = if (isDockerMode || isAshellMode) Color(0xFF00FF41).copy(alpha = 0.5f) else Color(0xFF1E2026),
                                                     shape = CircleShape,
                                                 ),
                                         contentAlignment = Alignment.Center,
@@ -891,7 +894,7 @@ fun MainScreen() {
                                         text = "DOCKER HUB",
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isDockerMode) Color(0xFF00FF41) else Color.LightGray,
+                                        color = if (isDockerMode || isAshellMode) Color(0xFF00FF41) else Color.LightGray,
                                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -989,6 +992,67 @@ fun MainScreen() {
                                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                         )
                                     }
+
+                                    // Host shell (ashell) — escape z PRootu, shell pod UID appky
+                                    Text(
+                                        text = "HOST SHELL",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.LightGray,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    )
+                                    Row(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (isAshellMode) Color(0x2600FF41) else Color(0xFF0D0E12))
+                                                .border(
+                                                    1.dp,
+                                                    if (isAshellMode) Color(0xFF00FF41) else Color(0xFF1E2026),
+                                                    RoundedCornerShape(8.dp),
+                                                )
+                                                .clickable(enabled = !isPullingDocker) {
+                                                    isAshellMode = true
+                                                    isDockerMode = false
+                                                    selectedDockerDir = null
+                                                    showDockerDialog = false
+                                                }
+                                                .padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = if (isAshellMode) "\u25CF" else "\u25CB",
+                                            color = if (isAshellMode) Color(0xFF00FF41) else Color.Gray,
+                                            fontSize = 12.sp,
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "APP SHELL (ashell)",
+                                                fontSize = 11.sp,
+                                                color = Color.White,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            )
+                                            Text(
+                                                text = "Host shell pod UID appky — /system/bin/sh bez PRootu",
+                                                fontSize = 9.sp,
+                                                color = Color.Gray,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            )
+                                        }
+                                        Text(
+                                            text = "SELECT",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF00FF41),
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        )
+                                    }
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = Color(0x3300FF41),
+                                    )
 
                                     // Installed images list
                                     Text(
@@ -1583,11 +1647,14 @@ fun MainScreen() {
                             }
                         }
                     } else {
-                        val canLaunchDocker = isDockerMode && selectedDockerDir != null
-                        val canLaunchDistro = !isDockerMode && isExtracted
-                        if (canLaunchDocker || canLaunchDistro) {
+                        val canLaunchAshell = isAshellMode
+                        val canLaunchDocker = !isAshellMode && isDockerMode && selectedDockerDir != null
+                        val canLaunchDistro = !isAshellMode && !isDockerMode && isExtracted
+                        if (canLaunchAshell || canLaunchDocker || canLaunchDistro) {
                             val activeBrandGradient =
-                                if (canLaunchDocker) {
+                                if (canLaunchAshell) {
+                                    Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
+                                } else if (canLaunchDocker) {
                                     Brush.horizontalGradient(listOf(Color(0xFF00FF41), Color(0xFF00D2FF)))
                                 } else if (selectedDistro.id == "kali") {
                                     Brush.horizontalGradient(listOf(Color(0xFF0052D4), Color(0xFF4364F7)))
@@ -1597,19 +1664,27 @@ fun MainScreen() {
 
                             Button(
                                 onClick = {
-                                    val rootfsDirName =
-                                        if (canLaunchDocker) {
-                                            selectedDockerDir!!
-                                        } else {
-                                            selectedDistro.rootfsDirName
-                                        }
                                     val intent =
-                                        Intent(context, TerminalActivity::class.java).apply {
-                                            putExtra("rootfsDirName", rootfsDirName)
-                                            putExtra("mountStorage", mountStorage)
-                                            // Docker image: přeskočí bootstrap/entrypoint v ProotManager
-                                            if (canLaunchDocker) {
-                                                putExtra("isDockerImage", true)
+                                        if (canLaunchAshell) {
+                                            // ashell: host shell pod UID appky, bez PRootu
+                                            Intent(context, TerminalActivity::class.java).apply {
+                                                putExtra("rootfsDirName", "ashell-host")
+                                                putExtra("ashellMode", true)
+                                            }
+                                        } else {
+                                            val rootfsDirName =
+                                                if (canLaunchDocker) {
+                                                    selectedDockerDir!!
+                                                } else {
+                                                    selectedDistro.rootfsDirName
+                                                }
+                                            Intent(context, TerminalActivity::class.java).apply {
+                                                putExtra("rootfsDirName", rootfsDirName)
+                                                putExtra("mountStorage", mountStorage)
+                                                // Docker image: přeskočí bootstrap/entrypoint v ProotManager
+                                                if (canLaunchDocker) {
+                                                    putExtra("isDockerImage", true)
+                                                }
                                             }
                                         }
                                     context.startActivity(intent)
@@ -1632,7 +1707,9 @@ fun MainScreen() {
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text =
-                                            if (canLaunchDocker) {
+                                            if (canLaunchAshell) {
+                                                "LAUNCH APP SHELL"
+                                            } else if (canLaunchDocker) {
                                                 "BOOT UP " + (dockerImageRef?.fullName ?: "DOCKER").uppercase()
                                             } else {
                                                 "BOOT UP " + selectedDistro.name.uppercase()
@@ -1859,7 +1936,13 @@ fun MainScreen() {
                             .verticalScroll(settingsScrollState),
                 ) {
                     val settingsTarget =
-                        if (isDockerMode) selectedDockerDir?.substringAfterLast("/") ?: "docker" else selectedDistro.name
+                        if (isAshellMode) {
+                            "app shell"
+                        } else if (isDockerMode) {
+                            selectedDockerDir?.substringAfterLast("/") ?: "docker"
+                        } else {
+                            selectedDistro.name
+                        }
                     Text(
                         text = "SETTINGS // ${settingsTarget.uppercase()}",
                         fontSize = 11.sp,
@@ -2263,8 +2346,8 @@ fun MainScreen() {
                                     modifier = Modifier.padding(14.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
-                                    val canManageDocker = isDockerMode && selectedDockerDir != null
-                                    val canManageDistro = !isDockerMode && isExtracted
+                                    val canManageDocker = !isAshellMode && isDockerMode && selectedDockerDir != null
+                                    val canManageDistro = !isAshellMode && !isDockerMode && isExtracted
 
                                     if (canManageDocker || canManageDistro) {
                                         val isDocker = canManageDocker
