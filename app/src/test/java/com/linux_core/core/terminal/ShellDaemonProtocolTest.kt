@@ -102,15 +102,16 @@ class ShellDaemonProtocolTest {
         // Regrese: `ashell adb stop` drive volal `adb shell kill` — bez
         // pripojeneho adb tise selhal a daemon bezel dal. Stop i zjisteni
         // stavu musi primarne jit pres LocalApiServer.
-        val c = File("src/main/cpp/ashell.c").readText()
+        // Od 3ca90096 je ashell.c jen launcher; logika je v nh adb (assets/nh).
+        val c = File("src/main/assets/nh").readText()
         assertTrue(
             "ashell stop musi volat API /shelldaemon/stop",
-            c.contains("http_request(\"POST\", \"/shelldaemon/stop\"")
+            c.contains("api_post \"/shelldaemon/stop\"")
         )
         assertTrue(
             "shelldaemon_alive musi primarne pouzit API /shelldaemon/status",
-            c.contains("shelldaemon_alive") &&
-                c.contains("http_request(\"GET\", \"/shelldaemon/status\"")
+            c.contains("adb_shelldaemon_alive") &&
+                c.contains("api_get \"/shelldaemon/status\"")
         )
     }
 

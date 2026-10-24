@@ -26,18 +26,23 @@ import java.io.File
  */
 class ShellDaemonStopFallbackTest {
 
-    private fun ashell(): String = File("src/main/cpp/ashell.c").readText()
+    /**
+     * Od refaktoru 3ca90096 ("presunout CLI logiku z ashell.c do nh adb") je
+     * `ashell.c` jen launcher (`execvp("nh", {"nh","adb",…})`) a skutečná
+     * logika `ashell adb stop` žije v `nh adb stop` → `assets/nh`.
+     */
+    private fun nh(): String = File("src/main/assets/nh").readText()
 
     private fun client(): String =
         File("src/main/java/com/linux_core/core/terminal/ShellDaemonClient.kt").readText()
 
-    /** Vytáhne větev `stop` z cmd_adb() v ashell.c (až po větev `status`). */
-    private fun ashellStopBranch(): String {
-        val src = ashell()
-        val start = src.indexOf("if (strcmp(sub, \"stop\") == 0)")
-        assertTrue("ashell.c: vetev 'stop' nenalezena", start >= 0)
-        val end = src.indexOf("if (strcmp(sub, \"status\") == 0)", start)
-        assertTrue("ashell.c: konec vetve 'stop' nenalezen", end > start)
+    /** Vytáhne funkci adb_stop() z assets/nh (až po adb_status). */
+    private fun nhStopBranch(): String {
+        val src = nh()
+        val start = src.indexOf("adb_stop() {")
+        assertTrue("nh: funkce adb_stop() nenalezena", start >= 0)
+        val end = src.indexOf("adb_status() {", start)
+        assertTrue("nh: konec adb_stop() nenalezen", end > start)
         return src.substring(start, end)
     }
 
@@ -53,11 +58,11 @@ class ShellDaemonStopFallbackTest {
 
     @Test
     fun `ashell stop po neuspesnem API nezustane jen u hlasky`() {
-        val stop = ashellStopBranch()
+        val stop = nhStopBranch()
         // Regrese: dřív tu byl jen `echo stale` + `exit 0` bez fallbacku.
         assertFalse(
             "ashell stop nesmi skoncit jen hláškou 'stale bezi' s exit 0",
-            stop.contains("API stop nedoběhl") && !stop.contains("pkill")
+            stop.contains("stale běží") && !stop.contains("pkill")
         )
         assertTrue(
             "ashell stop musí po neúspěchu skončit nenulovým kódem, když daemon pořád běží",
@@ -67,10 +72,10 @@ class ShellDaemonStopFallbackTest {
 
     @Test
     fun `ashell stop ma adb fallback kill a pkill`() {
-        val stop = ashellStopBranch()
+        val stop = nhStopBranch()
         assertTrue(
             "ashell stop musí umět kill PID z PID file přes adb shell",
-            stop.contains("adb shell") && (stop.contains("kill \$_p") || stop.contains("kill -9 \$_p"))
+            stop.contains("adb shell") && (stop.contains("kill \$p") || stop.contains("kill -9 \$p"))
         )
         assertTrue(
             "ashell stop musí mít pkill -f libshelldaemon jako poslední záchranu",
@@ -78,13 +83,13 @@ class ShellDaemonStopFallbackTest {
         )
         assertTrue(
             "ashell stop musí ověřit, že daemon po fallbacku skutečně zmizel",
-            stop.contains("daemon_alive")
+            stop.contains("adb_shelldaemon_alive")
         )
     }
 
     @Test
     fun `ashell stop pouziva adb shell jen kdyz je adb pripojeny`() {
-        val stop = ashellStopBranch()
+        val stop = nhStopBranch()
         // adb shell kill má smysl jen s připojeným adb (device$ v `adb devices`).
         assertTrue(
             "ashell stop musí adb fallback gatovat na připojené zařízení",
@@ -111,7 +116,7 @@ class ShellDaemonStopFallbackTest {
 
     @Test
     fun `stop cesta je non-root`() {
-        val stop = ashellStopBranch()
+        val stop = nhStopBranch()
         val body = stopDaemonBody()
         // Cíl je non-root: uid 2000 (adb shell) i EXEC kill (worker = stejné uid)
         // dosáhnou na démona bez `su`.

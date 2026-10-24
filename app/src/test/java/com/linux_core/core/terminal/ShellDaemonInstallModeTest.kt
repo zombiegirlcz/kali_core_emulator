@@ -33,7 +33,11 @@ class ShellDaemonInstallModeTest {
     private fun apiServer(): String =
         File("src/main/java/com/linux_core/core/LocalApiServer.kt").readText()
 
-    private fun ashell(): String = File("src/main/cpp/ashell.c").readText()
+    /**
+     * `ashell adb` je od 3ca90096 jen launcher (`execvp("nh", ...)`); CLI logika
+     * (start/stop/install/token) žije v `nh adb` → `assets/nh`.
+     */
+    private fun ashell(): String = File("src/main/assets/nh").readText()
 
     private fun cDefine(src: String, name: String): Long {
         val re = Regex("""#define\s+$name\s+(0x[0-9A-Fa-f]+|\d+)u?""")
