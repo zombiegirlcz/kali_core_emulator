@@ -352,12 +352,29 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
 /** IRemoteProcess impl — surové FD z `java.lang.Process` streamů přes reflexi na `fd` pole. */
 private class RemoteProcessImpl(private val process: java.lang.Process) : IRemoteProcess.Stub() {
 
-    private fun extractFd(stream: Any): FileDescriptor? = try {
-        val f = stream.javaClass.getDeclaredField("fd")
-        f.isAccessible = true
-        f.get(stream) as? FileDescriptor
-    } catch (t: Throwable) {
-        null
+    /**
+     * Pull the underlying [FileDescriptor] out of a stream.
+     *
+     * `getDeclaredField("fd")` on the concrete class is not enough: Android's
+     * `ProcessBuilder` returns `ProcessImpl$ProcessPipeInputStream`, which
+     * inherits `fd` from `FileInputStream`. Looking only at the declared class
+     * returns null, which surfaces on the client as a NullPointerException in
+     * `ShizukuRemoteProcess.getInputStream()`. Walk the superclass chain.
+     */
+    private fun extractFd(stream: Any): FileDescriptor? {
+        var cls: Class<*>? = stream.javaClass
+        while (cls != null) {
+            try {
+                val f = cls.getDeclaredField("fd")
+                f.isAccessible = true
+                return f.get(stream) as? FileDescriptor
+            } catch (_: NoSuchFieldException) {
+                cls = cls.superclass
+            } catch (t: Throwable) {
+                return null
+            }
+        }
+        return null
     }
 
     private fun wrap(stream: Any): ParcelFileDescriptor? {
