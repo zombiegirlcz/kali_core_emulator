@@ -349,46 +349,92 @@ private class ShizukuServiceImpl : IShizukuService.Stub() {
     }
 }
 
-/** IRemoteProcess impl — surové FD z `java.lang.Process` streamů přes reflexi na `fd` pole. */
+/**
+ * IRemoteProcess impl backed by explicit pipes.
+ *
+ * The obvious implementation hands the client the raw fd of
+ * `process.inputStream`, obtained by reflecting on `FileInputStream.fd`. That
+ * does not work: the field is unreachable under hidden-API restrictions,
+ * `setAccessible(true)` throws, `extractFd` returns null and the client dies
+ * with
+ *
+ *   NullPointerException: Attempt to invoke virtual method
+ *   'java.io.FileDescriptor android.os.ParcelFileDescriptor.getFileDescriptor()'
+ *   on a null object reference
+ *     at rikka.shizuku.ShizukuRemoteProcess.getInputStream
+ *
+ * So instead of borrowing the child's descriptors we create our own pipes and
+ * pump bytes between them and the process streams on background threads. This
+ * works regardless of reflection policy.
+ */
 private class RemoteProcessImpl(private val process: java.lang.Process) : IRemoteProcess.Stub() {
 
-    /**
-     * Pull the underlying [FileDescriptor] out of a stream.
-     *
-     * `getDeclaredField("fd")` on the concrete class is not enough: Android's
-     * `ProcessBuilder` returns `ProcessImpl$ProcessPipeInputStream`, which
-     * inherits `fd` from `FileInputStream`. Looking only at the declared class
-     * returns null, which surfaces on the client as a NullPointerException in
-     * `ShizukuRemoteProcess.getInputStream()`. Walk the superclass chain.
-     */
-    private fun extractFd(stream: Any): FileDescriptor? {
-        var cls: Class<*>? = stream.javaClass
-        while (cls != null) {
+    private val pumpers = mutableListOf<Thread>()
+
+    /** Returns [readEnd, writeEnd]. */
+    private fun pipe(): Pair<ParcelFileDescriptor, ParcelFileDescriptor> {
+        val fds = ParcelFileDescriptor.createPipe()
+        return fds[0] to fds[1]
+    }
+
+    /** process stream -> pipe (client reads). */
+    private fun pumpOut(from: java.io.InputStream, to: ParcelFileDescriptor) {
+        val t = Thread {
             try {
-                val f = cls.getDeclaredField("fd")
-                f.isAccessible = true
-                return f.get(stream) as? FileDescriptor
-            } catch (_: NoSuchFieldException) {
-                cls = cls.superclass
-            } catch (t: Throwable) {
-                return null
+                ParcelFileDescriptor.AutoCloseOutputStream(to).use { out ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val n = from.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        out.flush()
+                    }
+                }
+            } catch (_: Throwable) {
+                // process died or the client closed its end
             }
         }
-        return null
+        t.isDaemon = true
+        t.start()
+        synchronized(pumpers) { pumpers += t }
     }
 
-    private fun wrap(stream: Any): ParcelFileDescriptor? {
-        val fd = extractFd(stream) ?: return null
-        return try {
-            ParcelFileDescriptor.dup(fd)
-        } catch (t: Throwable) {
-            null
+    /** pipe (client writes) -> process stdin. */
+    private fun pumpIn(from: ParcelFileDescriptor, to: java.io.OutputStream) {
+        val t = Thread {
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(from).use { input ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        to.write(buf, 0, n)
+                        to.flush()
+                    }
+                }
+            } catch (_: Throwable) {
+                // process died or the client closed its end
+            }
         }
+        t.isDaemon = true
+        t.start()
+        synchronized(pumpers) { pumpers += t }
     }
 
-    override fun getOutputStream(): ParcelFileDescriptor? = wrap(process.outputStream as OutputStream)
-    override fun getInputStream(): ParcelFileDescriptor? = wrap(process.inputStream as InputStream)
-    override fun getErrorStream(): ParcelFileDescriptor? = wrap(process.errorStream as InputStream)
+    private val stdinPair by lazy { pipe() }
+    private val stdoutPair by lazy { pipe() }
+    private val stderrPair by lazy { pipe() }
+
+    init {
+        // Touch the lazy pipes so the pump threads start immediately.
+        pumpIn(stdinPair.first, process.outputStream)
+        pumpOut(process.inputStream, stdoutPair.second)
+        pumpOut(process.errorStream, stderrPair.second)
+    }
+
+    override fun getOutputStream(): ParcelFileDescriptor = stdinPair.second
+    override fun getInputStream(): ParcelFileDescriptor = stdoutPair.first
+    override fun getErrorStream(): ParcelFileDescriptor = stderrPair.first
 
     override fun waitFor(): Int = process.waitFor()
     override fun exitValue(): Int = process.exitValue()
