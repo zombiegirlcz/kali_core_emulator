@@ -83,6 +83,25 @@ if [ "$CONCLUSION" = "success" ]; then
     exit 0
 fi
 
+# `build.yml` má `concurrency: cancel-in-progress: true`, takže novější push
+# do stejné branche zruší běžící run. To NENÍ selhání testů — jen se tenhle
+# commit nedoměřil. Typicky když do `dev` pushuje víc agentů/sessions.
+if [ "$CONCLUSION" = "cancelled" ]; then
+    echo "[ci-test] run byl ZRUŠEN (novější push do $BRANCH, cancel-in-progress)"
+    echo "[ci-test] tenhle commit se nedoměřil — testy ani neselhaly, ani neprošly"
+    NEWER=$(gh api "repos/$REPO/actions/runs?branch=$BRANCH&per_page=5" \
+        --jq '.workflow_runs[] | select(.name=="Build APK") |
+              "\(.head_sha[0:7]) \(.status) \(.conclusion)"' 2>/dev/null |
+        head -3 || true)
+    if [ -n "$NEWER" ]; then
+        echo "[ci-test] poslední runy na $BRANCH:"
+        echo "$NEWER" | sed 's/^/  /'
+    fi
+    echo "[ci-test] buď počkej na run novějšího commitu, nebo tenhle znovu:"
+    echo "  gh api -X POST repos/$REPO/actions/runs/$RUN_ID/rerun"
+    exit 2
+fi
+
 if [ -n "$FAILED_STEPS" ]; then
     echo "[ci-test] selhaly kroky:"
     echo "$FAILED_STEPS" | sed 's/^/  - /'
