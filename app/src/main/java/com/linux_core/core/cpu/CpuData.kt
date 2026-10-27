@@ -70,24 +70,38 @@ sealed interface CpuctlState {
     /** Binárka hlásí starší verzi, než appka vyžaduje. */
     data class TooOld(val version: String) : CpuctlState
 
-    /** `cpuctl` neodpověděl (bez rootu/modulu) — prázdný/nečitelný výstup. */
+    /** `cpuctl` vůbec neodpověděl — prázdný výstup (bez rootu/modulu). */
     object NoRoot : CpuctlState
+
+    /**
+     * `cpuctl` něco vrátil, ale není to verze — odpověď se zkrátila timeoutem
+     * `su`, nebo se do stdout přimíchala hláška ze stderr.
+     *
+     * Nesmí se slít s [NoRoot]: root i modul mohou být v pořádku a UI má v
+     * tomhle případě nabídnout opakování, ne hlásit „není root". [raw] je
+     * zkrácený na prvních 64 znaků, aby se dal bezpečně zobrazit.
+     */
+    data class Unreadable(val raw: String) : CpuctlState
 }
 
 /** Nejnižší verze `cpuctl`, kterou appka umí číst (history/cores/events/bench). */
 private const val REQUIRED_VERSION = "1.4"
 
 /**
- * Rozpozná výstup `cpuctl version`. Prázdný/nečitelný vstup (žádný root,
- * modul nenainstalovaný) → [CpuctlState.NoRoot]. Jinak porovná číselně
- * s [REQUIRED_VERSION] ("major.minor…", chybějící složky = 0).
+ * Rozpozná výstup `cpuctl version`. Prázdný vstup (žádný root, modul
+ * nenainstalovaný) → [CpuctlState.NoRoot]; neprázdný, ale nečitelný
+ * (zkrácená odpověď, hláška ze stderr) → [CpuctlState.Unreadable].
+ * Jinak porovná číselně s [REQUIRED_VERSION] ("major.minor…", chybějící
+ * složky = 0).
  */
 fun parseVersion(s: String): CpuctlState {
     val version = s.trim()
     if (version.isEmpty()) return CpuctlState.NoRoot
 
     val parts = version.split(".").map { it.toIntOrNull() }
-    if (parts.any { it == null }) return CpuctlState.NoRoot
+    if (parts.isEmpty() || parts.any { it == null }) {
+        return CpuctlState.Unreadable(version.take(64))
+    }
 
     val required = REQUIRED_VERSION.split(".").map { it.toInt() }
     val got = parts.map { it!! }

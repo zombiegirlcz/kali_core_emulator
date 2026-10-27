@@ -110,6 +110,24 @@ class CpuDataTest {
     }
 
     @Test
+    fun `parseVersion odlisi chybejici root od zkracene odpovedi`() {
+        // Prázdno = `cpuctl` vůbec neodpověděl (není root ani modul).
+        assertEquals(CpuctlState.NoRoot, parseVersion(""))
+        assertEquals(CpuctlState.NoRoot, parseVersion("   "))
+        // Neprázdná, ale nečitelná odpověď: root může být v pořádku a `su`
+        // jen zkrátil výstup, nebo se přimíchala hláška ze stderr.
+        assertEquals(CpuctlState.Unreadable("1."), parseVersion("1."))
+        assertEquals(
+            CpuctlState.Unreadable("cpuctl: permission denied"),
+            parseVersion("cpuctl: permission denied"),
+        )
+        // `raw` se zkracuje, aby šel bezpečně zobrazit v UI.
+        val long = "x".repeat(200)
+        val state = parseVersion(long) as CpuctlState.Unreadable
+        assertEquals(64, state.raw.length)
+    }
+
+    @Test
     fun `prazdny vstup da prazdny seznam, ne vyjimku`() {
         assertEquals(emptyList<CoreRow>(), CpuTsv.cores(""))
         assertEquals(emptyList<Sample>(), CpuTsv.history(""))
