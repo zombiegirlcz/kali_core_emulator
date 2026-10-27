@@ -1,6 +1,7 @@
 package com.linux_core.ui.cpu
 
 import com.linux_core.core.cpu.Cluster
+import com.linux_core.core.cpu.CoreRow
 import com.linux_core.core.cpu.CpuctlState
 import com.linux_core.core.cpu.Sample
 import org.junit.Assert.assertEquals
@@ -110,5 +111,47 @@ class MonitorStateTest {
         val chips = MonitorLogic.pinChips(listOf(only))
         assertEquals(1, chips.size)
         assertEquals("f", chips.first().maskHex)
+    }
+
+    // ── ořez bufferu na nejdelší okno (Important nález revize: periodické
+    //    vzorkování bez ořezu by rostlo bez stropu) ──
+
+    @Test
+    fun `trimSamples oreze vzorky mimo nejdelsi okno`() {
+        val samples = listOf(sample(0L, 100), sample(50L, 200), sample(95L, 300), sample(100L, 400))
+        val trimmed = MonitorLogic.trimSamples(samples, nowTs = 100L, maxWindowSeconds = 10L)
+        assertEquals(listOf(sample(95L, 300), sample(100L, 400)), trimmed)
+    }
+
+    @Test
+    fun `trimSamples prazdny seznam zustane prazdny`() {
+        assertEquals(emptyList<Sample>(), MonitorLogic.trimSamples(emptyList(), nowTs = 100L, maxWindowSeconds = 10L))
+    }
+
+    // ── zátěž jader: měřená z `cpuctl cores`, odhad jen jako fallback
+    //    (Important nález revize: frekvenční odhad se nesmí tvářit jako měření) ──
+
+    private fun coreRow(core: Int) = CoreRow(core = core, maxKhz = 1_800_000L, curKhz = 900_000L, busyPromile = 0, cluster = 0)
+
+    @Test
+    fun `coreLoad pouzije merena data z cpuctl cores kdyz jsou k dispozici`() {
+        val coresOutput = "0\t1800000\t1800000\t500\t0\n1\t1800000\t900000\t100\t0\n"
+        val fallback = listOf(coreRow(0), coreRow(1))
+
+        val load = MonitorLogic.coreLoad(coresOutput, fallback)
+
+        assertFalse(load.estimated)
+        assertEquals(2, load.rows.size)
+        assertEquals(500, load.rows[0].busyPromile)
+    }
+
+    @Test
+    fun `coreLoad spadne na odhad kdyz cpuctl cores nevrati nic`() {
+        val fallback = listOf(coreRow(0), coreRow(1))
+
+        val load = MonitorLogic.coreLoad("", fallback)
+
+        assertTrue(load.estimated)
+        assertEquals(fallback, load.rows)
     }
 }

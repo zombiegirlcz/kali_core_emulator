@@ -42,10 +42,14 @@ import com.linux_core.ui.cpu.MonitorLogic
 import com.linux_core.ui.cpu.MonitorTab
 import com.linux_core.ui.cpu.MonitorWindow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
+
+/** Jak často se při otevřeném tabu Monitor dovzorkovává zátěž appek a jader. */
+private const val SAMPLE_INTERVAL_MS = 5_000L
 
 /**
  * Přehled CPU zátěže ostatních aplikací + přišpendlení na jádra.
@@ -69,11 +73,21 @@ import java.util.concurrent.TimeUnit
  * `strtoul("0-3", 16)` → odmítnuto s "Usage:" a `rc=0`, takže UI hlásilo
  * úspěch a nestalo se nic. Pin proto jde vždy jako `maskHex`.
  *
- * `cpuctl history`/`cores`/`events` (Task 2) ještě neexistují a nainstalovaná
- * binárka na zařízení je 1.3 → [CpuctlState.TooOld]/[CpuctlState.NoRoot]/
- * [CpuctlState.Unreadable] se musí ukázat uživateli, ne zamlčet jako prázdný
- * graf. Dokud historie nepřijde z `cpuctl`, Monitor si vzorky drží sám v
- * paměti po dobu, co je obrazovka otevřená ([AppSampleBuffer]).
+ * `cpuctl app-pin` **vždy** zapisuje trvalé pravidlo `app.<pkg>`
+ * (`cmd_app_pin` v `cpuctl.c` to dělá bez ohledu na argumenty) — žádný
+ * přepínač "jednorázově vs. trvale" v UI, protože by nic neměnil a lhal by.
+ * Jednorázový pin (`cpuctl pin <mask> <pid>`) existuje, ale `cpuctl apps`
+ * nevrací PID, takže z UI nejde použít bez změny C kódu.
+ *
+ * `cpuctl history`/`events` (Task 2) ještě neexistují → Monitor si vzorky
+ * drží sám v paměti po dobu, co je obrazovka otevřená ([AppSampleBuffer]),
+ * dovzorkovává periodicky každých [SAMPLE_INTERVAL_MS] ms, dokud je tab
+ * MONITOR aktivní. `cpuctl cores` (Task 1, v1.4) už existuje a používá se
+ * pro pás jader; frekvenční odhad ze sysfs je jen fallback a UI ho značí
+ * jako odhad, nikdy jako měření (viz `MonitorLogic.coreLoad`).
+ * Nainstalovaná binárka může být ještě 1.3 → [CpuctlState.TooOld]/
+ * [CpuctlState.NoRoot]/[CpuctlState.Unreadable] se musí ukázat uživateli,
+ * ne zamlčet jako prázdný graf.
  */
 class CpuAppsActivity : ComponentActivity() {
 
@@ -139,11 +153,14 @@ class CpuAppsActivity : ComponentActivity() {
     }
 
     /**
-     * Čtení aktuální zátěže jader pro pás nahoře v Monitoru. `busyPromile`
-     * zatím nemáme (to dodá `cpuctl cores` z Tasku 2) — frekvenční poměr
-     * `cur/max` je dost pro vizuální pás, dokud reálné zatížení nepřijde.
+     * Frekvenční **odhad** zátěže jader ze sysfs (`cur/max` poměr) — jen
+     * fallback pro [MonitorLogic.coreLoad], když `su -c cpuctl cores`
+     * selže (timeout, su nedostupné). Nejde o měřené zatížení: zamčené
+     * jádro pod plnou zátěží vypadá stejně jako nečinné, boostnuté
+     * nečinné vypadá jako zatížené. Caller musí tenhle rozdíl promítnout
+     * do UI ([CoreLoad.estimated]), ne předstírat měření.
      */
-    private fun readCoreRows(clusters: List<Cluster>): List<CoreRow> {
+    private fun readCoreRowsEstimate(clusters: List<Cluster>): List<CoreRow> {
         val clusterOfCore = clusters.flatMap { c -> c.cores.map { it to c.id } }.toMap()
         val rows = mutableListOf<CoreRow>()
         for (core in 0 until 64) {
@@ -184,55 +201,65 @@ class CpuAppsActivity : ComponentActivity() {
         var systemPkgs by remember { mutableStateOf<Set<String>>(emptySet()) }
         var window by remember { mutableStateOf(MonitorWindow.FIVE_MIN) }
         var detailPkg by remember { mutableStateOf<String?>(null) }
-        // Trvalé pravidlo vs. jednorázový pin — stav přepínače v detailu appky,
-        // per-appka, protože uživatel může přepínat mezi appkami v jedné session.
-        var persistentByPkg by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
         // Vzorky v paměti obrazovky, dokud `cpuctl history` neexistuje (Task 2).
+        // Ořezáno na nejdelší nabízené okno (MonitorLogic.trimSamples), aby
+        // periodické dovzorkování nerostlo bez stropu.
         val sampleHistory = remember { AppSampleBuffer() }
         val clusters = remember { readClusters() }
         var coreRows by remember { mutableStateOf<List<CoreRow>>(emptyList()) }
+        var coreRowsEstimated by remember { mutableStateOf(false) }
 
-        fun refresh() {
-            loading = true
-            lifecycleScope.launch {
-                val state = withContext(Dispatchers.IO) { cpuctlState() }
-                cpuState = state
-                if (state !is CpuctlState.Ok) {
-                    rows = emptyList()
-                    systemPkgs = emptySet()
-                    loading = false
-                    return@launch
-                }
-                val (code, out) = withContext(Dispatchers.IO) { cpuctl("apps 0") }
-                if (code != 0) {
-                    cpuState = CpuctlState.Unreadable(out.take(64))
-                    rows = emptyList()
-                    systemPkgs = emptySet()
-                } else {
-                    val parsed = parseApps(out)
-                    systemPkgs = withContext(Dispatchers.IO) {
-                        parsed.map { it.pkg }.filter { isSystemPkg(it) }.toSet()
-                    }
-                    rows = parsed
-                    val now = System.currentTimeMillis() / 1000
-                    for (row in parsed) {
-                        sampleHistory.record(row.pkg, Sample(ts = now, promile = (row.cpu * 10).toInt(), core = 0, mask = row.mask))
-                    }
-                    coreRows = withContext(Dispatchers.IO) { readCoreRows(clusters) }
-                }
-                loading = false
+        // Jedno kolo zjištění stavu + appek + jader. `showLoading=false` je
+        // "tiché" kolo periodického tikeru — nesmí blikat spinnerem, jen
+        // doplní vzorky na pozadí (Important nález revize Tasku 9).
+        suspend fun fetchOnce(showLoading: Boolean) {
+            if (showLoading) loading = true
+            val state = withContext(Dispatchers.IO) { cpuctlState() }
+            cpuState = state
+            if (state !is CpuctlState.Ok) {
+                rows = emptyList()
+                systemPkgs = emptySet()
+                if (showLoading) loading = false
+                return
             }
+            val (code, out) = withContext(Dispatchers.IO) { cpuctl("apps 0") }
+            if (code != 0) {
+                cpuState = CpuctlState.Unreadable(out.take(64))
+                rows = emptyList()
+                systemPkgs = emptySet()
+            } else {
+                val parsed = parseApps(out)
+                systemPkgs = withContext(Dispatchers.IO) {
+                    parsed.map { it.pkg }.filter { isSystemPkg(it) }.toSet()
+                }
+                rows = parsed
+                val now = System.currentTimeMillis() / 1000
+                for (row in parsed) {
+                    sampleHistory.record(
+                        row.pkg,
+                        Sample(ts = now, promile = (row.cpu * 10).toInt(), core = 0, mask = row.mask),
+                        nowTs = now,
+                    )
+                }
+                // `cpuctl cores` (v1.4, garantováno ve stavu Ok) — fallback na
+                // frekvenční odhad jen když samotné volání selže.
+                val (coresCode, coresOut) = withContext(Dispatchers.IO) { cpuctl("cores") }
+                val fallback = withContext(Dispatchers.IO) { readCoreRowsEstimate(clusters) }
+                val load = MonitorLogic.coreLoad(if (coresCode == 0) coresOut else "", fallback)
+                coreRows = load.rows
+                coreRowsEstimated = load.estimated
+            }
+            if (showLoading) loading = false
         }
 
-        fun pin(pkg: String, maskHex: String?, persistent: Boolean) {
+        fun refresh() {
+            lifecycleScope.launch { fetchOnce(showLoading = true) }
+        }
+
+        fun pin(pkg: String, maskHex: String?) {
             lifecycleScope.launch {
                 val arg = if (maskHex.isNullOrEmpty()) "off" else maskHex
-                // Trvalé pravidlo zapisuje app.<pkg> (pravidlo přežívá restart appky);
-                // jednorázový pin platí jen pro aktuálně běžící proces — oba případy
-                // jdou přes stejný `cpuctl app-pin`, cpuctld si perzistenci řeší sám
-                // podle existence souboru `app.<pkg>` (viz AGENTS.md §11).
-                val cmd = if (persistent) "app-pin $pkg $arg" else "app-pin $pkg $arg --once"
-                val (code, out) = withContext(Dispatchers.IO) { cpuctl(cmd) }
+                val (code, out) = withContext(Dispatchers.IO) { cpuctl("app-pin $pkg $arg") }
                 // cpuctl vrací rc=0 i na "Usage:" (odmítnutý argument) — bez téhle
                 // kontroly UI hlásilo úspěch, i když se nic nestalo.
                 val failed = code != 0 || out.contains("Usage:")
@@ -241,11 +268,24 @@ class CpuAppsActivity : ComponentActivity() {
                     if (failed) "Selhalo: ${out.trim()}" else out.trim(),
                     Toast.LENGTH_SHORT,
                 ).show()
-                refresh()
+                fetchOnce(showLoading = true)
             }
         }
 
-        LaunchedEffect(Unit) { refresh() }
+        LaunchedEffect(Unit) { fetchOnce(showLoading = true) }
+
+        // Periodický tiker: dovzorkovává appky/jádra, dokud je tab MONITOR
+        // otevřený. Klíčovaný na `tab` → při odchodu z tabu (nebo zavření
+        // obrazovky) se tahle coroutine automaticky zruší, nic neuteče na
+        // pozadí. Žádné duplicitní první kolo — to už udělal LaunchedEffect
+        // výše — proto se tu nejdřív čeká.
+        LaunchedEffect(tab) {
+            if (tab != CpuTab.MONITOR) return@LaunchedEffect
+            while (true) {
+                delay(SAMPLE_INTERVAL_MS)
+                fetchOnce(showLoading = false)
+            }
+        }
 
         Box(Modifier.fillMaxSize().background(CpuColors.surface).padding(12.dp)) {
             Column(Modifier.fillMaxSize()) {
@@ -270,9 +310,7 @@ class CpuAppsActivity : ComponentActivity() {
                             events = emptyList(), // cpuctl events je Task 2 — zatím žádná historie pinování.
                             clusters = clusters,
                             currentMask = appRow?.mask ?: "",
-                            persistent = persistentByPkg[detail] ?: true,
-                            onPersistentChange = { persistentByPkg = persistentByPkg + (detail to it) },
-                            onPin = { maskHex, persistent -> pin(detail, maskHex, persistent) },
+                            onPin = { maskHex -> pin(detail, maskHex) },
                             modifier = Modifier.fillMaxSize(),
                         )
                         Text(
@@ -285,6 +323,7 @@ class CpuAppsActivity : ComponentActivity() {
                     tab == CpuTab.MONITOR -> MonitorTab(
                         screenState = MonitorLogic.screenStateFor(cpuState),
                         coreRows = coreRows,
+                        coreRowsEstimated = coreRowsEstimated,
                         clusters = clusters,
                         apps = rows
                             .filter { it.pkg !in systemPkgs }
@@ -329,14 +368,20 @@ class CpuAppsActivity : ComponentActivity() {
 
 /**
  * Vzorky appek drženy v paměti obrazovky, dokud `cpuctl history` (Task 2)
- * neexistuje. Záměrně bez persistence a bez limitu na velikost okna —
- * žije jen po dobu, co je `CpuAppsActivity` otevřená (`remember { }`).
+ * neexistuje. Žije jen po dobu, co je `CpuAppsActivity` otevřená
+ * (`remember { }`), ale s periodickým dovzorkováním ([SAMPLE_INTERVAL_MS])
+ * by bez ořezu rostla bez stropu — [record] proto po každém zápisu ořeže
+ * na nejdelší nabízené okno přes [MonitorLogic.trimSamples].
  */
 private class AppSampleBuffer {
     private val byPkg = mutableMapOf<String, MutableList<Sample>>()
 
-    fun record(pkg: String, sample: Sample) {
-        byPkg.getOrPut(pkg) { mutableListOf() }.add(sample)
+    /** [nowTs] dodává caller (sekundy), aby ořez šel přes testovatelné [MonitorLogic.trimSamples]. */
+    fun record(pkg: String, sample: Sample, nowTs: Long) {
+        val list = byPkg.getOrPut(pkg) { mutableListOf() }
+        list.add(sample)
+        val trimmed = MonitorLogic.trimSamples(list, nowTs, MonitorWindow.TWELVE_HOURS.seconds)
+        byPkg[pkg] = trimmed.toMutableList()
     }
 
     /**
@@ -347,7 +392,7 @@ private class AppSampleBuffer {
      */
     fun windowed(pkg: String, window: MonitorWindow): List<Sample> {
         val samples = byPkg[pkg] ?: return emptyList()
-        val cutoff = (System.currentTimeMillis() / 1000) - window.seconds
-        return samples.filter { it.ts >= cutoff }
+        val nowTs = System.currentTimeMillis() / 1000
+        return MonitorLogic.trimSamples(samples, nowTs, window.seconds)
     }
 }

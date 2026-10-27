@@ -15,8 +15,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -37,9 +35,10 @@ import com.linux_core.core.cpu.Sample
  * Tab Monitor (Task 9, design `docs/superpowers/specs/2026-10-22-cpu-apps-tracing-design.md`).
  *
  * Historie `cpuctl history` zatím neexistuje (Task 2 ještě neproběhl) — obrazovka
- * si sama drží vzorky v paměti, dokud je otevřená (`sampleHistory` dodává
- * [CpuAppsScreenState]). Jakmile Task 2 dodá `cpuctl history`, zdroj vzorků se
- * vymění, stavová logika ([MonitorLogic]) se nemění.
+ * (`CpuAppsActivity`) si sama drží vzorky v paměti a periodicky je dovzorkovává,
+ * dokud je otevřená a tab MONITOR aktivní. Jakmile Task 2 dodá `cpuctl history`,
+ * zdroj vzorků se vymění, stavová logika ([MonitorLogic]) se nemění — dostává
+ * hotový `List<Sample>`, ne zdroj dat samotný.
  */
 
 /** Okno zobrazené historie. Zatím jen informativní popisek — data za delší
@@ -124,7 +123,37 @@ internal object MonitorLogic {
         val allCores = clusters.flatMap { it.cores }
         return perCluster + PinChip("vše", CpuTsv.maskOf(allCores))
     }
+
+    /**
+     * Ořeže vzorky appky na nejdelší nabízené okno ([MonitorWindow.TWELVE_HOURS]),
+     * aby [AppSampleBuffer] (v `CpuAppsActivity`) nerostl bez stropu, jakmile
+     * přibyde periodické vzorkování. `nowTs` dostává caller (testovatelnost,
+     * žádné `System.currentTimeMillis()` v čisté logice).
+     */
+    fun trimSamples(samples: List<Sample>, nowTs: Long, maxWindowSeconds: Long): List<Sample> {
+        val cutoff = nowTs - maxWindowSeconds
+        return samples.filter { it.ts >= cutoff }
+    }
+
+    /**
+     * Zátěž jader pro pás nahoře. `cpuctl cores` je od Tasku 1 (v1.4)
+     * garantovaně dostupný ve stavu [MonitorScreenState.Ready] (`parseVersion`
+     * to vyžaduje), ale samotné volání `su -c cpuctl cores` může selhat
+     * (timeout, su nedostupné) — tehdy spadne na frekvenční odhad
+     * (`estimatedFallback`, dodá caller z `cpuinfo_max_freq`/`scaling_cur_freq`).
+     * [CoreLoad.estimated] říká UI, že nejde o měřené zatížení — frekvenční
+     * poměr zavádí v obou směrech (zamčené jádro pod zátěží vs. boostnuté
+     * nečinné), takže se to nesmí tvářit jako měření.
+     */
+    fun coreLoad(coresOutput: String, estimatedFallback: List<CoreRow>): CoreLoad {
+        val measured = CpuTsv.cores(coresOutput)
+        return if (measured.isNotEmpty()) CoreLoad(measured, estimated = false)
+        else CoreLoad(estimatedFallback, estimated = true)
+    }
 }
+
+/** Výsledek [MonitorLogic.coreLoad] — řádky k vykreslení + zda jde o odhad. */
+data class CoreLoad(val rows: List<CoreRow>, val estimated: Boolean)
 
 /** Jedna appka na obrazovce Monitor — agregát, který aktivita udržuje v paměti. */
 data class MonitorAppRow(
@@ -146,6 +175,7 @@ data class MonitorAppRow(
 fun MonitorTab(
     screenState: MonitorScreenState,
     coreRows: List<CoreRow>,
+    coreRowsEstimated: Boolean,
     clusters: List<Cluster>,
     apps: List<MonitorAppRow>,
     window: MonitorWindow,
@@ -161,6 +191,15 @@ fun MonitorTab(
             MonitorScreenState.Ready -> {
                 if (coreRows.isNotEmpty()) {
                     CoreBars(coreRows, clusters, modifier = Modifier.fillMaxWidth().height(72.dp))
+                    if (coreRowsEstimated) {
+                        // Frekvenční odhad zavádí v obou směrech (viz MonitorLogic.coreLoad) —
+                        // nikdy se nesmí tvářit jako měřené zatížení.
+                        Text(
+                            "odhad podle frekvence — cpuctl cores nedostupný",
+                            color = CpuColors.inkDim,
+                            fontSize = 10.sp,
+                        )
+                    }
                 }
                 WindowSwitch(window, onWindowChange)
                 if (apps.isEmpty()) {
@@ -272,12 +311,14 @@ private fun MonitorAppCard(app: MonitorAppRow, thresholdPromile: Int, onClick: (
 }
 
 /**
- * Detail appky: graf za zvolené okno s `events`, pinovací chipy z clusterů,
- * přepínač "držet i po restartu appky" a textová historie.
+ * Detail appky: graf za zvolené okno s `events`, pinovací chipy z clusterů
+ * a textová historie.
  *
- * [persistent] = `true` znamená zapsat trvalé pravidlo `app.<pkg>`
- * (přežije restart appky), `false` jednorázový pin jen pro běžící proces —
- * rozdíl, který `onPin` dostává jako druhý parametr.
+ * Žádný přepínač "jednorázově vs. trvale" — `cpuctl app-pin` (`cpuctl.c`,
+ * `cmd_app_pin`) zapisuje pravidlo `app.<pkg>` **vždy**, bez ohledu na
+ * argumenty; jednorázový pin by šel jen přes `cpuctl pin <mask> <pid>`, ale
+ * `cpuctl apps` ve výstupu PID nemá, takže to bez změny C kódu nejde
+ * implementovat. Přepínač, který by nic neovlivňoval, by UI jen lhalo.
  */
 @Composable
 fun AppDetail(
@@ -286,9 +327,7 @@ fun AppDetail(
     events: List<PinEvent>,
     clusters: List<Cluster>,
     currentMask: String,
-    persistent: Boolean,
-    onPersistentChange: (Boolean) -> Unit,
-    onPin: (maskHex: String?, persistent: Boolean) -> Unit,
+    onPin: (maskHex: String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val chips = MonitorLogic.pinChips(clusters)
@@ -307,7 +346,12 @@ fun AppDetail(
             TimelineChart(samples, events, modifier = Modifier.fillMaxWidth().height(160.dp).padding(top = 8.dp))
         }
 
-        Text("Přišpendlit na:", color = CpuColors.inkDim, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
+        Text(
+            "Přišpendlit na (zapisuje trvalé pravidlo app.$pkg, přežije restart appky):",
+            color = CpuColors.inkDim,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 12.dp),
+        )
         Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             chips.forEach { chip ->
                 val active = chip.maskHex == currentMask
@@ -319,23 +363,9 @@ fun AppDetail(
                     modifier = Modifier
                         .background(if (active) CpuColors.surface else Color.Transparent, RoundedCornerShape(6.dp))
                         .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .clickable { onPin(chip.maskHex, persistent) },
+                        .clickable { onPin(chip.maskHex) },
                 )
             }
-        }
-
-        Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Switch(
-                checked = persistent,
-                onCheckedChange = onPersistentChange,
-                colors = SwitchDefaults.colors(checkedThumbColor = CpuColors.ok),
-            )
-            Text(
-                "držet i po restartu appky (zapisuje app.$pkg)",
-                color = CpuColors.inkDim,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(start = 6.dp),
-            )
         }
 
         if (events.isNotEmpty()) {
