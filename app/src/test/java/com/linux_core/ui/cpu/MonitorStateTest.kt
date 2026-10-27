@@ -97,7 +97,7 @@ class MonitorStateTest {
 
         assertEquals(3, chips.size) // little + big + "vše"
         val littleChip = chips.first { it.label.contains("little") }
-        assertEquals("1f", littleChip.maskHex)
+        assertEquals("3f", littleChip.maskHex)
         val bigChip = chips.first { it.label.contains("big") }
         assertEquals("c0", bigChip.maskHex)
         val allChip = chips.first { it.maskHex == "ff" }
