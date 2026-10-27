@@ -162,23 +162,53 @@ fun TimelineChart(samples: List<Sample>, events: List<PinEvent>, modifier: Modif
 }
 
 /** Najde cluster, do kterého patří dané jádro; `null`, pokud žádný. */
-private fun clusterOf(core: Int, clusters: List<Cluster>): Cluster? =
+internal fun clusterOf(core: Int, clusters: List<Cluster>): Cluster? =
     clusters.firstOrNull { core in it.cores }
 
-/** Barva clusteru podle pozice (nejnižší frekvence = little, nejvyšší = big, mezi = OK/mid). */
-private fun colorForCluster(cluster: Cluster?, clusters: List<Cluster>): Color {
-    if (cluster == null || clusters.isEmpty()) return CpuColors.inkDim
+/**
+ * Zařazení clusteru podle pozice ve frekvenčním pořadí. [tag] je krátká
+ * textová značka vedle barvy — Global Constraints zakazují rozlišovat
+ * **jen odstínem**, takže barva i značka musí vycházet ze stejného zdroje,
+ * aby se nemohly rozejít.
+ *
+ * [SINGLE] má značku prázdnou záměrně: u homogenního SoC není co rozlišovat
+ * a značka by jen přidala šum.
+ */
+internal enum class ClusterTier(val tag: String) {
+    LITTLE("L"),
+    MID("M"),
+    BIG("B"),
+    SINGLE(""),
+    UNKNOWN("?"),
+}
+
+/** Zařadí cluster: nejnižší frekvence = little, nejvyšší = big, mezi = mid. */
+internal fun clusterTier(cluster: Cluster?, clusters: List<Cluster>): ClusterTier {
+    if (cluster == null || clusters.isEmpty()) return ClusterTier.UNKNOWN
     val sorted = clusters.sortedBy { it.maxKhz }
     val index = sorted.indexOfFirst { it.id == cluster.id }
     return when {
-        sorted.size <= 1 -> CpuColors.ok
-        index == 0 -> CpuColors.little
-        index == sorted.size - 1 -> CpuColors.big
-        else -> CpuColors.ok
+        index < 0 -> ClusterTier.UNKNOWN
+        sorted.size <= 1 -> ClusterTier.SINGLE
+        index == 0 -> ClusterTier.LITTLE
+        index == sorted.size - 1 -> ClusterTier.BIG
+        else -> ClusterTier.MID
     }
 }
 
-/** Bar per jádro, barva podle clusteru (little/big/mid), popisek čísla jádra. */
+/** Barva pro zařazení clusteru. Jde ruku v ruce s [ClusterTier.tag]. */
+internal fun colorForTier(tier: ClusterTier): Color = when (tier) {
+    ClusterTier.LITTLE -> CpuColors.little
+    ClusterTier.BIG -> CpuColors.big
+    ClusterTier.MID, ClusterTier.SINGLE -> CpuColors.ok
+    ClusterTier.UNKNOWN -> CpuColors.inkDim
+}
+
+/**
+ * Bar per jádro: výška = zatížení, barva = cluster, pod barem číslo jádra a
+ * značka clusteru (`L`/`M`/`B`). Značka tu není navíc — bez ní by cluster
+ * nesl výhradně odstín, což Global Constraints zakazují.
+ */
 @Composable
 fun CoreBars(rows: List<CoreRow>, clusters: List<Cluster>, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
@@ -196,7 +226,8 @@ fun CoreBars(rows: List<CoreRow>, clusters: List<Cluster>, modifier: Modifier = 
             val x = index * (barWidth + gap)
             val busyFraction = (row.busyPromile.toFloat() / 1000f).coerceIn(0f, 1f)
             val barHeight = busyFraction * barAreaHeight
-            val color = colorForCluster(clusterOf(row.core, clusters), clusters)
+            val tier = clusterTier(clusterOf(row.core, clusters), clusters)
+            val color = colorForTier(tier)
 
             drawRect(
                 color = color,
@@ -209,7 +240,9 @@ fun CoreBars(rows: List<CoreRow>, clusters: List<Cluster>, modifier: Modifier = 
                 size = androidx.compose.ui.geometry.Size(barWidth, barAreaHeight),
             )
 
-            val label = measurer.measure("${row.core}", labelStyle)
+            // Číslo jádra + značka clusteru ("3 B"), aby zařazení nenesla jen barva.
+            val text = if (tier.tag.isEmpty()) "${row.core}" else "${row.core} ${tier.tag}"
+            val label = measurer.measure(text, labelStyle)
             drawText(
                 label,
                 topLeft = Offset(
