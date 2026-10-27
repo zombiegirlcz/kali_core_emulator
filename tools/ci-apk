@@ -1,0 +1,74 @@
+#!/bin/sh
+# ci-apk — stáhne APK postavené GitHub Actions pro daný commit (default HEAD)
+# do ~/Download/kali_core.apk. Náhrada za `zsh mbuild build`, když je Modal
+# nedostupný (workspace paused).
+#
+# Použití:
+#   sh tools/ci-apk            # APK pro HEAD
+#   sh tools/ci-apk <sha>      # pro konkrétní commit
+#   sh tools/ci-apk latest     # z posledního úspěšného runu na branchi
+#   CI_APK_OUT=/jina/cesta.apk sh tools/ci-apk
+#
+# Artifact `app-debug` z `.github/workflows/build.yml`. GitHub artifacty
+# expirují (default 90 dní) — u starého commitu to skončí hláškou, ne APK.
+#
+# Exit kódy: 0 = stáhnuto, 2 = provozní chyba (run nenalezen/neúspěšný,
+# artifact chybí nebo expiroval, rozbalení selhalo).
+
+set -eu
+
+REPO="${CI_REPO:-zombiegirlcz/kali_core_emulator}"
+OUT="${CI_APK_OUT:-$HOME/Download/kali_core.apk}"
+
+die() { echo "[ci-apk] $*" >&2; exit 2; }
+
+command -v gh >/dev/null 2>&1 || die "gh CLI není v PATH"
+gh api user --jq .login >/dev/null 2>&1 || die "gh není přihlášený (GH_TOKEN?)"
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+TARGET="${1:-$(git rev-parse HEAD)}"
+
+if [ "$TARGET" = "latest" ]; then
+    echo "[ci-apk] hledám poslední úspěšný run na $BRANCH"
+    RUN_ID=$(gh api "repos/$REPO/actions/runs?branch=$BRANCH&status=success&per_page=10" \
+        --jq '[.workflow_runs[] | select(.name=="Build APK")][0].id' 2>/dev/null || true)
+    SHA=$(gh api "repos/$REPO/actions/runs?branch=$BRANCH&status=success&per_page=10" \
+        --jq '[.workflow_runs[] | select(.name=="Build APK")][0].head_sha' 2>/dev/null || true)
+else
+    SHA="$TARGET"
+    RUN_ID=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=5" \
+        --jq '[.workflow_runs[] | select(.name=="Build APK")][0].id' 2>/dev/null || true)
+fi
+
+[ -n "${RUN_ID:-}" ] && [ "$RUN_ID" != "null" ] || die "run pro ${TARGET} nenalezen"
+
+CONCLUSION=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.conclusion' 2>/dev/null || true)
+echo "[ci-apk] run $RUN_ID (${SHA:-?}) → $CONCLUSION"
+if [ "$CONCLUSION" != "success" ]; then
+    die "run není úspěšný ($CONCLUSION) — APK z něj nevznikla; https://github.com/$REPO/actions/runs/$RUN_ID"
+fi
+
+ART=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+    --jq '.artifacts[] | select(.name=="app-debug") | "\(.id) \(.expired)"' 2>/dev/null |
+    head -1 || true)
+[ -n "$ART" ] || die "artifact 'app-debug' v runu $RUN_ID není"
+
+ART_ID=$(echo "$ART" | cut -d' ' -f1)
+ART_EXPIRED=$(echo "$ART" | cut -d' ' -f2)
+[ "$ART_EXPIRED" = "false" ] || die "artifact expiroval — postav commit znovu (push nebo rerun)"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+echo "[ci-apk] stahuji artifact $ART_ID"
+gh api "repos/$REPO/actions/artifacts/$ART_ID/zip" > "$TMP/app-debug.zip" ||
+    die "stažení artifactu selhalo"
+
+unzip -oq "$TMP/app-debug.zip" -d "$TMP/apk" || die "rozbalení artifactu selhalo"
+SRC=$(find "$TMP/apk" -name '*.apk' | head -1)
+[ -n "$SRC" ] || die "v artifactu není .apk"
+
+mkdir -p "$(dirname "$OUT")"
+cp "$SRC" "$OUT"
+SIZE=$(wc -c < "$OUT")
+echo "[ci-apk] hotovo: $OUT ($((SIZE / 1024 / 1024)) MB, commit ${SHA:-?})"
