@@ -1,0 +1,109 @@
+#!/bin/sh
+# ci-test — spustí/dohledá GitHub Actions run pro aktuální HEAD a vrátí
+# výsledek JVM unit testů. Náhrada za `zsh mbuild test`, když je Modal
+# nedostupný (workspace paused).
+#
+# Použití:
+#   sh tools/ci-test            # čeká na run pro HEAD, vypíše výsledek
+#   sh tools/ci-test <sha>      # konkrétní commit
+#   CI_TIMEOUT=1800 sh tools/ci-test
+#
+# Workflow `.github/workflows/build.yml` běží na každý push do dev/master a
+# dělá `./gradlew testDebugUnitTest` + `assembleDebug`. Filtr na jeden test
+# tudy NEJDE — Actions pouští celou sadu; `ci-test` proto vypíše všechny
+# padající testy a ty si v nich najdeš své.
+#
+# Exit kódy: 0 = testy prošly, 1 = testy spadly, 2 = provozní chyba
+# (nepushnuto, run nenalezen, timeout).
+
+set -eu
+
+REPO="${CI_REPO:-zombiegirlcz/kali_core_emulator}"
+TIMEOUT="${CI_TIMEOUT:-1800}"
+POLL="${CI_POLL:-20}"
+
+die() { echo "[ci-test] $*" >&2; exit 2; }
+
+command -v gh >/dev/null 2>&1 || die "gh CLI není v PATH"
+gh api user --jq .login >/dev/null 2>&1 || die "gh není přihlášený (GH_TOKEN?)"
+
+SHA="${1:-$(git rev-parse HEAD)}"
+SHORT=$(echo "$SHA" | cut -c1-7)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# HEAD musí být na GitHubu — Actions staví jen to, co je pushnuté.
+if [ -z "${1:-}" ]; then
+    git fetch -q origin "$BRANCH" 2>/dev/null || true
+    REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
+    if [ "$REMOTE" != "$SHA" ]; then
+        die "HEAD ($SHORT) není na origin/$BRANCH — nejdřív 'git push origin $BRANCH'"
+    fi
+fi
+
+echo "[ci-test] commit $SHORT na $BRANCH, repo $REPO"
+
+run_field() {
+    # $1 = jq výraz nad prvním runem pro tento SHA
+    gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=5" \
+        --jq ".workflow_runs[] | select(.name==\"Build APK\") | $1" 2>/dev/null |
+        head -1
+}
+
+# ── čekání na run ────────────────────────────────────────────────────────────
+WAITED=0
+RUN_ID=""
+while [ "$WAITED" -lt "$TIMEOUT" ]; do
+    RUN_ID=$(run_field '.id')
+    STATUS=$(run_field '.status')
+    if [ -n "$RUN_ID" ] && [ "$STATUS" = "completed" ]; then
+        break
+    fi
+    if [ -z "$RUN_ID" ]; then
+        echo "[ci-test] run pro $SHORT ještě nevznikl (${WAITED}s)"
+    else
+        echo "[ci-test] run $RUN_ID: $STATUS (${WAITED}s)"
+    fi
+    sleep "$POLL"
+    WAITED=$((WAITED + POLL))
+done
+
+[ -n "$RUN_ID" ] || die "run pro $SHORT nevznikl do ${TIMEOUT}s"
+[ "$(run_field '.status')" = "completed" ] || die "run $RUN_ID nedokončen do ${TIMEOUT}s"
+
+CONCLUSION=$(run_field '.conclusion')
+echo "[ci-test] run $RUN_ID dokončen: $CONCLUSION"
+echo "[ci-test] https://github.com/$REPO/actions/runs/$RUN_ID"
+
+# ── který krok selhal ────────────────────────────────────────────────────────
+FAILED_STEPS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+    --jq '.jobs[].steps[] | select(.conclusion=="failure") | .name' 2>/dev/null || true)
+
+if [ "$CONCLUSION" = "success" ]; then
+    echo "[ci-test] VŠECHNY TESTY PROŠLY (a APK se postavilo)"
+    exit 0
+fi
+
+if [ -n "$FAILED_STEPS" ]; then
+    echo "[ci-test] selhaly kroky:"
+    echo "$FAILED_STEPS" | sed 's/^/  - /'
+fi
+
+# ── padající testy z logu ────────────────────────────────────────────────────
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+if gh api "repos/$REPO/actions/runs/$RUN_ID/logs" > "$TMP/logs.zip" 2>/dev/null &&
+   unzip -oq "$TMP/logs.zip" -d "$TMP/logs" 2>/dev/null; then
+    echo "[ci-test] padající testy:"
+    grep -rhE 'FAILED$|tests completed' "$TMP/logs" 2>/dev/null |
+        sed -E 's/^[0-9T:.Z-]+ //' | sort -u | sed 's/^/  /' || true
+    echo "[ci-test] chyby kompilace / Gradle:"
+    # Pozor na vzor pro Kotlin chyby: samotné `e: ` se chytá i na nevinné
+    # `cache: gradle` ve výpisu akcí — proto hranice slova před `e:`.
+    grep -rhE '(^|[[:space:]])(e: |error: )|FAILURE: Build failed|What went wrong' \
+        "$TMP/logs" 2>/dev/null |
+        sed -E 's/^[0-9T:.Z-]+ //' | sort -u | head -20 | sed 's/^/  /' || true
+else
+    echo "[ci-test] log se nepodařilo stáhnout — viz URL výše"
+fi
+
+exit 1
