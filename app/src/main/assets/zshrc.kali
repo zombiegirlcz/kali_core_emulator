@@ -143,3 +143,33 @@ if [ -z "${CPU_ALL:-}" ] && [ -f /usr/share/nh/cpu_all.conf ]; then
     CPU_ALL=$(grep -v '^#' /usr/share/nh/cpu_all.conf | grep -v '^$' | paste -sd, -)
     export CPU_ALL
 fi
+
+# ─── SHARE — cíl pro odkazy sdílené z Androidu ─────────────
+# Appka (ShareReceiverActivity) spustí program z $SHARE s URL jako argumentem:
+#   export SHARE="yt-dlp -P ~/dl"   → sdílení odkazu z Chrome spustí
+#   `yt-dlp -P ~/dl <url>` v této session.
+# /proc/<pid>/environ je snapshot z execve(), takže `export SHARE=…` v už
+# běžícím shellu by appka nikdy neviděla — hook proto při každé ZMĚNĚ
+# SHARE/$PWD zapíše stav do $NH_SHARE_DIR/$$ (= files/nh/share appky, vidět
+# přes bind app data dir; files/ipc i files/share mají mód 000, nejdou použít).
+# Když bind chybí (izolovaný mód bez bind_app), hook nedělá nic a appka spadne
+# na sken /proc/*/environ. Vše jsou zsh builtiny (printf, [[ ]]) → žádný
+# fork/exec, tedy ani žádný SELinux audit záznam na prompt (AGENTS.md §13).
+nh_share_sync() {
+    [[ -n "$SHARE" ]] || return 0
+    local state="$SHARE|$PWD"
+    [[ "$state" == "$NH_SHARE_LAST" ]] && return 0
+    if [[ -z "$NH_SHARE_DIR" ]]; then
+        local c
+        for c in /data/data/com.linux_core/files/nh/share \
+                 /data/user/0/com.linux_core/files/nh/share; do
+            [[ -d "$c" ]] && { export NH_SHARE_DIR="$c"; break; }
+        done
+    fi
+    [[ -n "$NH_SHARE_DIR" && -d "$NH_SHARE_DIR" ]] || return 0
+    printf 'pid=%s\ncwd=%s\ncmd=%s\ndistro=%s\nsession=%s\n' \
+        "$$" "$PWD" "$SHARE" "${NH_DISTRO:-}" "${NETHUNTER_SESSION_ID:-}" \
+        > "$NH_SHARE_DIR/$$" 2>/dev/null && NH_SHARE_LAST="$state"
+}
+typeset -ga precmd_functions
+precmd_functions+=(nh_share_sync)

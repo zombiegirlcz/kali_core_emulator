@@ -34,6 +34,14 @@ class ShareReceiverActivity : Activity() {
         try {
             val uris = collectUris(intent)
             if (uris.isEmpty()) {
+                // Sdílený TEXT (typicky odkaz z prohlížeče) nemá EXTRA_STREAM →
+                // jde do programu z guest proměnné SHARE, ne do ~/share.
+                val text = collectText(intent)
+                if (!text.isNullOrBlank()) {
+                    handleSharedText(text)
+                    finish()
+                    return
+                }
                 Toast.makeText(this, "Žádný soubor k uložení", Toast.LENGTH_SHORT).show()
                 finish()
                 return
@@ -75,6 +83,66 @@ class ShareReceiverActivity : Activity() {
         } finally {
             finish()
         }
+    }
+
+    /** Sdílený text z SEND intentu (EXTRA_TEXT, fallback EXTRA_SUBJECT). */
+    private fun collectText(intent: Intent?): String? {
+        if (intent == null) return null
+        if (intent.action != Intent.ACTION_SEND) return null
+        return intent.getStringExtra(Intent.EXTRA_TEXT)
+            ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)
+    }
+
+    /**
+     * Doručí sdílený text (odkaz) programu z guest proměnné `SHARE`.
+     *
+     * `export SHARE="yt-dlp -P ~/dl"` v guestu → sdílení z Chrome spustí
+     * `yt-dlp -P ~/dl <url>`; detaily cest v [ShareDelivery]. Když `SHARE`
+     * nikde nastavená není, odkaz se jen zapíše do `~/share/shared_links.txt`,
+     * aby se neztratil.
+     *
+     * Běží na vlákně: resolver čte /proc a `boot` je fork+exec — na main
+     * threadu by to blokovalo UI (a activity je translucentní, takže by
+     * uživatel viděl zatuhlou obrazovku pod ní).
+     */
+    private fun handleSharedText(text: String) {
+        val app = applicationContext
+        val urls = UrlExtractor.extract(text)
+        val payload = urls.firstOrNull() ?: text.trim()
+        Thread {
+            val msg =
+                try {
+                    val target = ShareTargetResolver(app.filesDir).resolve()
+                    if (target == null) {
+                        saveLinkFallback(app.filesDir, payload)
+                        "SHARE není nastavená → uloženo do ~/share/shared_links.txt"
+                    } else {
+                        val r = ShareDelivery.deliver(app, target, payload)
+                        Log.i(TAG, "shared text → ${target.command} (${r.how}, ok=${r.ok})")
+                        if (r.ok) {
+                            "▶ ${target.command} ${payload.take(60)}"
+                        } else {
+                            "[-] SHARE selhalo: ${r.detail}"
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "handleSharedText failed", e)
+                    "[-] Chyba při sdílení: ${e.message}"
+                }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    /** Záloha, když SHARE nikde není: append do guest `~/share/shared_links.txt`. */
+    private fun saveLinkFallback(filesDir: File, payload: String) {
+        val dir = File(filesDir, "share")
+        if (!dir.exists()) dir.mkdirs()
+        val ts =
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm", java.util.Locale.US)
+                .format(java.util.Date())
+        File(dir, "shared_links.txt").appendText("$ts $payload\n")
     }
 
     /** Sbírá URI z VIEW / SEND / SEND_MULTIPLE intentů. */

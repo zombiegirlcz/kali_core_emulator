@@ -60,6 +60,9 @@ The application starts a loopback API server listening at `127.0.0.1:1337` on th
 | `nh system vibrate [ms]` | system | Vibrate the device (default 500ms) | `nh system vibrate 1000` |
 | `nh system toast <msg>` | system | Display an Android Toast popup | `nh system toast "Done!"` |
 | `nh system clipboard get\|set [text]` | system | Read/write host clipboard | `nh system clipboard set "pass123"` |
+| `nh clip` | clip | Zkopíruje **stdin** do systémové schránky (pipe-friendly) | `cat key.pem \| nh clip` |
+| `nh clip get` | clip | Vypíše schránku na stdout bez formátování | `nh clip get > url.txt` |
+| `nh share status\|set\|off\|log` | share | Cíl pro odkazy sdílené z Androidu (`$SHARE`) | `nh share set "yt-dlp -P ~/dl"` |
 | `nh system notification -t T -c C` | system | Post a system notification | `nh system notification -t "Alert" -c "Scan done"` |
 | `nh system speech` | system | Start voice recognition input | `nh system speech` |
 | `nh network wifi [on\|off\|scan\|connect]` | network | Manage Wi-Fi interface | `nh network wifi scan` |
@@ -278,6 +281,8 @@ At startup, `ProotManager` deploys a single unified **`nh`** CLI tool (symlinked
 | Category | Available Actions |
 | :--- | :--- |
 | `nh system` | `battery`, `volume`, `torch`, `vibrate`, `toast`, `clipboard`, `notification`, `speech` |
+| `nh clip` | `<cmd> \| nh clip` (stdin → schránka), `nh clip <text>`, `nh clip get` (raw na stdout) |
+| `nh share` | `status`, `set <příkaz>`, `off`, `log [N]` — cíl pro odkazy sdílené z Androidu |
 | `nh network` | `wifi`, `cell`, `location`, `map`, `ifconfig` |
 | `nh vpn` | `start`, `stop`, `status`, `on`, `off`, `logs`, `mitm`, `bypass`, `ignore`, `sni-fallback` |
 | `nh agent` | `ask`, `open` (→ Kali AI Assistant) |
@@ -598,6 +603,37 @@ Aplikace se teď hlásí systému jako cíl pro „Otevřít v aplikaci" i share
 - **`boot` skript** přidává bind `$FILES_DIR/share → /root/share` pro každé distro (včetně docker image) → uvnitř guesta je složka vidět jako `~/share`.
 
 > Rozhodnutí: `~/share` = privátní `filesDir/share` (žádná storage oprávnění; `content://`/`file://` kopie fungují přímo).
+
+### 🔗 Sdílení **odkazů** → program v `$SHARE` (2026-10-29)
+
+Sdílení textu (odkaz z prohlížeče) nemá `EXTRA_STREAM`, takže nejde do `~/share`, ale do programu,
+který si uživatel zvolil guest proměnnou `SHARE`:
+
+```sh
+cd ~/dl && export SHARE="yt-dlp -P ~/dl"     # v guestu stačí export
+# Chrome → Sdílet → kali_core  →  yt-dlp -P ~/dl https://youtu.be/xyz
+nh share status                              # co appka uvidí jako cíl
+nh share set "aria2c -d ~/dl"                # bez exportu (zapíše snapshot)
+nh share log                                 # výstup posledního doručení
+```
+
+- **Výběr cíle** (`ShareTargetResolver`): (1) prompt snapshot `filesDir/nh/share/<pid>`, který při
+  každé *změně* `SHARE`/`$PWD` zapíše hook v guest `zshrc` / `/etc/profile.d/nethunter-share.sh`
+  (jen builtin `printf`, žádný fork → žádné SELinux audit záznamy), (2) fallback sken
+  `/proc/*/environ` pro `SHARE=… program`. Hook je nutný proto, že `/proc/<pid>/environ` je
+  snapshot z `execve()` — `export` v už běžícím shellu by appka nikdy neviděla.
+- **Doručení** (`ShareDelivery`): běžící session v terminálu → příkaz se vepíše a odentruje
+  (výstup vidíš live) → attach session → `boot -p <sid> -q` → jinak nová headless session
+  (`boot <distro> -- "cd … && $SHARE <url>"`, log `tmp/share-<ts>.log`). URL se do shellu
+  předává vždy single-quoted.
+- Bez nastavené `SHARE` se odkaz jen připíše do `~/share/shared_links.txt` (nic se neztratí).
+
+### 📋 URL z terminálu do schránky
+
+Podržení prstu v terminálu → `copy | paste | more` → **„📋 Kopírovat URL"**: posbírá http/https odkazy
+z **celého** bufferu (viditelná obrazovka + scrollback, zalomené řádky spojené přes
+`getTranscriptTextWithFullLinesJoined()`), nabídne je v dialogu (nejnovější první) a vybraný zkopíruje
+do systémové schránky. Z CLI je symetrická cesta `nh clip` (`<cmd> | nh clip`, `nh clip get`).
 
 ## 🖼️ Picture-in-Picture (PiP)
 

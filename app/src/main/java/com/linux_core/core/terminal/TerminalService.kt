@@ -82,6 +82,33 @@ class TerminalService : Service() {
             }
         }
 
+        /**
+         * Vepíše příkazový řádek do konkrétní běžící session a odentruje ho.
+         *
+         * `emulator.paste()` je bracketed paste — vložený newline shell NEspustí
+         * (DECSET 2004), takže se Enter musí poslat zvlášť jako `\r`. Předchozí
+         * `\u0015` (Ctrl-U) zahodí rozepsaný prompt, aby se příkaz nepřilepil
+         * k tomu, co uživatel napsal a neodeslal. Používá `ShareDelivery`
+         * (sdílený odkaz → program z guest proměnné `SHARE`).
+         */
+        fun runInSession(sessionId: String, commandLine: String): Boolean {
+            val session = idToSession[sessionId]?.takeIf { it.isRunning } ?: return false
+            return try {
+                session.write("\u0015")
+                val emulator = session.getEmulator()
+                if (emulator != null) {
+                    emulator.paste(commandLine)
+                } else {
+                    session.write(commandLine)
+                }
+                session.write("\r")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "runInSession failed: ${e.message}")
+                false
+            }
+        }
+
         /** Session ID of the headless background (cron) boot, if one is active.
          *  Guards against duplicate cron sessions (MED-2) and drives auto-
          *  relaunch after a clean death (MED-3). */

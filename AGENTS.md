@@ -80,7 +80,7 @@ GUI není součást core — desktop renderuje **externí** NetHunter X11 Launch
 | `TerminalActivity` / `TerminalService` | Termux `TerminalView`, session lifecycle, headless session (`view=null`) |
 | `BackgroundBoot` / `BootReceiver` | Auto-start po bootu / `MY_PACKAGE_REPLACED` → headless session s cronem |
 | `FloatingTerminalService` | Overlay plovoucí terminál (`nh float`) |
-| `ShareReceiverActivity` | „Open with"/share → `filesDir/share` → guest `~/share` |
+| `ShareReceiverActivity` | „Open with"/share → `filesDir/share` → guest `~/share`; sdílený **text/odkaz** → program z guest `SHARE` (`ShareTargetResolver` + `ShareDelivery`) |
 | `VpnCaptureService` / `VpnNatEngine` | VPN lifecycle, TCP/UDP NAT, QUIC gating, packet forwarding |
 | `TlsMitmEngine` / `TlsClientHelloParser` | TLS MITM (`TlsMitmSession`), SNI extrakce, dešifrovaný provoz |
 | `AIBrain` / `AIBrainWorker` / `VerdictEngine` | ONNX klasifikace toků (`vpn_brain_v7.onnx`, LightGBM) |
@@ -755,6 +755,34 @@ panely = `usr/bin/boot-tmux-shell`, generuje `nh`). Test: `ashell -c "sh <repo>/
 
 **Launcher:** flag `-E` pro proot **neexistuje** — LD_PRELOAD/PROOT_LOADER se v guestu řeší přes
 `/bin/sh -c 'unset LD_PRELOAD PROOT_LOADER; exec "$@"'` před prvním exec.
+
+**Sdílení odkazů → `SHARE` + URL grabber + `nh clip` (2026-10-29) — nevracet zpět:**
+
+- **Snapshoty `SHARE` patří do `filesDir/nh/share`, NE do `ipc/share` ani `share`:**
+  `files/ipc` i `files/share` mají na zařízení mód **000** (ověřeno 2026-10-29: `stat` i
+  zápis z guestu = EACCES), takže guest hook do nich zapsat nemůže. `files/nh` má 700 pod
+  app UID a guest ji vidí přes bind app data dir (`/data/data/com.linux_core/files/nh/share`,
+  pref `bind_app`). Hook si cestu najde sám a cachuje ji v `NH_SHARE_DIR`.
+- **Proč vůbec hook a ne jen `/proc/<pid>/environ`:** `environ` je snapshot z `execve()` —
+  `export SHARE=…` v už běžícím shellu se do něj NIKDY nedostane. Proto zsh `precmd_functions`
+  (`assets/zshrc.{kali,parrot}`) + `/etc/profile.d/nethunter-share.sh` (`PROMPT_COMMAND`, deploy
+  v `ProotManager.deployShareHook`) píšou snapshot při každé *změně* `SHARE`/`$PWD`. Hook smí
+  používat **jen shell builtiny** (`printf`, `[ ]`) — každý fork/exec na prompt by přidal
+  `avc: granted { execute }` záznam (viz §13, audit flood).
+- **`Content-Length` je v BAJTECH, `Reader` vrací ZNAKY** (`LocalApiServer.readRequestBody`):
+  původní `CharArray(contentLength)` + počítání znaků se u UTF-8 těla zablokovalo, dokud klient
+  nezavřel spojení — `printf 'řádek\n' | nh clip` zamrzl na curlu (postihovalo každý POST
+  s diakritikou: `/clipboard`, `/toast`, `/notification`, `/shell`). Čte se dokud UTF-8 délka
+  těla nedosáhne `Content-Length`; hlavičky i tělo musí jít přes **tentýž** `BufferedReader`
+  (ten už při hlavičkách natáhne část těla do bufferu). Test: `app/src/test/java/com/linux_core/core/ApiRequestBodyTest.kt`.
+- **`ACTION_MORE` v Termux `TextSelectionCursorController` volá `stopTextSelectionMode()` PŘED
+  `showContextMenu()`** → v kontextovém menu už žádná selekce není. Proto „Kopírovat URL" hledá
+  odkazy v celém bufferu (`getTranscriptTextWithFullLinesJoined()`), ne ve výběru. Menu funguje
+  jen díky `registerForContextMenu(terminalView)` v `TerminalActivity.onCreate`.
+- **Doručení příkazu do běžící session:** `emulator.paste()` je bracketed paste, vložený newline
+  příkaz NESPUSTÍ → `TerminalService.runInSession` posílá `\u0015` (Ctrl-U, zahodí rozepsaný
+  prompt), pak paste a `\r` zvlášť. Headless `boot` se spouští přes `/system/bin/setsid`, jinak
+  by dlouhý download umřel se zabitím appky.
 
 ## 12. Známé technické dluhy
 

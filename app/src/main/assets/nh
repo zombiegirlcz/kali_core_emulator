@@ -53,6 +53,13 @@ api_post_bin() {
     echo "$2" | curl -s -X POST --data-binary @- -H "Authorization: Bearer $TOKEN" "$API_URL$1"
 }
 
+# Zápis těla požadavku ze stdin: --data-binary @- (ne -d) zachová newline,
+# UTF-8 i víc KB textu, které by se do argv nevešly.
+api_post_stdin() {
+    ensure_token
+    curl -s -X POST --data-binary @- -H "Authorization: Bearer $TOKEN" "$API_URL$1"
+}
+
 api_post_json() {
     ensure_token
     curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$2" "$API_URL$1"
@@ -201,22 +208,159 @@ except: print(f'{R}✘  Error reading clipboard{N}')
 " ;;
         set)
             shift
-            local text="$*"
-            if [ -z "$text" ]; then
-                if [ -p /dev/stdin ]; then text=$(cat); else echo "Usage: nh system clipboard set <text>"; exit 1; fi
+            # Tři vstupy: argumenty, pipe/redirect na stdin, nebo nic (chyba).
+            # Dřív to zkoušel test `[ -p /dev/stdin ]`, který neplatí pro
+            # redirect ze souboru (`nh clip < f`) a v některých shellech ani
+            # pro pipe — proto se rozhoduje podle `[ -t 0 ]`.
+            if [ $# -gt 0 ]; then
+                printf '%s' "$*" | clip_set_stdin
+                return $?
             fi
-            api_post "/clipboard" "$text" | fmt "
-import sys, json
-G,R,Y,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[93m',chr(27)+'[0m'
-try:
-    d=json.load(sys.stdin)
-    if 'error' in d: print(f'{R}✘  Clipboard error: {d[\"error\"]}{N}')
-    else: print(f'{G}📋  Clipboard: Text copied to host{N}')
-except: print(f'{G}📋  Clipboard: Text copied to host{N}')
-" ;;
+            if [ -t 0 ]; then
+                echo "Usage: nh system clipboard set <text>   |   <cmd> | nh clip"
+                exit 1
+            fi
+            clip_set_stdin ;;
         *)
             echo "Usage: nh system clipboard get|set [text]"
             exit 1 ;;
+    esac
+}
+
+# Vlastní POST do schránky ze stdin (volá ho `nh clip` i `clipboard set`).
+clip_set_stdin() {
+    api_post_stdin "/clipboard" | fmt "
+import sys, json
+G,R,N=chr(27)+'[92m',chr(27)+'[91m',chr(27)+'[0m'
+try:
+    d=json.load(sys.stdin)
+    if 'error' in d: print(f'{R}✘  Clipboard error: {d[\"error\"]}{N}')
+    else: print(f'{G}📋  Zkopírováno do schránky{N}')
+except: print(f'{G}📋  Zkopírováno do schránky{N}')
+"
+}
+
+# ─── CLIP — schránka přes pipe ─────────────────────────────
+# `cat f | nh clip`, `nh clip <text>`, `nh clip get` (raw na stdout).
+clip_dispatch() {
+    case "${1:-}" in
+        get|-g|--get)
+            shift
+            system_clipboard get --raw ;;
+        set)
+            shift
+            system_clipboard set "$@" ;;
+        help|-h|--help)
+            echo "Použití:"
+            echo "  <cmd> | nh clip          zkopíruje stdin do systémové schránky"
+            echo "  nh clip <text>           zkopíruje text z argumentů"
+            echo "  nh clip get              vypíše schránku na stdout (raw, pipe-friendly)" ;;
+        "")
+            system_clipboard set ;;
+        *)
+            system_clipboard set "$@" ;;
+    esac
+}
+
+# ─── SHARE — cíl pro sdílené odkazy z Androidu ─────────────
+# Appka (ShareReceiverActivity) hledá guest program v proměnné SHARE:
+#   export SHARE="yt-dlp -P ~/dl"   → sdílení odkazu z Chrome spustí
+#   `yt-dlp -P ~/dl <url>` v tomhle distru (a pokud to jde, v této session).
+# Protože /proc/<pid>/environ je snapshot z execve(), `export` v už běžícím
+# shellu appka nevidí — guest zshrc/profile hook (a `nh share set`) proto
+# zapisuje snapshot do $SHARE_DIR/<pid>, který appka čte přednostně.
+# files/nh/share appky (guest ji vidí přes bind app data dir). files/ipc ani
+# files/share použít nelze — mají na zařízení mód 000 (ověřeno 2026-10-29).
+SHARE_DIR="${NH_SHARE_DIR:-}"
+if [ -z "$SHARE_DIR" ]; then
+    for _c in /data/data/com.linux_core/files/nh/share \
+              /data/user/0/com.linux_core/files/nh/share; do
+        if [ -d "$_c" ]; then SHARE_DIR="$_c"; break; fi
+    done
+    [ -z "$SHARE_DIR" ] && SHARE_DIR=/data/data/com.linux_core/files/nh/share
+fi
+SHARE_LOG_DIR="/data/data/com.linux_core/files/tmp"
+
+share_snapshot() {
+    # $1 = PID shellu, který cíl vlastní, $2 = příkaz
+    [ -n "$2" ] || return 1
+    mkdir -p "$SHARE_DIR" 2>/dev/null || return 1
+    printf 'pid=%s\ncwd=%s\ncmd=%s\ndistro=%s\nsession=%s\n' \
+        "$1" "$PWD" "$2" "${NH_DISTRO:-}" "${NETHUNTER_SESSION_ID:-}" \
+        > "$SHARE_DIR/$1" 2>/dev/null
+}
+
+share_status() {
+    local pid="$1" snap="$SHARE_DIR/$1"
+    printf "${BOLD}SHARE cíl pro sdílené odkazy${RST}\n"
+    separator
+    if [ -n "${SHARE:-}" ]; then
+        printf "  ${GREEN}SHARE${RST}      = %s\n" "$SHARE"
+    else
+        printf "  ${YELLOW}SHARE${RST}      = (nenastavena)\n"
+    fi
+    printf "  ${CYAN}cwd${RST}        = %s\n" "$PWD"
+    printf "  ${CYAN}distro${RST}     = %s\n" "${NH_DISTRO:-?}"
+    printf "  ${CYAN}pid${RST}        = %s\n" "$pid"
+    if [ -d "$SHARE_DIR" ]; then
+        if [ -f "$snap" ]; then
+            printf "  ${GREEN}snapshot${RST}   = %s\n" "$snap"
+            sed 's/^/               /' "$snap" 2>/dev/null
+        else
+            printf "  ${YELLOW}snapshot${RST}   = chybí (appka použije sken /proc/*/environ)\n"
+        fi
+    else
+        printf "  ${YELLOW}snapshot${RST}   = nedostupný (%s nevidím — chybí bind app data dir)\n" "$SHARE_DIR"
+    fi
+    separator
+    echo "  nh share set \"yt-dlp -P ~/dl\"   nastaví cíl pro appku"
+    echo "  nh share log                     výstup posledního doručení"
+}
+
+share_log() {
+    local n="${1:-50}" f
+    f=$(ls -t "$SHARE_LOG_DIR"/share-*.log "$SHARE_LOG_DIR"/boot-*.log 2>/dev/null | head -n 1)
+    if [ -z "$f" ]; then
+        echo "[-] Žádný log doručení v $SHARE_LOG_DIR"
+        return 1
+    fi
+    echo "${DIM}--- $f ---${RST}"
+    tail -n "$n" "$f"
+}
+
+share_dispatch() {
+    local pid="${PPID:-$$}"
+    case "${1:-status}" in
+        status|show)
+            share_status "$pid" ;;
+        set)
+            shift
+            if [ -z "$1" ]; then
+                echo "Usage: nh share set \"<příkaz>\"   (např. \"yt-dlp -P ~/dl\")"
+                exit 1
+            fi
+            if share_snapshot "$pid" "$*"; then
+                echo "[+] SHARE cíl nastaven: $*"
+                echo "    (snapshot $SHARE_DIR/$pid — v shellu nezapomeň i 'export SHARE=\"$*\"')"
+            else
+                echo "[-] Snapshot nelze zapsat ($SHARE_DIR) — použij 'export SHARE=\"$*\"'"
+                exit 1
+            fi ;;
+        off|clear|unset)
+            rm -f "$SHARE_DIR/$pid" 2>/dev/null
+            echo "[+] SHARE snapshot zrušen (export SHARE zruš v shellu sám)" ;;
+        log|logs)
+            shift
+            share_log "$@" ;;
+        help|-h|--help|*)
+            echo "Použití: nh share [status|set <příkaz>|off|log [N]]"
+            echo
+            echo "  status            co appka uvidí jako cíl sdílení (default)"
+            echo "  set <příkaz>      zapíše cíl pro appku (nemění SHARE v shellu)"
+            echo "  off               smaže snapshot tohoto shellu"
+            echo "  log [N]           posledních N řádků logu doručení"
+            echo
+            echo "V shellu stačí: export SHARE=\"yt-dlp -P ~/dl\"" ;;
     esac
 }
 
@@ -4212,6 +4356,8 @@ shift
 
 case "$CMD" in
     system|sys)             system_dispatch "$@" ;;
+    clip)                   clip_dispatch "$@" ;;
+    share)                  share_dispatch "$@" ;;
     network|net)            network_dispatch "$@" ;;
     vpn)                    vpn_dispatch "$@" ;;
     agent|ai)               agent_dispatch "$@" ;;

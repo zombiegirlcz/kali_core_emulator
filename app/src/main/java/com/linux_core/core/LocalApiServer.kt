@@ -444,7 +444,7 @@ object LocalApiServer {
             }
 
             // ── Normal (non-binary) path ─────────────────────────────────
-            val reader = BufferedReader(InputStreamReader(rawIn))
+            val reader = BufferedReader(InputStreamReader(rawIn, Charsets.UTF_8))
 
             // Parse headers (remaining headers if not already read)
             var contentLength = 0
@@ -464,17 +464,7 @@ object LocalApiServer {
             }
 
             // Read request body if present
-            var body = ""
-            if (contentLength > 0) {
-                val bodyChars = CharArray(contentLength)
-                var totalRead = 0
-                while (totalRead < contentLength) {
-                    val read = reader.read(bodyChars, totalRead, contentLength - totalRead)
-                    if (read == -1) break
-                    totalRead += read
-                }
-                body = String(bodyChars, 0, totalRead)
-            }
+            val body = readRequestBody(reader, contentLength)
 
             // Authentication check
             val sensitiveEndpoints = listOf("/shell", "/proot/exec", "/clipboard", "/location", "/cellinfo",
@@ -675,6 +665,37 @@ object LocalApiServer {
 
     private fun jsonEsc(s: String): String =
         "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ") + "\""
+
+    /**
+     * Tělo požadavku z už rozparsovaných hlaviček.
+     *
+     * `Content-Length` je v BAJTECH, ale `reader` vrací ZNAKY. U UTF-8 těla
+     * (diakritika, emoji) je znaků méně než bajtů, takže původní čekání na
+     * `contentLength` ZNAKŮ se zablokovalo až do timeoutu klienta —
+     * `printf 'řádek\n' | nh clip` tak zamrzlo na curlu (ověřeno 2026-10-29).
+     * Čte se proto dokud UTF-8 délka načteného těla nedosáhne Content-Length.
+     * **Nevracet zpět na `CharArray(contentLength)` s počítáním znaků.**
+     *
+     * Hlavičky i tělo musí jít přes TENTÝŽ reader: BufferedReader už při
+     * čtení hlaviček natáhne část těla do svého bufferu, takže přejít
+     * u těla na raw `InputStream` nelze.
+     */
+    internal fun readRequestBody(reader: java.io.Reader, contentLength: Int): String {
+        if (contentLength <= 0) return ""
+        val sb = StringBuilder(contentLength)
+        val buf = CharArray(contentLength.coerceAtMost(8192))
+        var bytesRead = 0
+        while (bytesRead < contentLength) {
+            val read = reader.read(buf, 0, minOf(buf.size, contentLength - bytesRead))
+            if (read == -1) break
+            sb.append(buf, 0, read)
+            // Přepočet z celého těla, ne po blocích: surrogate pár rozdělený
+            // na hranici bufferu by dal špatný počet bajtů (lone surrogate →
+            // U+FFFD má 3 bajty). Tělo je max jednotky kB, takže to nic nestojí.
+            bytesRead = sb.toString().toByteArray(Charsets.UTF_8).size
+        }
+        return sb.toString()
+    }
 
     private fun sendResponse(out: OutputStream, statusCode: Int, statusText: String, jsonResponse: String) {
         val rawResponse = jsonResponse.toByteArray(Charsets.UTF_8)

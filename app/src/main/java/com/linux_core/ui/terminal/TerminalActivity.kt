@@ -481,6 +481,9 @@ class TerminalActivity : ComponentActivity() {
         terminalView.setBackgroundColor(Color.BLACK)
         terminalView.setTextSize(terminalFontSizeFloat.toInt())
         terminalView.setTerminalViewClient(viewClient)
+        // Plovoucí lišta výběru textu (copy | paste | more): „more" volá
+        // terminalView.showContextMenu(), což bez registrace nic neudělá.
+        registerForContextMenu(terminalView)
         terminalView.isFocusable = true
         terminalView.isFocusableInTouchMode = true
 
@@ -1101,6 +1104,29 @@ class TerminalActivity : ComponentActivity() {
             terminalView.requestFocus()
         }
     }
+
+    // ── Kontextové menu terminálu („more" z lišty výběru textu) ──────────
+    // Implementace v TerminalUrlMenu.kt.
+
+    override fun onCreateContextMenu(
+        menu: android.view.ContextMenu,
+        v: View,
+        menuInfo: android.view.ContextMenu.ContextMenuInfo?,
+    ) {
+        super.onCreateContextMenu(menu, v, menuInfo)
+        if (v !== terminalView) return
+        menu.setHeaderTitle("Terminál")
+        menu.add(android.view.Menu.NONE, MENU_ITEM_COPY_URL, android.view.Menu.NONE, "📋 Kopírovat URL")
+    }
+
+    override fun onContextItemSelected(item: android.view.MenuItem): Boolean =
+        when (item.itemId) {
+            MENU_ITEM_COPY_URL -> {
+                showUrlPicker()
+                true
+            }
+            else -> super.onContextItemSelected(item)
+        }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

@@ -468,12 +468,17 @@ object ProotManager {
             deployVpnHelpDocument(context, userHomeDir)
         }
         deployApiScripts(context, rootfsDir)
+        if (appIntegration) deployShareHook(rootfsDir)
 
         if (!isMusl) fixLdLinuxSymlinks(context, rootfsDir)
         // Marker aktivního distra — su_daemon re-entry (boot -- cmd) ho čte,
         // když NH_DISTRO env není nastavený.
         val nhDir = File(rootDir, "nh")
         if (!nhDir.exists()) nhDir.mkdirs()
+        // nh/share: prompt snapshoty guest proměnné SHARE (sdílení odkazů).
+        // Guest do nich píše přes bind app data dir; `files/ipc` ani
+        // `files/share` nejdou použít — mají na zařízení mód 000.
+        File(nhDir, "share").mkdirs()
         try {
             File(nhDir, ".active_distro").writeText(distroId)
         } catch (e: Exception) {
@@ -1312,6 +1317,65 @@ object ProotManager {
                     Log.e(TAG, "fixLdLinuxSymlinks failed for $relPath: ${e.message}")
                 }
             }
+        }
+    }
+
+    /**
+     * `/etc/profile.d/nethunter-share.sh` — hook pro bash/sh login shelly,
+     * který publikuje guest proměnnou `SHARE` appce (zsh má ekvivalent přímo
+     * v `assets/zshrc.<distro>`).
+     *
+     * Appka (`ShareReceiverActivity`) spustí program z `SHARE` se sdíleným
+     * odkazem jako argumentem. `/proc/<pid>/environ` je ale snapshot z
+     * `execve()`, takže `export SHARE=…` v už běžícím shellu by nebyl vidět —
+     * hook proto při každé ZMĚNĚ `SHARE`/`$PWD` zapíše stav do
+     * `$NH_SHARE_DIR/$$`. Jen shell builtiny (`printf`), žádný fork ani
+     * exec na prompt → nepřidává SELinux audit záznamy (viz AGENTS.md §13).
+     *
+     * Cílem je `filesDir/nh/share` viděná přes bind app data dir (pref
+     * `bind_app`, default on). Když bind chybí, hook nic nedělá a appka spadne
+     * na sken `/proc/*​/environ` (`ShareTargetResolver`).
+     */
+    private fun deployShareHook(rootfsDir: File) {
+        val dir = File(rootfsDir, "etc/profile.d")
+        try {
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, "nethunter-share.sh")
+            val body =
+                buildString {
+                    appendLine("# NetHunter: publikuje \$SHARE appce (sdílení odkazů z Androidu)")
+                    appendLine("# export SHARE=\"yt-dlp -P ~/dl\"  → sdílený odkaz spustí tenhle příkaz")
+                    appendLine("nh_share_sync() {")
+                    appendLine("    [ -n \"\$SHARE\" ] || return 0")
+                    appendLine("    _nh_s=\"\$SHARE|\$PWD\"")
+                    appendLine("    [ \"\$_nh_s\" = \"\$NH_SHARE_LAST\" ] && return 0")
+                    appendLine("    if [ -z \"\$NH_SHARE_DIR\" ]; then")
+                    appendLine("        for _nh_c in /data/data/com.linux_core/files/nh/share \\")
+                    appendLine("                     /data/user/0/com.linux_core/files/nh/share; do")
+                    appendLine("            [ -d \"\$_nh_c\" ] && { NH_SHARE_DIR=\"\$_nh_c\"; break; }")
+                    appendLine("        done")
+                    appendLine("    fi")
+                    appendLine("    _nh_d=\"\$NH_SHARE_DIR\"")
+                    appendLine("    [ -n \"\$_nh_d\" ] && [ -d \"\$_nh_d\" ] || return 0")
+                    appendLine("    printf 'pid=%s\\ncwd=%s\\ncmd=%s\\ndistro=%s\\nsession=%s\\n' \\")
+                    appendLine("        \"\$\$\" \"\$PWD\" \"\$SHARE\" \"\${NH_DISTRO:-}\" \"\${NETHUNTER_SESSION_ID:-}\" \\")
+                    appendLine("        > \"\$_nh_d/\$\$\" 2>/dev/null && NH_SHARE_LAST=\"\$_nh_s\"")
+                    appendLine("}")
+                    appendLine("case \"\$PROMPT_COMMAND\" in")
+                    appendLine("    *nh_share_sync*) ;;")
+                    appendLine("    \"\") PROMPT_COMMAND=\"nh_share_sync\" ;;")
+                    appendLine("    *) PROMPT_COMMAND=\"\$PROMPT_COMMAND; nh_share_sync\" ;;")
+                    appendLine("esac")
+                }
+            // Jen při reálné změně — zbytečný zápis při každém startu session
+            // je I/O na UFS, který se vyplatí nedělat (viz AGENTS.md §13).
+            if (!target.exists() || target.readText() != body) {
+                target.writeText(body)
+                target.setReadable(true, false)
+                Log.i(TAG, "deployShareHook: /etc/profile.d/nethunter-share.sh nasazen")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "deployShareHook failed: ${e.message}")
         }
     }
 
