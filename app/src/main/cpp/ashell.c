@@ -57,6 +57,9 @@
 #define API_HOST_TOKEN_PATH "/data/data/com.linux_core/shared_prefs/api_security.xml"
 /* plaintext token (LocalApiServer.publishGuestToken) — xml drží jen šifrované "enc:…" */
 #define API_TOKEN_FILE      "/data/data/com.linux_core/files/api.token"
+/* .env = kanonický zdroj tokenů/portů (LocalApiServer.publishGuestEnv);
+ * api.token zůstává jako kompatibilní kopie pro starší klienty. */
+#define API_ENV_FILE        "/data/data/com.linux_core/files/.env"
 
 /* Verbose/debug marker: zapne se vlajkou `-v`/`--verbose` (před -c) nebo
  * env ASHELL_DEBUG=1. Když je zapnutý, `ashell -c ...` napíše na stderr,
@@ -146,7 +149,31 @@ static int tcp_connect(int port) {
 
 /* ── auth token z api_security.xml (bez externiho grep/sed) ─────────── */
 
+/* Vytáhne hodnotu KLÍČ=hodnota z .env (bez uvozovek, bez mezer — ten formát
+ * generuje LocalApiServer.buildGuestEnv). NULL = klíč/soubor není. */
+static char *read_env_value(const char *key) {
+    FILE *f = fopen(API_ENV_FILE, "r");
+    if (!f) return NULL;
+    size_t klen = strlen(key);
+    char line[1024];
+    char *result = NULL;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, key, klen) != 0 || line[klen] != '=') continue;
+        char *v = line + klen + 1;
+        size_t n = strlen(v);
+        while (n > 0 && (v[n-1] == '\n' || v[n-1] == '\r' || v[n-1] == ' ')) n--;
+        if (n == 0) break;
+        result = malloc(n + 1);
+        if (result) { memcpy(result, v, n); result[n] = '\0'; }
+        break;
+    }
+    fclose(f);
+    return result;
+}
+
 static char *read_auth_token(void) {
+    char *from_env = read_env_value("API_TOKEN");
+    if (from_env) return from_env;
     FILE *tf = fopen(API_TOKEN_FILE, "r");
     if (tf) {
         char buf[256];
@@ -427,6 +454,25 @@ static int send_frame(int fd, unsigned char type, const void *payload, size_t le
 static volatile sig_atomic_t g_winch = 0;
 static void on_sigwinch(int sig) { (void)sig; g_winch = 1; }
 
+/* Požádá appku, ať nahodí ashell_pty most (POST /ashell/pty/start).
+ * Daemon je dítě appky a Android ho umí zabít (LMK / phantom process killer);
+ * bez tohohle by `ashell -t` / inline host shell zůstal nedostupný až do
+ * restartu appky. 0 = po návratu naslouchá, -1 = nepovedlo se. */
+static int ashell_pty_self_heal(void) {
+    int status = 0;
+    char *resp = http_request("POST", "/ashell/pty/start", "", NULL, "text/plain", &status);
+    int ok = (resp != NULL && status == 200);
+    free(resp);
+    if (!ok) return -1;
+    struct timespec ts = { 0, 50 * 1000 * 1000 };   /* 50 ms */
+    for (int i = 0; i < 10; i++) {
+        int fd = tcp_connect(PTY_PORT);
+        if (fd >= 0) { close(fd); return 0; }
+        nanosleep(&ts, NULL);
+    }
+    return -1;
+}
+
 /* want_pty = žádost o serverový PTY (F_HELLO interactive flag). Když 0, běží
  * příkaz na hostu v pipe režimu (levnější, čistý výstup). Lokální terminál se
  * přepíná do raw módu jen v PTY režimu (jinak by to rozbilo cooked vstup pro
@@ -434,7 +480,13 @@ static void on_sigwinch(int sig) { (void)sig; g_winch = 1; }
 static int run_via_ashell_pty(const char *cmd, const char *cwd, const char *rootfs,
                               const char *term, int want_pty) {
     int fd = tcp_connect(PTY_PORT);
-    if (fd < 0) return PTY_UNAVAILABLE;
+    if (fd < 0) {
+        /* Daemon umřel (LMK / phantom process killer) — appka ho umí nahodit
+         * zpět, jinak by uživatel viděl jen „ashell_pty nedostupný" a musel
+         * restartovat appku. Jeden pokus, pak teprve fallback. */
+        if (ashell_pty_self_heal() == 0) fd = tcp_connect(PTY_PORT);
+        if (fd < 0) return PTY_UNAVAILABLE;
+    }
 
     int is_tty = isatty(STDIN_FILENO);
     int pty_mode = want_pty;              /* žádáme serverový PTY? */

@@ -90,6 +90,15 @@ object LocalApiServer {
     /** filesDir/api.token — plaintext API token pro guest klienty (viz publishGuestToken). */
     const val GUEST_TOKEN_FILE = "api.token"
 
+    /**
+     * filesDir/.env — JEDINÉ místo, kde guest klienti hledají tokeny a porty.
+     *
+     * `api.token` i `shell_daemon.token` se dál zapisují jako kompatibilní
+     * kopie (čtou je externí appky a starší nasazené binárky), ale noví klienti
+     * mají číst `.env`: `set -a; . /data/data/com.linux_core/files/.env; set +a`.
+     */
+    const val GUEST_ENV_FILE = ".env"
+
     /** Application context reference, set during start(). */
     private var appContext: Context? = null
     private var serverSocket: ServerSocket? = null
@@ -107,7 +116,9 @@ object LocalApiServer {
         CertificateManager.init(appContext!!)
         // Token inicializovat hned (dřív se getAuthToken nikde nevolal → authToken==null
         // a isAuthenticated porovnával s "") + zpřístupnit ho guest klientům.
-        publishGuestToken(appContext!!, getAuthToken(appContext!!))
+        val apiToken = getAuthToken(appContext!!)
+        publishGuestToken(appContext!!, apiToken)
+        publishGuestEnv(appContext!!, apiToken)
         RootfsManager.ensureMigrated(appContext!!)
         UsbHostManager.init(appContext!!)
         // Pre-load USB bridge JNI library (actual UDS is started by ProotManager
@@ -178,13 +189,60 @@ object LocalApiServer {
             }
             // Stop stale instance first (port reuse)
             stopAshellPty()
+            // POZOR: stdout/stderr daemona MUSÍ jít do souboru, ne do pipe
+            // java.lang.Process. Pipe nikdo nečte, takže se po ~64 KB hlášek
+            // zaplní a daemon (nebo jeho worker) se zablokuje na write() —
+            // od té chvíle `ashell` „občas" selhává bez jediného logu.
+            // Nevracet zpět na pouhé redirectErrorStream(true).
+            val log = File(context.filesDir, "tmp/ashell_pty.log")
+            try {
+                log.parentFile?.mkdirs()
+                if (log.length() > ASHELL_PTY_LOG_MAX) log.delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "ashell_pty log rotace selhala: ${e.message}")
+            }
             ptyProcess = ProcessBuilder(target.absolutePath, ASHELL_PTY_PORT.toString(), context.filesDir.absolutePath)
                 .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(log))
                 .start()
-            Log.i(TAG, "ashell_pty started on 127.0.0.1:$ASHELL_PTY_PORT")
+            Log.i(TAG, "ashell_pty started on 127.0.0.1:$ASHELL_PTY_PORT (log ${log.absolutePath})")
         } catch (e: Exception) {
             Log.w(TAG, "ashell_pty unavailable: ${e.message}")
         }
+    }
+
+    /** Strop logu ashell_pty před rotací (smazáním) — diagnostika, ne archiv. */
+    private const val ASHELL_PTY_LOG_MAX = 256L * 1024L
+
+    /** Naslouchá někdo na 127.0.0.1:13340? (rychlý connect, 300 ms) */
+    fun isAshellPtyListening(): Boolean =
+        try {
+            java.net.Socket().use { sock ->
+                sock.connect(java.net.InetSocketAddress("127.0.0.1", ASHELL_PTY_PORT), 300)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+
+    /**
+     * Self-heal: když daemon neběží (umřel na LMK/phantom killer, nebo ho
+     * nikdo nenastartoval), spustí ho znovu. Vrací true, když po návratu
+     * port naslouchá.
+     */
+    fun ensureAshellPty(context: Context): Boolean {
+        if (ptyProcess?.isAlive == true && isAshellPtyListening()) return true
+        startAshellPty(context)
+        // Daemon stihne bind+listen v jednotkách ms; dáme mu pár pokusů.
+        repeat(10) {
+            if (isAshellPtyListening()) return true
+            try {
+                Thread.sleep(50)
+            } catch (_: InterruptedException) {
+                return isAshellPtyListening()
+            }
+        }
+        return isAshellPtyListening()
     }
 
     private fun stopAshellPty() {
@@ -266,15 +324,57 @@ object LocalApiServer {
      * appky: číst ho může jen appka sama (a tedy její PRoot guest) a root; cizí appky ne.
      */
     private fun publishGuestToken(context: Context, token: String) {
+        writeGuestFile(context, GUEST_TOKEN_FILE, token)
+    }
+
+    /**
+     * Zapíše `filesDir/.env` s tokeny a porty — jediné místo, které musí nový
+     * guest klient znát. `api.token` / `shell_daemon.token` zůstávají jako
+     * kompatibilní kopie pro externí appky a už nasazené binárky.
+     */
+    private fun publishGuestEnv(context: Context, apiToken: String) {
+        val daemonToken =
+            try {
+                ShellDaemonClient.ensureToken(context)
+            } catch (e: Exception) {
+                Log.w(TAG, "publishGuestEnv: shell_daemon token nedostupný: ${e.message}")
+                null
+            }
+        writeGuestFile(context, GUEST_ENV_FILE, buildGuestEnv(apiToken, daemonToken))
+    }
+
+    /**
+     * Obsah `.env`. Formát je úmyslně „shell-source-able i triviálně
+     * grepnutelný": `KLÍČ=hodnota` bez mezer a bez uvozovek, takže ho umí
+     * `. .env` v shellu, `grep '^API_TOKEN='` i ruční parser v C (ashell,
+     * ashell_pty). Hodnoty tokenů jsou hex/UUID — nikdy neobsahují mezeru
+     * ani newline, takže quoting není potřeba.
+     */
+    internal fun buildGuestEnv(apiToken: String, shellDaemonToken: String?): String =
+        buildString {
+            appendLine("# Generated by LocalApiServer — neupravovat (přepíše se při startu appky).")
+            appendLine("# Guest klienti: set -a; . /data/data/com.linux_core/files/.env; set +a")
+            appendLine("API_HOST=127.0.0.1")
+            appendLine("API_PORT=$PORT")
+            appendLine("API_TOKEN=$apiToken")
+            if (!shellDaemonToken.isNullOrEmpty()) {
+                appendLine("SHELL_DAEMON_TOKEN=$shellDaemonToken")
+            }
+            appendLine("SHELL_DAEMON_PORT=${ShellDaemonClient.PORT}")
+            appendLine("ASHELL_PTY_PORT=$ASHELL_PTY_PORT")
+        }
+
+    /** Atomický zápis do filesDir (tmp + rename) s právy 0600. */
+    private fun writeGuestFile(context: Context, name: String, content: String) {
         try {
-            val f = java.io.File(context.filesDir, GUEST_TOKEN_FILE)
-            val tmp = java.io.File(context.filesDir, "$GUEST_TOKEN_FILE.tmp")
-            tmp.writeText(token)
+            val f = java.io.File(context.filesDir, name)
+            val tmp = java.io.File(context.filesDir, "$name.tmp")
+            tmp.writeText(content)
             tmp.setReadable(false, false); tmp.setReadable(true, true)
             tmp.setWritable(false, false); tmp.setWritable(true, true)
             if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
         } catch (e: Exception) {
-            Log.e(TAG, "Nelze zapsat $GUEST_TOKEN_FILE: ${e.message}")
+            Log.e(TAG, "Nelze zapsat $name: ${e.message}")
         }
     }
 
@@ -470,7 +570,7 @@ object LocalApiServer {
             val sensitiveEndpoints = listOf("/shell", "/proot/exec", "/clipboard", "/location", "/cellinfo",
                 "/notifications/active", "/accessibility/hierarchy", "/accessibility/", "/voice_input",
                 "/device/admin", "/device/lock", "/apps/usage", "/rootfs/backup", "/rootfs/restore",
-                "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist",
+                "/distro/kill", "/distro/remove", "/ashell/config", "/ashell/blocklist", "/ashell/pty",
                 "/vpn/logs", "/map", "/wifi", "/torch", "/volume",
                 "/battery/optimize", "/app/logs", "/usb/",
                 "/vpn/ai/", "/vpn/mitm/selective", "/shelldaemon", "/shizuku", "/cpu/apps", "/terminal/input")
@@ -569,6 +669,8 @@ object LocalApiServer {
                 path == "/shell" && method == "POST" -> handleShell(context, body, out)
                 path == "/proot/exec" && method == "POST" -> handleProotExec(context, body, out)
                 path == "/ashell" && method == "POST" -> handleAshell(context, body, out)
+                path == "/ashell/pty" && method == "GET" -> handleAshellPtyStatus(out)
+                path == "/ashell/pty/start" && method == "POST" -> handleAshellPtyStart(context, out)
                 path == "/ashell/config" && method == "GET" -> handleAshellConfigGet(context, out)
                 path == "/ashell/config" && method == "POST" -> handleAshellConfigPost(body, out)
                 path == "/ashell/blocklist" && method == "GET" -> handleAshellBlocklistGet(context, out)
@@ -1145,6 +1247,34 @@ object LocalApiServer {
      * GET /ashell/config — vrátí aktuální obsah ashell.conf jako text/plain.
      * Placeholder \${FILES_DIR} se NEexpanduje (raw editace, zůstává přenositelný).
      */
+    /** GET /ashell/pty → {running, listening, port, log} */
+    private fun handleAshellPtyStatus(out: OutputStream) {
+        val json =
+            JSONObject()
+                .put("running", ptyProcess?.isAlive == true)
+                .put("listening", isAshellPtyListening())
+                .put("port", ASHELL_PTY_PORT)
+                .put("log", "tmp/ashell_pty.log")
+        sendResponse(out, 200, "OK", json.toString())
+    }
+
+    /**
+     * POST /ashell/pty/start → self-heal mostu.
+     *
+     * Volá ho `ashell`, když se nedovolá na 13340 (daemon umřel na LMK /
+     * phantom process killeru) — jinak by uživatel viděl jen „ashell_pty
+     * nedostupný" a musel restartovat appku.
+     */
+    private fun handleAshellPtyStart(context: Context, out: OutputStream) {
+        val ok = ensureAshellPty(context)
+        sendResponse(
+            out,
+            if (ok) 200 else 500,
+            if (ok) "OK" else "Internal Error",
+            JSONObject().put("listening", ok).put("port", ASHELL_PTY_PORT).toString(),
+        )
+    }
+
     private fun handleAshellConfigGet(context: Context, out: OutputStream) {
         val f = ExecCore.ashellConfigFile(context)
         if (!f.exists()) {

@@ -534,17 +534,45 @@ static int check_peer_uid(int client_fd, unsigned listen_port) {
     return -1;
 }
 
-/* Porovná token z HELLO s filesDir/api.token v konstantním čase. */
+/* Načte API_TOKEN z filesDir/.env (kanonický zdroj, LocalApiServer.buildGuestEnv).
+ * Vrátí délku zapsanou do out, nebo 0. */
+static size_t read_env_token(const char *files_dir, char *out, size_t cap) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/.env", files_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[1024];
+    size_t len = 0;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (strncmp(line, "API_TOKEN=", 10) != 0) continue;
+        char *v = line + 10;
+        size_t n = strlen(v);
+        while (n > 0 && (v[n-1] == '\n' || v[n-1] == '\r' || v[n-1] == ' ')) n--;
+        if (n == 0 || n >= cap) break;
+        memcpy(out, v, n);
+        out[n] = '\0';
+        len = n;
+        break;
+    }
+    fclose(f);
+    return len;
+}
+
+/* Porovná token z HELLO s API_TOKEN v konstantním čase. Zdroj: filesDir/.env,
+ * fallback filesDir/api.token (kompatibilita se staršími buildy appky). */
 static int token_ok(const char *files_dir, const char *given) {
     char path[1024], want[256];
     if (!given || !*given) return 0;
-    snprintf(path, sizeof(path), "%s/api.token", files_dir);
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return 0;
-    ssize_t n = read(fd, want, sizeof(want) - 1);
-    close(fd);
-    if (n <= 0) return 0;
-    while (n > 0 && (want[n-1] == '\n' || want[n-1] == '\r' || want[n-1] == ' ')) n--;
+    ssize_t n = (ssize_t)read_env_token(files_dir, want, sizeof(want));
+    if (n <= 0) {
+        snprintf(path, sizeof(path), "%s/api.token", files_dir);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return 0;
+        n = read(fd, want, sizeof(want) - 1);
+        close(fd);
+        if (n <= 0) return 0;
+        while (n > 0 && (want[n-1] == '\n' || want[n-1] == '\r' || want[n-1] == ' ')) n--;
+    }
     want[n] = '\0';
     size_t gl = strlen(given), wl = (size_t)n;
     if (wl == 0 || gl != wl) return 0;
@@ -640,7 +668,9 @@ int main(int argc, char **argv) {
         close(listen_fd);
         return 1;
     }
-    if (listen(listen_fd, 10) < 0) {
+    /* Backlog 64 (ne 10): klienti (nh, Claude Code, skripty) umí spustit
+     * desítky `ashell -c` paralelně a přeteklý backlog = ECONNREFUSED. */
+    if (listen(listen_fd, 64) < 0) {
         perror("[ashell_pty] listen");
         close(listen_fd);
         return 1;

@@ -19,9 +19,19 @@ GRAY='\033[0;90m'
 
 # ─── Helpers ───────────────────────────────────────────────
 
+# filesDir/.env — jediné místo s tokeny a porty (LocalApiServer.publishGuestEnv).
+NH_ENV_FILE="${NH_ENV_FILE:-/data/data/com.linux_core/files/.env}"
+
 get_token() {
-    # Plaintext token publikuje appka do filesDir/api.token (0600, jen UID appky);
-    # api_security.xml drží jen šifrované "enc:…".
+    # 1) .env (kanonický zdroj), 2) api.token (kompatibilita se staršími
+    # buildy a externími klienty), 3) api_security.xml (jen když není "enc:").
+    if [ -r "$NH_ENV_FILE" ]; then
+        TOKEN=$(sed -n 's/^API_TOKEN=//p' "$NH_ENV_FILE" | head -n 1)
+        if [ -n "$TOKEN" ]; then
+            echo "$TOKEN"
+            return
+        fi
+    fi
     if [ -r /data/data/com.linux_core/files/api.token ]; then
         cat /data/data/com.linux_core/files/api.token
         return

@@ -69,7 +69,7 @@
 
 **Interfaces:**
 - Produces: `int cpu_clusters(cluster_t *out, int max)` — vyplní `{int id; unsigned long mask; long max_khz; int ncores;}` vzestupně podle `max_khz`, vrací počet; `static int cmd_cores(void)` tiskne TSV `core<TAB>max_khz<TAB>cur_khz<TAB>busy_promile<TAB>cluster`.
-- `busy_promile` per jádro z deltы `/proc/stat` řádku `cpuN` mezi dvěma odečty 500 ms od sebe.
+- `busy_promile` per jádro z delty `/proc/stat` řádku `cpuN` mezi dvěma odečty 500 ms od sebe.
 
 - [ ] **Step 1: Napsat padající test**
 
