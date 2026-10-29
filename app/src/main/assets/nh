@@ -2237,7 +2237,9 @@ clean_dispatch() {
         ""|scan) clean_scan ;;
         l2s) shift; clean_l2s "$@" ;;
         trash) shift; clean_trash "$@" ;;
-        logs|cache|perms|all)
+        logs) shift; clean_logs "$@" ;;
+        cache) shift; clean_cache "$@" ;;
+        perms|all)
             echo "[-] 'nh clean $1' zatím neimplementováno." >&2
             echo "    Plán: docs/plans/12s-cleaner.md" >&2
             exit 1 ;;
@@ -2505,6 +2507,128 @@ NHCLEAN
     ashell -c "$script"
 }
 
+# Převede "16M"/"500K"/"1G"/"1024" na bajty. Prázdné/neplatné -> echo nic (rc=1).
+clean_parse_size() {
+    case "$1" in
+        ''|*[!0-9KkMmGg]*) return 1 ;;
+        *[Gg]) echo $(( ${1%[Gg]} * 1024 * 1024 * 1024 )) ;;
+        *[Mm]) echo $(( ${1%[Mm]} * 1024 * 1024 )) ;;
+        *[Kk]) echo $(( ${1%[Kk]} * 1024 )) ;;
+        *)     echo "$1" ;;
+    esac
+}
+
+# Fáze 3 plánu: STROPY, ne mazání — rostoucí/velký log bez cyklení nebo stropu
+# umí sám zaplnit disk (viz plán, incident se sx.log = 6,4 GB). Default = jen
+# report; '--delete' zkrátí (truncate, NE rm — proces s otevřeným fd si inode
+# ponechá) soubory nad limit. Kandidáti: *.log / diag.*.txt v $FILES_DIR.
+clean_logs() {
+    local max_raw="16M" do_delete=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --max) max_raw="$2"; shift 2 ;;
+            --delete) do_delete=1; shift ;;
+            *) echo "Použití: nh clean logs [--max VELIKOST] [--delete]" >&2; exit 1 ;;
+        esac
+    done
+    local max_bytes
+    max_bytes=$(clean_parse_size "$max_raw") || { echo "[-] Neplatná velikost: $max_raw (např. 16M, 500K, 1G)" >&2; exit 1; }
+
+    command -v ashell >/dev/null 2>&1 || { echo "[-] ashell nenalezen — clean logs vyžaduje host nástroje" >&2; exit 1; }
+
+    local script
+    script='FILES_DIR="/data/data/com.linux_core/files"
+DO_DELETE='"$do_delete"'
+find "$FILES_DIR" -xdev -type f \( -name "*.log" -o -name "diag.*.txt" \) -size +'"${max_bytes}"'c 2>/dev/null |
+while read -r f; do
+    sz=$(stat -c "%s" "$f" 2>/dev/null)
+    [ -n "$sz" ] || continue
+    echo "$f  (${sz} B)"
+    writer=""
+    for pidfd in /proc/[0-9]*/fd; do
+        for fd in "$pidfd"/*; do
+            l=$(readlink "$fd" 2>/dev/null)
+            if [ "$l" = "$f" ]; then
+                pid=${pidfd#/proc/}; pid=${pid%/fd}
+                writer="$writer $pid"
+            fi
+        done
+    done
+    [ -n "$writer" ] && echo "    otevreno PID:$writer (zabit pred truncate, jinak hned naroste zpet)"
+    if [ "$DO_DELETE" = "1" ]; then
+        : > "$f" && echo "    [+] zkraceno na 0 B"
+    fi
+done'
+    local out
+    out=$(ashell -c "$script")
+    if [ -z "$out" ]; then
+        echo "[+] Žádný log/diag soubor nad limit ($max_raw)."
+    else
+        echo "[*] nh clean logs (limit $max_raw)$([ "$do_delete" = "1" ] && echo ' — ZKRACUJI' || echo ' — dry-run, pro zkraceni pridej --delete'):"
+        echo "$out"
+    fi
+}
+
+# Fáze 4 plánu: cache (apt archives/lists, pip/npm/cargo/_cacache, __pycache__).
+# "Bezpečně smazatelné, žádná karanténa není potřeba" (plán) — na rozdíl od
+# l2s se tu rovnou maže. Default = jen report velikostí, '--delete' maže.
+clean_cache() {
+    local do_delete=0
+    case "${1:-}" in
+        --delete) do_delete=1 ;;
+        ""|--dry-run) ;;
+        *) echo "Použití: nh clean cache [--delete]" >&2; exit 1 ;;
+    esac
+
+    local total=0 any=0
+    echo "[*] nh clean cache"
+    for p in /var/cache/apt/archives /root/.cache/pip /root/.cache/uv /root/.cache/npm /root/.cache/_cacache /root/.cargo/registry/cache; do
+        [ -d "$p" ] || continue
+        local sz
+        sz=$(du -sk "$p" 2>/dev/null | awk '{print $1}')
+        [ -n "$sz" ] && [ "$sz" -gt 0 ] || continue
+        any=1
+        total=$((total + sz))
+        echo "  $p  (${sz} KiB)"
+        if [ "$do_delete" = "1" ]; then
+            find "$p" -mindepth 1 -delete 2>/dev/null
+        fi
+    done
+    # apt lists: smazat jen soubory (ne "lock", obnoví se dalsim 'apt update')
+    if [ -d /var/lib/apt/lists ]; then
+        local lsz
+        lsz=$(find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print int(s/1024)}')
+        if [ -n "$lsz" ] && [ "$lsz" -gt 0 ]; then
+            any=1
+            total=$((total + lsz))
+            echo "  /var/lib/apt/lists (soubory, ne lock)  (${lsz} KiB)"
+            if [ "$do_delete" = "1" ]; then
+                find /var/lib/apt/lists -maxdepth 1 -type f ! -name lock -delete 2>/dev/null
+            fi
+        fi
+    fi
+    # __pycache__ / node-compile-cache kdekoli pod $HOME (ohraničeno hloubkou)
+    find "${HOME:-/root}" -xdev -maxdepth 6 -type d \( -name __pycache__ -o -name node-compile-cache \) 2>/dev/null |
+    while read -r d; do
+        local sz
+        sz=$(du -sk "$d" 2>/dev/null | awk '{print $1}')
+        [ -n "$sz" ] || continue
+        echo "  $d  (${sz} KiB)"
+        [ "$do_delete" = "1" ] && rm -rf "$d"
+    done
+
+    if [ "$any" = "0" ]; then
+        echo "  (nic nenalezeno)"
+        return 0
+    fi
+    echo ""
+    if [ "$do_delete" = "1" ]; then
+        echo "[+] Uvolněno ~$((total / 1024)) MiB."
+    else
+        echo "[*] Dry-run (~$((total / 1024)) MiB) — pro smazání přidej '--delete'."
+    fi
+}
+
 help_clean() {
     banner
     echo ""
@@ -2513,13 +2637,17 @@ help_clean() {
     echo "  ${GREEN}scan${RST} (výchozí)          Read-only inventura: místo, velké/rostoucí soubory, smazané-ale-otevřené fd, R procesy"
     echo "  ${GREEN}l2s [--delete]${RST}          Fáze 1+2: materializace git .l2s + dvouúrovňové GC. Bez '--delete' jen report (dry-run)."
     echo "  ${GREEN}trash [list|--purge]${RST}    Obsah karantény (nh/trash/<timestamp>/) nebo trvalé smazání"
+    echo "  ${GREEN}logs [--max N] [--delete]${RST} Fáze 3: nalezne *.log/diag.*.txt nad limitem (výchozí 16M); '--delete' zkrátí (ne rm)"
+    echo "  ${GREEN}cache [--delete]${RST}        Fáze 4: apt archives/lists, pip/npm/cargo/_cacache, __pycache__ — rovnou maže s '--delete'"
     echo ""
-    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): logs, cache, perms, all"
+    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): perms, all"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh clean"
     echo "    nh clean l2s"
     echo "    nh clean l2s --delete"
+    echo "    nh clean logs --max 32M --delete"
+    echo "    nh clean cache --delete"
     echo "    nh clean trash"
     echo "    nh clean trash --purge"
     echo ""
@@ -3611,7 +3739,7 @@ list_cmds() {
         "api share on|off|status" \
         "vnc start" "vnc stop" "vnc status" \
         "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
-        "clean" "clean scan" "clean l2s" "clean l2s --delete" "clean trash" "clean trash --purge" \
+        "clean" "clean scan" "clean l2s" "clean l2s --delete" "clean logs" "clean logs --delete" "clean cache" "clean cache --delete" "clean trash" "clean trash --purge" \
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "adb start" "adb stop" "adb status" "adb shell [cmd]" "adb <cmd>" "adb install [-r] <apk>" "adb uninstall <pkg>" "adb push <L> <R>" "adb pull <R> <L>" "adb devices" \
