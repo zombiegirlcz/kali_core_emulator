@@ -2224,6 +2224,119 @@ fix_auto() {
     echo "[+] Auto-fix complete."
 }
 
+# ─── CLEAN ─────────────────────────────────────────────────
+# Čistící nástroj proti plnému úložišti (osiřelé proot .l2s odkazy, nestropované
+# logy, cache). Plán + nálezy: docs/plans/12s-cleaner.md.
+#
+# Jen `scan` je implementováno (fáze 0 — read-only inventura). Zbylé fáze
+# (l2s GC, logy, cache, perms) čekají na implementaci podle plánu —
+# NEMAZAT nic bez karantény, .l2s nikdy paušálně (viz plán, "Co se nesmí dělat").
+
+clean_dispatch() {
+    case "$1" in
+        ""|scan) clean_scan ;;
+        l2s|logs|cache|perms|trash|all)
+            echo "[-] 'nh clean $1' zatím neimplementováno (jen 'nh clean scan' — fáze 0)." >&2
+            echo "    Plán: docs/plans/12s-cleaner.md" >&2
+            exit 1 ;;
+        help|-h|--help) help_clean ;;
+        *) echo "Použití: nh clean [scan]"; echo "Pro nápovědu: nh clean help"; exit 1 ;;
+    esac
+}
+
+# Read-only inventura (fáze 0 plánu). Běží hostovými nástroji přes ashell —
+# prootí readlink/find zkracují/lžou cíle symlinků (viz plán, "Pasti prostředí"),
+# takže scan uvnitř prootu by dával špatná čísla.
+clean_scan() {
+    echo "[*] nh clean scan — read-only inventura (fáze 0, docs/plans/12s-cleaner.md)"
+    echo ""
+    command -v ashell >/dev/null 2>&1 || { echo "[-] ashell nenalezen — scan vyžaduje host nástroje" >&2; exit 1; }
+
+    local script
+    script=$(cat <<'NHCLEAN'
+FILES_DIR="/data/data/com.linux_core/files"
+MY_UID=$(id -u 2>/dev/null)
+
+echo "--- su dostupnost ---"
+if command -v su >/dev/null 2>&1 && su -c true >/dev/null 2>&1; then
+    echo "su: ANO (root-owned zbytky mozne; scan pod uid appky nemusi byt kompletni, fix perms bude relevantni)"
+    HAS_SU=1
+else
+    echo "su: NE (zarizeni bez rootu — root-owned zbytky nemohou vzniknout, scan pod uid appky je kompletni)"
+    HAS_SU=0
+fi
+echo ""
+
+echo "--- vyuziti mista (du -x -k -d2, top uroven $FILES_DIR) ---"
+du -x -k -d2 "$FILES_DIR" 2>/dev/null | sort -rn | head -n 25
+echo ""
+echo "celkem (uid appky): $(du -sk "$FILES_DIR" 2>/dev/null | awk '{print $1}') KiB"
+if [ "$HAS_SU" = "1" ]; then
+    ROOT_KB=$(su -c "du -sk '$FILES_DIR'" 2>/dev/null | awk '{print $1}')
+    [ -n "$ROOT_KB" ] && echo "celkem (root):       $ROOT_KB KiB  (rozdil = skryte za opravnenim)"
+fi
+echo ""
+
+echo "--- velke soubory (>200M) ---"
+find "$FILES_DIR" -xdev -type f -size +200M -printf '%10s  %p\n' 2>/dev/null | sort -rn
+echo ""
+
+echo "--- rostouci soubory (2x stat, 1s odstup; kandidati *.log, diag.*.txt) ---"
+CANDS=$(find "$FILES_DIR" -xdev -type f \( -name '*.log' -o -name 'diag.*.txt' \) 2>/dev/null)
+if [ -n "$CANDS" ]; then
+    SNAP1=$(for f in $CANDS; do s=$(stat -c '%s' "$f" 2>/dev/null); [ -n "$s" ] && echo "$s $f"; done)
+    sleep 1
+    echo "$SNAP1" | while read -r s1 f; do
+        s2=$(stat -c '%s' "$f" 2>/dev/null)
+        [ -n "$s2" ] || continue
+        awk -v a="$s1" -v b="$s2" -v f="$f" 'BEGIN{d=b-a; if (d>0) printf "ROSTE: %s  (%s -> %s B, +%s B/s)\n", f, a, b, d}'
+    done
+else
+    echo "(zadni kandidati)"
+fi
+echo ""
+
+echo "--- smazane-ale-otevrene soubory (procesy uid appky) ---"
+for pidfd in /proc/[0-9]*/fd; do
+    pid=${pidfd#/proc/}; pid=${pid%/fd}
+    puid=$(stat -c '%u' "/proc/$pid" 2>/dev/null)
+    [ "$puid" = "$MY_UID" ] || continue
+    for fd in "$pidfd"/*; do
+        link=$(readlink "$fd" 2>/dev/null)
+        case "$link" in
+            *"(deleted)")
+                sz=$(stat -L -c '%s' "$fd" 2>/dev/null)
+                echo "PID $pid fd $(basename "$fd"): $link  (${sz:-?} B)"
+                ;;
+        esac
+    done
+done
+echo ""
+
+echo "--- bezici procesy ve stavu R ---"
+ps -eo pid,stat,time,comm 2>/dev/null | awk '$2 ~ /^R/'
+echo ""
+echo "[*] Konec inventury. Dalsi faze (l2s GC, logy, cache, perms) viz docs/plans/12s-cleaner.md — jeste neimplementovano."
+NHCLEAN
+)
+    ashell -c "$script"
+}
+
+help_clean() {
+    banner
+    echo ""
+    echo "  ${WHITE}${BOLD}CLEAN${RST} ${DIM}– Inventura a (plánovaný) úklid plného úložiště${RST}"
+    separator
+    echo "  ${GREEN}scan${RST} (výchozí)          Read-only inventura: místo, velké/rostoucí soubory, smazané-ale-otevřené fd, R procesy"
+    echo ""
+    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): l2s, logs, cache, perms, trash, all"
+    echo ""
+    echo "  ${YELLOW}Příklady:${RST}"
+    echo "    nh clean"
+    echo "    nh clean scan"
+    echo ""
+}
+
 # ─── APPS ──────────────────────────────────────────────────
 
 apps_dispatch() {
@@ -2278,6 +2391,7 @@ help_dispatch() {
         api)                      help_api ;;
         desktop|vnc)              help_desktop ;;
         fix)                      help_fix ;;
+        clean)                    help_clean ;;
         apps)                     help_apps ;;
         usb)                      help_usb ;;
         distro)                   help_distro ;;
@@ -2308,6 +2422,7 @@ help_dispatch() {
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "agent" "(ai)" "Předání dotazu appce Kali AI Assistant"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "log" "(logs)" "Prohlížení a filtrování logcat logů (-n, -g, -K), nastavení log levelu"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "fix" "" "Oprava dpkg locků, zaseklých balíčků, vlastnictví souborů a PRoot git .l2s linků"
+            printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "clean" "" "Inventura plného úložiště (místo, rostoucí logy, osiřelé fd) — scan zatím, úklid dle plánu"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "desktop" "(vnc)" "Spuštění a správa headless GUI prostředí (Xvfb / VNC / X11)"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "apps" "" "Statistiky využití aplikací v popředí za 24h"
             printf "  ${CYAN}%-18s${RST} %-12s ${DIM}%s${RST}\n" "api" "" "Správa sdílení LocalApiServer rozhraní (0.0.0.0 vs 127.0.0.1)"
@@ -3308,6 +3423,7 @@ list_cmds() {
         "api share on|off|status" \
         "vnc start" "vnc stop" "vnc status" \
         "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
+        "clean" "clean scan" \
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "adb start" "adb stop" "adb status" "adb shell [cmd]" "adb <cmd>" "adb install [-r] <apk>" "adb uninstall <pkg>" "adb push <L> <R>" "adb pull <R> <L>" "adb devices" \
@@ -4378,6 +4494,7 @@ case "$CMD" in
     api)                    api_dispatch "$@" ;;
     desktop|vnc)            desktop_dispatch "$@" ;;
     fix)                    fix_dispatch "$@" ;;
+    clean)                  clean_dispatch "$@" ;;
     apps)                   apps_dispatch "$@" ;;
     usb)                    usb_dispatch "$@" ;;
     distro)                 distro_dispatch "$@" ;;

@@ -153,6 +153,9 @@ run cpu status
 section "docs"
 run docs
 
+section "clean"
+run clean scan
+
 # ── zastavit/vybrat logcat ────────────────────────────────
 sleep 1
 if [ -n "$LOGCAT_PID" ]; then
