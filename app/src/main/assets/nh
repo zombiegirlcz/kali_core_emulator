@@ -2235,12 +2235,195 @@ fix_auto() {
 clean_dispatch() {
     case "$1" in
         ""|scan) clean_scan ;;
-        l2s|logs|cache|perms|trash|all)
-            echo "[-] 'nh clean $1' zatím neimplementováno (jen 'nh clean scan' — fáze 0)." >&2
+        l2s) shift; clean_l2s "$@" ;;
+        trash) shift; clean_trash "$@" ;;
+        logs|cache|perms|all)
+            echo "[-] 'nh clean $1' zatím neimplementováno." >&2
             echo "    Plán: docs/plans/12s-cleaner.md" >&2
             exit 1 ;;
         help|-h|--help) help_clean ;;
-        *) echo "Použití: nh clean [scan]"; echo "Pro nápovědu: nh clean help"; exit 1 ;;
+        *) echo "Použití: nh clean [scan|l2s [--delete]|trash [list|--purge]]"; echo "Pro nápovědu: nh clean help"; exit 1 ;;
+    esac
+}
+
+# Najde host pohled na rootfs aktuálního distra (App Data bind appky —
+# /data/user/0/com.linux_core, starší /mnt/app). Tam proot l2s symlinky NEJSOU
+# přepisované (bind je mimo l2s translaci), takže readlink/find vidí pravdu —
+# na rozdíl od pohledu zevnitř prootu (viz plán, "Pasti prostředí"). Nastaví
+# HOST_APP_DIR a HOST_ROOTFS, vrací 1 když nenalezeno (chybí NH_DISTRO nebo bind).
+clean_resolve_host_root() {
+    HOST_APP_DIR=""; HOST_ROOTFS=""
+    local app_dir
+    for app_dir in /data/user/0/com.linux_core /mnt/app; do
+        if [ -n "${NH_DISTRO:-}" ] && [ -d "$app_dir/files/nh/distro/$NH_DISTRO" ]; then
+            HOST_APP_DIR="$app_dir"
+            HOST_ROOTFS="$app_dir/files/nh/distro/$NH_DISTRO"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Fáze 1+2 plánu: materializace git .l2s odkazů (přes existující fix_git,
+# nad VŠEMI .git repy v rootfs) + dvouúrovňové GC .l2s store. Default = jen
+# report (dry-run); `--delete` přesune mrtvé mezistupně + osiřelá data do
+# karantény (nh/trash/<timestamp>/l2s) — NIKDY natvrdo nemaže (viz plán,
+# "Co se nesmí dělat" #4). Povinný denylist (status/dpkg/...) se nikdy
+# nesklízí, i kdyby vyšel jako osiřelý.
+clean_l2s() {
+    local do_delete=0
+    case "${1:-}" in
+        --delete) do_delete=1 ;;
+        ""|--dry-run) ;;
+        *) echo "Použití: nh clean l2s [--delete]" >&2; exit 1 ;;
+    esac
+
+    clean_resolve_host_root || {
+        echo "[-] Nelze najít host pohled na rootfs (chybí bind App Data nebo NH_DISTRO)." >&2
+        echo "    Zapni 'App Data' (Root Bridge) a spusť znovu." >&2
+        exit 1
+    }
+    local host_root="$HOST_ROOTFS" app_dir="$HOST_APP_DIR"
+    local l2s_dir="$host_root/.l2s"
+    if [ ! -d "$l2s_dir" ]; then
+        echo "[*] $l2s_dir neexistuje — nic k úklidu."
+        return 0
+    fi
+
+    echo "[*] Fáze 1 — materializace git .l2s odkazů ($host_root)"
+    local gitdir d repo_rel
+    find "$host_root" -xdev -maxdepth 10 -type d -name .git 2>/dev/null | while read -r gitdir; do
+        d=$(dirname "$gitdir")
+        repo_rel=${d#"$host_root"}
+        [ -z "$repo_rel" ] && repo_rel="/"
+        echo "  - $repo_rel"
+        fix_git "$repo_rel" 2>&1 | sed 's/^/      /'
+    done
+    echo ""
+
+    echo "[*] Fáze 2 — dvouúrovňové GC .l2s ($l2s_dir)"
+    local tmp TAB
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/nh_clean_l2s.XXXXXX") || { echo "[-] mktemp selhal" >&2; exit 1; }
+    TAB=$(printf '\t')
+
+    # 1) data = soubory v .l2s (skutečná data, basename + velikost)
+    find "$l2s_dir" -maxdepth 1 -type f -printf '%f\t%s\n' 2>/dev/null | LC_ALL=C sort > "$tmp/data_full"
+    LC_ALL=C cut -f1 "$tmp/data_full" | LC_ALL=C sort -u > "$tmp/data_names"
+
+    # 2) mid = mezistupeň (symlinky v .l2s), basename -> basename cíle
+    find "$l2s_dir" -maxdepth 1 -type l -printf '%f\t%l\n' 2>/dev/null \
+        | awk -F'\t' '{t=$2; sub(/^.*\//,"",t); print $1"\t"t}' \
+        | LC_ALL=C sort > "$tmp/mid"
+    LC_ALL=C cut -f1 "$tmp/mid" | LC_ALL=C sort -u > "$tmp/mid_names"
+
+    # 3) rootrefs = cíle symlinků v rootfs (mimo .l2s), co míří do .l2s
+    find "$host_root" -xdev -type l 2>/dev/null | while read -r l; do
+        case "$l" in "$l2s_dir"/*) continue ;; esac
+        readlink "$l" 2>/dev/null
+    done | grep '/\.l2s/' | sed 's#.*/##' | LC_ALL=C sort -u > "$tmp/rootrefs"
+
+    # 4) mid_live / mid_dead
+    LC_ALL=C comm -12 "$tmp/mid_names" "$tmp/rootrefs" > "$tmp/mid_live_names"
+    LC_ALL=C comm -23 "$tmp/mid_names" "$tmp/rootrefs" > "$tmp/mid_dead_names"
+
+    # 5) live = cíle mid_live (přes mid) ∪ rootrefs (přímé odkazy na data)
+    LC_ALL=C join -t "$TAB" "$tmp/mid_live_names" "$tmp/mid" | cut -f2 | LC_ALL=C sort -u > "$tmp/mid_live_targets"
+    cat "$tmp/mid_live_targets" "$tmp/rootrefs" | LC_ALL=C sort -u > "$tmp/live"
+
+    # 6) orphans = data, na které nic nemíří
+    LC_ALL=C comm -23 "$tmp/data_names" "$tmp/live" > "$tmp/orphans_all"
+
+    # Povinný denylist (viz plán) — i kdyby vyšel jako osiřelý, nikdy se nesklízí.
+    local deny='(^|[._-])(status|dpkg|statoverride|triggers)([._-]|$)|\.l2s\.diversions'
+    grep -vE "$deny" "$tmp/orphans_all" > "$tmp/orphans" 2>/dev/null || : > "$tmp/orphans"
+    grep -vE "$deny" "$tmp/mid_dead_names" > "$tmp/mid_dead" 2>/dev/null || : > "$tmp/mid_dead"
+
+    local n_data n_mid n_mid_dead n_orphans n_denied_o n_denied_m orphan_bytes
+    n_data=$(wc -l < "$tmp/data_names")
+    n_mid=$(wc -l < "$tmp/mid_names")
+    n_mid_dead=$(wc -l < "$tmp/mid_dead")
+    n_orphans=$(wc -l < "$tmp/orphans")
+    n_denied_o=$(( $(wc -l < "$tmp/orphans_all") - n_orphans ))
+    n_denied_m=$(( $(wc -l < "$tmp/mid_dead_names") - n_mid_dead ))
+    orphan_bytes=$(LC_ALL=C join -t "$TAB" "$tmp/orphans" "$tmp/data_full" 2>/dev/null | awk -F'\t' '{s+=$2} END{print s+0}')
+
+    echo "  data (úroveň se soubory):  $n_data"
+    echo "  mid (úroveň se symlinky):  $n_mid"
+    echo "  mid mrtvé:                 $n_mid_dead  (+ $n_denied_m chráněno denylistem)"
+    echo "  osiřelé data:              $n_orphans  (+ $n_denied_o chráněno denylistem), ~$((orphan_bytes / 1024 / 1024)) MiB"
+    echo ""
+
+    if [ "$do_delete" != "1" ]; then
+        echo "[*] Dry-run — nic se nemazalo. Spusť s '--delete' pro přesun do karantény."
+        rm -rf "$tmp"
+        return 0
+    fi
+
+    if [ "$n_orphans" = "0" ] && [ "$n_mid_dead" = "0" ]; then
+        echo "[+] Nic k úklidu."
+        rm -rf "$tmp"
+        return 0
+    fi
+
+    local ts quarantine
+    ts=$(date +%Y%m%d-%H%M%S)
+    quarantine="$app_dir/files/nh/trash/$ts/l2s"
+    mkdir -p "$quarantine" || { echo "[-] Nelze vytvořit karanténu $quarantine" >&2; rm -rf "$tmp"; exit 1; }
+
+    local to_move
+    to_move=$(( $(wc -l < "$tmp/mid_dead") + $(wc -l < "$tmp/orphans") ))
+    echo "[*] Přesouvám $to_move záznamů do karantény: $quarantine"
+    cat "$tmp/mid_dead" "$tmp/orphans" | while read -r name; do
+        [ -n "$name" ] || continue
+        [ -e "$l2s_dir/$name" ] && mv "$l2s_dir/$name" "$quarantine/$name" 2>/dev/null
+    done
+    echo "[+] Přesunuto. Obnova: mv $quarantine/* $l2s_dir/   (nebo 'nh clean trash --purge' pro trvalé smazání)"
+
+    echo ""
+    echo "[*] Fáze 6 — verifikace rozbitých .l2s odkazů"
+    local broken_file="$tmp/broken"
+    find "$host_root" -xdev -type l 2>/dev/null | grep '/\.l2s/' | while read -r p; do
+        [ -e "$p" ] || echo "$p"
+    done > "$broken_file"
+    if [ -s "$broken_file" ]; then
+        echo "[!] Rozbité odkazy ($(wc -l < "$broken_file")):"
+        sed 's/^/    /' "$broken_file"
+        echo "    Tip: 'nh fix git <repo>' po obnově z karantény, nebo repo znovu naklonovat."
+    else
+        echo "[+] 0 rozbitých odkazů."
+    fi
+
+    rm -rf "$tmp"
+}
+
+# nh/trash/<timestamp>/... — karanténa pro vše, co clean příkazy přesouvají
+# místo mazání (viz plán, "Co se nesmí dělat" #4: smazání je vratné jen tímto).
+clean_trash() {
+    local app_dir="" cand
+    for cand in /data/user/0/com.linux_core /mnt/app; do
+        [ -d "$cand/files/nh/trash" ] && { app_dir="$cand"; break; }
+    done
+    if [ -z "$app_dir" ]; then
+        echo "[*] Karanténa je prázdná (žádný nh/trash adresář nenalezen)."
+        return 0
+    fi
+    local trash_root="$app_dir/files/nh/trash"
+
+    case "${1:-}" in
+        --purge)
+            local sz
+            sz=$(du -sh "$trash_root" 2>/dev/null | cut -f1)
+            echo "[*] Trvale mažu karanténu: $trash_root (~${sz:-?})"
+            rm -rf "$trash_root"
+            echo "[+] Smazáno."
+            ;;
+        ""|list)
+            echo "[*] Obsah karantény: $trash_root"
+            find "$trash_root" -mindepth 1 -maxdepth 2 2>/dev/null | while read -r d; do
+                du -sh "$d" 2>/dev/null
+            done
+            ;;
+        *) echo "Použití: nh clean trash [list|--purge]" >&2; exit 1 ;;
     esac
 }
 
@@ -2328,12 +2511,17 @@ help_clean() {
     echo "  ${WHITE}${BOLD}CLEAN${RST} ${DIM}– Inventura a (plánovaný) úklid plného úložiště${RST}"
     separator
     echo "  ${GREEN}scan${RST} (výchozí)          Read-only inventura: místo, velké/rostoucí soubory, smazané-ale-otevřené fd, R procesy"
+    echo "  ${GREEN}l2s [--delete]${RST}          Fáze 1+2: materializace git .l2s + dvouúrovňové GC. Bez '--delete' jen report (dry-run)."
+    echo "  ${GREEN}trash [list|--purge]${RST}    Obsah karantény (nh/trash/<timestamp>/) nebo trvalé smazání"
     echo ""
-    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): l2s, logs, cache, perms, trash, all"
+    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): logs, cache, perms, all"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh clean"
-    echo "    nh clean scan"
+    echo "    nh clean l2s"
+    echo "    nh clean l2s --delete"
+    echo "    nh clean trash"
+    echo "    nh clean trash --purge"
     echo ""
 }
 
@@ -3423,7 +3611,7 @@ list_cmds() {
         "api share on|off|status" \
         "vnc start" "vnc stop" "vnc status" \
         "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
-        "clean" "clean scan" \
+        "clean" "clean scan" "clean l2s" "clean l2s --delete" "clean trash" "clean trash --purge" \
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "adb start" "adb stop" "adb status" "adb shell [cmd]" "adb <cmd>" "adb install [-r] <apk>" "adb uninstall <pkg>" "adb push <L> <R>" "adb pull <R> <L>" "adb devices" \
