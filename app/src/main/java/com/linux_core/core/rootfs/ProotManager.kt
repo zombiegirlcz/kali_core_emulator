@@ -1334,7 +1334,7 @@ object ProotManager {
      *
      * Cílem je `filesDir/nh/share` viděná přes bind app data dir (pref
      * `bind_app`, default on). Když bind chybí, hook nic nedělá a appka spadne
-     * na sken `/proc/*​/environ` (`ShareTargetResolver`).
+     * na sken `/proc/<pid>/environ` (`ShareTargetResolver`).
      */
     private fun deployShareHook(rootfsDir: File) {
         val dir = File(rootfsDir, "etc/profile.d")

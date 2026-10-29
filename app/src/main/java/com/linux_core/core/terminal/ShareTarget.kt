@@ -34,7 +34,7 @@ data class ShareTarget(
  *     Nutné proto, že `/proc/<pid>/environ` je **snapshot z `execve()`**: `export`
  *     v už běžícím shellu se do něj nikdy nedostane. Hook funguje v módu D
  *     (`ipc` je bindnuté jako `/run/host_ipc`), v I/M módu zápis tiše selže.
- *  2. **sken `/proc/*​/environ`** — fallback pro `SHARE=… program` (proměnná
+ *  2. **sken `/proc/<pid>/environ`** — fallback pro `SHARE=… program` (proměnná
  *     předaná při exec) a pro izolované módy bez `/run/host_ipc`.
  *
  * Když kandidátů víc, vyhrává nejnovější (mtime snapshotu / nejvyšší PID).
