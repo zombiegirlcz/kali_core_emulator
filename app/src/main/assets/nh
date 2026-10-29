@@ -2239,12 +2239,10 @@ clean_dispatch() {
         trash) shift; clean_trash "$@" ;;
         logs) shift; clean_logs "$@" ;;
         cache) shift; clean_cache "$@" ;;
-        perms|all)
-            echo "[-] 'nh clean $1' zatím neimplementováno." >&2
-            echo "    Plán: docs/plans/12s-cleaner.md" >&2
-            exit 1 ;;
+        perms) shift; clean_perms "$@" ;;
+        all) shift; clean_all "$@" ;;
         help|-h|--help) help_clean ;;
-        *) echo "Použití: nh clean [scan|l2s [--delete]|trash [list|--purge]]"; echo "Pro nápovědu: nh clean help"; exit 1 ;;
+        *) echo "Použití: nh clean [scan|l2s [--delete]|logs [--delete]|cache [--delete]|perms [--apply]|trash [list|--purge]|all [--delete]]"; echo "Pro nápovědu: nh clean help"; exit 1 ;;
     esac
 }
 
@@ -2629,6 +2627,85 @@ clean_cache() {
     fi
 }
 
+# Fáze 5 plánu: vlastnictví a SELinux labely — JEN zařízení s 'su'. Bez su
+# root-owned zbytky nemohou vzniknout (plán, "má zařízení su?" tabulka) —
+# skončit hned s vysvětlením, ne chybou. Vlastník i label se odvozují
+# z rootfs kořene (ls -ldZ), nikdy hardcoded (kategorie plynou z uid appky).
+# Na rozdíl od plánova CLI náčrtu je default jen report — živý root chown/chcon
+# na skutečném zařízení bez prvního náhledu je zbytečné riziko; '--apply' spustí.
+clean_perms() {
+    local do_apply=0
+    case "${1:-}" in
+        --apply) do_apply=1 ;;
+        "") ;;
+        *) echo "Použití: nh clean perms [--apply]" >&2; exit 1 ;;
+    esac
+
+    command -v ashell >/dev/null 2>&1 || { echo "[-] ashell nenalezen — clean perms vyžaduje host nástroje" >&2; exit 1; }
+
+    clean_resolve_host_root || {
+        echo "[-] Nelze najít host pohled na rootfs (chybí bind App Data nebo NH_DISTRO)." >&2
+        echo "    Zapni 'App Data' (Root Bridge) a spusť znovu." >&2
+        exit 1
+    }
+    local host_root="$HOST_ROOTFS"
+
+    local script
+    script='HOST_ROOT="'"$host_root"'"
+DO_APPLY='"$do_apply"'
+if ! command -v su >/dev/null 2>&1 || ! su -c true >/dev/null 2>&1; then
+    echo "[*] Zarizeni bez su — root-owned zbytky nemohou vzniknout, clean perms neni relevantni (vynechano)."
+    exit 0
+fi
+OWNER=$(su -c "stat -c %U:%G \"$HOST_ROOT\"" 2>/dev/null)
+LABEL=$(su -c "ls -ldZ \"$HOST_ROOT\"" 2>/dev/null | awk "{print \$(NF-1)}")
+if [ -z "$OWNER" ]; then
+    echo "[-] Nelze zjistit vlastnika $HOST_ROOT"
+    exit 1
+fi
+echo "[*] cilovy vlastnik: $OWNER  label: ${LABEL:-?}"
+N_F=$(su -c "find \"$HOST_ROOT\" -xdev -user 0 ! -type l" 2>/dev/null | wc -l)
+N_L=$(su -c "find \"$HOST_ROOT\" -xdev -user 0 -type l" 2>/dev/null | wc -l)
+echo "  root-owned soubory:  $N_F"
+echo "  root-owned symlinky: $N_L"
+if [ "$DO_APPLY" != "1" ]; then
+    echo "[*] Dry-run — nic se nemenilo. Spusť s '"'"'--apply'"'"' pro skutecnou opravu."
+    exit 0
+fi
+if [ "$N_F" = "0" ] && [ "$N_L" = "0" ]; then
+    echo "[+] Nic k oprave."
+    exit 0
+fi
+su -c "find \"$HOST_ROOT\" -xdev -user 0 ! -type l -exec chown $OWNER {} + 2>/dev/null"
+[ -n "$LABEL" ] && su -c "find \"$HOST_ROOT\" -xdev -user 0 ! -type l -exec chcon $LABEL {} + 2>/dev/null"
+su -c "find \"$HOST_ROOT\" -xdev -user 0 -type l -exec chown -h $OWNER {} + 2>/dev/null"
+[ -n "$LABEL" ] && su -c "find \"$HOST_ROOT\" -xdev -user 0 -type l -exec chcon -h $LABEL {} + 2>/dev/null"
+echo "[+] Hotovo."'
+    ashell -c "$script"
+}
+
+# nh clean all [--delete] — proběhne všechny bezpečné fáze po řadě. perms se
+# NEVOLÁ automaticky (plán ho drží oddělený, root-only a riskantnější) —
+# spusť 'nh clean perms' sám, až budeš chtít.
+clean_all() {
+    local flag=""
+    case "${1:-}" in --delete) flag="--delete" ;; "") ;; *) echo "Použití: nh clean all [--delete]" >&2; exit 1 ;; esac
+
+    echo "########## nh clean scan ##########"
+    clean_scan
+    echo ""
+    echo "########## nh clean l2s $flag ##########"
+    clean_l2s $flag
+    echo ""
+    echo "########## nh clean logs $flag ##########"
+    clean_logs $flag
+    echo ""
+    echo "########## nh clean cache $flag ##########"
+    clean_cache $flag
+    echo ""
+    echo "[*] 'nh clean perms' se nevolá automaticky — root-only, spusť ho zvlášť, pokud zařízení má su."
+}
+
 help_clean() {
     banner
     echo ""
@@ -2639,8 +2716,8 @@ help_clean() {
     echo "  ${GREEN}trash [list|--purge]${RST}    Obsah karantény (nh/trash/<timestamp>/) nebo trvalé smazání"
     echo "  ${GREEN}logs [--max N] [--delete]${RST} Fáze 3: nalezne *.log/diag.*.txt nad limitem (výchozí 16M); '--delete' zkrátí (ne rm)"
     echo "  ${GREEN}cache [--delete]${RST}        Fáze 4: apt archives/lists, pip/npm/cargo/_cacache, __pycache__ — rovnou maže s '--delete'"
-    echo ""
-    echo "  ${YELLOW}Zatím neimplementováno${RST} (viz docs/plans/12s-cleaner.md): perms, all"
+    echo "  ${GREEN}perms [--apply]${RST}         Fáze 5 (jen zařízení s su): vlastnictví + SELinux label root-owned souborů v rootfs"
+    echo "  ${GREEN}all [--delete]${RST}          scan + l2s + logs + cache po řadě (perms NE — root-only, spusť zvlášť)"
     echo ""
     echo "  ${YELLOW}Příklady:${RST}"
     echo "    nh clean"
@@ -2648,6 +2725,8 @@ help_clean() {
     echo "    nh clean l2s --delete"
     echo "    nh clean logs --max 32M --delete"
     echo "    nh clean cache --delete"
+    echo "    nh clean perms"
+    echo "    nh clean all --delete"
     echo "    nh clean trash"
     echo "    nh clean trash --purge"
     echo ""
@@ -3739,7 +3818,7 @@ list_cmds() {
         "api share on|off|status" \
         "vnc start" "vnc stop" "vnc status" \
         "fix pkg <name>" "fix auto" "fix permission <path>" "fix git [path]" \
-        "clean" "clean scan" "clean l2s" "clean l2s --delete" "clean logs" "clean logs --delete" "clean cache" "clean cache --delete" "clean trash" "clean trash --purge" \
+        "clean" "clean scan" "clean l2s" "clean l2s --delete" "clean logs" "clean logs --delete" "clean cache" "clean cache --delete" "clean perms" "clean perms --apply" "clean all" "clean trash" "clean trash --purge" \
         "apps usage" \
         "usb list" "usb permission <dev>" "usb claim" "usb release" "usb send" "usb bulk" "usb control" "usb bridge" "usb gadget" \
         "adb start" "adb stop" "adb status" "adb shell [cmd]" "adb <cmd>" "adb install [-r] <apk>" "adb uninstall <pkg>" "adb push <L> <R>" "adb pull <R> <L>" "adb devices" \
